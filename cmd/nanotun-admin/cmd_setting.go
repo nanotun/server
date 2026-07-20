@@ -248,7 +248,7 @@ func cmdSettingRate(ctx context.Context, st *store.Store, opts *globalOpts, args
 // 退出码语义:
 //
 //   - 0  DNS + ICMP 全通过(或 skip-icmp 时 DNS 通过)
-//   - 非 0  返回 error(语法 / DNS / ICMP / ctx 取消)— shell 脚本可 `vpn-port-admin … || handle`
+//   - 非 0  返回 error(语法 / DNS / ICMP / ctx 取消)— shell 脚本可 `nanotun-admin … || handle`
 //
 // 三类失败用文本前缀区分(`✗ DNS 失败` / `⚠ ICMP 不通` / `✗ 语法校验失败`),
 // 不细分自定义 exit code,避免与全局 main 退出码语义打架。

@@ -23,7 +23,7 @@
 2. **出口能力声明**：扩 `RouteAdvertise` 加 `exit bool`；仅当 `exit=true` 时该帧允许携带 0/0/::/0（否则照旧拒 /0，防误声明全网代理）。
 3. **使用方选择**：新增 `LinkTypeEgressSelect`（type 19）控制帧，使用客户端运行时选择 `egress = server | <exit device_uuid>`；server 为该会话记 `egressDeviceID` 绑定。
 4. **数据面转发**：A 的「dst 非任何 vIP」包，若会话 `egressDeviceID != 0` 且该出口 conn 在线 → 投递到出口 D 的 `TunChan`（而非 `tunWriteChan`）；否则走原 server 自出口。回程由 D 本机 NAT 还原 dst=A 的 vIP，经隧道回 server，按现有 vIP demux 投给 A。
-5. **出口侧 NAT（客户端）**：开 ip_forward + 对 mesh 子网来源、dst 非本机 vIP 的流量 masquerade 出物理网卡，回程 rev-NAT 进 TUN。Linux 先行（复用 server `setup-network-and-persist.sh` 配方 / `nanotun-net` nftables 能力）；mac(pf)/Win(WinNAT) 后续。
+5. **出口侧 NAT（客户端）**：开 ip_forward + 对 mesh 子网来源、dst 非本机 vIP 的流量 masquerade 出物理网卡，回程 rev-NAT 进 TUN。Linux 先行（iptables MASQUERADE 配方 / `nanotun-net` nftables 能力）；mac(pf)/Win(WinNAT) 后续。
 6. **安全**：admin 审批才生效；`exit_allowed` 仍管「能否用出口」；ACL 可对 exit 流量粒度 deny；出口下线 fail-closed（不静默回落明文）；审计 `route.forward.*`。
 
 ## 协议改动（util/）

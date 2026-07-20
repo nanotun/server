@@ -4,7 +4,7 @@
 
 ## 1. 背景
 
-nanotun 数据面在 wss\://...:8080/internal/vpn-port/data-plane/ws/v1/... 上跑链路帧
+nanotun 数据面在 wss\://...:8080/internal/nanotun/data-plane/ws/v1/... 上跑链路帧
 (LinkType + payload)。之前没有应用层 Ping/Pong,因此:
 
 - 中间盒(运营商 NAT / 公司防火墙)让 TCP 半开时,smux KeepAlive 自己的 ACK 仍能在

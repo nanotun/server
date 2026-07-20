@@ -36,10 +36,12 @@ cp tun-isolate.sh /usr/local/bin/nanotun-tun-isolate.sh
 chmod +x /usr/local/bin/nanotun-tun-setup.sh /usr/local/bin/nanotun-tun-isolate.sh
 
 # 2. 安装并启用 systemd 服务（只用一个 service）
-cp tun-setup.service /etc/systemd/system/
+#    单元名统一 nanotun- 前缀,与 install-self-hosted.sh 的标准安装一致;
+#    tun-isolate.service 的 After=/Requires= 也指向这个名字。
+cp tun-setup.service /etc/systemd/system/nanotun-tun-setup.service
 systemctl daemon-reload
-systemctl enable tun-setup.service
-systemctl start tun-setup.service
+systemctl enable nanotun-tun-setup.service
+systemctl start nanotun-tun-setup.service
 
 # 3. 检查（应看到 tun0–tun14，且隔离规则已生效）
 ip addr show tun0 tun1 tun2 tun3 tun4 tun5 tun6 tun7 tun8 tun9 tun10 tun11 tun12 tun13 tun14
@@ -65,5 +67,5 @@ iptables -L INPUT -n -v | head -5
 ```bash
 /usr/local/bin/nanotun-tun-setup.sh
 # 或
-systemctl restart tun-setup.service
+systemctl restart nanotun-tun-setup.service
 ```

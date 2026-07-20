@@ -22,10 +22,10 @@ if [[ ! -f "$CFG" ]]; then
   exit 0
 fi
 
-read_hysteria_field() {
-  local key="$1"
-  awk -v k="$key" '
-    /^\[hysteria\]/ { insection=1; next }
+read_toml_field() {
+  local section="$1" key="$2"
+  awk -v sect="[$section]" -v k="$key" '
+    $0 == sect { insection=1; next }
     /^\[/ { if (insection) exit }
     insection && $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {
       sub(/^[[:space:]]*[^=]+=[[:space:]]*/, "")
@@ -35,6 +35,30 @@ read_hysteria_field() {
       exit
     }
   ' "$CFG"
+}
+
+read_hysteria_field() { read_toml_field hysteria "$1"; }
+
+gen_self_signed() {
+  # gen_self_signed <cert_path> <key_path> <subject> —— 缺文件时生成自签（带 SAN，失败退回无 SAN）。
+  local cert_path="$1" key_path="$2" subj="$3"
+  if [[ -f "$cert_path" && -f "$key_path" ]]; then
+    return 0
+  fi
+  echo "[ensure-server-assets] 未找到 TLS 证书，生成自签 -> $cert_path" >&2
+  mkdir -p "$(dirname "$cert_path")" "$(dirname "$key_path")"
+  if openssl req -x509 -newkey rsa:2048 \
+    -keyout "$key_path" -out "$cert_path" -days 3650 -nodes \
+    -subj "$subj" \
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null; then
+    :
+  else
+    openssl req -x509 -newkey rsa:2048 \
+      -keyout "$key_path" -out "$cert_path" -days 3650 -nodes \
+      -subj "$subj"
+  fi
+  chmod 600 "$key_path" 2>/dev/null || true
+  chmod 644 "$cert_path" 2>/dev/null || true
 }
 
 resolve_path() {
@@ -47,6 +71,16 @@ resolve_path() {
   fi
 }
 
+# [server] 数据面 WSS TLS：配置了 tls_cert_file/tls_key_file 但文件缺失时自签。
+# install-self-hosted.sh 不再随包分发 dev-*.pem，改由这里按需生成——否则 [server]
+# 启了 TLS 却没证书，nanotund 启动即 Fatal。
+srv_cert_rel=$(read_toml_field server "tls_cert_file")
+srv_key_rel=$(read_toml_field server "tls_key_file")
+if [[ -n "${srv_cert_rel// }" && -n "${srv_key_rel// }" ]]; then
+  gen_self_signed "$(resolve_path "$srv_cert_rel")" "$(resolve_path "$srv_key_rel")" \
+    "/CN=localhost/O=nanotun-deploy"
+fi
+
 password=$(read_hysteria_field "password")
 cert_rel=$(read_hysteria_field "tls_cert_file")
 key_rel=$(read_hysteria_field "tls_key_file")
@@ -55,24 +89,8 @@ masq_rel=$(read_hysteria_field "masquerade_dir")
 
 # hy2：已配置主密码且 tls 路径齐全、但文件缺失时生成自签（与 自签证书说明 类似）
 if [[ -n "${password// }" && -n "$cert_rel" && -n "$key_rel" ]]; then
-  cert_path=$(resolve_path "$cert_rel")
-  key_path=$(resolve_path "$key_rel")
-  if [[ ! -f "$cert_path" || ! -f "$key_path" ]]; then
-    echo "[ensure-server-assets] 未找到 hy2 TLS，生成自签证书 -> $cert_path" >&2
-    mkdir -p "$(dirname "$cert_path")" "$(dirname "$key_path")"
-    if openssl req -x509 -newkey rsa:2048 \
-      -keyout "$key_path" -out "$cert_path" -days 3650 -nodes \
-      -subj "/CN=localhost/O=nanotun-deploy" \
-      -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null; then
-      :
-    else
-      openssl req -x509 -newkey rsa:2048 \
-        -keyout "$key_path" -out "$cert_path" -days 3650 -nodes \
-        -subj "/CN=localhost/O=nanotun-deploy"
-    fi
-    chmod 600 "$key_path" 2>/dev/null || true
-    chmod 644 "$cert_path" 2>/dev/null || true
-  fi
+  gen_self_signed "$(resolve_path "$cert_rel")" "$(resolve_path "$key_rel")" \
+    "/CN=localhost/O=nanotun-deploy"
 fi
 
 # mTLS：配置了 tls_client_ca_file 但 CA 证书缺失时生成自签 CA（与 自签证书说明 一致）

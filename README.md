@@ -14,12 +14,18 @@
 cd cmd/nanotund
 go build -o nanotund .
 
-# 首次启动会自动跑 schema migration,也可显式执行:
-./nanotund -config config.toml &  # 启动后立即 Ctrl-C 也行,只为建库
+# 首次启动会自动跑 schema migration,也可显式执行(本地非 root 试跑用 no_tun 样例):
+./nanotund -config config_no_tun.toml &  # 启动后立即 Ctrl-C 也行,只为建库
 ```
 
-`config.toml` 里 `[store].db_path` 默认 `data/nanotun.db`,首次启动会自动建库
-并迁移到最新 schema。
+首次启动会自动建库并迁移到最新 schema。注意 `config.toml`(完整 reference 样板)
+里 `[store].db_path` 钉的是生产绝对路径 `/var/lib/nanotun/nanotun.db`,非 root
+本地试跑请改成相对路径,或直接用 `config_no_tun.toml`(其 `db_path` 为
+`data/nanotun.db`,且无需 root/TUN):
+
+```bash
+./nanotund -config config_no_tun.toml
+```
 
 ### 2. 用 admin CLI 创建用户和设备
 

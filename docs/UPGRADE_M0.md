@@ -33,7 +33,7 @@ go build -o nanotund ./cmd/nanotund
 [server]
 listen_addr = ":8080"
 # WebSocket 路径必须与客户端 profile 一致;不写则用默认长路径
-vpn_websocket_path = "/internal/vpn-port/data-plane/ws/v1/<your-random-token>"
+vpn_websocket_path = "/internal/nanotun/data-plane/ws/v1/<your-random-token>"
 
 [tun]
 device_name = "tun0"
@@ -54,7 +54,7 @@ enabled = false
 ### 3. 创建用户 / 设备 / profile
 
 ```bash
-cd nanotun-admin
+cd cmd/nanotun-admin
 go build -o nanotun-admin .
 
 # 默认数据库路径与 [store].db_path 一致,建议导出环境变量
@@ -64,13 +64,13 @@ export NANOTUN_DB=data/nanotun.db
 ./nanotun-admin init
 
 # 追加普通用户
-./nanotun-admin user add alice
+./nanotun-admin user create alice
 
 # 生成客户端 profile(JSON / nanotun:// URL / QR 码)
-./nanotun-admin profile gen alice --output alice.json
+./nanotun-admin profile show alice --output alice.json
 ```
 
-子命令完整列表 + 字段语义见 [`nanotun-admin/README.md`](../nanotun-admin/README.md)。
+子命令完整列表 + 字段语义见 [`cmd/nanotun-admin/README.md`](../cmd/nanotun-admin/README.md)。
 
 ### 4. 客户端登录约定
 
@@ -103,14 +103,17 @@ export NANOTUN_DB=data/nanotun.db
 - 老用户升级后应当主动取消旧服务:
 
 ```bash
-sudo systemctl disable --now tun-isolate.service
+# 单元名:标准安装(install-self-hosted.sh)为 nanotun-tun-isolate.service;
+# 更早的历史部署可能装成过无前缀的 tun-isolate.service,一并 disable 即可。
+sudo systemctl disable --now nanotun-tun-isolate.service 2>/dev/null || true
+sudo systemctl disable --now tun-isolate.service 2>/dev/null || true
 sudo /usr/local/bin/nanotun-tun-isolate-teardown.sh   # 清掉残留的 iptables 规则
 ```
 
 如果确实希望保留历史隔离行为:
 
 ```bash
-sudo systemctl enable --now tun-isolate.service
+sudo systemctl enable --now nanotun-tun-isolate.service
 # 或 export NANOTUN_TUN_ISOLATE=1; tun-setup.sh
 ```
 
@@ -141,9 +144,11 @@ sudo systemctl enable --now tun-isolate.service
 **升级动作**:
 
 ```bash
-# 1. 全量升级到 0016 schema(NOP 迁移,只 bump 版本号,**不做数据 backfill**)
+# 1. 全量升级到 0016 schema(NOP 迁移,只 bump 版本号,**不做数据 backfill**)。
+#    nanotund 没有独立的 migrate 子命令:启动时自动跑 store.Migrate,
+#    起来后 Ctrl-C 即可(只为建库/升 schema)。
 go build -o nanotund ./cmd/nanotund
-./nanotund --migrate-only
+./nanotund -config config.toml   # 启动完成(开始监听)即已完成迁移,Ctrl-C 退出
 
 # 2. 老库里 advertised_host 已经配过(老值通常是真实 IP),server_dial_host 还是空 →
 #    Web dashboard 顶部红 banner「server_dial_host 未配置 — 服务器 QR 暂不可生成」。
@@ -164,8 +169,10 @@ go build -o nanotund ./cmd/nanotund
 # 临时(立刻生效,重启失效):
 sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
-# 永久(写入 sysctl.d):
-echo 'net.ipv4.ping_group_range = 0 2147483647' | sudo tee /etc/sysctl.d/99-vpn-port-ping.conf
+# 永久(写入 sysctl.d)。注意:scripts/install-self-hosted.sh 的标准安装已把这条
+# 写进 /etc/sysctl.d/99-nanotun.conf,走安装脚本的部署无需重复;手动部署才需要下面这行,
+# 且请沿用同一个文件名,避免两个文件争同一个键。
+echo 'net.ipv4.ping_group_range = 0 2147483647' | sudo tee -a /etc/sysctl.d/99-nanotun.conf
 sudo sysctl --system
 ```
 

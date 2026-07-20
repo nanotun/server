@@ -874,7 +874,7 @@ func writeFixtureConfigWithGateway(t *testing.T, dir string) string {
 	body := `
 [server]
 listen_addr = ":8080"
-vpn_websocket_path = "/internal/vpn-port/data-plane/ws/v1/abc-fixture"
+vpn_websocket_path = "/internal/nanotun/data-plane/ws/v1/abc-fixture"
 tls_cert_file = "/tmp/srv-cert.pem"
 tls_key_file  = "/tmp/srv-key.pem"
 
@@ -1103,7 +1103,7 @@ func TestProfileShow_GatewayWithTLS_FromConfig(t *testing.T) {
 	if p.GatewayTLS == nil || *p.GatewayTLS != true {
 		t.Fatalf("gateway_tls 应当为 true（cert/key 都非空），实际 %+v", p.GatewayTLS)
 	}
-	if p.GatewayWSPath != "/internal/vpn-port/data-plane/ws/v1/abc-fixture" {
+	if p.GatewayWSPath != "/internal/nanotun/data-plane/ws/v1/abc-fixture" {
 		t.Fatalf("gateway_ws_path=%q", p.GatewayWSPath)
 	}
 	if p.GatewayTLSInsecureHint == nil || *p.GatewayTLSInsecureHint != true {

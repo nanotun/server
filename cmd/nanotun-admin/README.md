@@ -8,11 +8,11 @@
 
 ```bash
 cd /path/to/nanotun
-go build -o nanotun-admin ./nanotun-admin
+go build -o nanotun-admin ./cmd/nanotun-admin
 sudo install -m 0755 nanotun-admin /usr/local/bin/nanotun-admin
 ```
 
-或在部署脚本里跟 `nanotund` 一并 build：参见 `cmd/nanotund/build-on-server.sh`。
+或在部署脚本里跟 `nanotund` 一并 build：参见 `scripts/build-release.sh`（交叉编译打包）。
 
 ## 全局 Flag
 

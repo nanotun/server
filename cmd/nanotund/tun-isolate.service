@@ -2,9 +2,11 @@
 Description=Apply TUN client-to-client isolation (iptables+ipset) -- DISABLED by default in M0
 # M0 起 nanotun 是 mesh 网关：默认允许客户端互通，访问控制由应用层 ACL 完成。
 # 本 service 仅作为「想恢复历史隔离行为」的逃生阀；如确需启用：
-#   sudo systemctl enable --now tun-isolate.service
-After=tun-setup.service
-Requires=tun-setup.service
+#   sudo systemctl enable --now nanotun-tun-isolate.service
+# 依赖名与 install-self-hosted.sh 安装的单元名一致（统一 nanotun- 前缀约定；
+# 手动安装时也请 cp 成 nanotun-tun-setup.service / nanotun-tun-isolate.service）。
+After=nanotun-tun-setup.service
+Requires=nanotun-tun-setup.service
 
 [Service]
 Type=oneshot
@@ -13,4 +15,4 @@ RemainAfterExit=yes
 ExecStart=/usr/local/bin/nanotun-tun-isolate.sh
 
 # 故意省略 [Install]：systemd-enable 不再把它挂上 multi-user.target；
-# 用户可显式 `systemctl enable tun-isolate.service` 手动启用历史行为。
+# 用户可显式 `systemctl enable nanotun-tun-isolate.service` 手动启用历史行为。

@@ -8,7 +8,7 @@ echo "== nanotun util =="
 (cd "$ROOT" && go test ./util/... -count=1)
 
 echo "== nanotun-admin profile port hop =="
-(cd "$ROOT" && go test ./nanotun-admin/... -count=1 -run 'PortHop|PortUnion|PlanHy2')
+(cd "$ROOT" && go test ./cmd/nanotun-admin/... -count=1 -run 'PortHop|PortUnion|PlanHy2')
 
 echo "== nanotun server (unit + hy2 port hop, skip legacy integration) =="
 export RUST_VPN_CLIENT_LIB_COMMON_DIR="${COMMON}"

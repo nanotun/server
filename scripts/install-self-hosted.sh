@@ -13,12 +13,12 @@
 # 行为（不再装 Go、不在服务器编译）：
 #   1. 安装文件到位：
 #      /usr/local/bin/{nanotund, nanotun-admin, nanotun-tun-setup.sh, ...}
-#      /etc/nanotun/{config.toml, certs/, masquerade/}
+#      /etc/nanotun/{config.toml, certs/, masquerade/}（证书由 ensure-server-assets.sh 按需自签）
 #      /var/lib/nanotun/                        （SQLite home）
-#      /etc/systemd/system/{nanotun-tun-setup,nanotun}.service
+#      /etc/systemd/system/{nanotun-tun-setup,nanotun-tun-isolate,nanotun}.service
 #   2. 开启 IP forwarding（v4 + v6）+ unprivileged ICMP ping（nanotun-web
 #      pro-bing 探测 server_dial_host 可达性必备），写 /etc/sysctl.d/99-nanotun.conf
-#   3. ufw active 时自动放行 8080/8443/tcp + 443/udp（INPUT 默认 DROP 时必须）
+#   3. ufw active 时自动放行 8080/8443/tcp + 443/udp（装了 web 再加 7443/tcp；INPUT 默认 DROP 时必须）
 #   4. K1 旧 DB 自检:若新 DB 空 + 旧 DB(/root/nanotun/data/nanotun.db)有终端用户 →
 #      默认拒绝继续(2026-05-21 事故场景);设置 NANOTUN_IMPORT_LEGACY_DB=1 显式导入。
 #   5. 跑 nanotun-admin --json --yes init 创建 admin（PSK 自动生成）
@@ -44,12 +44,16 @@ die()  { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 
 # 必要文件存在性自检。nanotun-web 是 M2 引入的 Web 后台:可选,缺了不会 fatal,
 # 但会跳过其安装步骤并 warn。这样老 deploy 包不会因为多一个二进制就失败。
+#
+# 证书不随包分发:发布包里没有任何 dev-*.pem。TLS / mTLS CA / masquerade 页由
+# ensure-server-assets.sh 在 config.toml 落位后按需自签(见 step 1 末尾)。
 for f in "$DEPLOY_DIR/nanotund" "$DEPLOY_DIR/nanotun-admin" \
          "$EXTRAS_DIR/config.toml" "$EXTRAS_DIR/nanotun.service" \
          "$SCRIPTS_DIR/tun-setup.sh" "$SCRIPTS_DIR/tun-isolate.sh" \
+         "$SCRIPTS_DIR/tun-isolate-teardown.sh" \
          "$SCRIPTS_DIR/tun-teardown.sh" "$SCRIPTS_DIR/tun-setup.service" \
-         "$SCRIPTS_DIR/dev-cert.pem" "$SCRIPTS_DIR/dev-key.pem" \
-         "$SCRIPTS_DIR/dev-client-ca.pem" "$SCRIPTS_DIR/dev-client-ca-key.pem"; do
+         "$SCRIPTS_DIR/tun-isolate.service" \
+         "$SCRIPTS_DIR/ensure-server-assets.sh"; do
   [ -e "$f" ] || die "缺文件: $f"
 done
 
@@ -63,19 +67,12 @@ install -m 0755 "$DEPLOY_DIR/nanotund"  /usr/local/bin/nanotund
 install -m 0755 "$DEPLOY_DIR/nanotun-admin"    /usr/local/bin/nanotun-admin
 install -m 0755 "$SCRIPTS_DIR/tun-setup.sh"     /usr/local/bin/nanotun-tun-setup.sh
 install -m 0755 "$SCRIPTS_DIR/tun-isolate.sh"   /usr/local/bin/nanotun-tun-isolate.sh
+# teardown 与 UPGRADE_M0.md 里「关掉历史隔离」的卸载指引配套,必须一起装上。
+install -m 0755 "$SCRIPTS_DIR/tun-isolate-teardown.sh" /usr/local/bin/nanotun-tun-isolate-teardown.sh
 install -m 0755 "$SCRIPTS_DIR/tun-teardown.sh"  /usr/local/bin/nanotun-tun-teardown.sh
 
 mkdir -p "$ETC_DIR/certs" "$ETC_DIR/masquerade" "$LIB_DIR"
 chmod 0750 "$LIB_DIR"
-
-# 证书：dev 自签 + 客户端 CA（hy2 mTLS 保活用）
-install -m 0644 "$SCRIPTS_DIR/dev-cert.pem"        "$ETC_DIR/certs/dev-cert.pem"
-install -m 0600 "$SCRIPTS_DIR/dev-key.pem"         "$ETC_DIR/certs/dev-key.pem"
-install -m 0644 "$SCRIPTS_DIR/dev-client-ca.pem"       "$ETC_DIR/certs/dev-client-ca.pem"
-install -m 0600 "$SCRIPTS_DIR/dev-client-ca-key.pem" "$ETC_DIR/certs/dev-client-ca-key.pem"
-
-# masquerade 占位页（hy2 伪装站根目录）
-install -m 0644 "$SCRIPTS_DIR/masquerade-index.html" "$ETC_DIR/masquerade/index.html"
 
 # config.toml：旧文件备份后覆盖
 if [ -f "$ETC_DIR/config.toml" ]; then
@@ -83,11 +80,19 @@ if [ -f "$ETC_DIR/config.toml" ]; then
 fi
 install -m 0644 "$EXTRAS_DIR/config.toml" "$ETC_DIR/config.toml"
 
-# systemd 单元
+# 证书 / masquerade 页：按 config.toml 里配置的路径**按需自签**(不随包分发)。
+# ensure-server-assets.sh 读 [server] / [hysteria] 的 tls_* 与 masquerade_dir,
+# 只在文件缺失时生成,幂等;WorkingDirectory 传 $ETC_DIR,相对路径落到 $ETC_DIR/certs 等。
+install -m 0755 "$SCRIPTS_DIR/ensure-server-assets.sh" /usr/local/bin/nanotun-ensure-assets.sh
+bash "$SCRIPTS_DIR/ensure-server-assets.sh" "$ETC_DIR"
+
+# systemd 单元。tun-isolate 是「恢复历史客户端隔离」的逃生阀:装上但**不** enable,
+# 需要时 `systemctl enable --now nanotun-tun-isolate.service`(单元本身无 [Install] 段)。
 install -m 0644 "$SCRIPTS_DIR/tun-setup.service" /etc/systemd/system/nanotun-tun-setup.service
+install -m 0644 "$SCRIPTS_DIR/tun-isolate.service" /etc/systemd/system/nanotun-tun-isolate.service
 install -m 0644 "$EXTRAS_DIR/nanotun.service"  /etc/systemd/system/nanotun.service
 systemctl daemon-reload
-ok "二进制 / 配置 / systemd 单元已就位"
+ok "二进制 / 配置 / 证书 / systemd 单元已就位"
 
 step "2. 开启 IP forwarding + unprivileged ICMP ping"
 cat > /etc/sysctl.d/99-nanotun.conf <<'SYSCTL'
@@ -111,13 +116,20 @@ step "3. 防火墙：放行 nanotun 监听端口（仅 ufw active 时）"
 #   tcp 8080 (WSS gateway)  tcp 8443 (REALITY)  udp 443 (hy2 QUIC)
 # 2026-07-17:hy2 独立 WSS 保活(:8444)已下线,不再放行,并清理历史规则。
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  for rule in "8080/tcp" "8443/tcp" "443/udp"; do
+  WEB_PORTS=()
+  # nanotun-web 监听 7443/tcp(见 nanotun-web.service),装了才放行;否则保持 LAN/隧道内可达。
+  [ "$WEB_AVAILABLE" -eq 1 ] && WEB_PORTS+=("7443/tcp")
+  for rule in "8080/tcp" "8443/tcp" "443/udp" "${WEB_PORTS[@]}"; do
     ufw allow "$rule" >/dev/null
   done
   ufw delete allow "8444/tcp" >/dev/null 2>&1 || true
-  ok "ufw 放行：8080/tcp 8443/tcp 443/udp"
+  if [ "$WEB_AVAILABLE" -eq 1 ]; then
+    ok "ufw 放行：8080/tcp 8443/tcp 443/udp 7443/tcp(web)"
+  else
+    ok "ufw 放行：8080/tcp 8443/tcp 443/udp"
+  fi
 else
-  warn "未检测到 ufw active；如使用其他防火墙，请手动放行 8080/8443/tcp 与 443/udp"
+  warn "未检测到 ufw active；如使用其他防火墙，请手动放行 8080/8443/tcp 与 443/udp（装了 web 再加 7443/tcp）"
 fi
 
 step "4. 旧 DB 路径迁移自检（K1：2026-05-21 事故防再发）"
