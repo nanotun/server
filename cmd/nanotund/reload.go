@@ -14,6 +14,16 @@ import (
 	"github.com/nanotun/server/store"
 )
 
+// hotReloadCfgMu 保护「SIGHUP 可原地热更、且被数据面 goroutine 无锁读」的少数 cfg
+// 字段(当前:Server.MaxSessionsPerUser / Server.RateLimitByPlatform /
+// Server.JumpHostAllowedIPs)。rs.cfg 与 gw.cfg 指向**同一个** *config.Config:
+// applyConfigReload 在只持 rs.mu 的情况下原地改这些字段,而登录路径在别的锁(或无锁)
+// 下读它们 —— 按 Go 内存模型这是数据竞争(`go test -race` / 生产 -race 会报),slice
+// header 之类多字长字段还可能读到撕裂值。这把 RWMutex 让「写(reload)」与「读(热路径)」
+// 串行化。锁序:任何已持有的锁(如 connIDMapMu)→ hotReloadCfgMu;reload 侧只持有它,
+// 不再向下取 connIDMapMu,故无环。
+var hotReloadCfgMu sync.RWMutex
+
 // reloadState 把 SIGHUP hot reload 需要触摸的运行时句柄收在一起,避免在 main 里
 // 散一堆全局变量。锁串行整次 reload,防止两个并发 SIGHUP 同时改 effective cfg
 // 出现 partial apply。
@@ -110,7 +120,9 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 				"old_count": len(old.Server.JumpHostAllowedIPs),
 				"new_count": len(newCfg.Server.JumpHostAllowedIPs),
 			}).Info("[reload] server.jump_host_allowed_ips 已热更新")
+			hotReloadCfgMu.Lock()
 			old.Server.JumpHostAllowedIPs = append([]string(nil), newCfg.Server.JumpHostAllowedIPs...)
+			hotReloadCfgMu.Unlock()
 			applied = append(applied, "server.jump_host_allowed_ips")
 		}
 	}
@@ -136,7 +148,9 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 			"old": old.Server.MaxSessionsPerUser,
 			"new": newCfg.Server.MaxSessionsPerUser,
 		}).Info("[reload] server.max_sessions_per_user 已热更(仅对未来登录生效;现役会话不会被回踢)")
+		hotReloadCfgMu.Lock()
 		old.Server.MaxSessionsPerUser = newCfg.Server.MaxSessionsPerUser
+		hotReloadCfgMu.Unlock()
 		applied = append(applied, "server.max_sessions_per_user")
 	}
 
@@ -164,7 +178,9 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 		for k, v := range newCfg.Server.RateLimitByPlatform {
 			cp[k] = v
 		}
+		hotReloadCfgMu.Lock()
 		old.Server.RateLimitByPlatform = cp
+		hotReloadCfgMu.Unlock()
 		logrus.WithFields(logrus.Fields{
 			"platform_count": len(cp),
 		}).Info("[reload] server.rate_limit_by_platform 已热更(仅对未来登录生效)")

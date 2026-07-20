@@ -17,6 +17,16 @@ func TestParseRealityShortID(t *testing.T) {
 	if err != nil || z != [8]byte{} {
 		t.Fatalf("empty: %#v %v", z, err)
 	}
+
+	// 短 shortId 必须左对齐，与 Xray/xtls-reality 线上格式一致；
+	// 若右对齐（旧 bug），面板默认的 8 位 hex shortId 握手会匹配失败。
+	short, err := ParseRealityShortID("aabb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantShort := ([8]byte{0xaa, 0xbb, 0, 0, 0, 0, 0, 0}); short != wantShort {
+		t.Fatalf("short shortId not left-aligned: got %#v want %#v", short, wantShort)
+	}
 }
 
 func TestDecodeRealityPrivateKey(t *testing.T) {

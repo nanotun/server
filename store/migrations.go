@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -107,8 +109,13 @@ func (s *Store) currentSchemaVersion(ctx context.Context) (int, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key='schema_version'`)
 	var v string
 	if err := row.Scan(&v); err != nil {
-		// 不存在视为 0。
-		return 0, nil //nolint:nilerr
+		if errors.Is(err, sql.ErrNoRows) {
+			// 行不存在(全新库)视为 0。
+			return 0, nil
+		}
+		// 真错误(I/O / ctx 取消)必须上报:若误当成 0,migration runner 会把
+		// 非幂等的历史 migration 重跑一遍,破坏已有 schema。
+		return 0, fmt.Errorf("store: read schema_version: %w", err)
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
@@ -165,7 +172,14 @@ func (s *Store) SettingsGet(ctx context.Context, key string) (string, bool, erro
 	row := s.db.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key=?`, key)
 	var v string
 	if err := row.Scan(&v); err != nil {
-		return "", false, nil //nolint:nilerr
+		if errors.Is(err, sql.ErrNoRows) {
+			// key 不存在:正常「未设置」,由调用方决定默认值。
+			return "", false, nil
+		}
+		// 真错误(I/O / ctx 取消 / 类型错)必须上报,不能与「未设置」混同——
+		// 否则 fail-closed 的调用方(如 acl reload 读 acl_default_action / mesh_enabled)
+		// 会把一次 DB 抖动误判成「未配置」而退回不安全默认。
+		return "", false, fmt.Errorf("store: settings get %q: %w", key, err)
 	}
 	return v, true, nil
 }

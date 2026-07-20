@@ -86,9 +86,13 @@ func (s *Store) UpsertDevice(ctx context.Context, userID int64, uuid, name, plat
 	// 每用户设备名唯一（Tailscale 式）：若归一后与该用户**其它**设备撞名，追加 "-1"/"-2"… 直到唯一。MagicDNS 主机名
 	// （host.user.suffix / 4via6 站点归属）以设备名为标签，重名会导致解析到错误设备；在注册这唯一写入 chokepoint 去重。
 	//
-	// **事务加固（去 TOCTOU）**：去重的 SELECT 与下方 upsert 的 INSERT 若分两条独立语句，MaxOpenConns=1 下另一个
-	// UpsertDevice 可在两者之间插入 → 两台同 hostname 设备并发首注册可能都拿到裸名（去重漏判）。包进单事务后，事务
-	// 独占那唯一连接、串行化其它 UpsertDevice，窗口消除。归一按 util.NormalizeMagicHost（与解析端同口径）。
+	// **去 TOCTOU**：去重 SELECT 与 upsert INSERT 之间的窗口不能靠连接池大小消除（池默认已放宽到 4，见 sqlite.go）——
+	// 两个同 user、同 hostname、不同 uuid 的并发 UpsertDevice 会各自读到「无撞名」再双双写入裸名。用进程内
+	// deviceUpsertMu 串行化整段（去重 + 事务写），窗口彻底消除，不依赖 MaxOpenConns=1。归一按 util.NormalizeMagicHost
+	// （与解析端同口径）。注：跨进程只有守护进程走登录写设备，admin CLI 不在并发登录路径改设备名，故进程内锁足够。
+	s.deviceUpsertMu.Lock()
+	defer s.deviceUpsertMu.Unlock()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: upsert device begin tx: %w", err)
@@ -125,8 +129,9 @@ func (s *Store) UpsertDevice(ctx context.Context, userID int64, uuid, name, plat
 	committed = true
 
 	// 单独 SELECT 拿回行(包含可能与 excluded.* 不同的 id / created_at)。
-	// 注意:这次 SELECT 与上面 INSERT 不在一个事务里,但由于 MaxOpenConns=1
-	// 不存在跨连接幻读,且 (user_id, device_uuid) UNIQUE 不会重复行。
+	// 这次 SELECT 与上面 INSERT 不在一个事务里,但仍在 deviceUpsertMu 临界区内(defer 到函数
+	// 返回才解锁),同 (user_id, uuid) 的并发 UpsertDevice 被串行化,不会在此处读到中间态;
+	// 且 (user_id, device_uuid) UNIQUE 不会重复行。
 	row := s.db.QueryRowContext(ctx,
 		deviceSelectSQL+` WHERE user_id=? AND device_uuid=?`,
 		userID, uuid,

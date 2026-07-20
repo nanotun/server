@@ -334,7 +334,14 @@ type Connection struct {
 	superseded atomic.Bool
 	takeoverMu sync.Mutex    // 保护接管转移的原子性（防止 race 和重入）
 	tunnelDone chan struct{} // runLinkTunnel 完整退出信号；初始化为 make(chan struct{})；运行末尾 close
-	createdAt  time.Time     // primary login 注册到 connIDMap 的时刻;per-user 会话上限做「踢最老」时按这个排序
+	// cleanupDone 在 cleanupConnection **完整执行完**(vIP 释放 / TunChan 注销 / map 摘除)后 close。
+	// 与 tunnelDone 的区别很关键:tunnelDone 只标志 runLinkTunnel 返回,而真正释放 vIP 的
+	// cleanupConnection 是在其后由 handleVPNLink 的 defer 才跑的。supersede 的 waitConnsCleanup 必须
+	// 等的是「vIP 已回收」这一刻(才能让新 conn 捡回同一 vIP),故等 cleanupDone 而非 tunnelDone。
+	// 初始化为 make(chan struct{});cleanupConnection 用 sync.Once 保证只 close 一次。
+	cleanupDone chan struct{}
+	cleanupOnce sync.Once
+	createdAt   time.Time // primary login 注册到 connIDMap 的时刻;per-user 会话上限做「踢最老」时按这个排序
 
 	// G_wss_ping:服务端主动 Ping 后,客户端最近一次回 Pong 的时刻(UnixNano)。
 	// 0 = 尚未收到任何 Pong;读写都走 atomic 以避免与 keepalive goroutine 抢锁。
@@ -1819,12 +1826,13 @@ func linkRatesForPlatform(gw *gatewayState, platform string) (upload, download i
 	if p == "" {
 		return upload, download
 	}
+	// SIGHUP 可整体替换 RateLimitByPlatform 指针(见 reload.go);持读锁避免读到
+	// 撕裂的 map header。快照拿到条目后即释放锁,后续只读栈上副本。
+	hotReloadCfgMu.RLock()
 	m := gw.cfg.Server.RateLimitByPlatform
-	if m == nil {
-		return upload, download
-	}
 	pl, ok := m[p]
-	if !ok {
+	hotReloadCfgMu.RUnlock()
+	if m == nil || !ok {
 		return upload, download
 	}
 	if pl.UploadRate > 0 {
@@ -2061,7 +2069,11 @@ func effectiveMaxSessions(gw *gatewayState, newConn *Connection) int {
 		return 0
 	}
 	if gw != nil && gw.cfg != nil {
-		if v := gw.cfg.Server.MaxSessionsPerUser; v > 0 {
+		// SIGHUP 可原地热更该字段(见 reload.go);持读锁避免与 reload 写竞争。
+		hotReloadCfgMu.RLock()
+		v := gw.cfg.Server.MaxSessionsPerUser
+		hotReloadCfgMu.RUnlock()
+		if v > 0 {
 			return v
 		}
 	}
@@ -2111,6 +2123,14 @@ func generateTakeoverSecret() string {
 func cleanupConnection(c *Connection) {
 	if c == nil {
 		return
+	}
+	// cleanupDone 在本函数返回时 close(无论走 !takenOver 完整清理还是 takenOver 跳过分支),
+	// 标志「vIP 释放 / map 摘除已全部完成」。supersede 的 waitConnsCleanup 等这个信号而非
+	// tunnelDone —— 后者只标志 runLinkTunnel 返回,vIP 尚未回收,等它会让新 conn 抢不到同一 vIP。
+	// sync.Once 防御:cleanupConnection 理论只被 handleVPNLink 的 defer 调一次,但用 Once 兜底
+	// 避免任何未来重入造成 close of closed channel panic。
+	if c.cleanupDone != nil {
+		defer c.cleanupOnce.Do(func() { close(c.cleanupDone) })
 	}
 
 	// 持有 c.takeoverMu 期间禁止 handleTakeoverLogin 改 c.takenOver。
@@ -2481,6 +2501,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		takeoverSecret: takeoverSecret,
 		loginToken:     loginReq.Token,
 		tunnelDone:     make(chan struct{}),
+		cleanupDone:    make(chan struct{}),
 		createdAt:      time.Now(),
 		exitAllowed:    true,
 		// 平台白名单踢线用快照;此刻 AllowsPlatform 已放行过,快照必然合规,
@@ -2904,6 +2925,25 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	}
 
 	oldConn.takeoverMu.Lock()
+	// TOCTOU 复验:上面 connIDMap 查到 oldConn 与这里 Lock(takeoverMu) 之间存在窗口,
+	// oldConn 的链路可能刚断、cleanupConnection 已抢先拿到 takeoverMu 跑完「!takenOver」
+	// 分支——它已经把 oldConn 从 connIDMap 摘除**并释放了 vIP**(delete(clientIPUsed,...))。
+	// 此时若继续接管,会继承 oldConn.safeClientIPs() 里那些**已回收的 vIP**:新会话变僵尸
+	// (TunChan 已 close、ip2Channel 已注销,下行黑洞),更糟的是这些 vIP 已回到空闲池,
+	// 另一台设备的新登录可能被分到同一 vIP → 级联双分配。cleanupConnection 也持 takeoverMu
+	// 且在同一把锁下删 connIDMap,故这里在锁内复验 connIDMap[sid] 仍等于 oldConn 即可判定
+	// 「清理是否已抢先发生」。不等则按 session 已消失拒绝——这是良性竞态(断网重连),
+	// 客户端会退回全新 primary login,不计 PoW 惩罚。
+	connIDMapMu.RLock()
+	cur, still := connIDMap[sid]
+	connIDMapMu.RUnlock()
+	if !still || cur != oldConn {
+		oldConn.takeoverMu.Unlock()
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn 已被清理(链路先于接管断开),拒绝接管")
+		auditTakeoverFail(gw, remote, "session_cleaned", oldConn.userID)
+		_ = writeLinkLoginResp(raw, 1, "takeover failed: session gone", "")
+		return
+	}
 	if oldConn.takenOver.Load() {
 		oldConn.takeoverMu.Unlock()
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn 已被接管")
@@ -3017,6 +3057,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		takeoverSecret: newSecret, // 新 secret,客户端将通过下方 LoginResp 收到
 		loginToken:     loginReq.Token,
 		tunnelDone:     make(chan struct{}),
+		cleanupDone:    make(chan struct{}),
 		createdAt:      time.Now(),
 		// P0-4:takeover 继承 oldConn 上已经从 users 表读出来固化的 user-level
 		// 字段,避免再查一次库;user.disable/reset-psk 想生效请通过 P0-1 踢线。

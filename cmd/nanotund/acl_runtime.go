@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
@@ -123,8 +124,16 @@ func reloadACLSnapshotFromStore(st *store.Store) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// fail-closed:读 acl_default_action 出真错(非「key 缺失」)时**不**默默退回 allow,
+	// 否则一次 DB 抖动就能把配置了 default-deny 的部署翻成 default-allow(整网门户大开),
+	// 且新旧快照都被这份错误默认污染。与 ListACLPairs 失败同款处理:返回 err、保留旧快照。
+	// 仅当读取成功(ok=true 或明确不存在 ok=false)时才应用值 / 落到内置默认 allow。
 	def := store.ACLAllow
-	if v, ok, _ := st.SettingsGet(ctx, "acl_default_action"); ok {
+	v, ok, serr := st.SettingsGet(ctx, "acl_default_action")
+	if serr != nil {
+		return 0, fmt.Errorf("read acl_default_action: %w", serr)
+	}
+	if ok {
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case store.ACLDeny:
 			def = store.ACLDeny
@@ -132,12 +141,11 @@ func reloadACLSnapshotFromStore(st *store.Store) (int, error) {
 			def = store.ACLAllow
 		}
 	}
-	// mesh_enabled 读取错误时默认 true(参见 store.GetMeshEnabled 的容错语义):
-	// 不能让 DB 抖一下就把整网误隔离。
+	// mesh_enabled 同样 fail-closed:读出错时不再强行按 on 处理(那会在 admin 关了 mesh
+	// 隔离后,因一次 DB 抖动把跨用户流量重新放开)。返回 err 保留旧快照,保住 admin 意图。
 	meshOn, merr := st.GetMeshEnabled(ctx)
 	if merr != nil {
-		logrus.WithError(merr).Warn("[acl] 读取 mesh_enabled 失败,按默认 on 处理")
-		meshOn = true
+		return 0, fmt.Errorf("read mesh_enabled: %w", merr)
 	}
 	snap := buildACLSnapshot(rules, def)
 	snap.meshEnabled = meshOn

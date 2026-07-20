@@ -178,6 +178,66 @@ func TestScanAndKick_PSKRotated(t *testing.T) {
 	}
 }
 
+// TestScanAndKick_PSKRotated_KicksOnlyStaleConn 回归修复:PSK 轮换是 per-conn 判定,
+// 只踢登录时用旧 PSK 的会话,**不能**误踢已用新 PSK 重登的会话。
+//
+// 修复前 psk_rotated 走整账号 kickAll 且用 snaps[0](map 遍历,随机一条)判定:
+//   - 若随机到旧会话 → 新会话被一起误踢(用户刚输新 PSK 就被踢);
+//   - 若随机到新会话 → 旧会话逃过本轮。
+//
+// 两个方向都错。这里同一 user 挂一条旧 PSK + 一条新 PSK 会话,断言只有旧的被踢。
+func TestScanAndKick_PSKRotated_KicksOnlyStaleConn(t *testing.T) {
+	gw := newTestGatewayForUserInvalidate(t)
+	ctx := t.Context()
+	user, err := gw.store.CreateUser(ctx, store.NewUser{Username: "grace", PSKHash: "psk-old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uidStr := userIDFromStoreID(user.ID)
+
+	// admin 轮换 PSK 到新值。
+	if err := gw.store.RotateUserPSK(ctx, user.ID, "psk-new", time.Now().UTC().Unix()); err != nil {
+		t.Fatalf("RotateUserPSK: %v", err)
+	}
+
+	// 旧会话:登录快照是轮换前的 psk-old。
+	staleFake := newFakeLinkConn()
+	staleConn := &Connection{
+		connIDStr:      "conn-grace-stale",
+		userID:         uidStr,
+		linkConn:       staleFake,
+		pskHashAtLogin: "psk-old",
+		tunnelDone:     make(chan struct{}),
+		createdAt:      time.Now().Add(-time.Minute),
+	}
+	installConn(t, staleConn)
+
+	// 新会话:用户用新 PSK 立刻重登,快照是 psk-new(与 DB 当下一致)。
+	freshFake := newFakeLinkConn()
+	freshConn := &Connection{
+		connIDStr:      "conn-grace-fresh",
+		userID:         uidStr,
+		linkConn:       freshFake,
+		pskHashAtLogin: "psk-new",
+		tunnelDone:     make(chan struct{}),
+		createdAt:      time.Now(),
+	}
+	installConn(t, freshConn)
+
+	scanAndKickInvalidUsers(ctx, gw)
+
+	select {
+	case <-staleFake.closed:
+	case <-time.After(time.Second):
+		t.Fatal("旧 PSK 会话应被踢")
+	}
+	select {
+	case <-freshFake.closed:
+		t.Fatal("新 PSK 会话不应被误踢")
+	default:
+	}
+}
+
 // TestScanAndKick_PSKRotatedAfterTakeover:回归 P1-1。
 // 时序:primary 登录(c1, pskHashAtLogin=psk-old) → takeover 切链路(c2,
 // 由 server.go takeover 分支赋 newConn.pskHashAtLogin = 本次握手 PSK 的 hash;

@@ -136,9 +136,16 @@ func dedupVictims(supersededVictims, evictedVictims []*Connection) []*Connection
 	return out
 }
 
-// waitConnsCleanup 等到一批 conn 全部 tunnelDone(标志 cleanupConnection 完整执行完),
-// 或达到 supersedeWaitTimeout 兜底返回。每条 conn 各自计算超时(不共享 timer),
-// 但因为它们是并发 close 的,实际墙钟时间 ≈ 最慢一条的 cleanup 耗时。
+// waitConnsCleanup 等到一批 conn 全部 **cleanupDone**(cleanupConnection 完整执行完:
+// vIP 已 delete(clientIPUsed) / TunChan 已注销 / map 已摘除),或达到 supersedeWaitTimeout
+// 兜底返回。每条 conn 各自计算超时(不共享 timer),但因为它们是并发 close 的,实际墙钟
+// 时间 ≈ 最慢一条的 cleanup 耗时。
+//
+// 关键(修复):等的是 cleanupDone 而非 tunnelDone。tunnelDone 只标志 runLinkTunnel 返回,
+// 而真正释放 vIP 的 cleanupConnection 是其后由 handleVPNLink 的 defer 才执行的 —— 中间还隔着
+// victim cleanupConnection 可能阻塞在 takeoverMu(如并发 takeover 正持锁跑 argon2 verify)的
+// 任意长窗口。若等 tunnelDone,新 conn 会在 vIP 尚未释放时就去 alloc,拿到**不同** vIP,
+// 破坏「同 device 重登 IP 不变」这一 supersede 存在的全部意义。
 //
 // 仅给 supersede 路径用;evict 路径不需要等(它们是不同 device,vIP 与新 conn 无关)。
 func waitConnsCleanup(victims []*Connection) {
@@ -146,12 +153,12 @@ func waitConnsCleanup(victims []*Connection) {
 		return
 	}
 	for _, v := range victims {
-		if v == nil || v.tunnelDone == nil {
+		if v == nil || v.cleanupDone == nil {
 			continue
 		}
 		select {
-		case <-v.tunnelDone:
-			// 老 conn 已彻底退出,clientIPUsed[vIP] 已被它 cleanup 释放,
+		case <-v.cleanupDone:
+			// 老 conn 的 cleanupConnection 已彻底跑完,clientIPUsed[vIP] 已释放,
 			// 新 conn 后续 preferredLeasedVIPs + AllocClientIP 就能拿回相同 vIP。
 		case <-time.After(supersedeWaitTimeout):
 			logrus.WithFields(logrus.Fields{

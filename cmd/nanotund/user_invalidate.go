@@ -148,11 +148,12 @@ func scanAndKickInvalidUsers(ctx context.Context, gw *gatewayState) {
 	}
 
 	for uid, snaps := range byUserID {
-		// user 维度判定(disabled / psk_rotated / user_deleted) —— 命中即全员踢。
+		// user 维度判定(user_deleted / user_disabled) —— 命中即全员踢。
+		// 这两个才是真正的「整账号失效」;PSK 轮换是 per-conn 判定(见下)。
 		//
 		// 2026-05-25:历史上还有 A2 per-conn profile_id 黑名单分支,与 P2#14 配套;
-		// 0014 移除 pid 链路后此处只剩 user 维度 + 下面的 per-conn 平台白名单。
-		u, reason, kickAll := userInvalidStatus(ctx, gw.store, uid, snaps[0].pskHashAtLogin)
+		// 0014 移除 pid 链路后此处只剩 user 维度 + 下面的 per-conn 判定。
+		u, reason, kickAll := userInvalidStatus(ctx, gw.store, uid)
 		if kickAll {
 			for _, snap := range snaps {
 				kickConnForUserInvalidate(ctx, gw, snap.c, uid, reason)
@@ -162,15 +163,30 @@ func scanAndKickInvalidUsers(ctx context.Context, gw *gatewayState) {
 		if u == nil {
 			continue // 临时性 DB 错误,本轮跳过(userInvalidStatus 已 Warn)
 		}
-		// 平台白名单(2026-07-18):user 本身有效,但 admin 可能改过 allowed_platforms。
-		// per-conn 判定(平台是会话属性,同 user 各端可分别合规/不合规),不合规只踢
-		// 那一条。空快照(登录时没报 platform)在已设白名单时同样不合规 —— 与登录
-		// 路径 AllowsPlatform 对空串的拒绝口径一致,重登也会吃 910,不存在误伤。
-		if strings.TrimSpace(u.AllowedPlatforms) == "" {
-			continue
-		}
+		// per-conn 判定(psk_rotated / platform_denied)。二者都是**会话级**属性,
+		// 必须逐条比对本连接**登录时的快照**,不能拿 snaps[0] 一条代表全体:
+		//
+		// 关键 bug(修复前):psk_rotated 曾用 snaps[0].pskHashAtLogin 判 kickAll。
+		// snaps 来自 Go map 遍历,snaps[0] 是**随机**一条。admin reset-psk 后用户立刻
+		// 用新 PSK 重登(新 conn 的 hash == DB 新值),而旧 PSK 会话还在(等本轮扫到踢):
+		//   - 若 snaps[0] 恰是旧会话 → 判 kickAll → **刚登录的新会话被一起误踢**
+		//     (close 905「请重新输入新 PSK」,用户刚输完就被踢,可能循环);
+		//   - 若 snaps[0] 恰是新会话 → hash 匹配 → psk_rotated 根本没被检出 →
+		//     该踢的旧 PSK 会话**逃过本轮**,安全动作被非确定性地延迟。
+		// 逐连接比对同时消除这两个方向的错误。
+		allowedEmpty := strings.TrimSpace(u.AllowedPlatforms) == ""
+		dbHash := strings.TrimSpace(u.PSKHash)
 		for _, snap := range snaps {
-			if !u.AllowsPlatform(snap.platformAtLogin) {
+			// psk_rotated 优先:本连接登录时用的 PSK hash 与 DB 当下不一致 → 只踢这条。
+			if snap.pskHashAtLogin != "" && dbHash != strings.TrimSpace(snap.pskHashAtLogin) {
+				kickConnForUserInvalidate(ctx, gw, snap.c, uid, "psk_rotated")
+				continue
+			}
+			// 平台白名单(2026-07-18):user 本身有效,但 admin 可能改过 allowed_platforms。
+			// per-conn 判定(平台是会话属性,同 user 各端可分别合规/不合规),不合规只踢
+			// 那一条。空快照(登录时没报 platform)在已设白名单时同样不合规 —— 与登录
+			// 路径 AllowsPlatform 对空串的拒绝口径一致,重登也会吃 910,不存在误伤。
+			if !allowedEmpty && !u.AllowsPlatform(snap.platformAtLogin) {
 				kickConnForUserInvalidate(ctx, gw, snap.c, uid, "platform_denied")
 			}
 		}
@@ -178,12 +194,16 @@ func scanAndKickInvalidUsers(ctx context.Context, gw *gatewayState) {
 }
 
 // userInvalidStatus 查 user 当前状态:
-//   - kickAll=true:user 级失效(user_deleted / user_disabled / psk_rotated),reason 给出原因,
+//   - kickAll=true:整账号失效(user_deleted / user_disabled),reason 给出原因,
 //     调用方应踢掉该 user 的全部会话;此时 u 可能为 nil(deleted)。
-//   - kickAll=false 且 u != nil:user 有效,u 供调用方做 per-conn 级判定(平台白名单)。
+//   - kickAll=false 且 u != nil:user 有效,u 供调用方做 per-conn 级判定
+//     (psk_rotated / 平台白名单)。
 //   - kickAll=false 且 u == nil:临时性 DB 错误,本轮什么都不做(误伤 active 用户的成本
 //     远大于让 admin 操作晚一个 tick 生效,下一轮扫描会再试)。
-func userInvalidStatus(ctx context.Context, st *store.Store, userID int64, pskHashAtLogin string) (u *store.User, reason string, kickAll bool) {
+//
+// 注意:PSK 轮换**不**在这里判 —— 它是 per-conn 的(见 scanAndKickInvalidUsers),
+// 用整账号 kickAll 会把刚用新 PSK 重登的会话一起误踢。
+func userInvalidStatus(ctx context.Context, st *store.Store, userID int64) (u *store.User, reason string, kickAll bool) {
 	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	u, err := st.GetUser(opCtx, userID)
@@ -196,9 +216,6 @@ func userInvalidStatus(ctx context.Context, st *store.Store, userID int64, pskHa
 	}
 	if u.DisabledAt != 0 {
 		return u, "user_disabled", true
-	}
-	if pskHashAtLogin != "" && strings.TrimSpace(u.PSKHash) != strings.TrimSpace(pskHashAtLogin) {
-		return u, "psk_rotated", true
 	}
 	return u, "", false
 }

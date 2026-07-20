@@ -96,6 +96,12 @@ func validateRealityDest(dest string) error {
 }
 
 // ParseRealityShortID 将配置中的 shortId 转为 8 字节（与 Xray shortIds 一致）。
+//
+// 对齐方向必须与 Xray/xtls-reality 线上格式一致：客户端把 shortId 解码后从
+// sessionId[8] 起**左对齐**写入，服务端 tls.go 亦以 copy(ClientShortId[:], plainText[8:])
+// 左对齐读取。因此这里必须左对齐（copy(out[:], dec)）——若右对齐，任何短于 16 个
+// 十六进制字符的 shortId（面板默认常见 8 位）都会与客户端发来的 key 不相等，
+// REALITY 握手静默匹配失败并回落到 dest。
 func ParseRealityShortID(s string) ([8]byte, error) {
 	var out [8]byte
 	s = strings.TrimSpace(strings.ToLower(s))
@@ -112,7 +118,7 @@ func ParseRealityShortID(s string) ([8]byte, error) {
 	if err != nil {
 		return out, err
 	}
-	copy(out[8-len(dec):], dec)
+	copy(out[:], dec)
 	return out, nil
 }
 

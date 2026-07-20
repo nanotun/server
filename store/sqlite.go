@@ -27,6 +27,12 @@ type Store struct {
 	path string
 	// mu 保护 Migrate 等串行操作，避免多个调用者同时执行。
 	mu sync.Mutex
+	// deviceUpsertMu 串行化 UpsertDevice 的「设备名去重 SELECT + upsert INSERT」临界区。
+	// 历史实现靠 MaxOpenConns=1 隐式串行，但连接池默认已放宽到 4（见 sqlite.go Open）：
+	// 多连接下两个同 user、同 hostname、不同 uuid 的并发 UpsertDevice 会在各自连接上
+	// 先跑完去重 SELECT 再 INSERT，双双漏判撞名（MagicDNS 标签重复 / 或后写方撞
+	// SQLITE_BUSY_SNAPSHOT 登录失败）。用进程内锁把该临界区显式串行化，不再依赖池大小。
+	deviceUpsertMu sync.Mutex
 }
 
 // Options 用于配置 Store 行为。零值合理。

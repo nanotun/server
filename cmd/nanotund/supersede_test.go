@@ -14,11 +14,12 @@ import (
 func makeFakeConn(t *testing.T, connID, userID, deviceUUID string) *Connection {
 	t.Helper()
 	c := &Connection{
-		connIDStr:  connID,
-		userID:     userID,
-		deviceUUID: deviceUUID,
-		tunnelDone: make(chan struct{}),
-		createdAt:  time.Now(),
+		connIDStr:   connID,
+		userID:      userID,
+		deviceUUID:  deviceUUID,
+		tunnelDone:  make(chan struct{}),
+		cleanupDone: make(chan struct{}),
+		createdAt:   time.Now(),
 	}
 	installConn(t, c)
 	return c
@@ -157,12 +158,12 @@ func TestDedupVictims(t *testing.T) {
 	}
 }
 
-// TestWaitConnsCleanup_ReturnsImmediatelyWhenDone:tunnelDone 已 closed → 立即返回。
+// TestWaitConnsCleanup_ReturnsImmediatelyWhenDone:cleanupDone 已 closed → 立即返回。
 func TestWaitConnsCleanup_ReturnsImmediatelyWhenDone(t *testing.T) {
-	c1 := &Connection{connIDStr: "c1", tunnelDone: make(chan struct{})}
-	c2 := &Connection{connIDStr: "c2", tunnelDone: make(chan struct{})}
-	close(c1.tunnelDone)
-	close(c2.tunnelDone)
+	c1 := &Connection{connIDStr: "c1", cleanupDone: make(chan struct{})}
+	c2 := &Connection{connIDStr: "c2", cleanupDone: make(chan struct{})}
+	close(c1.cleanupDone)
+	close(c2.cleanupDone)
 
 	done := make(chan struct{})
 	go func() {
@@ -172,7 +173,7 @@ func TestWaitConnsCleanup_ReturnsImmediatelyWhenDone(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("waitConnsCleanup 应在 tunnelDone 已关闭时立即返回")
+		t.Fatal("waitConnsCleanup 应在 cleanupDone 已关闭时立即返回")
 	}
 }
 
@@ -183,12 +184,12 @@ func TestWaitConnsCleanup_ReturnsImmediatelyWhenDone(t *testing.T) {
 // 折中:用真实 5s,但 fast-path test 不跑;给一个 goroutine 启动等到 ~10ms 就 close 来
 // 同样验证语义。
 func TestWaitConnsCleanup_RespectsExternalClose(t *testing.T) {
-	c := &Connection{connIDStr: "c", tunnelDone: make(chan struct{})}
+	c := &Connection{connIDStr: "c", cleanupDone: make(chan struct{})}
 
 	start := time.Now()
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		close(c.tunnelDone)
+		close(c.cleanupDone)
 	}()
 	waitConnsCleanup([]*Connection{c})
 	elapsed := time.Since(start)
