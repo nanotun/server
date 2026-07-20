@@ -42,7 +42,14 @@ func cmdInit(ctx context.Context, st *store.Store, opts *globalOpts, args []stri
 	if err != nil {
 		return err
 	}
-	setupDone, _, _ := st.SettingsGet(ctx, "setup_completed")
+	// 深扫第八轮 MED:此前吞掉 SettingsGet 的 error —— 一次瞬时 DB 抖动会让 setupDone
+	// 读成空串,alreadySetup=false,init 于是穿过幂等 noop 分支;若同名 admin 已存在,
+	// 就会静默**轮换其 PSK**(把线上管理员密钥改掉)。这里显式传播真错误(非「key 缺失」
+	// 由 ok=false 表达,不是 err),读失败即中止,绝不因误判而改 PSK。
+	setupDone, _, serr := st.SettingsGet(ctx, "setup_completed")
+	if serr != nil {
+		return fmt.Errorf("read setup_completed: %w", serr)
+	}
 	alreadySetup := n > 0 && setupDone == "1"
 
 	r := bufio.NewReader(opts.stdin)

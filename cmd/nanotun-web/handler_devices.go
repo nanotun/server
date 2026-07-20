@@ -222,7 +222,7 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 		// 纯展示字段:不做唯一性约束,也不需要踢线/热更(出口列表下次重算自然带上)。
 		alias := strings.TrimSpace(r.FormValue("alias"))
 		if err := s.store.SetDeviceAlias(r.Context(), id, alias); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.setFailed")+err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.deviceNotFound", "err.setFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "device_set_alias", FormatTarget("device", id),
@@ -237,7 +237,7 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("/devices/%d?flash=%s", id, url.QueryEscape(msg)), http.StatusSeeOther)
 	case "delete":
 		if err := s.store.DeleteDevice(r.Context(), id); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.deleteFailed")+err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.deviceNotFound", "err.deleteFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "device_delete", FormatTarget("device", id),
@@ -264,7 +264,7 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 		}
 		oldUp, oldDown := d.RateUploadBPS, d.RateDownloadBPS
 		if err := s.store.SetDeviceRateLimit(r.Context(), id, upBPS, downBPS); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.saveFailed")+err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.deviceNotFound", "err.saveFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "device_rate_set",
@@ -334,7 +334,7 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := s.store.SetDeviceFixedVIP(r.Context(), id, v4, v6); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.setFailed")+err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.deviceNotFound", "err.setFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "device_set_fixed_vip", FormatTarget("device", id),

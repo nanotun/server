@@ -42,6 +42,14 @@ func (s *Store) GetOrAssignSiteID(ctx context.Context, deviceID int64) (uint16, 
 		return 0, fmt.Errorf("store: assign site_id (lastid): %w", err)
 	}
 	if id <= 0 || id > 65535 {
+		// 深扫第八轮 LOW:溢出前先把刚插入的这条脏行删掉。否则它会一直留在表里,
+		// 下次 GetOrAssignSiteID 走 siteIDByDevice 命中它、同样越界报错 —— 该 device
+		// 被永久钉死且留下一条死行。删除后回到「未分配」状态,虽然仍超上限会再次报错,
+		// 但至少不残留脏数据,上限问题解决后也无需人工清库。按 rowid(=site_id)删,精确。
+		_, delErr := s.db.ExecContext(ctx, `DELETE FROM via6_sites WHERE site_id=?`, id)
+		if delErr != nil {
+			return 0, fmt.Errorf("store: site_id %d overflow, and rollback of poisoned row failed: %w", id, delErr)
+		}
 		return 0, i18nErr("store.via6.siteIDOverflow",
 			fmt.Sprintf("store: site_id %d 超出 uint16 范围(4via6 站点数已达上限)", id), id)
 	}

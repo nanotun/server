@@ -201,7 +201,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.UpdateWebAdminPasswordHash(r.Context(), id, hash); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.pwChangeFailed")+err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.adminNotFound", "err.pwChangeFailed")
 			return
 		}
 		// 改密后清空该 admin 的所有 session,强制重新登录(防止旧 session 继续用)。
@@ -218,7 +218,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := s.store.SetWebAdminEnabled(r.Context(), id, false); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.adminNotFound", "err.disableFailed")
 			return
 		}
 		_, _ = s.store.DeleteWebSessionsByAdmin(r.Context(), id)
@@ -228,7 +228,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 
 	case "enable":
 		if err := s.store.SetWebAdminEnabled(r.Context(), id, true); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.adminNotFound", "err.enableFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "webadmin_enable",
@@ -243,7 +243,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := s.store.DeleteWebAdmin(r.Context(), id); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.adminNotFound", "err.deleteFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "webadmin_delete",

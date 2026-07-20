@@ -926,6 +926,7 @@ var catZH = map[string]string{
 	"me.totpNotEnabledRegen":    "TOTP 未启用,无法生成恢复码",
 	"me.totpCodeWrongCheckTime": "验证码错误:%s。检查手机时间是否同步,或在「启用 TOTP」页面重新扫码。",
 	"me.totpCodeWrong":          "验证码错误:%s",
+	"me.totpTooManyAttempts":    "该 IP 验证码错误次数过多,请等待几分钟后再试。",
 	// 管理员保护:
 	"admins.cannotActOnSelf": "不允许对自己执行此操作(避免锁死自己)",
 	"admins.lastAdmin":       "拒绝:这是最后一个 enabled admin,不能禁用 / 删除 / 降级 —— 否则将无人能登录",
@@ -973,6 +974,7 @@ var catZH = map[string]string{
 	"routes.needPathVerb": "需要 /routes/{device_id}/{cidr}/{verb}",
 	// ACL 内联创建失败(Flash):
 	"acl.createFailed": "创建失败: ",
+	"acl.duplicate":    "该规则已存在(相同的来源/目标/动作/协议/端口)。",
 
 	// ===== 2026-07-19 易用性改版新增 =====
 	// 通用:

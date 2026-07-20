@@ -465,13 +465,24 @@ func (s *Server) handleRuntimeMeshToggle(w http.ResponseWriter, r *http.Request)
 	if !s.requireAdminRole(w, r) {
 		return
 	}
-	current, _ := s.store.GetMeshEnabled(r.Context())
-	target := !current
+	// 深扫第八轮 LOW:此前 `current, _ :=` 吞掉读错误。current 有两个用途:审计里的
+	// from 字段,以及 to 缺省时用「取反」推出 target。读失败(DB 抖动)会让 current=false,
+	// 若请求又没带显式 to,target 就被推成 true —— 一次读错误可能把 mesh 误**打开**。
+	// 这里区分对待:先看请求有没有显式 to;没有显式 to 时才依赖 current,此时读错误即中止。
+	current, cerr := s.store.GetMeshEnabled(r.Context())
+	var target bool
 	switch strings.ToLower(strings.TrimSpace(r.FormValue("to"))) {
 	case "on", "true", "1", "yes":
 		target = true
 	case "off", "false", "0", "no":
 		target = false
+	default:
+		// 无显式 to → 依赖 current 取反。读失败则不猜(防误开),直接报错让用户重试。
+		if cerr != nil {
+			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+cerr.Error())
+			return
+		}
+		target = !current
 	}
 	if err := s.store.SetMeshEnabled(r.Context(), target); err != nil {
 		s.audit.WriteFromRequest(r, "mesh_toggle_fail", "",

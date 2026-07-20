@@ -120,35 +120,64 @@ func reloadACLSnapshotFromStore(st *store.Store) (int, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	rules, err := st.ListACLPairs(ctx)
-	if err != nil {
-		return 0, err
-	}
-	// fail-closed:读 acl_default_action 出真错(非「key 缺失」)时**不**默默退回 allow,
-	// 否则一次 DB 抖动就能把配置了 default-deny 的部署翻成 default-allow(整网门户大开),
-	// 且新旧快照都被这份错误默认污染。与 ListACLPairs 失败同款处理:返回 err、保留旧快照。
-	// 仅当读取成功(ok=true 或明确不存在 ok=false)时才应用值 / 落到内置默认 allow。
-	def := store.ACLAllow
-	v, ok, serr := st.SettingsGet(ctx, "acl_default_action")
-	if serr != nil {
-		return 0, fmt.Errorf("read acl_default_action: %w", serr)
-	}
-	if ok {
-		switch strings.ToLower(strings.TrimSpace(v)) {
-		case store.ACLDeny:
-			def = store.ACLDeny
-		case store.ACLAllow:
-			def = store.ACLAllow
+
+	// 读一次 (default_action, mesh_enabled)。两者都 fail-closed:读真错(非「key 缺失」)
+	// 时返回 err 保留旧快照,绝不因一次 DB 抖动把 default-deny 翻成 allow、或把关掉的 mesh
+	// 重新放开。ok=false(key 不存在)才落到内置默认。
+	readSettings := func() (def string, mesh bool, err error) {
+		def = store.ACLAllow
+		v, ok, serr := st.SettingsGet(ctx, "acl_default_action")
+		if serr != nil {
+			return "", false, fmt.Errorf("read acl_default_action: %w", serr)
 		}
+		if ok {
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case store.ACLDeny:
+				def = store.ACLDeny
+			case store.ACLAllow:
+				def = store.ACLAllow
+			}
+		}
+		mesh, merr := st.GetMeshEnabled(ctx)
+		if merr != nil {
+			return "", false, fmt.Errorf("read mesh_enabled: %w", merr)
+		}
+		return def, mesh, nil
 	}
-	// mesh_enabled 同样 fail-closed:读出错时不再强行按 on 处理(那会在 admin 关了 mesh
-	// 隔离后,因一次 DB 抖动把跨用户流量重新放开)。返回 err 保留旧快照,保住 admin 意图。
-	meshOn, merr := st.GetMeshEnabled(ctx)
-	if merr != nil {
-		return 0, fmt.Errorf("read mesh_enabled: %w", merr)
+
+	// 深扫第八轮 LOW:rules / default_action / mesh_enabled 是三条独立查询,中间夹着一次
+	// admin 写(改 default_action / toggle mesh / 加删规则)会拼出「规则集 vs 兜底动作」
+	// 不一致的快照。这里用「前读设置 → 读规则 → 后读设置,不一致就重试」把窗口收窄到近乎零:
+	// 若一轮内设置没变,说明这轮读到的 rules 与 settings 相互一致。有界重试,兜底用末次读值
+	// (低危,下次 reload/SIGHUP 会自愈)。
+	var (
+		rules []*store.ACLPair
+		def   string
+		mesh  bool
+	)
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		defBefore, meshBefore, err := readSettings()
+		if err != nil {
+			return 0, err
+		}
+		rules, err = st.ListACLPairs(ctx)
+		if err != nil {
+			return 0, err
+		}
+		defAfter, meshAfter, err := readSettings()
+		if err != nil {
+			return 0, err
+		}
+		def, mesh = defAfter, meshAfter
+		if defBefore == defAfter && meshBefore == meshAfter {
+			break // 一致,采用本轮结果
+		}
+		// 设置在读规则期间被改动 → 重试一轮取一致视图。
 	}
+
 	snap := buildACLSnapshot(rules, def)
-	snap.meshEnabled = meshOn
+	snap.meshEnabled = mesh
 	aclCurrent.Store(snap)
 	return len(rules), nil
 }

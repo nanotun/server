@@ -151,12 +151,27 @@ func cmdRouteReject(ctx context.Context, st *store.Store, opts *globalOpts, args
 	fs := flag.NewFlagSet("route reject", flag.ContinueOnError)
 	fs.SetOutput(opts.stderr)
 	reason := fs.String("reason", "", opts.T("route.flag.reason"))
-	if err := fs.Parse(args); err != nil {
+	force := fs.Bool("force", false, opts.T("route.flag.rejectForce"))
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
-	deviceID, cidr, err := parseRouteTarget(opts, fs.Args())
+	deviceID, cidr, err := parseRouteTarget(opts, pos)
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.usage("nanotun-admin route reject <device_id> <cidr> [--reason ...]"), err)
+		return fmt.Errorf("%s: %w", opts.usage("nanotun-admin route reject <device_id> <cidr> [--reason ...] [--force]"), err)
+	}
+	// 深扫第八轮 MED:与 web(handler_routes.go reject 仅限 pending)对齐 —— reject 只作用于
+	// 待审批声明。此前 CLI 无守卫,`route reject` 会把一条 **已 approved** 的路由静默降级为
+	// rejected,等于绕过 revoke 路径的一次隐式撤销(web 侧已堵住,CLI 却是缺口)。这里先查
+	// 当前状态,非 pending 且未加 --force 直接报错,提示改用 `route delete` 显式撤销。
+	if !*force {
+		cur, gerr := st.GetRouteByDeviceCIDR(ctx, deviceID, cidr)
+		if gerr != nil {
+			return gerr
+		}
+		if cur.Status != util.RouteStatusPending {
+			return errors.New(opts.T("route.notPending", deviceID, cidr, cur.Status))
+		}
 	}
 	if err := st.SetRouteStatus(ctx, deviceID, cidr, util.RouteStatusRejected, *reason); err != nil {
 		return err

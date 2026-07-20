@@ -44,6 +44,20 @@ func startWSSDataPlaneKeepalive(ctx context.Context, c *Connection, w io.Writer,
 	if interval <= 0 {
 		return // 配置禁用
 	}
+	// 深扫第八轮 MED:防御性下限,专防「ticker 高频空转」这类真正的 CPU 刷屏。
+	// 主修在 config.Duration.UnmarshalText —— 裸整数(如 `data_plane_ping_interval = 30`
+	// 本意 30s 却被当 30ns)已在解析期直接拒绝。这里只再兜一道**亚毫秒**下限:任何
+	// <1ms 的间隔(如误写 "500us")一律夹到 1ms 并告警,挡住 ns/us 级别的失控自旋。
+	// 阈值刻意取 1ms 而非「秒级」,以免误伤合法的短间隔(测试与激进保活可用几十 ms)。
+	const minPingInterval = time.Millisecond
+	if interval < minPingInterval {
+		logrus.WithFields(logrus.Fields{
+			"remote":  remote,
+			"got":     interval.String(),
+			"clamped": minPingInterval.String(),
+		}).Warn("[keepalive] data_plane_ping_interval 小于 1ms,已夹到 1ms(疑似漏写单位导致次毫秒自旋)")
+		interval = minPingInterval
+	}
 	if missThreshold <= 0 {
 		missThreshold = defaultDataPlanePingMissThreshold
 	}

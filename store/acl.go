@@ -103,6 +103,12 @@ func (s *Store) AddACLPair(ctx context.Context, in NewACLPair) (*ACLPair, error)
 		in.Proto, in.DstPortLo, in.DstPortHi, in.DstKind, now,
 	)
 	if err != nil {
+		// 深扫第八轮 MED:UNIQUE 冲突归一化为 ErrDuplicate,与 users / leases 等 DAL 一致。
+		// 否则同一条 (src,dst,proto,port,kind) 规则重复添加时向上抛裸驱动错误,web 侧只能
+		// 渲染成通用 500(而非「规则已存在」的可读提示)。
+		if isUniqueConstraintErr(err) {
+			return nil, ErrDuplicate
+		}
 		return nil, fmt.Errorf("store: add acl: %w", err)
 	}
 	id, err := res.LastInsertId()

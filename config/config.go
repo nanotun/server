@@ -34,7 +34,18 @@ func (d *Duration) UnmarshalText(text []byte) error {
 		return nil
 	}
 	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-		*d = Duration(time.Duration(n))
+		dur := time.Duration(n)
+		// 深扫第八轮 MED:裸整数按纳秒解释(与 time.Duration 语义一致)。但一个正的
+		// **亚毫秒**裸整数几乎必然是「忘了带单位」的误配 —— 例如把 ping 间隔写成
+		// `data_plane_ping_interval = 30`(本意 30 秒),会被当成 30ns,让 time.Ticker
+		// 每 30ns 触发一次 → CPU 空转 + 日志/网络刷屏。这类值直接拒绝并提示补单位,
+		// 而不是静默上线一个刷屏配置。0 保留(表示禁用),显式大整数纳秒(如 30000000000
+		// = 30s)仍照常接受。
+		if dur > 0 && dur < time.Millisecond {
+			return fmt.Errorf("config: duration %q parsed as %v — bare integers are nanoseconds; "+
+				"did you forget a unit? write %q or %q", s, dur, s+"s", s+"ms")
+		}
+		*d = Duration(dur)
 		return nil
 	}
 	return fmt.Errorf("config: invalid duration %q (expected forms: \"30s\" / \"5m\" / 30000000000)", s)
@@ -257,8 +268,12 @@ type MagicDNSConfig struct {
 }
 
 // ResolveExitMode 把 cfg 上的 ExitMode + ClientIsolate 翻译成最终生效的三档值。
-// 输入空 / 未知字符串 → 用 ClientIsolate 退化(向后兼容老配置)。
+// 输入**空字符串** → 用 ClientIsolate 退化(向后兼容老配置)。
 // 这条逻辑必须在 SetupIptables 之前调一次,把字符串归一为 mesh/isolate/off。
+//
+// 未知非空值(如拼错的 "lockdown")本应在启动早期被 ValidateExitMode fail-fast 拦下,
+// 不会流到这里;万一被绕过(测试 / 未调 Validate),default 分支仍退回兼容路径以免 panic,
+// 但生产路径不依赖这个兜底。
 func (t *TUNConfig) ResolveExitMode() string {
 	switch strings.ToLower(strings.TrimSpace(t.ExitMode)) {
 	case TUNExitModeMesh:
@@ -272,6 +287,22 @@ func (t *TUNConfig) ResolveExitMode() string {
 			return TUNExitModeIsolate
 		}
 		return TUNExitModeMesh
+	}
+}
+
+// ValidateExitMode 在启动早期校验 tun.exit_mode。
+//
+// 深扫第八轮 MED:此前未知非空值会被 ResolveExitMode 静默退回 mesh(或 isolate),
+// 即一个 typo(exit_mode = "lockdow")就能让一个本想「off / isolate」的部署以 mesh
+// (跨用户互通)姿态上线 —— 静默 fail-open。这里对非空值强制枚举校验,非法即 fail-fast,
+// 把 ClientIsolate 兼容退化严格限定在「exit_mode 留空」这一种情况。
+func (t *TUNConfig) ValidateExitMode() error {
+	switch strings.ToLower(strings.TrimSpace(t.ExitMode)) {
+	case "", TUNExitModeMesh, TUNExitModeIsolate, TUNExitModeOff:
+		return nil
+	default:
+		return fmt.Errorf("config: unknown tun.exit_mode %q (valid: %q / %q / %q, or leave empty)",
+			t.ExitMode, TUNExitModeMesh, TUNExitModeIsolate, TUNExitModeOff)
 	}
 }
 

@@ -334,9 +334,15 @@ func (s *Store) SetDeviceAlias(ctx context.Context, id int64, alias string) erro
 
 // SetDeviceFixedVIP 修改 device 的固定 vIP(v4 / v6)。空字符串表示清除。
 //
-// 全局 UNIQUE 索引会保证 v4 / v6 在所有 devices 行之间不重复。撞到时返回
-// fmt.Errorf("...: %w", ErrDuplicate) 让调用方分支处理 — 典型 UX 是把这条提示
-// 渲染回表单,而不是直接 500。
+// 唯一性保证的**准确**范围(深扫第八轮 LOW 勘误):devices 表上的 UNIQUE 索引只保证
+// fixed_vip_v4 / fixed_vip_v6 在 **devices↔devices** 之间不重复,撞到时返回
+// fmt.Errorf("...: %w", ErrDuplicate),调用方通常把提示渲染回表单而非直接 500。
+//
+// 它**不**跨表约束到 leases:另一台设备**动态分配**到的 lease vIP(leases.vip_v4/v6)
+// 与这里要钉的 fixed vIP 落在同一地址时,本 UNIQUE 索引查不到。这层 devices↔leases 的
+// 冲突检查在应用层完成(web: checkFixedVIPConflict / CLI: findFixedVIPConflict,均扫描
+// devices + leases 两张表),而 CLI 的 --force 会**跳过**该预检 —— 详见 cmd_device.go,
+// 强推时调用方需自行承担 vIP 撞车后果(下次分配可能撞库/双分配)。
 //
 // 注意:这里**不**会去校验 fixed_vip 是否落在 server 的 vIP 网段内 — 那是 server
 // 启动配置才知道的事;store 层语义只是「持久化」,网段校验由 server/admin/web 在

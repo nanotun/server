@@ -680,6 +680,38 @@ func parseListenPort(listenAddr, defaultAddr string) int {
 	return p
 }
 
+// validateVPNListenAddr 保证 listen_addr 的 host 与「环回桥接」自洽:必须是通配
+// (空 / 0.0.0.0 / ::)或回环地址,否则 loopbackVPNWebSocketURL 的 127.0.0.1 拨号
+// 到不了实际 listener,hy2/REALITY 会静默全断。非法值直接 fail-fast。
+func validateVPNListenAddr(listenAddr string) {
+	la := strings.TrimSpace(listenAddr)
+	host, _, err := net.SplitHostPort(la)
+	if err != nil {
+		// ":8080" 这类无 host 的写法:SplitHostPort 报错但语义是「所有网卡」,放行。
+		if strings.HasPrefix(la, ":") {
+			return
+		}
+		util.FatalExit(util.ExitConfigParse, logrus.Fields{"listen_addr": listenAddr},
+			"[server] 无法解析 listen 地址 %q: %v", listenAddr, err)
+	}
+	host = strings.TrimSpace(host)
+	// 空 host / 通配地址:listener 覆盖所有网卡(含回环),环回拨号可达。
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return
+	}
+	addr, perr := netip.ParseAddr(host)
+	if perr != nil {
+		util.FatalExit(util.ExitConfigParse, logrus.Fields{"listen_addr": listenAddr, "host": host},
+			"[server] listen 地址 host %q 不是合法 IP;请用回环(127.0.0.1 / ::1)或通配(0.0.0.0 / :: / 省略 host)", host)
+	}
+	if addr.IsLoopback() || addr.IsUnspecified() {
+		return
+	}
+	util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"listen_addr": listenAddr, "host": host},
+		"[server] listen_addr 绑到非回环具体 IP %q,会导致 hy2/REALITY 环回桥接(拨 127.0.0.1)连接被拒;"+
+			"请改用 127.0.0.1:<port>(推荐)或 0.0.0.0:<port>", host)
+}
+
 func main() {
 	globalContext, globalContextCancel = context.WithCancel(context.Background())
 	defer globalContextCancel()
@@ -793,13 +825,27 @@ func main() {
 	}
 
 	if cfg.Server.ListenAddr == "" {
-		cfg.Server.ListenAddr = ":8080"
+		// 深扫第八轮 LOW:空值兜底默认从 ":8080"(所有网卡,公网可达)收窄到回环。
+		// 数据面 WS listener 只被本机 hy2/REALITY 经环回桥接,无需对外暴露;示例配置
+		// 已是 127.0.0.1:8080,这里让「配置项缺失」也落到同一安全默认,避免误公开。
+		cfg.Server.ListenAddr = "127.0.0.1:8080"
 	}
 	if *addrOverride != "" {
 		cfg.Server.ListenAddr = *addrOverride
 	}
 	if v := os.Getenv("LISTEN_ADDR"); v != "" {
 		cfg.Server.ListenAddr = v
+	}
+	// 深扫第八轮 MED:环回桥接的自洽校验。hy2/REALITY 终结后经 loopbackVPNWebSocketURL
+	// (硬编码 127.0.0.1)回连本机 WS listener。若 listen_addr 绑到一个**具体的非回环 IP**
+	// (如 10.0.0.5:8080),listener 只在该 IP 上,127.0.0.1 的环回拨号必然 connection
+	// refused —— hy2/REALITY 全线 login 失败且无启动期诊断。这里在启动早期显式校验:
+	// host 必须为空 / 0.0.0.0 / :: / 回环地址;否则 fail-fast 给出明确原因。
+	validateVPNListenAddr(cfg.Server.ListenAddr)
+	// 深扫第八轮 MED:exit_mode 非空值必须是 mesh/isolate/off 之一,拼错即 fail-fast,
+	// 不再静默退回 mesh(避免一个 typo 把隔离部署翻成跨用户互通)。
+	if err := cfg.TUN.ValidateExitMode(); err != nil {
+		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"exit_mode": cfg.TUN.ExitMode}, "%v", err)
 	}
 
 	tunCount := len(cfg.TUN.Subnets)
@@ -1230,10 +1276,14 @@ func main() {
 		jumpFW:     jumpFW,
 		store:      gw.store,
 	}
-	// P0-1: 启动时拉一次 ACL 快照。失败时只 Warn(数据面默认放行,与历史行为一致);
-	// 后续 SIGHUP 可以再试。store 为 nil(测试场景)时函数内部走空快照分支。
+	// P0-1: 启动时拉一次 ACL 快照。store 为 nil(测试场景)时函数内部走空快照分支。
+	// 深扫第八轮 MED:启动装载失败改为 **fatal**,与 SIGHUP reload 的 fail-closed 对齐。
+	// 旧行为(只 Warn + 数据面按 init() 空快照 default=allow 放行)意味着一次启动期 DB
+	// 抖动就能让配置了 default-deny / mesh-off 的部署以「整网互通」姿态上线,且没有旧快照
+	// 可保留(进程刚起)。此处 store 刚完成迁移、必然可读,再读失败即真实 DB 故障 ——
+	// 直接退出,交给 systemd Restart= 重拉,绝不带着错误的 allow-all 快照服务流量。
 	if n, err := reloadACLSnapshotFromStore(gw.store); err != nil {
-		logrus.WithError(err).Warn("[acl] 启动期 ACL 规则集装载失败,数据面默认放行")
+		logrus.WithError(err).Fatal("[acl] 启动期 ACL 规则集装载失败,拒绝以默认放行姿态上线,进程退出")
 	} else {
 		logrus.WithField("rule_count", n).WithFields(aclSummaryForLog()).Info("[acl] 规则集已装载")
 	}
@@ -2925,6 +2975,23 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	}
 
 	oldConn.takeoverMu.Lock()
+	// 深扫第八轮 MED:整段接管临界区靠 ~11 处手动 Unlock 释放锁,中间夹着 argon2 verify、
+	// store.Audit、GetRateDefaults、JSON 编码等可能 panic 的调用。连接处理 goroutine 的
+	// recover 会兜住 panic 保住进程,但 takeoverMu 会永久泄漏 —— oldConn.cleanupConnection
+	// 阻塞在这把锁上永不返回,其 goroutine 泄漏、cleanupDone 永不关、vIP 永不回收、
+	// connIDMap 残留僵尸,之后该设备每次重登都踢僵尸并另分 vIP(池永久缩水)。
+	// 用幂等的 unlockTakeover + defer 兜底:所有原手动 Unlock 点改调 unlockTakeover(),
+	// 保持每条路径原有的放锁时机(尤其成功路径必须在 runLinkTunnel 前放锁,否则整个会话
+	// 生命周期都占着 takeoverMu);而 panic / 漏放锁的退出路径由 defer 补放。
+	// takeoverMuHeld 只被本 goroutine 读写,无并发。
+	takeoverMuHeld := true
+	unlockTakeover := func() {
+		if takeoverMuHeld {
+			takeoverMuHeld = false
+			oldConn.takeoverMu.Unlock()
+		}
+	}
+	defer unlockTakeover()
 	// TOCTOU 复验:上面 connIDMap 查到 oldConn 与这里 Lock(takeoverMu) 之间存在窗口,
 	// oldConn 的链路可能刚断、cleanupConnection 已抢先拿到 takeoverMu 跑完「!takenOver」
 	// 分支——它已经把 oldConn 从 connIDMap 摘除**并释放了 vIP**(delete(clientIPUsed,...))。
@@ -2938,14 +3005,14 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	cur, still := connIDMap[sid]
 	connIDMapMu.RUnlock()
 	if !still || cur != oldConn {
-		oldConn.takeoverMu.Unlock()
+		unlockTakeover()
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn 已被清理(链路先于接管断开),拒绝接管")
 		auditTakeoverFail(gw, remote, "session_cleaned", oldConn.userID)
 		_ = writeLinkLoginResp(raw, 1, "takeover failed: session gone", "")
 		return
 	}
 	if oldConn.takenOver.Load() {
-		oldConn.takeoverMu.Unlock()
+		unlockTakeover()
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn 已被接管")
 		auditTakeoverFail(gw, remote, "already_taken_over", oldConn.userID)
 		// 多发竞态:不算攻击。
@@ -2957,7 +3024,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// 会让 takeover 通过。两边都强制拒绝空 secret —— 这条路径在 generateTakeoverSecret
 	// 已经成功的正常 server 上永远不会触发,只是兜底防 entropy-broken 机器。
 	if oldConn.takeoverSecret == "" || loginReq.TakeoverSecret == "" {
-		oldConn.takeoverMu.Unlock()
+		unlockTakeover()
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] secret 为空,拒绝接管")
 		auditTakeoverFail(gw, remote, "empty_secret", oldConn.userID)
 		// 试空字符串 secret 是典型 fuzz / bypass 尝试 → 升难度。
@@ -2969,7 +3036,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		[]byte(oldConn.takeoverSecret),
 		[]byte(loginReq.TakeoverSecret),
 	) != 1 {
-		oldConn.takeoverMu.Unlock()
+		unlockTakeover()
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] secret 不匹配")
 		auditTakeoverFail(gw, remote, "secret_mismatch", oldConn.userID)
 		// 试错 secret → 升难度。secret 256-bit 暴破毫无意义,但代码上统一。
@@ -2986,7 +3053,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	//     + 偷来的 session_id+secret 来接管别人的会话)。
 	authResult, authErr := authenticatePSK(gw, loginReq)
 	if authErr != nil {
-		oldConn.takeoverMu.Unlock()
+		unlockTakeover()
 		logrus.WithFields(logrus.Fields{
 			"remote": remote,
 			"sid":    sid,
@@ -3005,7 +3072,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		return
 	}
 	if authResult.UserID != oldConn.userID {
-		oldConn.takeoverMu.Unlock()
+		unlockTakeover()
 		logrus.WithFields(logrus.Fields{
 			"remote":      remote,
 			"sid":         sid,
@@ -3032,7 +3099,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// 而不是降级回旧 secret —— 安全优先。
 	newSecret := generateTakeoverSecret()
 	if newSecret == "" {
-		oldConn.takeoverMu.Unlock()
+		unlockTakeover()
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Error("[takeover] 轮换 secret 失败(熵源故障?),拒绝接管")
 		_ = writeLinkLoginResp(raw, 1, "takeover failed: server entropy", "")
 		return
@@ -3218,7 +3285,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 
 	if err := writeLinkLoginRespFull(rwc, 0, "takeover ok", newConn.userID, newConn.connIDStr, newConn.takeoverSecret); err != nil {
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).WithError(err).Warn("[takeover] 写 LoginResp 失败，回滚")
-		oldConn.takeoverMu.Unlock()
+		unlockTakeover()
 		return
 	}
 
@@ -3235,7 +3302,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	saltBody, err := util.MarshalConvSaltLiteJSON(newConn.safeClientIPs(), dnsV4, dnsV6, magicDNSSuffixForClient(gw), newConn.deviceName)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).WithError(err).Warn("[takeover] 构造 ConvSaltLite 失败，回滚")
-		oldConn.takeoverMu.Unlock()
+		unlockTakeover()
 		return
 	}
 	newConn.linkWrMu.Lock()
@@ -3243,7 +3310,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	newConn.linkWrMu.Unlock()
 	if err != nil {
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).WithError(err).Warn("[takeover] 下发 ConvSaltLite 失败，回滚")
-		oldConn.takeoverMu.Unlock()
+		unlockTakeover()
 		return
 	}
 
@@ -3281,9 +3348,13 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 
 	// H2(B3): 接管转移已完成(newConn 进 connIDMap + oldConn.takenOver=true),
 	// 后续 close + tunnelDone 等待都是清理 oldConn 而非取消接管。从这里开始,
-	// newConn 的生命周期由下方 `defer cleanupConnection(newConn)` 接管,
-	// rollback 不能再删 connections[newConn.connID](会让 newConn 凭空消失)。
+	// newConn 的生命周期由 cleanupConnection 接管,rollback 不能再删
+	// connections[newConn.connID](会让 newConn 凭空消失)。
+	// 深扫第八轮 MED:cleanup defer 必须**在这里**注册,而不是 runLinkTunnel 之前 ——
+	// 否则「maps 已切换 → 注册 defer」之间(关老链路、等 tunnelDone 5s、日志等)一旦
+	// panic,newConn 已入四张表却无人清理,成为永久僵尸(vIP 占用 + 设备重登异常)。
 	rollbackNewConnNeeded = false
+	defer cleanupConnection(newConn)
 
 	// 关老 link → 老 readLoop EOF → 老 demux 退出 → close oldConn.tunnelDone。
 	// 持 oldConn.linkWrMu 是为了与 kick goroutine 读 c.linkConn 串行化,避免 race。
@@ -3303,7 +3374,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		}
 	}
 
-	oldConn.takeoverMu.Unlock()
+	unlockTakeover()
 
 	logrus.WithFields(logrus.Fields{
 		"remote":     remote,
@@ -3320,8 +3391,6 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	if newConn.egressDeviceID.Load() != 0 {
 		go revalidateExitBindings(context.Background())
 	}
-
-	defer cleanupConnection(newConn)
 
 	tunnelCtx := globalContext
 	if tunnelCtx == nil {

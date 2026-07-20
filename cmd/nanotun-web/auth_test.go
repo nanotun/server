@@ -140,6 +140,73 @@ func TestAttemptLogin_DisabledUser(t *testing.T) {
 	}
 }
 
+// TestAttemptLogin_TOTPAccount_PasswordDoesNotResetCounter 是 H1(深扫第八轮)的回归:
+// 对启用了 TOTP 的账号,密码正确只是登录第一步,AttemptLogin **绝不能**在此处
+// RecordWebAdminLoginSuccess —— 否则 failed_logins/locked_until 被清零,attacker 每次重发
+// 正确密码就把 TOTP 步累积的失败计数抹掉,6 位码锁定形同虚设。
+func TestAttemptLogin_TOTPAccount_PasswordDoesNotResetCounter(t *testing.T) {
+	st := newTestStore(t)
+	ctx := t.Context()
+	pwd := "GoodStrong1!Pass"
+	hash, _ := HashWebPassword(pwd)
+	a, err := st.CreateWebAdmin(ctx, store.NewWebAdmin{Username: "totpuser", PasswordHash: hash})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	// 启用 TOTP(需要先有 secret,再 enable)。
+	if err := st.SetWebAdminTOTPSecret(ctx, a.ID, "JBSWY3DPEHPK3PXP"); err != nil {
+		t.Fatalf("set secret: %v", err)
+	}
+	if _, err := st.EnableWebAdminTOTP(ctx, a.ID, []string{"h1", "h2"}, nowUnix()); err != nil {
+		t.Fatalf("enable totp: %v", err)
+	}
+
+	cfg := defaultConfig()
+	cfg.MaxLoginFailures = 5
+	cfg.LockoutSeconds = 600
+
+	// 模拟 TOTP 步失败累积 3 次(handler_auth 里走 RecordWebAdminLoginFailure)。
+	for i := 0; i < 3; i++ {
+		if _, _, err := st.RecordWebAdminLoginFailure(ctx, a.ID, cfg.MaxLoginFailures, cfg.LockoutSeconds); err != nil {
+			t.Fatalf("record failure: %v", err)
+		}
+	}
+	// 关键:重发正确密码走 AttemptLogin。它必须成功(通过第一步),但**不得**清零计数。
+	res := AttemptLogin(ctx, st, cfg, "totpuser", pwd, "10.0.0.1")
+	if res.Err != nil {
+		t.Fatalf("password step should pass for TOTP account, got %v", res.Err)
+	}
+	got, _ := st.GetWebAdmin(ctx, a.ID)
+	if got.FailedLogins != 3 {
+		t.Fatalf("TOTP 账号密码步不该重置计数器: FailedLogins=%d, want 3", got.FailedLogins)
+	}
+}
+
+// TestAttemptLogin_NonTOTPAccount_PasswordResetsCounter 是上面的对照:非 TOTP 账号
+// 密码正确即完成登录,照常复位 failed_logins。
+func TestAttemptLogin_NonTOTPAccount_PasswordResetsCounter(t *testing.T) {
+	st := newTestStore(t)
+	ctx := t.Context()
+	pwd := "GoodStrong1!Pass"
+	hash, _ := HashWebPassword(pwd)
+	a, _ := st.CreateWebAdmin(ctx, store.NewWebAdmin{Username: "plainuser", PasswordHash: hash})
+	cfg := defaultConfig()
+	cfg.MaxLoginFailures = 5
+	cfg.LockoutSeconds = 600
+
+	for i := 0; i < 3; i++ {
+		_, _, _ = st.RecordWebAdminLoginFailure(ctx, a.ID, cfg.MaxLoginFailures, cfg.LockoutSeconds)
+	}
+	res := AttemptLogin(ctx, st, cfg, "plainuser", pwd, "10.0.0.1")
+	if res.Err != nil {
+		t.Fatalf("login: %v", res.Err)
+	}
+	got, _ := st.GetWebAdmin(ctx, a.ID)
+	if got.FailedLogins != 0 {
+		t.Fatalf("非 TOTP 账号密码正确应复位计数器: FailedLogins=%d, want 0", got.FailedLogins)
+	}
+}
+
 func TestConstantTimeStringEqual(t *testing.T) {
 	if !ConstantTimeStringEqual("abc", "abc") {
 		t.Fatal("equal failed")

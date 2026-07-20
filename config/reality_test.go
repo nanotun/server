@@ -27,6 +27,28 @@ func TestParseRealityShortID(t *testing.T) {
 	if wantShort := ([8]byte{0xaa, 0xbb, 0, 0, 0, 0, 0, 0}); short != wantShort {
 		t.Fatalf("short shortId not left-aligned: got %#v want %#v", short, wantShort)
 	}
+
+	// 深扫第八轮 LOW:补边界覆盖。
+	// 奇数长度 hex → 报错(不能截断成半字节)。
+	if _, err := ParseRealityShortID("aab"); err == nil {
+		t.Fatal("odd-length shortId 应报错")
+	}
+	// 超过 16 个 hex 字符(>8 字节)→ 报错。
+	if _, err := ParseRealityShortID("aabbccddeeff00112233"); err == nil {
+		t.Fatal("超长 shortId 应报错")
+	}
+	// 恰好 16 个 hex(8 字节)满长 → 不左移,原样填满。
+	full, err := ParseRealityShortID("00112233445566ff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantFull := ([8]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0xff}); full != wantFull {
+		t.Fatalf("full shortId: got %#v want %#v", full, wantFull)
+	}
+	// 非法 hex 字符 → 报错。
+	if _, err := ParseRealityShortID("zzzz"); err == nil {
+		t.Fatal("非法 hex 应报错")
+	}
 }
 
 func TestDecodeRealityPrivateKey(t *testing.T) {

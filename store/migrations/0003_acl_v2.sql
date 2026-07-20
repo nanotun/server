@@ -35,8 +35,13 @@
 --   3. 把旧行 SELECT/INSERT 进去,新列取默认值;
 --   4. 删掉旧表 + 重建旧索引(此处 v1 没有非约束自动索引)。
 --
--- foreign_keys 在事务内由 Migrate 临时关闭(SQLite ALTER 重建表惯例),
--- 不会触发 cascade。本 migration 已经在 BeginTx 包裹内,符合官方推荐。
+-- 【勘误 · 深扫第八轮 LOW】下面这两条 `PRAGMA foreign_keys = OFF/ON` 在事务内是
+-- **no-op** —— SQLite 明确规定该 pragma 不能在一个打开的事务里更改(Migrate 用 BeginTx
+-- 包裹每个 migration),所以它既不会真的关掉、也不会真的开启 FK 检查,仅作历史注释保留。
+-- 本 migration 之所以仍然安全,与 FK 开关无关:重建表时新行全部来自旧表(约束一致,
+-- 不会有悬空引用),且 CASCADE 只挂在 acl_pairs→users 上,DROP 旧表不触发级联。
+-- 【给未来的重建型 migration】若确实需要在事务内推迟 FK 检查,请用
+-- `PRAGMA defer_foreign_keys = ON;`(它对事务内生效,COMMIT 时统一校验),而不是本行。
 
 PRAGMA foreign_keys = OFF;
 

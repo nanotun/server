@@ -125,6 +125,10 @@ func (s *Server) handleACLNew(w http.ResponseWriter, r *http.Request) {
 			DstKind:   dstKind,
 		})
 		if err != nil {
+			if errors.Is(err, store.ErrDuplicate) {
+				retry(tr(r, "acl.duplicate"))
+				return
+			}
 			retry(tr(r, "acl.createFailed") + err.Error())
 			return
 		}

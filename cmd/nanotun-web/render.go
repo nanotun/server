@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/base32"
+	"errors"
 	"fmt"
 	"html/template"
 	"net"
@@ -182,6 +183,21 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 // renderError 渲染 error 页(或者退化为 plain text)。
 func (s *Server) renderError(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	s.renderErrorWithCTA(w, r, status, msg, "", "")
+}
+
+// renderStoreWriteErr 统一处理「先 Get 校验存在、再 store 写」路径上写操作的报错渲染。
+//
+// 深扫第八轮 LOW:这些 action handler(user/admin/device 的 disable/enable/delete/
+// set-* 等)都先 Get 一次(命中 404),但随后的写若因 GET→写之间那条窄窗口内该行被删
+// (TOCTOU)返回 store.ErrNotFound,此前一律被包成通用 500。route/lease/port-forward
+// 这类「无前置 Get」的 handler 已正确映射 404,这里让前者对齐:ErrNotFound → 404
+// (用调用方给的实体 notFoundKey),其余错误仍 500(failKey + 原始错误串)。
+func (s *Server) renderStoreWriteErr(w http.ResponseWriter, r *http.Request, err error, notFoundKey, failKey string) {
+	if errors.Is(err, store.ErrNotFound) {
+		s.renderError(w, r, http.StatusNotFound, tr(r, notFoundKey))
+		return
+	}
+	s.renderError(w, r, http.StatusInternalServerError, tr(r, failKey)+err.Error())
 }
 
 // renderErrorWithCTA 在 error.html 默认「返回首页」按钮**之外**额外渲染一个

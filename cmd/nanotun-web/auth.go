@@ -6,7 +6,6 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -129,7 +128,9 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 			_, _ = VerifyWebPassword(password, decoyWebHash())
 			return AuthResult{Err: ErrAuthBadCredentials}
 		}
-		return AuthResult{Err: fmt.Errorf("查询用户失败: %w", err)}
+		// 深扫第八轮 LOW:此前返回内联中文 fmt.Errorf,trErr 既非哨兵也无 LocaleKey,
+		// 英文 UI 下会原样渲染中文。改用可本地化错误(err.queryFailed 两套 catalog 都有)。
+		return AuthResult{Err: newLocErr("err.queryFailed")}
 	}
 	if !a.Enabled {
 		_, _ = VerifyWebPassword(password, decoyWebHash())
@@ -147,10 +148,17 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 		// lockUntil > 0 时把"刚刚被锁"也透给 UI,让用户知道为什么 5 次后突然不响应了
 		return AuthResult{Admin: a, Err: ErrAuthBadCredentials, LockedUntil: lockUntil}
 	}
-	if err := st.RecordWebAdminLoginSuccess(ctx, a.ID, ip); err != nil {
-		// 成功路径里 record 失败不应该拦登录(已经验证通过,只是审计写库出问题)。
-		// 这里直接放过,让登录 OK,RecordSuccess 失败会在 logrus 体现。
-		_ = err
+	// TOTP 账号:密码只是登录的第一步,**绝不能**在这里 RecordWebAdminLoginSuccess ——
+	// 那会把 failed_logins/locked_until 清零,让 attacker 每次重发正确密码就把 TOTP 步
+	// 累积起来的失败计数抹掉,6 位码锁定形同虚设(H1)。计数器复位统一交给
+	// handleLoginTOTP 里「TOTP 全程通过」后的 RecordWebAdminLoginSuccess。
+	// 非 TOTP 账号:密码正确即登录完成,照常复位 + 记录 last_login。
+	if !a.TOTPEnabled {
+		if err := st.RecordWebAdminLoginSuccess(ctx, a.ID, ip); err != nil {
+			// 成功路径里 record 失败不应该拦登录(已经验证通过,只是审计写库出问题)。
+			// 这里直接放过,让登录 OK,RecordSuccess 失败会在 logrus 体现。
+			_ = err
+		}
 	}
 	return AuthResult{Admin: a}
 }

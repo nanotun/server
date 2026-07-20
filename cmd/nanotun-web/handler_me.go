@@ -243,13 +243,29 @@ func (s *Server) handleMeTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/me?flash="+url.QueryEscape(tr(r, "flash.totpNotEnabled")), http.StatusFound)
 		return
 	}
+	// 深扫第八轮 MED:关 2FA 是「输一个 6 位码即生效」的敏感操作,此前无任何限流 ——
+	// 密码泄露 + cookie 劫持后可对 6 位码无限爆破直到关掉 2FA。复用 step-up 的 IP 冷却
+	// (滑窗 5min,5 次锁),与 /server-qr/reveal 同款,失败即计数、锁定即 429、成功清零。
+	ip := clientIP(r)
+	if s.stepUpFailures.Recent(ip) >= stepUpMaxFailures {
+		s.audit.WriteFromRequest(r, "totp_disable_locked",
+			FormatTarget("web_admin", admin.ID),
+			FormatDetail("ip", ip, "reason", "ip_cooldown"))
+		s.renderError(w, r, http.StatusTooManyRequests, tr(r, "me.totpTooManyAttempts"))
+		return
+	}
 	code := strings.TrimSpace(r.FormValue("code"))
 	recovery := strings.TrimSpace(r.FormValue("recovery_code"))
 	ok, usedRecovery, recoveryID, _ := s.verifyTOTPOrRecovery(r.Context(), cur, code, recovery)
 	if !ok {
+		s.stepUpFailures.Inc(ip)
+		s.audit.WriteFromRequest(r, "totp_disable_fail",
+			FormatTarget("web_admin", admin.ID),
+			FormatDetail("ip", ip))
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpCodeWrongCloseFail"))
 		return
 	}
+	s.stepUpFailures.Reset(ip)
 	if usedRecovery && recoveryID > 0 {
 		// disable 路径用了恢复码,标记 used 主要是审计完整,实际马上要全删了。
 		_ = s.store.MarkRecoveryCodeUsed(r.Context(), recoveryID, clientIP(r), time.Now().Unix())
@@ -288,11 +304,26 @@ func (s *Server) handleMeTOTPRegen(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpNotEnabledRegen"))
 		return
 	}
+	// 深扫第八轮 MED:重刷恢复码同样是「输一个 6 位码即作废旧码、刷出新码」的敏感操作,
+	// 与 disable 同等防护 —— 复用 step-up IP 冷却,防止劫持会话后爆破 6 位码刷恢复码。
+	ip := clientIP(r)
+	if s.stepUpFailures.Recent(ip) >= stepUpMaxFailures {
+		s.audit.WriteFromRequest(r, "totp_regen_locked",
+			FormatTarget("web_admin", admin.ID),
+			FormatDetail("ip", ip, "reason", "ip_cooldown"))
+		s.renderError(w, r, http.StatusTooManyRequests, tr(r, "me.totpTooManyAttempts"))
+		return
+	}
 	code := strings.TrimSpace(r.FormValue("code"))
 	if err := VerifyTOTP(cur.TOTPSecret, code); err != nil {
+		s.stepUpFailures.Inc(ip)
+		s.audit.WriteFromRequest(r, "totp_regen_fail",
+			FormatTarget("web_admin", admin.ID),
+			FormatDetail("ip", ip))
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpCodeWrong", trErr(r, err)))
 		return
 	}
+	s.stepUpFailures.Reset(ip)
 	plain, hashes, err := GenerateRecoveryCodes()
 	if err != nil {
 		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.genRecoveryFailed")+err.Error())

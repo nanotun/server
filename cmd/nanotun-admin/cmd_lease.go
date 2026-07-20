@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/nanotun/server/store"
@@ -156,7 +157,21 @@ func cmdLeaseSet(ctx context.Context, st *store.Store, opts *globalOpts, args []
 		return err
 	}
 	if *v4 == "" && *v6 == "" {
-		return errors.New("at least one of --v4 / --v6 must be provided")
+		return errors.New(opts.T("lease.needV4OrV6"))
+	}
+	// 深扫第八轮 MED:此前 --v4/--v6 未经任何校验直接进 UpsertLease(store 只归一化
+	// UNIQUE 冲突,不验格式/地址族)。`lease set 5 --v4 fe80::1` 或 `--v4 notanip` 会把
+	// 垃圾写进 vip_v4,设备下次登录收到即黑洞。与 device set-fixed-vip 同口径严格校验:
+	// v4 必须是 IPv4、v6 必须是纯 IPv6(排除 IPv4-mapped)。
+	if *v4 != "" {
+		if a, aerr := netip.ParseAddr(*v4); aerr != nil || !a.Unmap().Is4() {
+			return errors.New(opts.T("lease.badV4", *v4))
+		}
+	}
+	if *v6 != "" {
+		if a, aerr := netip.ParseAddr(*v6); aerr != nil || !a.Is6() || a.Is4In6() {
+			return errors.New(opts.T("lease.badV6", *v6))
+		}
 	}
 	l, err := st.UpsertLease(ctx, deviceID, *v4, *v6, *manual)
 	if err != nil {

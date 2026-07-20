@@ -353,7 +353,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 	switch verb {
 	case "disable":
 		if err := s.store.DisableUser(r.Context(), id); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.disableFailed")+err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.userNotFound", "err.disableFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "user_disable", FormatTarget("user", id),
@@ -365,7 +365,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 			url.QueryEscape(tr(r, "flash.userDisabled", u.Username)), http.StatusSeeOther)
 	case "enable":
 		if err := s.store.EnableUser(r.Context(), id); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.enableFailed")+err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.userNotFound", "err.enableFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "user_enable", FormatTarget("user", id),
@@ -374,7 +374,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 			url.QueryEscape(tr(r, "flash.userEnabled", u.Username)), http.StatusSeeOther)
 	case "delete":
 		if err := s.store.DeleteUser(r.Context(), id); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.deleteFailed")+err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.userNotFound", "err.deleteFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "user_delete", FormatTarget("user", id),
@@ -501,7 +501,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.SetUserAllowedPlatforms(r.Context(), id, csv); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.userNotFound", "err.queryFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "user_platforms_set", FormatTarget("user", id),
@@ -526,7 +526,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 				s.renderError(w, r, http.StatusBadRequest, tr(r, "err.badMaxSessions"))
 				return
 			}
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+err.Error())
+			s.renderStoreWriteErr(w, r, err, "err.userNotFound", "err.queryFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "user_max_sessions_set", FormatTarget("user", id),

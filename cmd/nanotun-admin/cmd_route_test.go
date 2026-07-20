@@ -82,3 +82,47 @@ func TestRouteApprove_ExitPlatformGate(t *testing.T) {
 		t.Fatalf("--force 应放行, code=%d stderr=%s", c, e)
 	}
 }
+
+// 深扫第八轮 MED 回归:CLI `route reject` 仅作用于 pending 行,与 web 一致。
+// 对已 approved 的路由直接 reject 应被拒(防隐式撤销),--force 才越过;pending 行正常拒绝。
+func TestRouteReject_PendingOnlyGuard(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "route-reject.db")
+	st := openStoreForTest(t, db)
+	ctx := t.Context()
+	u, err := st.CreateUser(ctx, openStoreNewUser("rejuser"))
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	dev, err := st.UpsertDevice(ctx, u.ID, "99999999-1111-4222-8333-444444444444", "a-router", "linux")
+	if err != nil {
+		t.Fatalf("upsert device: %v", err)
+	}
+	for _, cidr := range []string{"10.0.0.0/24", "10.0.1.0/24"} {
+		if _, err := st.UpsertAdvertisedRoute(ctx, dev.ID, cidr); err != nil {
+			t.Fatalf("upsert route %s: %v", cidr, err)
+		}
+	}
+	// 把 10.0.0.0/24 批到 approved。
+	if err := st.SetRouteStatus(ctx, dev.ID, "10.0.0.0/24", util.RouteStatusApproved, ""); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	_ = st.Close()
+
+	devStr := fmt.Sprintf("%d", dev.ID)
+	// approved 行直接 reject → 被 pending-only 守卫拦下。
+	c, _, stderr := runCLI(t, db, "", "route", "reject", devStr, "10.0.0.0/24")
+	if c == 0 {
+		t.Fatal("对 approved 路由 reject 应被拒(pending-only 守卫)")
+	}
+	if !strings.Contains(stderr, "pending") && !strings.Contains(stderr, "route delete") {
+		t.Fatalf("报错应提示非 pending / 改用 route delete,实际: %s", stderr)
+	}
+	// --force 越过守卫,把 approved 强制降级为 rejected。
+	if c, _, e := runCLI(t, db, "", "route", "reject", devStr, "10.0.0.0/24", "--force"); c != 0 {
+		t.Fatalf("--force 应放行 reject, code=%d stderr=%s", c, e)
+	}
+	// pending 行正常 reject。
+	if c, _, e := runCLI(t, db, "", "route", "reject", devStr, "10.0.1.0/24"); c != 0 {
+		t.Fatalf("pending 路由 reject 应成功, code=%d stderr=%s", c, e)
+	}
+}

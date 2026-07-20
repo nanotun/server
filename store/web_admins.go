@@ -229,6 +229,12 @@ func (s *Store) RecordWebAdminLoginFailure(ctx context.Context, id int64,
 	var failed int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT failed_logins FROM web_admins WHERE id=?`, id).Scan(&failed); err != nil {
+		// 深扫第八轮 LOW:未知 admin id 时 UPDATE 影响 0 行(无错),SELECT 返回
+		// sql.ErrNoRows。归一化为 ErrNotFound,与其余 DAL 一致(上层可 errors.Is 判定),
+		// 而不是把裸 sql.ErrNoRows 包成一条读失败错误。
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, 0, ErrNotFound
+		}
 		return 0, 0, fmt.Errorf("store: read web admin failed_logins: %w", err)
 	}
 	var lockUntil int64
@@ -360,19 +366,24 @@ func (s *Store) GetWebSession(ctx context.Context, id string) (*WebSession, erro
 // extendBy <=0 时只刷新 last_seen,不改 expires。
 func (s *Store) TouchWebSession(ctx context.Context, id string, extendBy int64) error {
 	now := nowUnix()
+	// 深扫第八轮 LOW:检查 RowsAffected —— touch 一个不存在(已过期被 GC / 已 logout)
+	// 的 session id 应显式返回 ErrNotFound,而不是静默成功。上层据此可提前把请求当未登录
+	// 处理,不会误以为滑动续期成功。
+	var res sql.Result
+	var err error
 	if extendBy > 0 {
-		_, err := s.db.ExecContext(ctx,
+		res, err = s.db.ExecContext(ctx,
 			`UPDATE web_sessions SET last_seen_at=?, expires_at=? WHERE id=?`,
 			now, now+extendBy, id)
-		if err != nil {
-			return fmt.Errorf("store: touch web session: %w", err)
-		}
-		return nil
+	} else {
+		res, err = s.db.ExecContext(ctx,
+			`UPDATE web_sessions SET last_seen_at=? WHERE id=?`, now, id)
 	}
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE web_sessions SET last_seen_at=? WHERE id=?`, now, id)
 	if err != nil {
 		return fmt.Errorf("store: touch web session: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
