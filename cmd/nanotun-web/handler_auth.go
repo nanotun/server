@@ -90,7 +90,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 			Role:         "admin",
 		})
 		if err != nil {
-			s.setupRetry(w, r, "创建账号失败: "+err.Error())
+			s.setupRetry(w, r, tr(r, "err.createAccountFailed")+err.Error())
 			return
 		}
 		// 直接颁发 session,登入。
@@ -360,6 +360,17 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
+	// 账号锁定同时覆盖密码步与 TOTP 步:TOTP 失败也会累加 failed_logins 并可能
+	// 触发锁定(见下面 POST 分支),锁定后即便持有有效 pending cookie 也不放行,
+	// 否则拿到密码的 attacker 可在 pending cookie TTL 内无限枚举 6 位 TOTP 码。
+	if admin.LockedUntil > 0 && admin.LockedUntil > nowUnix() {
+		s.sess.ClearTOTPPending(w)
+		s.audit.Write(ctx, admin, "web.totp.locked",
+			FormatTarget("web_admin", admin.ID),
+			FormatDetail("ip", clientIP(r), "locked_until", admin.LockedUntil))
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -391,9 +402,19 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 		ok, usedRecovery, recoveryID, verr := s.verifyTOTPOrRecovery(ctx, admin, code, recoveryCode)
 		if !ok {
 			s.sess.ipFailures.Inc(ip)
+			// TOTP/恢复码失败与密码失败共用账号锁定计数器(原子事务),
+			// 满 MaxLoginFailures 次即锁定 LockoutSeconds,杜绝 6 位码暴力枚举。
+			_, lockedUntil, _ := s.store.RecordWebAdminLoginFailure(ctx, admin.ID,
+				s.cfg.MaxLoginFailures, s.cfg.LockoutSeconds)
 			s.audit.Write(ctx, admin, "web.totp.fail",
 				FormatTarget("web_admin", admin.ID),
-				FormatDetail("ip", ip, "reason", verr))
+				FormatDetail("ip", ip, "reason", verr, "locked_until", lockedUntil))
+			if lockedUntil > 0 && lockedUntil > nowUnix() {
+				// 已被本次失败锁定:作废 pending,提示回登录页重来。
+				s.sess.ClearTOTPPending(w)
+				s.loginTOTPRetry(w, r, tr(r, "auth.accountLocked", fmtTime(lockedUntil)), admin.Username, next)
+				return
+			}
 			s.loginTOTPRetry(w, r, tr(r, "auth.totpCodeInvalid"), admin.Username, next)
 			return
 		}
@@ -481,9 +502,21 @@ func (s *Server) loginTOTPRetry(w http.ResponseWriter, r *http.Request,
 	})
 }
 
-// handleLogout:POST 时销毁 session 并跳登录页。
-// GET 上也容忍,方便用户直接点链接。
+// handleLogout:仅 POST + CSRF 校验通过时销毁 session 并跳登录页。
+//
+// 不再容忍 GET:GET 注销意味着任意第三方页面用 <img src="https://console/logout">
+// 就能跨站把管理员踢下线(CSRF logout,可反复骚扰 + 打断操作);header 侧边栏的
+// 退出按钮本就是带 csrf_token 的 POST 表单(partials/header.html),无需 GET 兜底。
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.sess.VerifyCSRFToken(r); err != nil {
+		http.Error(w, trErr(r, err), http.StatusForbidden)
+		return
+	}
 	ctx := r.Context()
 	// 取一次 admin 信息用于 audit(没登录就跳过)。
 	if admin, _, err := s.sess.LookupSession(ctx, r); err == nil && admin != nil {

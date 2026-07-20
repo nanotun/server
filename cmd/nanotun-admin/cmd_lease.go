@@ -128,6 +128,9 @@ func cmdLeaseRelease(ctx context.Context, st *store.Store, opts *globalOpts, arg
 		}
 		return err
 	}
+	// 与其它破坏性 CLI 操作对齐的审计:释放 lease 会让该设备下次登录换 vIP。
+	_ = st.Audit(ctx, "admin-cli", "lease_release",
+		fmt.Sprintf("device:%d", id), "")
 	fmt.Fprintln(opts.stdout, opts.T("lease.released", id))
 	return nil
 }
@@ -159,6 +162,10 @@ func cmdLeaseSet(ctx context.Context, st *store.Store, opts *globalOpts, args []
 	if err != nil {
 		return err
 	}
+	// 审计:手工改 lease 直接影响设备下次登录拿到的 vIP。
+	_ = st.Audit(ctx, "admin-cli", "lease_set",
+		fmt.Sprintf("device:%d", deviceID),
+		fmt.Sprintf("v4=%s v6=%s manual=%v", l.VIPv4, l.VIPv6, l.Manual))
 	if opts.json {
 		return printJSON(opts.stdout, l)
 	}

@@ -129,7 +129,7 @@ func cmdUserSetMaxSessions(ctx context.Context, st *store.Store, opts *globalOpt
 		return err
 	}
 	n64, err := parseInt64(args[1])
-	if err != nil || n64 < -1 || n64 > int64(^uint(0)>>1) {
+	if err != nil || n64 < -1 || n64 > store.MaxSessionsCap {
 		return errors.New(opts.T("user.badMaxSessions", args[1]))
 	}
 	n := int(n64)
@@ -263,6 +263,10 @@ func cmdUserCreate(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	if err != nil {
 		return fmt.Errorf("create user: %w", err)
 	}
+	// 与 web(user_create)对等的审计:CLI 建号同样落 audit,便于事后归因。
+	_ = st.Audit(ctx, "admin-cli", "user_create",
+		fmt.Sprintf("user:%d", u.ID),
+		fmt.Sprintf("username=%s admin=%v exit_allowed=%v platforms=%s", u.Username, *isAdmin, *exitAllowed, allowedPlatforms))
 
 	type out struct {
 		ID       int64  `json:"id"`
@@ -439,12 +443,18 @@ func cmdUserSetDisabled(ctx context.Context, st *store.Store, opts *globalOpts, 
 		if err := st.DisableUser(ctx, u.ID); err != nil {
 			return err
 		}
+		// 与 web(user_disable)对等的审计。
+		_ = st.Audit(ctx, "admin-cli", "user_disable",
+			fmt.Sprintf("user:%d", u.ID), "username="+u.Username)
 		fmt.Fprintln(opts.stdout, opts.T("user.disabled", u.Username))
 		return nil
 	}
 	if err := st.EnableUser(ctx, u.ID); err != nil {
 		return err
 	}
+	// 与 web(user_enable)对等的审计。
+	_ = st.Audit(ctx, "admin-cli", "user_enable",
+		fmt.Sprintf("user:%d", u.ID), "username="+u.Username)
 	fmt.Fprintln(opts.stdout, opts.T("user.enabled", u.Username))
 	return nil
 }
@@ -470,6 +480,9 @@ func cmdUserDelete(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	if err := st.DeleteUser(ctx, u.ID); err != nil {
 		return err
 	}
+	// 与 web(user_delete)对等的审计:删号是最高破坏性操作,必须可归因。
+	_ = st.Audit(ctx, "admin-cli", "user_delete",
+		fmt.Sprintf("user:%d", u.ID), "username="+u.Username)
 	fmt.Fprintln(opts.stdout, opts.T("user.deleted", u.Username, u.ID))
 	return nil
 }

@@ -274,6 +274,10 @@ func cmdDeviceDelete(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	if err := st.DeleteDevice(ctx, id); err != nil {
 		return err
 	}
+	// 与 web(device_delete)对等的审计:删设备级联清 lease / 路由声明,须可归因。
+	_ = st.Audit(ctx, "admin-cli", "device_delete",
+		fmt.Sprintf("device:%d", id),
+		fmt.Sprintf("uuid=%s user_id=%d", d.DeviceUUID, d.UserID))
 	fmt.Fprintln(opts.stdout, opts.T("device.deleted", id))
 	// 删设备会级联清掉它的 lease / 出口 / 子网路由声明 / 4via6 siteID（via6_sites ON DELETE CASCADE）。通知运行中的
 	// server 重算出口与重建「已批准子网路由表」并广播 routes-list，否则数据面快照（subnetRouteTable/via6SiteTable）
@@ -325,6 +329,19 @@ func cmdDeviceSetFixedVIP(ctx context.Context, st *store.Store, opts *globalOpts
 	newV6 := d.FixedVIPv6
 	if *v6 != "<keep>" {
 		newV6 = *v6
+	}
+	// 地址族校验(空串 = 清除,豁免):--v4 必须是 IPv4,--v6 必须是 IPv6。
+	// ParseAddr 两族都收,不查族会把 IPv6 字面量写进 fixed_vip_v4(反之亦然),
+	// 分配时静默失效。与 web 端 set-fixed-vip 同口径。
+	if newV4 != "" {
+		if a, aerr := netip.ParseAddr(newV4); aerr != nil || !a.Unmap().Is4() {
+			return errors.New(opts.T("device.badFixedV4", newV4))
+		}
+	}
+	if newV6 != "" {
+		if a, aerr := netip.ParseAddr(newV6); aerr != nil || !a.Is6() || a.Is4In6() {
+			return errors.New(opts.T("device.badFixedV6", newV6))
+		}
 	}
 	// 仅在「真的变了」时才查冲突,避免 noop 触发全表扫描。
 	if newV4 != d.FixedVIPv4 {

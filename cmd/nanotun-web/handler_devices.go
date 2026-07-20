@@ -288,15 +288,18 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 		v4 := strings.TrimSpace(r.FormValue("fixed_vip_v4"))
 		v6 := strings.TrimSpace(r.FormValue("fixed_vip_v6"))
 
-		// 合法 IP 校验(空串例外 = 清除)。
+		// 合法 IP + 地址族校验(空串例外 = 清除)。ParseAddr 两族都收,
+		// 不查族的话 IPv6 字面量能存进 fixed_vip_v4(反之亦然),分配时静默失效。
 		if v4 != "" {
-			if _, perr := netip.ParseAddr(v4); perr != nil {
+			addr, perr := netip.ParseAddr(v4)
+			if perr != nil || !addr.Unmap().Is4() {
 				s.renderError(w, r, http.StatusBadRequest, tr(r, "devices.fixedVip4Invalid", v4))
 				return
 			}
 		}
 		if v6 != "" {
-			if _, perr := netip.ParseAddr(v6); perr != nil {
+			addr, perr := netip.ParseAddr(v6)
+			if perr != nil || !addr.Is6() || addr.Is4In6() {
 				s.renderError(w, r, http.StatusBadRequest, tr(r, "devices.fixedVip6Invalid", v6))
 				return
 			}
@@ -552,6 +555,12 @@ func (s *Server) handleLeaseAction(w http.ResponseWriter, r *http.Request) {
 	switch verb {
 	case "release":
 		if err := s.store.DeleteLease(r.Context(), deviceID); err != nil {
+			// 双击「释放」/ 陈旧列表页重提交 → 干净 404,而不是 500 + 裸 store 错误。
+			// CLI lease release 已是同口径(cmd_lease.go 映射 ErrNotFound 为友好提示)。
+			if errors.Is(err, store.ErrNotFound) {
+				s.renderError(w, r, http.StatusNotFound, tr(r, "err.leaseNotFound"))
+				return
+			}
 			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.releaseFailed")+err.Error())
 			return
 		}

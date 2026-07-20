@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/netip"
@@ -176,6 +177,10 @@ func (s *Server) handlePortForwardAction(w http.ResponseWriter, r *http.Request)
 	switch verb {
 	case "delete":
 		if err := s.store.DeletePortForward(r.Context(), id); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				s.renderError(w, r, http.StatusNotFound, tr(r, "err.pfNotFound"))
+				return
+			}
 			s.renderError(w, r, http.StatusInternalServerError, "delete: "+err.Error())
 			return
 		}
@@ -185,6 +190,10 @@ func (s *Server) handlePortForwardAction(w http.ResponseWriter, r *http.Request)
 	case "enable", "disable":
 		enabled := verb == "enable"
 		if err := s.store.SetPortForwardEnabled(r.Context(), id, enabled); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				s.renderError(w, r, http.StatusNotFound, tr(r, "err.pfNotFound"))
+				return
+			}
 			s.renderError(w, r, http.StatusInternalServerError, verb+": "+err.Error())
 			return
 		}

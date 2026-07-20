@@ -306,6 +306,15 @@ func (s *SessionService) pruneExpiredPoW() {
 		}
 		return true
 	})
+	// captchaUsed 与 powUsed 同套(nonce → expireUnix),同一轮 GC 一并清过期项,
+	// 避免用过的 captcha nonce 长期占内存。
+	s.captchaUsed.Range(func(k, v any) bool {
+		exp, ok := v.(int64)
+		if !ok || exp <= now {
+			s.captchaUsed.Delete(k)
+		}
+		return true
+	})
 }
 
 // powUsedSnapshot 仅测试 / 调试用:返回当前 in-flight challenge 数量。

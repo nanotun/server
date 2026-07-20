@@ -148,6 +148,7 @@ var (
 	ErrCaptchaInvalid = errors.New("captcha: invalid cookie")
 	ErrCaptchaExpired = errors.New("captcha: expired")
 	ErrCaptchaWrong   = errors.New("captcha: wrong answer")
+	ErrCaptchaReplay  = errors.New("captcha: already used")
 )
 
 func (s *SessionService) VerifyCaptcha(r *http.Request, userAnswer string) error {
@@ -172,6 +173,11 @@ func (s *SessionService) VerifyCaptcha(r *http.Request, userAnswer string) error
 	gotHash := answerHash(s.captchaHMACKey, got, nonce)
 	if subtle.ConstantTimeCompare(gotHash, expectedHash) != 1 {
 		return ErrCaptchaWrong
+	}
+	// 答案正确 → 服务端一次性消费该 nonce。第二次见同 nonce(重放截获的
+	// cookie+answer)直接拒。LoadOrStore 让并发提交同一 nonce 也只有一次赢。
+	if _, loaded := s.captchaUsed.LoadOrStore(string(nonce), exp); loaded {
+		return ErrCaptchaReplay
 	}
 	return nil
 }

@@ -85,7 +85,7 @@ func (s *Server) handleAdminNew(w http.ResponseWriter, r *http.Request) {
 			CreatedBy:    createdBy,
 		})
 		if err != nil {
-			s.adminNewRetry(w, r, "创建失败: "+err.Error())
+			s.adminNewRetry(w, r, tr(r, "err.createFailed")+err.Error())
 			return
 		}
 		s.audit.WriteFromRequest(r, "webadmin_create",

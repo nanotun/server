@@ -483,12 +483,17 @@ func (s *Store) SetUserAllowedPlatforms(ctx context.Context, id int64, csv strin
 	return nil
 }
 
+// MaxSessionsCap 是按账号 max_sessions 的合理上限。>此值的配置没有实际意义
+// (等价不限,直接用 -1),却可能是输入手滑(如 999999999999);统一在 store 层拒绝,
+// web / CLI 引用同一常量,两个入口口径一致。
+const MaxSessionsCap = 10000
+
 // SetUserMaxSessions 设置按账号的并发会话上限。
-// n:0 = 跟随全局;>0 = 覆盖全局;-1 = 该账号显式不限。其余负值拒绝。
+// n:0 = 跟随全局;1..MaxSessionsCap = 覆盖全局;-1 = 该账号显式不限。其余值拒绝。
 // 仅对未来登录生效(登录时定格到 Connection),现役会话不回踢。
 func (s *Store) SetUserMaxSessions(ctx context.Context, id int64, n int) error {
-	if n < -1 {
-		return fmt.Errorf("store: bad max_sessions %d (want -1 / 0 / >0): %w", n, ErrInvalid)
+	if n < -1 || n > MaxSessionsCap {
+		return fmt.Errorf("store: bad max_sessions %d (want -1 / 0 / 1..%d): %w", n, MaxSessionsCap, ErrInvalid)
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE users SET max_sessions=? WHERE id=?`, n, id)
 	if err != nil {

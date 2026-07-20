@@ -33,6 +33,9 @@ func TestSetUserMaxSessions(t *testing.T) {
 	if err := s.SetUserMaxSessions(ctx, u.ID, -2); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("<-1 应 ErrInvalid,got %v", err)
 	}
+	if err := s.SetUserMaxSessions(ctx, u.ID, MaxSessionsCap+1); !errors.Is(err, ErrInvalid) {
+		t.Fatalf(">MaxSessionsCap 应 ErrInvalid,got %v", err)
+	}
 	if err := s.SetUserMaxSessions(ctx, 999999, 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("未知 user 应 ErrNotFound,got %v", err)
 	}

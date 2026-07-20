@@ -120,10 +120,20 @@ func cmdRouteApprove(ctx context.Context, st *store.Store, opts *globalOpts, arg
 		if !store.IsExitCapablePlatform(d.Platform) {
 			return errors.New(opts.T("exit.platformUnsupported", dashIfEmpty(d.Platform)))
 		}
+		// owner 禁用检查与 exit designate 同口径:禁用用户的设备是死出口,批了会挂进
+		// 所有客户端下拉。--force 越过。
+		if owner, oerr := st.GetUser(ctx, d.UserID); oerr != nil {
+			return fmt.Errorf("get device owner %d: %w", d.UserID, oerr)
+		} else if owner.DisabledAt != 0 {
+			return errors.New(opts.T("exit.ownerDisabled", owner.Username))
+		}
 	}
 	if err := st.SetRouteStatus(ctx, deviceID, cidr, util.RouteStatusApproved, ""); err != nil {
 		return err
 	}
+	// 与 web(route_approve)对等的审计。
+	_ = st.Audit(ctx, "admin-cli", "route_approve",
+		fmt.Sprintf("route:%d/%s", deviceID, cidr), "cidr="+cidr)
 	fmt.Fprintln(opts.stdout, opts.T("route.approved", deviceID, cidr))
 	// 出口默认路由(0.0.0.0/0 / ::/0)的数据面已落地(exit-node M2):approved 后该 device 在线时,
 	// 选它当出口的会话公网流量会真正经它转发。非出口的任意 CIDR subnet route 数据面仍待补。
@@ -151,6 +161,10 @@ func cmdRouteReject(ctx context.Context, st *store.Store, opts *globalOpts, args
 	if err := st.SetRouteStatus(ctx, deviceID, cidr, util.RouteStatusRejected, *reason); err != nil {
 		return err
 	}
+	// 与 web(route_reject)对等的审计。
+	_ = st.Audit(ctx, "admin-cli", "route_reject",
+		fmt.Sprintf("route:%d/%s", deviceID, cidr),
+		fmt.Sprintf("cidr=%s reason=%s", cidr, *reason))
 	fmt.Fprintln(opts.stdout, opts.T("route.rejected", deviceID, cidr, *reason))
 	if util.IsExitDefaultRoute(cidr) {
 		notifyExitsChanged(opts) // 撤销出口 → 即时把绑定它的会话踢回 server + 刷新下拉。best-effort。
@@ -178,6 +192,9 @@ func cmdRouteDelete(ctx context.Context, st *store.Store, opts *globalOpts, args
 	if err := st.DeleteRoute(ctx, deviceID, cidr); err != nil {
 		return err
 	}
+	// 与 web(route_delete)对等的审计。
+	_ = st.Audit(ctx, "admin-cli", "route_delete",
+		fmt.Sprintf("route:%d/%s", deviceID, cidr), "cidr="+cidr)
 	fmt.Fprintln(opts.stdout, opts.T("route.deleted", deviceID, cidr))
 	if util.IsExitDefaultRoute(cidr) {
 		notifyExitsChanged(opts) // 删出口路由 → 即时把绑定它的会话踢回 server + 刷新下拉。best-effort。

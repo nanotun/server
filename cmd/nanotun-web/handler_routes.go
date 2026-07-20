@@ -466,8 +466,26 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 					tr(r, "err.exitPlatformUnsupported", d.Platform))
 				return
 			}
+			// 与一键 designate 同口径:禁用用户的设备连不上 server,批了就是死出口
+			// 挂进所有客户端下拉(buildExitsList 连离线出口一起推)。此前只有 designate
+			// 路径挡了这一情形,通用 approve 端点漏掉 → 直接 POST 仍能造出死出口。
+			owner, oerr := s.store.GetUser(r.Context(), d.UserID)
+			if oerr != nil {
+				s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+oerr.Error())
+				return
+			}
+			if owner.DisabledAt != 0 {
+				s.renderError(w, r, http.StatusBadRequest,
+					tr(r, "err.exitOwnerDisabled", owner.Username))
+				return
+			}
 		}
 		if err := s.store.SetRouteStatus(r.Context(), deviceID, cidr, store.RouteStatusApproved, ""); err != nil {
+			// 双击 / 陈旧列表页重提交 → 干净 404,而不是 500 + 裸 store 错误。
+			if errors.Is(err, store.ErrNotFound) {
+				s.renderError(w, r, http.StatusNotFound, tr(r, "err.routeNotFound"))
+				return
+			}
 			s.renderError(w, r, http.StatusInternalServerError, "approve: "+err.Error())
 			return
 		}
@@ -484,8 +502,28 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 			"/routes?flash="+url.QueryEscape(tr(r, "flash.routeApproved", cidr)),
 			http.StatusSeeOther)
 	case "reject":
+		// 仅允许 reject pending 行:SetRouteStatus 本身不看当前状态,不加这道闸,
+		// 绕过 UI 直 POST 能把 approved 子网路由悄悄翻成 rejected(等价隐式撤销,
+		// 且不走 delete 的审计口径)。与出口 reject 端点同规则。
+		cur, gerr := s.store.GetRouteByDeviceCIDR(r.Context(), deviceID, cidr)
+		switch {
+		case errors.Is(gerr, store.ErrNotFound):
+			s.renderError(w, r, http.StatusNotFound, tr(r, "err.routeNotFound"))
+			return
+		case gerr != nil:
+			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+gerr.Error())
+			return
+		}
+		if cur.Status != store.RouteStatusPending {
+			s.renderError(w, r, http.StatusConflict, tr(r, "err.routeNotPending", cur.Status))
+			return
+		}
 		reason := strings.TrimSpace(r.FormValue("reason"))
 		if err := s.store.SetRouteStatus(r.Context(), deviceID, cidr, store.RouteStatusRejected, reason); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				s.renderError(w, r, http.StatusNotFound, tr(r, "err.routeNotFound"))
+				return
+			}
 			s.renderError(w, r, http.StatusInternalServerError, "reject: "+err.Error())
 			return
 		}
@@ -496,6 +534,10 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/routes?flash="+url.QueryEscape(tr(r, "flash.routeRejected")), http.StatusSeeOther)
 	case "delete":
 		if err := s.store.DeleteRoute(r.Context(), deviceID, cidr); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				s.renderError(w, r, http.StatusNotFound, tr(r, "err.routeNotFound"))
+				return
+			}
 			s.renderError(w, r, http.StatusInternalServerError, "delete: "+err.Error())
 			return
 		}

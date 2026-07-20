@@ -132,13 +132,23 @@ func TestCaptcha_RoundTrip(t *testing.T) {
 		t.Fatalf("verify correct answer: %v", err)
 	}
 
-	// 错答案
-	if err := s.VerifyCaptcha(req, "0000"); err != ErrCaptchaWrong {
-		t.Fatalf("verify wrong answer: want ErrCaptchaWrong, got %v", err)
+	// 服务端一次性消费:同一张 captcha(同 nonce)第二次提交,即便答案正确也应
+	// 被判重放拒绝(防截获 cookie+answer 后重放试不同密码)。
+	if err := s.VerifyCaptcha(req, answer); err != ErrCaptchaReplay {
+		t.Fatalf("replay same captcha: want ErrCaptchaReplay, got %v", err)
 	}
 
-	// 答案带空格 — 应该被 normalize 接受
-	if err := s.VerifyCaptcha(req, " 4 2 7 1 "); err != nil {
+	// 换一张全新的 (answer, cookie) 验错答案 → ErrCaptchaWrong;验对答案 + 空格归一 → 通过。
+	nonce2 := make([]byte, 16)
+	rand.Read(nonce2)
+	cookieVal2 := encodeCaptchaCookie(s.captchaHMACKey, answer, nonce2, exp)
+	req2 := httptest.NewRequest("POST", "/login", nil)
+	req2.AddCookie(&http.Cookie{Name: captchaCookieName, Value: cookieVal2})
+	if err := s.VerifyCaptcha(req2, "0000"); err != ErrCaptchaWrong {
+		t.Fatalf("verify wrong answer: want ErrCaptchaWrong, got %v", err)
+	}
+	// 错答案不消费 nonce,同一张图输对(带空格)仍应通过。
+	if err := s.VerifyCaptcha(req2, " 4 2 7 1 "); err != nil {
 		t.Fatalf("verify with spaces: %v", err)
 	}
 
@@ -166,11 +176,13 @@ func TestCaptcha_FullIssueVerify(t *testing.T) {
 	}
 
 	// 任意答案 — 不应通过(除非中签)。统计 12 个明显错答案。
+	// 若碰巧中签,nonce 被一次性消费,后续同 cookie 提交会得 ErrCaptchaReplay,
+	// 同样算"没通过"。
 	wrongCount := 0
 	for _, ans := range []string{"0000", "1111", "2222", "3333", "4444", "5555",
 		"6666", "7777", "8888", "9999", "1234", "9876"} {
 		err := s.VerifyCaptcha(req, ans)
-		if err == ErrCaptchaWrong {
+		if err == ErrCaptchaWrong || err == ErrCaptchaReplay {
 			wrongCount++
 		} else if err != nil {
 			t.Fatalf("unexpected err on %q: %v", ans, err)

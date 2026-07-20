@@ -59,6 +59,12 @@ func (s *Store) siteIDByDevice(ctx context.Context, deviceID int64) (uint16, err
 	if err != nil {
 		return 0, err
 	}
+	// 读路径与插入路径同一道界检查:手工改库 / AUTOINCREMENT 超过 65535 后,
+	// 直接截断成 uint16 会把两个站点映射到同一 4via6 地址段 —— 宁可报错。
+	if sid <= 0 || sid > 65535 {
+		return 0, i18nErr("store.via6.siteIDOverflow",
+			fmt.Sprintf("store: site_id %d 超出 uint16 范围(4via6 站点数已达上限)", sid), sid)
+	}
 	return uint16(sid), nil
 }
 
@@ -94,6 +100,11 @@ func (s *Store) ListVia6Sites(ctx context.Context) (map[int64]uint16, error) {
 		var dev, sid int64
 		if err := rows.Scan(&dev, &sid); err != nil {
 			return nil, err
+		}
+		// 与 siteIDByDevice 同口径:越界行跳过(不让一行脏数据废掉整张路由表),
+		// 该站点等价「未分配」,数据面解析不到即投递失败,fail-closed。
+		if sid <= 0 || sid > 65535 {
+			continue
 		}
 		out[dev] = uint16(sid)
 	}

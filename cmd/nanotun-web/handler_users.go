@@ -137,12 +137,12 @@ func (s *Server) handleUserNew(w http.ResponseWriter, r *http.Request) {
 		// 自动生成 PSK,创建成功后一次性展示给管理员(不入审计 detail)。
 		psk, err := util.GeneratePSK()
 		if err != nil {
-			s.renderUserNew(w, r, nil, "生成 PSK 失败: "+err.Error())
+			s.renderUserNew(w, r, nil, tr(r, "err.genPskFailed")+err.Error())
 			return
 		}
 		hash, err := HashPSKForUser(psk)
 		if err != nil {
-			s.renderUserNew(w, r, nil, "PSK 哈希失败: "+err.Error())
+			s.renderUserNew(w, r, nil, tr(r, "err.pskHashFailed")+err.Error())
 			return
 		}
 		// 0013(2026-05-25):新建 user 同步分配 credential_id(UUID v4)+ credential_created_at,
@@ -160,7 +160,7 @@ func (s *Server) handleUserNew(w http.ResponseWriter, r *http.Request) {
 			CredentialCreatedAt: credNow,
 		})
 		if err != nil {
-			s.renderUserNew(w, r, nil, "创建失败: "+err.Error())
+			s.renderUserNew(w, r, nil, tr(r, "err.createFailed")+err.Error())
 			return
 		}
 		// P2#3(2026-05-26):audit action 改成 underscore 风格,与 CLI `user_*` 对齐。
@@ -517,7 +517,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 		// 仅对未来登录生效(登录时定格),现役会话不回踢 —— 与 CLI / 全局热更同口径。
 		raw := strings.TrimSpace(r.FormValue("max_sessions"))
 		n, err := strconv.Atoi(raw)
-		if err != nil || n < -1 {
+		if err != nil || n < -1 || n > store.MaxSessionsCap {
 			s.renderError(w, r, http.StatusBadRequest, tr(r, "err.badMaxSessions"))
 			return
 		}

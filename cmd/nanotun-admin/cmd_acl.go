@@ -161,6 +161,12 @@ func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	if err != nil {
 		return err
 	}
+	// 与 web(acl_add)对等的审计:ACL 变更直接影响数据面放行/拦截,须可归因。
+	_ = st.Audit(ctx, "admin-cli", "acl_add",
+		fmt.Sprintf("acl:%d", pair.ID),
+		fmt.Sprintf("action=%s src=%s dst=%s kind=%s proto=%s port=%s",
+			pair.Action, positional[0], dstRaw, pair.DstKind,
+			formatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi)))
 	if opts.json {
 		return printJSON(opts.stdout, pair)
 	}
@@ -279,6 +285,9 @@ func cmdACLDelete(ctx context.Context, st *store.Store, opts *globalOpts, args [
 	if err := st.DeleteACLPair(ctx, id); err != nil {
 		return err
 	}
+	// 与 web(acl_delete)对等的审计。
+	_ = st.Audit(ctx, "admin-cli", "acl_delete",
+		fmt.Sprintf("acl:%d", id), "")
 	fmt.Fprintln(opts.stdout, opts.T("acl.deleted", id))
 	return nil
 }

@@ -74,6 +74,12 @@ type SessionService struct {
 	// 单实例进程内 sync.Map 够用;runPoWGC goroutine 每 60s prune 过期项。
 	powUsed sync.Map
 
+	// captchaUsed 记录已成功验证过的 captcha nonce → expireUnix,做**服务端**一次性消费。
+	// ClearCaptcha 只清响应里的 cookie,attacker 攥着截获的 (cookie, answer) 仍可在 5min TTL
+	// 内反复重放同一张验证码试不同密码;这里在验证通过时把 nonce 记下,再次提交同 nonce 直接
+	// 拒绝。与 powUsed 同套(sync.Map + runPoWGC 每 60s prune 过期项)。
+	captchaUsed sync.Map
+
 	// ipFailures 跟踪每个 IP 的滑动窗口失败次数,驱动自适应 PoW 难度。
 	// 见 ip_failures.go。
 	ipFailures *IPFailureTracker

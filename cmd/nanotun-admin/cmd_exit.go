@@ -95,6 +95,14 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 		return errors.New(opts.T("exit.platformUnsupported", dashIfEmpty(d.Platform)))
 	}
 
+	// 禁用用户的设备连不上 server:批了就是死出口挂进所有客户端下拉(buildExitsList
+	// 连离线出口一起推)。与 web /routes/exit/designate 同口径拦截;--force 保留逃生口。
+	if owner, oerr := st.GetUser(ctx, d.UserID); oerr != nil {
+		return fmt.Errorf("get device owner %d: %w", d.UserID, oerr)
+	} else if owner.DisabledAt != 0 && !*force {
+		return errors.New(opts.T("exit.ownerDisabled", owner.Username))
+	}
+
 	// 1) 批准 0.0.0.0/0 + ::/0：upsert(创建 pending,幂等) 再 approve —— 即便该设备尚未 advertise 出口
 	//    也能**预先焊死**,设备之后跑 --exit-node 连上即已批准。
 	for _, cidr := range []string{util.ExitDefaultRouteV4, util.ExitDefaultRouteV6} {
