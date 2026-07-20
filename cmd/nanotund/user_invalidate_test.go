@@ -184,7 +184,6 @@ func TestScanAndKick_PSKRotated(t *testing.T) {
 // 修复前 psk_rotated 走整账号 kickAll 且用 snaps[0](map 遍历,随机一条)判定:
 //   - 若随机到旧会话 → 新会话被一起误踢(用户刚输新 PSK 就被踢);
 //   - 若随机到新会话 → 旧会话逃过本轮。
-//
 // 两个方向都错。这里同一 user 挂一条旧 PSK + 一条新 PSK 会话,断言只有旧的被踢。
 func TestScanAndKick_PSKRotated_KicksOnlyStaleConn(t *testing.T) {
 	gw := newTestGatewayForUserInvalidate(t)

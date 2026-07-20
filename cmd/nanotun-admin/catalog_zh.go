@@ -180,7 +180,7 @@ var catZH = map[string]string{
 	"user.maxSessions.override":     "%d(覆盖全局)",
 	"user.maxSessions.followGlobal": "0(跟随全局)",
 	"user.maxSessions.unlimited":    "-1(该账号不限)",
-	"user.badMaxSessions":           "max_sessions 必须是整数: 1..10000 覆盖全局 / 0 跟随全局 / -1 该账号不限,实际 %q",
+	"user.badMaxSessions":           "max_sessions 必须是整数: >0 覆盖全局 / 0 跟随全局 / -1 该账号不限,实际 %q",
 	"user.flag.createPSK":           "用户 PSK 明文（不指定则自动生成 5 段 base32）",
 	"user.flag.admin":               "标记为管理员（M0 暂仅 schema 落库，未投入鉴权）",
 	"user.flag.exitAllowed":         "是否允许该用户把 nanotun 当出口节点",

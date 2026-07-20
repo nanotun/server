@@ -731,7 +731,7 @@ var catEN = map[string]string{
 	"flash.userPlatformsSet":                   "Platform allowlist updated: %s",
 	"flash.userPlatformsCleared":               "Platform allowlist cleared (all platforms allowed)",
 	"flash.userMaxSessionsSet":                 "Concurrent session limit updated to %d (0=follow global; -1=unlimited)",
-	"err.badMaxSessions":                       "Session limit must be an integer: 1..10000 overrides global / 0 follows global / -1 unlimited for this user",
+	"err.badMaxSessions":                       "Session limit must be an integer: >0 overrides global / 0 follows global / -1 unlimited for this user",
 	"acl.userIdInvalid":                        "Invalid source/destination user id",
 	"acl.portInvalid":                          "Port must be an integer between 0-65535 (0 = any)",
 	"flash.portForwardAdded":                   "Port forward added :%d",

@@ -1,9 +1,15 @@
-# 对外 VPN：listen_addr 上 HTTP + WebSocket Upgrade；链路帧在 WS Binary 中。
+# VPN 数据面：listen_addr 上 HTTP + WebSocket Upgrade；链路帧在 WS Binary 中。
 # 自托管 PSK 模式:用户/PSK 由本机 SQLite([store].db_path)维护,由 nanotun-admin
 # CLI 管理。详见 nanotun-admin/README.md。
 
 [server]
-listen_addr = ":8080"
+# 默认只绑本机回环。这是数据面 WS 端点,生产客户端(iOS/Android)一律经 hy2(:443/udp)
+# 或 REALITY(:8443/tcp)接入,由服务端在本机把它们桥接到这里(dial 127.0.0.1:<port>),
+# 客户端**从不**直连本端口 —— 所以没必要暴露到公网(暴露只会多一个仅靠路径 token
+# 遮挡的攻击面)。安装脚本据此也不再放行 8080/tcp。
+# 仅当你确实要让客户端(或同仓 Go 测试客户端)直接 wss:// 拨这个端口时,才改成
+# ":8080"(所有网卡)并自行放行防火墙。
+listen_addr = "127.0.0.1:8080"
 # Linux:true 时按 [server].jump_host_allowed_ips 限制「仅本监听 TCP 端口」入站
 # (固定 ipset nanotun_jump_src、链 NANOTUN_JUMP)。需 ipset/iptables;换 listen
 # 端口不改上述名字。

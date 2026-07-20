@@ -18,7 +18,8 @@
 #      /etc/systemd/system/{nanotun-tun-setup,nanotun-tun-isolate,nanotun}.service
 #   2. 开启 IP forwarding（v4 + v6）+ unprivileged ICMP ping（nanotun-web
 #      pro-bing 探测 server_dial_host 可达性必备），写 /etc/sysctl.d/99-nanotun.conf
-#   3. ufw active 时自动放行 8080/8443/tcp + 443/udp（装了 web 再加 7443/tcp；INPUT 默认 DROP 时必须）
+#   3. ufw active 时自动放行 8443/tcp（REALITY）+ 443/udp（hy2）（装了 web 再加 7443/tcp；
+#      INPUT 默认 DROP 时必须）。数据面 WS(:8080)默认绑回环、不放行,客户端经 hy2/REALITY 接入。
 #   4. K1 旧 DB 自检:若新 DB 空 + 旧 DB(/root/nanotun/data/nanotun.db)有终端用户 →
 #      默认拒绝继续(2026-05-21 事故场景);设置 NANOTUN_IMPORT_LEGACY_DB=1 显式导入。
 #   5. 跑 nanotun-admin --json --yes init 创建 admin（PSK 自动生成）
@@ -113,23 +114,28 @@ step "3. 防火墙：放行 nanotun 监听端口（仅 ufw active 时）"
 # ufw 默认 INPUT DROP（Ubuntu 全新系统常见配置），不放行端口客户端会全部被静默丢包，
 # 表现为「TCP 三次握手超时」「QUIC 重传无响应」。这里检测 ufw 状态后幂等放行。
 # 如果你用的是 firewalld / iptables / 云厂商安全组，请按各自方式自行放行：
-#   tcp 8080 (WSS gateway)  tcp 8443 (REALITY)  udp 443 (hy2 QUIC)
+#   tcp 8443 (REALITY)  udp 443 (hy2 QUIC)
+# 数据面 WS(:8080)默认绑 127.0.0.1、不放行:客户端经 hy2/REALITY 接入,服务端在本机
+# 桥接到它。若你把 [server].listen_addr 改回 ":8080" 想让客户端直连,请自行 `ufw allow 8080/tcp`。
 # 2026-07-17:hy2 独立 WSS 保活(:8444)已下线,不再放行,并清理历史规则。
+# 2026-07-20:数据面 WS(:8080)改绑回环,从放行清单移除,并回收历史 8080/tcp 规则。
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
   WEB_PORTS=()
   # nanotun-web 监听 7443/tcp(见 nanotun-web.service),装了才放行;否则保持 LAN/隧道内可达。
   [ "$WEB_AVAILABLE" -eq 1 ] && WEB_PORTS+=("7443/tcp")
-  for rule in "8080/tcp" "8443/tcp" "443/udp" "${WEB_PORTS[@]}"; do
+  for rule in "8443/tcp" "443/udp" "${WEB_PORTS[@]}"; do
     ufw allow "$rule" >/dev/null
   done
   ufw delete allow "8444/tcp" >/dev/null 2>&1 || true
+  # 历史部署曾放行 8080/tcp(当时数据面 WS 绑 0.0.0.0);现在绑回环,回收这条规则。
+  ufw delete allow "8080/tcp" >/dev/null 2>&1 || true
   if [ "$WEB_AVAILABLE" -eq 1 ]; then
-    ok "ufw 放行：8080/tcp 8443/tcp 443/udp 7443/tcp(web)"
+    ok "ufw 放行：8443/tcp 443/udp 7443/tcp(web)"
   else
-    ok "ufw 放行：8080/tcp 8443/tcp 443/udp"
+    ok "ufw 放行：8443/tcp 443/udp"
   fi
 else
-  warn "未检测到 ufw active；如使用其他防火墙，请手动放行 8080/8443/tcp 与 443/udp（装了 web 再加 7443/tcp）"
+  warn "未检测到 ufw active；如使用其他防火墙，请手动放行 8443/tcp 与 443/udp（装了 web 再加 7443/tcp）"
 fi
 
 step "4. 旧 DB 路径迁移自检（K1：2026-05-21 事故防再发）"

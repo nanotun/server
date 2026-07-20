@@ -734,7 +734,7 @@ var catZH = map[string]string{
 	"flash.userPlatformsSet":                   "平台白名单已更新为: %s",
 	"flash.userPlatformsCleared":               "平台白名单已清空(不限平台)",
 	"flash.userMaxSessionsSet":                 "并发会话上限已更新为 %d(0=跟随全局;-1=不限)",
-	"err.badMaxSessions":                       "会话上限必须是整数: 1..10000 覆盖全局 / 0 跟随全局 / -1 该账号不限",
+	"err.badMaxSessions":                       "会话上限必须是整数: >0 覆盖全局 / 0 跟随全局 / -1 该账号不限",
 	"acl.userIdInvalid":                        "源/目标用户 ID 不合法",
 	"acl.portInvalid":                          "端口必须是 0-65535 的整数(0 = 任意)",
 	"flash.portForwardAdded":                   "已新增端口转发 :%d",

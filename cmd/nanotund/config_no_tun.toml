@@ -5,7 +5,9 @@
 # 环境授权;无 TUN 时服务端仍会启动,但无虚拟网卡转发。
 
 [server]
-listen_addr = ":8080"
+# 数据面 WS 只绑回环:客户端经 hy2/REALITY 接入,服务端在本机桥接过来,不直连本端口。
+# 需要客户端直接 wss:// 拨这个端口时才改成 ":8080" 并放行防火墙。详见 config.toml 注释。
+listen_addr = "127.0.0.1:8080"
 jump_host_firewall = false
 tls_cert_file = "certs/dev-cert.pem"
 tls_key_file = "certs/dev-key.pem"

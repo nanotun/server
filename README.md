@@ -65,9 +65,11 @@ cd cmd/nanotund
 ./nanotund -config config_no_tun.toml
 ```
 
-默认 VPN 数据面监听 `[server].listen_addr`(如 `:8080`),走 WebSocket Binary +
-自定义链路帧(见 `util/link_frame.go`)。同时可启用 Hysteria 2(`[hysteria]`)和
-Xray REALITY(`[reality]`)入站,均会在握手后环回到 VPN 数据面端口。
+VPN 数据面监听 `[server].listen_addr`(默认 `127.0.0.1:8080`,仅回环),走 WebSocket
+Binary + 自定义链路帧(见 `util/link_frame.go`)。生产客户端(iOS/Android)经 Hysteria 2
+(`[hysteria]`,:443/udp)或 Xray REALITY(`[reality]`,:8443/tcp)入站,服务端在握手后
+把它们环回桥接到数据面端口,客户端不直连 8080。仅当你要让客户端直接 wss:// 拨数据面时,
+才把 `listen_addr` 改成 `:8080`(所有网卡)并放行防火墙。
 
 ## 协议与会话语义
 

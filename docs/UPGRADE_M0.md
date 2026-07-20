@@ -31,8 +31,10 @@ go build -o nanotund ./cmd/nanotund
 
 ```toml
 [server]
-listen_addr = ":8080"
-# WebSocket 路径必须与客户端 profile 一致;不写则用默认长路径
+# 数据面 WS 默认绑回环:客户端经 hy2/REALITY 接入,服务端在本机桥接过来,不直连本端口。
+# 要客户端直接 wss:// 拨这个端口时才改成 ":8080"(所有网卡)并放行防火墙。
+listen_addr = "127.0.0.1:8080"
+# WebSocket 路径不写则用编译内置默认长路径;生产务必换成你自己的随机长路径。
 vpn_websocket_path = "/internal/nanotun/data-plane/ws/v1/<your-random-token>"
 
 [tun]

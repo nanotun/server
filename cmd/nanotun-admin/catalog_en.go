@@ -183,7 +183,7 @@ var catEN = map[string]string{
 	"user.maxSessions.override":     "%d (overrides global)",
 	"user.maxSessions.followGlobal": "0 (follow global)",
 	"user.maxSessions.unlimited":    "-1 (unlimited for this user)",
-	"user.badMaxSessions":           "max_sessions must be an integer: 1..10000 overrides global / 0 follows global / -1 unlimited for this user, got %q",
+	"user.badMaxSessions":           "max_sessions must be an integer: >0 overrides global / 0 follows global / -1 unlimited for this user, got %q",
 	"user.flag.createPSK":           "user PSK plaintext (auto-generates a 5-group base32 PSK if omitted)",
 	"user.flag.admin":               "mark as admin (M0: schema only for now, not yet used for authz)",
 	"user.flag.exitAllowed":         "whether this user may use nanotun as an exit node",
