@@ -19,8 +19,10 @@ package main
 //    限流,但对自适应 PoW 来说 *差不多* 就行 — 真要更准换 token bucket 也是
 //    几十行的事,不在 P3 范围内。
 //
-// 3) **IP 取自 r.RemoteAddr**:复用 session.go 的 clientIP(r),
-//    现状不信任 XFF(默认安全姿态),如果以后接反代再开 trust_proxy_header。
+// 3) **IP 取自 clientIP(r)**(session.go):默认用 TCP 直连对端,不信任 XFF。
+//    仅当运维配置了 trusted_proxies(反代 IP/CIDR)且直连对端落在其中时,clientIP
+//    才解析 X-Forwarded-For 还原真实客户端 —— 否则按 IP 限流会被伪造 XFF 绕过 / 变成
+//    跨账号 DoS(见 session.go: clientIP 与 config.go: TrustedProxies)。
 //
 // 4) **手动 prune**:GC 跟 PoW 共用一个 ticker(runPoWGC 里调一下),减少
 //    后台 goroutine 数。

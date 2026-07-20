@@ -66,14 +66,34 @@ func (s *Store) SetRateDefaults(ctx context.Context, d RateDefaults) error {
 		return fmt.Errorf("store: rate defaults must be >= 0 (got up=%d down=%d burst=%d): %w",
 			d.UploadBPS, d.DownloadBPS, d.BurstBytes, ErrInvalid)
 	}
-	if err := s.SettingsSet(ctx, settingRateDefaultUploadBPS, strconv.FormatInt(d.UploadBPS, 10)); err != nil {
+	// 深扫第九轮 LOW:三个键包进一个事务原子写入。此前是三次独立 autocommit,中途
+	// 失败 / 崩溃会留下「上行已改、下行没改」的撕裂态,且 MaxOpenConns>1 时并发读者
+	// 可能读到中间态。事务保证要么三个全改、要么全不改。
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: set rate defaults begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	setOne := func(key, val string) error {
+		if _, e := tx.ExecContext(ctx,
+			`INSERT INTO app_settings(key,value) VALUES(?,?)
+			 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, val); e != nil {
+			return fmt.Errorf("store: set %s: %w", key, e)
+		}
+		return nil
+	}
+	if err := setOne(settingRateDefaultUploadBPS, strconv.FormatInt(d.UploadBPS, 10)); err != nil {
 		return err
 	}
-	if err := s.SettingsSet(ctx, settingRateDefaultDownloadBPS, strconv.FormatInt(d.DownloadBPS, 10)); err != nil {
+	if err := setOne(settingRateDefaultDownloadBPS, strconv.FormatInt(d.DownloadBPS, 10)); err != nil {
 		return err
 	}
-	if err := s.SettingsSet(ctx, settingRateBurstBytes, strconv.FormatInt(d.BurstBytes, 10)); err != nil {
+	if err := setOne(settingRateBurstBytes, strconv.FormatInt(d.BurstBytes, 10)); err != nil {
 		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: set rate defaults commit: %w", err)
 	}
 	return nil
 }

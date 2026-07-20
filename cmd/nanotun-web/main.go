@@ -83,6 +83,7 @@ func main() {
 	flag.Int64Var(&cfg.LockoutSeconds, "lockout-seconds", cfg.LockoutSeconds, "锁定时长(秒)")
 	flag.BoolVar(&cfg.EnableDebug, "debug", cfg.EnableDebug, "暴露 /debug/* 路由(生产关)")
 	noAutoReload := flag.Bool("no-auto-reload", false, "ACL 改动后不自动通知 server reload(默认自动)")
+	trustedProxies := flag.String("trusted-proxies", "", "可信前置反代 IP/CIDR 列表(逗号分隔),如 127.0.0.1,10.0.0.0/8;仅当直连对端落在此集合内才解析 X-Forwarded-For。默认空=不信任 XFF")
 	verbose := flag.Bool("v", false, "更详细的日志(debug 级)")
 	showVersion := flag.Bool("version", false, "打印版本并退出")
 	flag.Parse()
@@ -112,10 +113,19 @@ func main() {
 	if *noAutoReload {
 		cfg.AutoReloadOnACLChange = false
 	}
+	if *trustedProxies != "" {
+		cfg.TrustedProxies = splitCSV(*trustedProxies)
+	}
 
 	cfg.applyEnvOverrides()
 	if err := cfg.Validate(); err != nil {
 		logrus.WithError(err).Fatal("[web] 配置校验失败,退出")
+	}
+	// clientIP 的 XFF 信任集合在此固定(Validate 已解析并校验)。默认空=不信任 XFF。
+	setTrustedProxies(cfg.trustedProxyNets)
+	if len(cfg.trustedProxyNets) > 0 {
+		logrus.WithField("trusted_proxies", cfg.TrustedProxies).
+			Info("[web] 已启用 X-Forwarded-For 解析(仅信任列出的前置反代)")
 	}
 
 	logrus.WithFields(logrus.Fields{

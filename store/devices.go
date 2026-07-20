@@ -145,8 +145,10 @@ func (s *Store) UpsertDevice(ctx context.Context, userID int64, uuid, name, plat
 
 // dedupeDeviceNameTx 为 (userID, uuid) 计算一个在该用户下**归一化唯一**的设备名（Tailscale 式的 "-N" 后缀）。
 //
-// **在调用方的事务内执行**（用 tx.QueryContext）：与紧随其后的 upsert INSERT 同处一个事务，独占 MaxOpenConns=1 的
-// 唯一连接，杜绝「SELECT 与 INSERT 之间被并发 UpsertDevice 插入 → 两台同名都拿裸名」的 TOCTOU。
+// **在调用方的事务内执行**（用 tx.QueryContext）：与紧随其后的 upsert INSERT 同处一个事务。TOCTOU
+// 串行化由 UpsertDevice 持有的进程级 s.deviceUpsertMu 保证（见 UpsertDevice），**不再**依赖
+// MaxOpenConns=1（连接池默认已是 4），因此「SELECT 与 INSERT 之间被并发 UpsertDevice 插入 → 两台
+// 同名都拿裸名」的窗口被 mutex 关掉。
 //
 // 归一按 util.NormalizeMagicHost（与 MagicDNS 主机名解析同口径），故消除的是「DNS 名」层面的冲突——
 // "home pi" / "home-pi" / "home_pi" 归一后同名也算撞名。比较时**排除本 uuid 自身**（重连不与自己冲突）。

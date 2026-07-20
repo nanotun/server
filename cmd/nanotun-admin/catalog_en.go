@@ -356,6 +356,7 @@ var catEN = map[string]string{
 	"route.approveSubnetHint": "hint: the subnet-route data plane is wired up (SR-M1). When the device is online, traffic peers send to this subnet is truly forwarded through it (routed into the LAN by its host; SR-M2 exit-side NAT still needed). See docs/DESIGN_SUBNET_ROUTES.md",
 	"route.rejected":          "rejected device=%d cidr=%s reason=%q",
 	"route.notPending":        "route device=%d cidr=%s is not pending (current status=%s); reject only acts on pending advertisements. To revoke an already-approved route use `route delete`, or re-run with --force to override.",
+	"route.notFound":          "route not found: device=%d cidr=%s",
 	"route.confirmDelete":     "confirm deleting the route advertisement for device=%d cidr=%s?",
 	"route.deleted":           "deleted device=%d cidr=%s",
 	"route.needTwoArgs":       "need two arguments: <device_id> and <cidr>",

@@ -170,6 +170,77 @@ func TestEnsureCSRFToken_ReusesExistingCookie(t *testing.T) {
 	}
 }
 
+func TestClientIP_TrustedProxy(t *testing.T) {
+	// 保存并在结束时恢复全局(同包测试串行修改包级状态)。
+	saved := trustedProxyNets
+	t.Cleanup(func() { trustedProxyNets = saved })
+
+	mkReq := func(remote, xff string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = remote
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+
+	t.Run("no trusted proxies: XFF ignored", func(t *testing.T) {
+		setTrustedProxies(nil)
+		if got := clientIP(mkReq("203.0.113.9:443", "1.2.3.4")); got != "203.0.113.9" {
+			t.Fatalf("default posture must use direct peer, got %q", got)
+		}
+	})
+
+	t.Run("direct peer trusted: rightmost untrusted from XFF", func(t *testing.T) {
+		nets, err := parseTrustedProxies([]string{"10.0.0.0/8", "127.0.0.1"})
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		setTrustedProxies(nets)
+		// client → nginx(203.0.113.x, untrusted, appears left) ... 但直连是 10.x 可信,
+		// XFF = "client, internal-proxy";从右往左第一个非可信即真实客户端。
+		if got := clientIP(mkReq("10.0.0.5:5555", "198.51.100.7, 10.0.0.9")); got != "198.51.100.7" {
+			t.Fatalf("want real client 198.51.100.7, got %q", got)
+		}
+	})
+
+	t.Run("direct peer NOT trusted: XFF is ignored (spoof-proof)", func(t *testing.T) {
+		nets, _ := parseTrustedProxies([]string{"10.0.0.0/8"})
+		setTrustedProxies(nets)
+		// 直连对端是公网(不可信),即使伪造 XFF 也不采信。
+		if got := clientIP(mkReq("203.0.113.50:1234", "1.1.1.1")); got != "203.0.113.50" {
+			t.Fatalf("spoofed XFF must be ignored, got %q", got)
+		}
+	})
+
+	t.Run("all XFF entries trusted: falls back to leftmost", func(t *testing.T) {
+		nets, _ := parseTrustedProxies([]string{"10.0.0.0/8"})
+		setTrustedProxies(nets)
+		if got := clientIP(mkReq("10.0.0.5:5555", "10.0.0.1, 10.0.0.2")); got != "10.0.0.1" {
+			t.Fatalf("want leftmost 10.0.0.1, got %q", got)
+		}
+	})
+
+	t.Run("IPv6 direct peer + bracketed remote", func(t *testing.T) {
+		nets, _ := parseTrustedProxies([]string{"::1/128"})
+		setTrustedProxies(nets)
+		if got := clientIP(mkReq("[::1]:8443", "2001:db8::9")); got != "2001:db8::9" {
+			t.Fatalf("want 2001:db8::9, got %q", got)
+		}
+	})
+}
+
+func TestParseTrustedProxies_RejectsGarbage(t *testing.T) {
+	if _, err := parseTrustedProxies([]string{"10.0.0.0/8", "127.0.0.1"}); err != nil {
+		t.Fatalf("valid entries should parse: %v", err)
+	}
+	for _, bad := range []string{"not-an-ip", "10.0.0.0/99", "999.1.1.1", "1.2.3.4/"} {
+		if _, err := parseTrustedProxies([]string{bad}); err == nil {
+			t.Errorf("parseTrustedProxies(%q) should fail-fast, got nil", bad)
+		}
+	}
+}
+
 func TestGenerateRandomTokenUnique(t *testing.T) {
 	seen := make(map[string]bool, 256)
 	for i := 0; i < 256; i++ {

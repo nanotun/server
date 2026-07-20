@@ -29,6 +29,13 @@ func TestDuration_UnmarshalText(t *testing.T) {
 		{"int_nanos", `d = 30000000000`, 30 * time.Second, false},
 		{"empty", ``, 0, false},
 		{"invalid_string", `d = "not-a-duration"`, 0, true},
+		// 深扫第八轮 MED 的回归钉子:正的亚毫秒裸整数(忘带单位)必须被拒,
+		// 而不是静默当纳秒上线(会导致 ticker 30ns 空转刷屏)。
+		{"bare_int_30_rejected", `d = 30`, 0, true},
+		{"bare_int_999_rejected", `d = 999`, 0, true},
+		// 边界:0 表示「禁用」,保留;1ms 及以上照常接受。
+		{"bare_int_zero_ok", `d = 0`, 0, false},
+		{"bare_int_1ms_ok", `d = 1000000`, time.Millisecond, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

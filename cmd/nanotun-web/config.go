@@ -14,6 +14,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,6 +82,18 @@ type Config struct {
 	// 派生 reality / hy2 / gateway 字段。默认 /etc/nanotun/config.toml(install
 	// 脚本布局)。
 	ServerConfigPath string
+
+	// TrustedProxies:可信前置反代的 IP / CIDR 列表(如 "127.0.0.1", "10.0.0.0/8")。
+	//
+	// 默认空 = **不信任** X-Forwarded-For,一律用 TCP 直连对端作为客户端 IP(默认安全
+	// 姿态)。仅当 nanotun-web 部署在 nginx/caddy/HAProxy 之后时才应配置:填反代自己
+	// 的地址,clientIP 才会在「直连对端属于本集合」时解析 XFF 还原真实客户端 IP。
+	// 否则任何人都能伪造 XFF,把「按 IP 限流 / 锁定」变成跨账号 DoS 并污染审计日志。
+	// 来源:flag -trusted-proxies / env NANOTUN_WEB_TRUSTED_PROXIES(逗号分隔)。
+	TrustedProxies []string
+
+	// trustedProxyNets 是 TrustedProxies 在 Validate 阶段解析后的前缀集合(内部用)。
+	trustedProxyNets []netip.Prefix
 }
 
 // defaultConfig 返回填好默认值的 Config。
@@ -139,6 +152,49 @@ func (c *Config) applyEnvOverrides() {
 	if v := strings.TrimSpace(os.Getenv("NANOTUN_SERVER_CONFIG")); v != "" {
 		c.ServerConfigPath = v
 	}
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_TRUSTED_PROXIES")); v != "" {
+		// env 覆盖(而非追加):显式给了就以 env 为准。
+		c.TrustedProxies = splitCSV(v)
+	}
+}
+
+// splitCSV 逗号分隔并去空白/空项。
+func splitCSV(v string) []string {
+	var out []string
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// parseTrustedProxies 把 CIDR / 裸 IP 列表解析成前缀集合。裸 IP 视作 /32(IPv4)
+// 或 /128(IPv6)。任何非法条目立即返回 error(启动期 fail-fast,避免运维以为开了
+// XFF 信任实际上因拼错而静默失效)。
+func parseTrustedProxies(entries []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, raw := range entries {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			continue
+		}
+		if strings.Contains(s, "/") {
+			p, err := netip.ParsePrefix(s)
+			if err != nil {
+				return nil, fmt.Errorf("invalid trusted_proxies CIDR %q: %w", raw, err)
+			}
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid trusted_proxies IP %q: %w", raw, err)
+		}
+		a = a.Unmap()
+		out = append(out, netip.PrefixFrom(a, a.BitLen()))
+	}
+	return out, nil
 }
 
 func parseBoolEnv(v string, def bool) bool {
@@ -193,5 +249,10 @@ func (c *Config) Validate() error {
 	if c.IdleTimeout <= 0 {
 		c.IdleTimeout = 120 * time.Second
 	}
+	nets, err := parseTrustedProxies(c.TrustedProxies)
+	if err != nil {
+		return err
+	}
+	c.trustedProxyNets = nets
 	return nil
 }

@@ -256,6 +256,12 @@ func (s *Server) handleMeTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	}
 	code := strings.TrimSpace(r.FormValue("code"))
 	recovery := strings.TrimSpace(r.FormValue("recovery_code"))
+	// 深扫第九轮 LOW:空输入(既没填 TOTP 码也没填恢复码)不计 step-up 失败配额 ——
+	// 与 /server-qr 空密码一致(handler_server_qr.go),避免误提交把自己锁进冷却。
+	if code == "" && recovery == "" {
+		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpCodeRequired"))
+		return
+	}
 	ok, usedRecovery, recoveryID, _ := s.verifyTOTPOrRecovery(r.Context(), cur, code, recovery)
 	if !ok {
 		s.stepUpFailures.Inc(ip)
@@ -315,6 +321,11 @@ func (s *Server) handleMeTOTPRegen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := strings.TrimSpace(r.FormValue("code"))
+	// 深扫第九轮 LOW:空验证码不计 step-up 失败配额(与 disable / server-qr 一致)。
+	if code == "" {
+		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpCodeRequired"))
+		return
+	}
 	if err := VerifyTOTP(cur.TOTPSecret, code); err != nil {
 		s.stepUpFailures.Inc(ip)
 		s.audit.WriteFromRequest(r, "totp_regen_fail",

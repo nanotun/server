@@ -680,9 +680,32 @@ func parseListenPort(listenAddr, defaultAddr string) int {
 	return p
 }
 
-// validateVPNListenAddr 保证 listen_addr 的 host 与「环回桥接」自洽:必须是通配
-// (空 / 0.0.0.0 / ::)或回环地址,否则 loopbackVPNWebSocketURL 的 127.0.0.1 拨号
-// 到不了实际 listener,hy2/REALITY 会静默全断。非法值直接 fail-fast。
+// normalizeLoopbackHost 把 listen_addr 里的 "localhost" host 归一为 "127.0.0.1"。
+// 环回桥接(loopbackVPNWebSocketURL)固定拨 127.0.0.1;而 "localhost" 依赖名字解析,
+// 某些环境会把 ::1 排到 127.0.0.1 前面 → net.Listen 只绑 IPv6 回环,IPv4 环回拨号
+// 打不进来 → hy2/REALITY 静默全断。归一到 127.0.0.1 后 listener 绑定确定、桥接自洽。
+// 非 localhost / 无法拆分的地址原样返回(交由 validateVPNListenAddr 处置)。
+func normalizeLoopbackHost(listenAddr string) string {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil {
+		return listenAddr
+	}
+	if strings.EqualFold(strings.TrimSpace(host), "localhost") {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return listenAddr
+}
+
+// validateVPNListenAddr 保证 listen_addr 的 host 与「环回桥接」自洽。环回桥接
+// (loopbackVPNWebSocketURL)**固定**拨 127.0.0.1,因此只有当 listener 能收到
+// 127.0.0.1 的连接时数据面才通。放行集合:
+//   - 通配(空 / ":port" / 0.0.0.0 / ::)—— 覆盖所有网卡,含 127.0.0.1;
+//   - 精确 127.0.0.1。
+//
+// 其它回环地址(127.0.0.2 / ::1 等)虽是 loopback,但 listener 收不到 127.0.0.1 的
+// 拨号,会让 hy2/REALITY 静默全断 —— 深扫第九轮 MED 明确拒绝(旧实现放行整个
+// IsLoopback,埋了坑)。localhost 已在调用前由 normalizeLoopbackHost 归一为 127.0.0.1。
+// 非法/不可达值一律 fail-fast,把误配暴露在启动期而非运行期。
 func validateVPNListenAddr(listenAddr string) {
 	la := strings.TrimSpace(listenAddr)
 	host, _, err := net.SplitHostPort(la)
@@ -695,17 +718,28 @@ func validateVPNListenAddr(listenAddr string) {
 			"[server] 无法解析 listen 地址 %q: %v", listenAddr, err)
 	}
 	host = strings.TrimSpace(host)
-	// 空 host / 通配地址:listener 覆盖所有网卡(含回环),环回拨号可达。
-	if host == "" || host == "0.0.0.0" || host == "::" {
+	switch host {
+	case "", "0.0.0.0", "::":
+		// 空 host / IPv4 通配 / IPv6 通配:listener 覆盖所有网卡(含回环),
+		// 127.0.0.1 环回拨号必达(:: 在 dual-stack 下也收 IPv4-mapped 127.0.0.1)。
+		return
+	case "127.0.0.1":
+		// 环回桥接固定拨 127.0.0.1,精确匹配 → 可达。
 		return
 	}
 	addr, perr := netip.ParseAddr(host)
 	if perr != nil {
 		util.FatalExit(util.ExitConfigParse, logrus.Fields{"listen_addr": listenAddr, "host": host},
-			"[server] listen 地址 host %q 不是合法 IP;请用回环(127.0.0.1 / ::1)或通配(0.0.0.0 / :: / 省略 host)", host)
+			"[server] listen 地址 host %q 不是合法 IP;请用 127.0.0.1(推荐)/ 0.0.0.0 / :: / 省略 host / localhost", host)
 	}
-	if addr.IsLoopback() || addr.IsUnspecified() {
+	if addr.IsUnspecified() {
+		// 防御:理论上已被上面的 "0.0.0.0" / "::" 分支覆盖。
 		return
+	}
+	if addr.IsLoopback() {
+		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"listen_addr": listenAddr, "host": host},
+			"[server] listen_addr 绑到回环地址 %q,但内部 hy2/REALITY 环回桥接固定拨 127.0.0.1,"+
+				"该地址收不到该拨号 → 数据面会静默中断;请改用 127.0.0.1:<port>", host)
 	}
 	util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"listen_addr": listenAddr, "host": host},
 		"[server] listen_addr 绑到非回环具体 IP %q,会导致 hy2/REALITY 环回桥接(拨 127.0.0.1)连接被拒;"+
@@ -836,16 +870,25 @@ func main() {
 	if v := os.Getenv("LISTEN_ADDR"); v != "" {
 		cfg.Server.ListenAddr = v
 	}
+	// 深扫第九轮 LOW:localhost 归一到 127.0.0.1(否则解析器可能优先 ::1,只绑 IPv6
+	// 回环,环回桥接的 IPv4 127.0.0.1 拨号打不进来)。归一后既恢复 localhost 可用性,
+	// 又保证 listener 绑定确定、与桥接自洽。
+	cfg.Server.ListenAddr = normalizeLoopbackHost(cfg.Server.ListenAddr)
 	// 深扫第八轮 MED:环回桥接的自洽校验。hy2/REALITY 终结后经 loopbackVPNWebSocketURL
-	// (硬编码 127.0.0.1)回连本机 WS listener。若 listen_addr 绑到一个**具体的非回环 IP**
-	// (如 10.0.0.5:8080),listener 只在该 IP 上,127.0.0.1 的环回拨号必然 connection
-	// refused —— hy2/REALITY 全线 login 失败且无启动期诊断。这里在启动早期显式校验:
-	// host 必须为空 / 0.0.0.0 / :: / 回环地址;否则 fail-fast 给出明确原因。
+	// (硬编码 127.0.0.1)回连本机 WS listener。若 listen_addr 绑到一个 127.0.0.1 拨号
+	// 到不了的地址(具体非回环 IP、127.0.0.2/::1 等其它回环),listener 收不到环回拨号
+	// → hy2/REALITY 全线 login 失败且无启动期诊断。这里在启动早期 fail-fast 给出原因。
 	validateVPNListenAddr(cfg.Server.ListenAddr)
 	// 深扫第八轮 MED:exit_mode 非空值必须是 mesh/isolate/off 之一,拼错即 fail-fast,
 	// 不再静默退回 mesh(避免一个 typo 把隔离部署翻成跨用户互通)。
 	if err := cfg.TUN.ValidateExitMode(); err != nil {
 		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"exit_mode": cfg.TUN.ExitMode}, "%v", err)
+	}
+	// 深扫第九轮 MED:exit_dns_redirect 同样 fail-fast(姊妹于 exit_mode)。非空值必须是
+	// auto/off/合法 IPv4;拼错(如 "of")过去会被 resolveExitDNSRedirect 静默回退 auto,
+	// 把本想关闭的 DNS 接管反而打开 —— 这里在启动期就拦下。
+	if err := cfg.TUN.ValidateExitDNSRedirect(); err != nil {
+		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"exit_dns_redirect": cfg.TUN.ExitDNSRedirect}, "%v", err)
 	}
 
 	tunCount := len(cfg.TUN.Subnets)
@@ -2616,6 +2659,15 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	}
 	connIDMapMu.Unlock()
 
+	// 深扫第九轮 MED:cleanup defer 必须在 c 入 connIDMap/connByUser/connByDevice 三张表
+	// 并解锁后**立即**注册,而不是等到 vIP 分配前(原来在下方 ~waitConnsCleanup 之后)。
+	// 否则「已入表 → 注册 defer」之间(dedup、写 kick_* audit、close 老链路、waitConnsCleanup)
+	// 任一处 panic,c 已进三张共享表却无人清理 —— 成为永久僵尸(vIP 占用 + map 泄漏,反复
+	// panic 会无界累积;handleVPNLink 顶部 recover 只吞 panic 不做清理)。与 takeover 路径
+	// (defer 紧随 maps 切换)对齐。放在解锁**之后**:cleanupConnection 自身要抢 connIDMapMu,
+	// 锁内注册会死锁。
+	defer cleanupConnection(c)
+
 	// dedup:0021 深扫后 evict 已按 !superseded 过滤,理论上不会再与 supersede 命中
 	// 同一条旧 conn;保留 dedup 作防御(改动 evict 过滤条件时不至于双关双记)。
 	// 重合时优先记成 supersede(语义更精确)。
@@ -2668,8 +2720,6 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	// 接管路径下新 conn 也会分配新的 convID（见 handleTakeoverLogin），与老 convID 不冲突。
 	var convID uint32
 	var assignmentsForMsg []util.VirtualIPAssignment
-
-	defer cleanupConnection(c)
 
 	if err := writeLinkLoginRespFull(raw, 0, "登录成功", userID, connIDStr, takeoverSecret); err != nil {
 		logrus.WithField("remote", remote).WithError(err).Warn("发送登录响应失败")

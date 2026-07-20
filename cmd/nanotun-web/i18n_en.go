@@ -922,6 +922,7 @@ var catEN = map[string]string{
 	"me.totpCodeWrongCheckTime": "Wrong code: %s. Check that your phone's clock is in sync, or rescan on the \"Enable TOTP\" page.",
 	"me.totpCodeWrong":          "Wrong code: %s",
 	"me.totpTooManyAttempts":    "Too many failed code attempts from your IP. Please wait a few minutes and try again.",
+	"me.totpCodeRequired":       "Please enter the verification code.",
 	// Admin protection:
 	"admins.cannotActOnSelf": "You cannot perform this operation on yourself (to avoid locking yourself out)",
 	"admins.lastAdmin":       "Denied: this is the last enabled admin and cannot be disabled / deleted / demoted — otherwise no one could log in",

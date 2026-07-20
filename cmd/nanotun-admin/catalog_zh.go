@@ -353,6 +353,7 @@ var catZH = map[string]string{
 	"route.approveSubnetHint": "提示: 子网路由数据面已接入(SR-M1)。该 device 在线时,使用方发往本网段的流量将经它真正转发(由其本机转进 LAN,需 SR-M2 出口侧 NAT)。详见 docs/DESIGN_SUBNET_ROUTES.md",
 	"route.rejected":          "已拒绝 device=%d cidr=%s reason=%q",
 	"route.notPending":        "路由 device=%d cidr=%s 不是 pending(当前状态=%s);reject 仅作用于待审批声明。要撤销已批准的路由请用 `route delete`,或加 --force 越过。",
+	"route.notFound":          "路由不存在:device=%d cidr=%s",
 	"route.confirmDelete":     "确认删除 device=%d cidr=%s 的路由声明?",
 	"route.deleted":           "已删除 device=%d cidr=%s",
 	"route.needTwoArgs":       "需要 <device_id> 与 <cidr> 两个参数",

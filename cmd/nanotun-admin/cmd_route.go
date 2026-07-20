@@ -129,6 +129,9 @@ func cmdRouteApprove(ctx context.Context, st *store.Store, opts *globalOpts, arg
 		}
 	}
 	if err := st.SetRouteStatus(ctx, deviceID, cidr, util.RouteStatusApproved, ""); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return errors.New(opts.T("route.notFound", deviceID, cidr))
+		}
 		return err
 	}
 	// 与 web(route_approve)对等的审计。
@@ -167,6 +170,11 @@ func cmdRouteReject(ctx context.Context, st *store.Store, opts *globalOpts, args
 	if !*force {
 		cur, gerr := st.GetRouteByDeviceCIDR(ctx, deviceID, cidr)
 		if gerr != nil {
+			// 深扫第九轮 LOW:本地化 ErrNotFound(此前裸抛 store 英文错误,和 CLI 其它
+			// 路径「默认英文可翻」的口径不一致)。
+			if errors.Is(gerr, store.ErrNotFound) {
+				return errors.New(opts.T("route.notFound", deviceID, cidr))
+			}
 			return gerr
 		}
 		if cur.Status != util.RouteStatusPending {
@@ -174,6 +182,9 @@ func cmdRouteReject(ctx context.Context, st *store.Store, opts *globalOpts, args
 		}
 	}
 	if err := st.SetRouteStatus(ctx, deviceID, cidr, util.RouteStatusRejected, *reason); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return errors.New(opts.T("route.notFound", deviceID, cidr))
+		}
 		return err
 	}
 	// 与 web(route_reject)对等的审计。

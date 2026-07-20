@@ -169,8 +169,9 @@ func (s *Store) ListUnusedRecoveryCodes(ctx context.Context, adminID int64) ([]*
 // 让用户再输一次。
 //
 // 关键:用 WHERE used_at=0 这个条件保证并发场景下只有第一个调用成功 — sqlite
-// 的 UPDATE WHERE 是原子的,且 MaxOpenConns=1 也排除了真正并发。但这条件本身
-// 仍是正确性兜底,避免某天连接池放大或恢复码逻辑外部并发调用时出双花。
+// 的单条 UPDATE ... WHERE 是原子的,即便连接池已放大到 MaxOpenConns=4、多请求
+// 真并发也只会有一条 UPDATE 命中 used_at=0(其余 RowsAffected=0 → ErrNotFound),
+// 不出双花。不依赖任何「单连接串行」假设。
 func (s *Store) MarkRecoveryCodeUsed(ctx context.Context, codeID int64, ip string, now int64) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE web_admin_recovery_codes

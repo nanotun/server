@@ -501,7 +501,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.SetUserAllowedPlatforms(r.Context(), id, csv); err != nil {
-			s.renderStoreWriteErr(w, r, err, "err.userNotFound", "err.queryFailed")
+			s.renderStoreWriteErr(w, r, err, "err.userNotFound", "err.saveFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "user_platforms_set", FormatTarget("user", id),
@@ -526,7 +526,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 				s.renderError(w, r, http.StatusBadRequest, tr(r, "err.badMaxSessions"))
 				return
 			}
-			s.renderStoreWriteErr(w, r, err, "err.userNotFound", "err.queryFailed")
+			s.renderStoreWriteErr(w, r, err, "err.userNotFound", "err.saveFailed")
 			return
 		}
 		s.audit.WriteFromRequest(r, "user_max_sessions_set", FormatTarget("user", id),

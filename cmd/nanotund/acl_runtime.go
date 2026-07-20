@@ -118,13 +118,10 @@ func reloadACLSnapshotFromStore(st *store.Store) (int, error) {
 		aclCurrent.Store(&aclSnapshot{defaultAction: store.ACLAllow, meshEnabled: true})
 		return 0, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	// 读一次 (default_action, mesh_enabled)。两者都 fail-closed:读真错(非「key 缺失」)
 	// 时返回 err 保留旧快照,绝不因一次 DB 抖动把 default-deny 翻成 allow、或把关掉的 mesh
 	// 重新放开。ok=false(key 不存在)才落到内置默认。
-	readSettings := func() (def string, mesh bool, err error) {
+	readSettings := func(ctx context.Context) (def string, mesh bool, err error) {
 		def = store.ACLAllow
 		v, ok, serr := st.SettingsGet(ctx, "acl_default_action")
 		if serr != nil {
@@ -150,6 +147,10 @@ func reloadACLSnapshotFromStore(st *store.Store) (int, error) {
 	// 不一致的快照。这里用「前读设置 → 读规则 → 后读设置,不一致就重试」把窗口收窄到近乎零:
 	// 若一轮内设置没变,说明这轮读到的 rules 与 settings 相互一致。有界重试,兜底用末次读值
 	// (低危,下次 reload/SIGHUP 会自愈)。
+	//
+	// 深扫第九轮 LOW:超时**按 attempt** 各给 5s,而不是一个 5s 摊到最多 9 次查询上 ——
+	// 否则 DB 高延迟时后几次查询可能撞到已耗尽的 deadline,reloadACLSnapshotFromStore
+	// 返回 err;而启动期该错误是 logrus.Fatal(见 server.go),会把进程直接打挂。
 	var (
 		rules []*store.ACLPair
 		def   string
@@ -157,23 +158,32 @@ func reloadACLSnapshotFromStore(st *store.Store) (int, error) {
 	)
 	const maxAttempts = 3
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		defBefore, meshBefore, err := readSettings()
+		def, mesh, rules = "", false, nil
+		retry, err := func() (bool, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			defBefore, meshBefore, err := readSettings(ctx)
+			if err != nil {
+				return false, err
+			}
+			rs, err := st.ListACLPairs(ctx)
+			if err != nil {
+				return false, err
+			}
+			defAfter, meshAfter, err := readSettings(ctx)
+			if err != nil {
+				return false, err
+			}
+			rules, def, mesh = rs, defAfter, meshAfter
+			// 设置在读规则期间被改动 → 需要重试一轮取一致视图。
+			return defBefore != defAfter || meshBefore != meshAfter, nil
+		}()
 		if err != nil {
 			return 0, err
 		}
-		rules, err = st.ListACLPairs(ctx)
-		if err != nil {
-			return 0, err
-		}
-		defAfter, meshAfter, err := readSettings()
-		if err != nil {
-			return 0, err
-		}
-		def, mesh = defAfter, meshAfter
-		if defBefore == defAfter && meshBefore == meshAfter {
+		if !retry {
 			break // 一致,采用本轮结果
 		}
-		// 设置在读规则期间被改动 → 重试一轮取一致视图。
 	}
 
 	snap := buildACLSnapshot(rules, def)

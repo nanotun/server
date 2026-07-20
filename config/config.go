@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -304,6 +305,27 @@ func (t *TUNConfig) ValidateExitMode() error {
 		return fmt.Errorf("config: unknown tun.exit_mode %q (valid: %q / %q / %q, or leave empty)",
 			t.ExitMode, TUNExitModeMesh, TUNExitModeIsolate, TUNExitModeOff)
 	}
+}
+
+// ValidateExitDNSRedirect 在启动早期校验 tun.exit_dns_redirect,是 ValidateExitMode
+// 的姊妹校验。
+//
+// 深扫第九轮 MED:此前该字段没有 fail-fast 校验,而 resolveExitDNSRedirect 对无法识别
+// 的值(如把 "off" 拼成 "of")会 Warn 后**静默回退 auto**(自动探测系统 DNS 并接管)。
+// 于是「运维想关掉 DNS 接管」的 typo 反而把 DNS 劫持**打开**了 —— 与 exit_mode 同类的
+// fail-open-on-typo。这里对非空值强制枚举/IPv4 校验,非法即 fail-fast。
+// 合法取值:""(默认) / "auto" / "off" / 合法 IPv4;大小写不敏感(IP 本身无大小写)。
+func (t *TUNConfig) ValidateExitDNSRedirect() error {
+	raw := strings.TrimSpace(t.ExitDNSRedirect)
+	switch strings.ToLower(raw) {
+	case "", "auto", "off":
+		return nil
+	}
+	if ip := net.ParseIP(raw); ip != nil && ip.To4() != nil {
+		return nil
+	}
+	return fmt.Errorf("config: invalid tun.exit_dns_redirect %q (valid: empty / \"auto\" / \"off\" / a literal IPv4 such as \"1.1.1.1\")",
+		t.ExitDNSRedirect)
 }
 
 // LinkRateLimitPlatform 按登录 JSON 的 platform（小写匹配，如 linux、android）覆盖链路限速；某项为 0 表示该方向仍用全局默认（upload_rate/download_rate 及 [kcp] 回退）

@@ -69,3 +69,46 @@ func TestVia6Sites_BadDeviceID(t *testing.T) {
 		t.Fatal("device_id=0 应报错")
 	}
 }
+
+// TestVia6Sites_OverflowRollsBackPoisonedRow 钉住深扫第八轮 LOW 的回归:site_id 越过
+// uint16 上限时,刚 INSERT 的那条脏行必须被回滚删除,不能残留 —— 否则该 device 会被
+// 永久钉死(下次 GetOrAssignSiteID 走 siteIDByDevice 命中脏行,同样越界报错)。
+//
+// 手法:直接把 AUTOINCREMENT 计数器(sqlite_sequence)顶到 70000,下一条插入拿到
+// 70001 > 65535,触发溢出分支。
+func TestVia6Sites_OverflowRollsBackPoisonedRow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	u, err := s.CreateUser(ctx, NewUser{Username: "bob", PSKHash: "h"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	dev := mustCreateDevice(t, s, u.ID, "dev-overflow")
+
+	// 把 via6_sites 的 AUTOINCREMENT seq 顶到 70000(> 65535)。空表时先清残留再写入。
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM sqlite_sequence WHERE name='via6_sites'`); err != nil {
+		t.Fatalf("clear sqlite_sequence: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO sqlite_sequence(name, seq) VALUES('via6_sites', 70000)`); err != nil {
+		t.Fatalf("seed sqlite_sequence: %v", err)
+	}
+
+	// 下一条 INSERT → site_id=70001 → 溢出 → 报错。
+	if _, err := s.GetOrAssignSiteID(ctx, dev); err == nil {
+		t.Fatal("site_id 越界应报错")
+	}
+
+	// 关键断言:脏行已被回滚删除,device 回到「未分配」状态。
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM via6_sites WHERE device_id=?`, dev).Scan(&n); err != nil {
+		t.Fatalf("count via6_sites: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("溢出后应无残留脏行,却有 %d 条", n)
+	}
+	// siteIDByDevice 也应报「未分配」而不是命中脏行再次越界。
+	if _, err := s.siteIDByDevice(ctx, dev); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("溢出回滚后 siteIDByDevice 应 ErrNotFound, 得 %v", err)
+	}
+}

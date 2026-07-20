@@ -45,3 +45,19 @@ func TestTUNConfig_ValidateExitMode(t *testing.T) {
 		}
 	}
 }
+
+func TestTUNConfig_ValidateExitDNSRedirect(t *testing.T) {
+	valid := []string{"", "auto", "off", " AUTO ", "OFF", "1.1.1.1", "223.5.5.5", " 8.8.8.8 "}
+	for _, v := range valid {
+		if err := (&TUNConfig{ExitDNSRedirect: v}).ValidateExitDNSRedirect(); err != nil {
+			t.Errorf("ValidateExitDNSRedirect(%q) 应通过, got err=%v", v, err)
+		}
+	}
+	// "of" 是 "off" 的经典 typo:必须被拒,而不是静默回退 auto 打开 DNS 接管。
+	invalid := []string{"of", "on", "true", "system", "::1", "2606:4700:4700::1111", "1.1.1.1.1", "999.1.1.1", "not-an-ip"}
+	for _, v := range invalid {
+		if err := (&TUNConfig{ExitDNSRedirect: v}).ValidateExitDNSRedirect(); err == nil {
+			t.Errorf("ValidateExitDNSRedirect(%q) 应拒绝(fail-fast), got nil", v)
+		}
+	}
+}

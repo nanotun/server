@@ -32,12 +32,22 @@ nanotun-web \
   -extra-sans=admin.example.com,1.2.3.4 \
   -session-ttl=43200 \
   -max-login-failures=5 \
-  -lockout-seconds=900
+  -lockout-seconds=900 \
+  -trusted-proxies=127.0.0.1,10.0.0.0/8
 ```
 
 也可用环境变量覆盖:`NANOTUN_WEB_LISTEN`、`NANOTUN_WEB_DB`、`NANOTUN_WEB_CERT_DIR`、
 `NANOTUN_WEB_EXTRA_SANS`、`NANOTUN_WEB_DEBUG`、`NANOTUN_WEB_DISABLE_AUTORELOAD`、
-`NANOTUN_CONTROL_SOCKET`。
+`NANOTUN_CONTROL_SOCKET`、`NANOTUN_WEB_TRUSTED_PROXIES`(逗号分隔)。
+
+### `-trusted-proxies`(前置反代场景)
+
+默认**不信任** `X-Forwarded-For`,登录限流 / 账号锁定 / 审计一律以 TCP 直连对端 IP
+为准 —— 这是防伪造的安全默认。若把 nanotun-web 放在 nginx / caddy / HAProxy 之后,
+**必须**用本项声明反代自己的 IP / CIDR,`clientIP` 才会在「直连对端属于该集合」时解析
+`X-Forwarded-For` 还原真实客户端。否则:所有请求都被记成反代那一个 IP,限流/锁定会
+退化成**跨账号 DoS**(一个攻击者触发锁定 → 全体管理员被锁),审计也丢失来源。取值支持
+裸 IP(记作 /32 或 /128)与 CIDR;拼错会在启动时 fail-fast。
 
 ## 首次使用
 
@@ -93,7 +103,10 @@ nanotun-web \
 ## 生产部署建议
 
 - 默认 self-signed 证书仅适合内网 / 跳板。生产建议:把 `-listen` 改成
-  `127.0.0.1:7443`,前置 nginx/caddy 走 Let's Encrypt + mTLS。
+  `127.0.0.1:7443`,前置 nginx/caddy 走 Let's Encrypt + mTLS。此时**务必**加
+  `-trusted-proxies=127.0.0.1`(反代与 web 同机)或反代所在 IP/CIDR,并让反代设置
+  `X-Forwarded-For`,否则限流 / 锁定 / 审计会全部记到反代 IP 上(见上文
+  `-trusted-proxies`)。
 - 把 `/etc/nanotun/certs/cert.pem` 当 root CA 分发给团队(自签证书的 IsCA=true),
   可以让浏览器停止报警。
 - `NANOTUN_WEB_DISABLE_AUTORELOAD=1` 关闭 "改 ACL 后自动通知 server reload" 行为,

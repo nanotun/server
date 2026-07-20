@@ -9,7 +9,9 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -409,18 +411,91 @@ func truncate(s string, max int) string {
 	return s[:max]
 }
 
-func clientIP(r *http.Request) string {
-	// X-Forwarded-For 由前置反代设置;若直接绑公网就只剩 RemoteAddr。
-	// 不信任 XFF 是默认安全姿态(otherwise admin 可通过伪造 XFF 把审计搞乱)。
-	// 这里 *只* 在 trust_proxy_header=true 时才解析,目前 hardcoded false。
-	host := r.RemoteAddr
-	if idx := strings.LastIndex(host, ":"); idx > 0 {
-		host = host[:idx]
+// trustedProxyNets 是启动时(main → setTrustedProxies)固定下来的可信反代前缀集合。
+// nil / 空 = 默认安全姿态:完全不信任 X-Forwarded-For。设定后只读,读无需加锁。
+var trustedProxyNets []netip.Prefix
+
+// setTrustedProxies 在 Config.Validate 通过后、开始 Serve 之前由 main 调一次。
+func setTrustedProxies(nets []netip.Prefix) {
+	trustedProxyNets = nets
+}
+
+// hostFromAddr 从 "ip:port" / "[ipv6]:port" / 裸 IP 中取出 host 字符串(去端口去括号)。
+// 解析不出 host:port 时按裸地址处理(测试里常直接塞裸 IP)。
+func hostFromAddr(s string) string {
+	s = strings.TrimSpace(s)
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		return strings.Trim(h, "[]")
 	}
-	// IPv6 RemoteAddr 形如 [::1]:1234,strip 括号。
-	host = strings.TrimPrefix(host, "[")
-	host = strings.TrimSuffix(host, "]")
-	return host
+	return strings.Trim(s, "[]")
+}
+
+// parseHostIP 从 "ip" / "ip:port" / "[ipv6]:port" / "[ipv6]" 中解析出 netip.Addr。
+func parseHostIP(s string) (netip.Addr, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return netip.Addr{}, false
+	}
+	if a, err := netip.ParseAddr(s); err == nil { // 裸 IP(含裸 IPv6)
+		return a.Unmap(), true
+	}
+	if ap, err := netip.ParseAddrPort(s); err == nil { // ip:port / [ipv6]:port
+		return ap.Addr().Unmap(), true
+	}
+	if a, err := netip.ParseAddr(strings.Trim(s, "[]")); err == nil { // [ipv6] 无端口
+		return a.Unmap(), true
+	}
+	return netip.Addr{}, false
+}
+
+func ipInTrustedProxy(a netip.Addr) bool {
+	if !a.IsValid() {
+		return false
+	}
+	a = a.Unmap()
+	for _, p := range trustedProxyNets {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP 提取请求的真实客户端 IP。
+//
+// 默认安全姿态:trustedProxyNets 为空时**完全不信任** X-Forwarded-For —— 直接用
+// TCP 直连对端(r.RemoteAddr)。否则任何人都能伪造 XFF 污染审计日志,并把「按 IP
+// 限流 / 锁定」变成跨账号 DoS(伪造不同 XFF 绕过锁定,或伪造同一 XFF 锁死他人)。
+//
+// 仅当运维显式配置了 trusted_proxies(反代自己的 IP/CIDR)且本次直连对端确实落在
+// 该集合内时,才解析 XFF:从右往左取第一个「不在可信集合」的 IP 作为真实客户端
+// (右侧是最靠近本机的可信反代链,可信反代会把上游追加在右边)。全部可信则退化到
+// 最左项;直连对端不可信则忽略 XFF(视为伪造)。
+func clientIP(r *http.Request) string {
+	direct := hostFromAddr(r.RemoteAddr)
+	if len(trustedProxyNets) == 0 {
+		return direct
+	}
+	da, ok := parseHostIP(r.RemoteAddr)
+	if !ok || !ipInTrustedProxy(da) {
+		// 直连对端不是可信反代 → XFF 不可信,一律用直连 IP。
+		return direct
+	}
+	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if xff == "" {
+		return direct
+	}
+	parts := strings.Split(xff, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if a, ok := parseHostIP(parts[i]); ok && !ipInTrustedProxy(a) {
+			return a.String()
+		}
+	}
+	// XFF 里全是可信反代(或都解析失败):取最左(离真实客户端最近)。
+	if a, ok := parseHostIP(parts[0]); ok {
+		return a.String()
+	}
+	return direct
 }
 
 func nowUnix() int64 {
