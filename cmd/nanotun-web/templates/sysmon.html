@@ -1,0 +1,550 @@
+{{template "header" .}}
+
+<div class="crumb">SYSTEM &middot; <b>SYSMON</b></div>
+<h1>{{T "sysmon.title"}}</h1>
+
+<div id="sysmon-banner-host" class="flash err" style="display:none">
+    {{T "sysmon.hostUnavailable"}}<span id="sysmon-banner-host-msg"></span>
+</div>
+<div id="sysmon-banner-vpn" class="flash warn" style="display:none">
+    {{T "sysmon.vpnUnavailable"}}<span id="sysmon-banner-vpn-msg"></span>
+    <span class="muted">{{T "sysmon.vpnUnavailableNote"}}</span>
+</div>
+<div id="sysmon-banner-skew" class="flash warn" style="display:none">
+    {{T "sysmon.skewWarn"}}<span id="sysmon-banner-skew-msg"></span>
+    <span class="muted">{{T "sysmon.skewNote"}}</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>{{T "sysmon.samplingStatus"}}</h2>
+        <span id="sysmon-status" class="muted" style="margin-left:auto">{{T "sysmon.waitingFirstFrame"}}</span>
+    </div>
+    <div class="grid-stats">
+        <div class="stat" title="{{T "sysmon.intervalTitle"}}">
+            <div class="label">{{T "sysmon.intervalLabel"}}</div>
+            <div class="value" id="sysmon-interval">2.0s</div>
+        </div>
+        <div class="stat" title="{{T "sysmon.samplesTitle"}}">
+            <div class="label">{{T "sysmon.samplesLabel"}}</div>
+            <div class="value" id="sysmon-samples">0</div>
+        </div>
+        <div class="stat" title="{{T "sysmon.windowTitle"}}">
+            <div class="label">{{T "sysmon.windowLabel"}}</div>
+            <div class="value">2 min</div>
+        </div>
+        <div class="stat" title="{{T "sysmon.uptimeTitle"}}">
+            <div class="label">server uptime</div>
+            <div class="value" id="server-uptime" style="font-size:14px">—</div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>CPU</h2>
+        <span class="muted" style="margin-left:auto">{{T "sysmon.procStatAgg"}}</span>
+    </div>
+    <div class="grid-stats">
+        <div class="stat"><div class="label">{{T "sysmon.usage"}}</div><div class="value" id="cpu-pct">—</div></div>
+        <div class="stat"><div class="label">{{T "sysmon.cores"}}</div><div class="value" id="cpu-cores">—</div></div>
+        <div class="stat" style="grid-column: span 4">
+            <div class="label">{{T "sysmon.last2min"}}</div>
+            <canvas id="cpu-spark" height="80" style="width:100%;display:block"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "sysmon.memory"}}</h2>
+        <span class="muted" style="margin-left:auto">{{T "sysmon.meminfoNote"}}</span>
+    </div>
+    <div class="grid-stats">
+        <div class="stat"><div class="label">{{T "sysmon.usage"}}</div><div class="value" id="mem-pct">—</div></div>
+        <div class="stat"><div class="label">{{T "sysmon.used"}}</div><div class="value" id="mem-used">—</div></div>
+        <div class="stat"><div class="label">{{T "sysmon.available"}}</div><div class="value" id="mem-avail">—</div></div>
+        <div class="stat"><div class="label">{{T "sysmon.total"}}</div><div class="value" id="mem-total">—</div></div>
+        <div class="stat"><div class="label">{{T "sysmon.cached"}}</div><div class="value" id="mem-cached">—</div></div>
+        <div class="stat"><div class="label">Swap</div><div class="value" id="mem-swap">—</div></div>
+        <div class="stat" style="grid-column: 1 / -1">
+            <div class="label">{{T "sysmon.last2minUsedPct"}}</div>
+            <canvas id="mem-spark" height="80" style="width:100%;display:block"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "sysmon.network"}}</h2>
+        <span class="muted" style="margin-left:auto">{{T "sysmon.netdevNote"}}</span>
+    </div>
+    <div id="nic-list">
+        <p class="muted">{{T "sysmon.waitingFirstFrame"}}</p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "sysmon.vpnTraffic"}}</h2>
+        <span class="muted" style="margin-left:auto">{{T "sysmon.vpnStatusNote"}}</span>
+    </div>
+    <div class="grid-stats">
+        <div class="stat" title="{{T "sysmon.upRateTitle"}}">
+            <div class="label">{{T "sysmon.upRate"}}</div>
+            <div class="value" id="vpn-up-rate">—</div>
+        </div>
+        <div class="stat" title="{{T "sysmon.downRateTitle"}}">
+            <div class="label">{{T "sysmon.downRate"}}</div>
+            <div class="value" id="vpn-down-rate">—</div>
+        </div>
+        <div class="stat"><div class="label">{{T "sysmon.cumUp"}}</div><div class="value" id="vpn-up-total">—</div></div>
+        <div class="stat"><div class="label">{{T "sysmon.cumDown"}}</div><div class="value" id="vpn-down-total">—</div></div>
+        <div class="stat" style="grid-column: 1 / -1">
+            <div class="label">{{T "sysmon.last2minUpDown"}}</div>
+            <canvas id="vpn-spark" height="100" style="width:100%;display:block"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    "use strict";
+    // V1(2026-05-26):/sysmon 客户端逻辑。
+    //
+    // 设计要点:
+    //   - 2s 轮询(可改 sysmonIntervalMs),fetch /sysmon/data;
+    //   - 累计计数器(CPU jiffies、NIC bytes、VPN bytes)在本地两次采样间差分;
+    //     首帧只画"等待..",有了 prev 才开始算速度;
+    //   - 折线图纯 Canvas 实现 ~30 行,零依赖,自适应宽度(响应式);
+    //   - 每条 series 保留最近 60 个点(60 × 2s = 2 分钟历史);
+    //   - 后端错误把 banner 显出来,但不阻塞下次采样 — server 临时断了也能自愈;
+    //   - 页面隐藏(document.hidden)时跳过 fetch,省手机后台数据 / server 负载。
+    var sysmonIntervalMs = 2000;
+    var maxPoints = 60;
+
+    document.getElementById("sysmon-interval").textContent = (sysmonIntervalMs / 1000).toFixed(1) + "s";
+
+    function fmtBytes(n) {
+        if (!isFinite(n) || n < 0) return "—";
+        var k = 1024;
+        if (n < k) return n.toFixed(0) + " B";
+        if (n < k * k) return (n / k).toFixed(1) + " KiB";
+        if (n < k * k * k) return (n / (k * k)).toFixed(1) + " MiB";
+        return (n / (k * k * k)).toFixed(2) + " GiB";
+    }
+    function fmtRate(bps) {
+        if (!isFinite(bps) || bps < 0) return "—";
+        return fmtBytes(bps) + "/s";
+    }
+    // A4.8(2026-05-26):server uptime 格式化。秒数 → "3d 12h" / "4h 22m" / "37s"。
+    //
+    // uptime_zero(2026-05-26):语义区分三态:
+    //   - undefined / null / -1:fallback 路径或老 server 没 uptime 字段 → "—";
+    //   - 0:新 server 刚启动 < 1s → "0s"(合法,不要误显 "—");
+    //   - > 0:正常 → 按 d/h/m/s 格式化。
+    function fmtDurationSecs(s) {
+        if (s === undefined || s === null || !isFinite(s) || s < 0) return "—";
+        var d = Math.floor(s / 86400);
+        var h = Math.floor((s % 86400) / 3600);
+        var m = Math.floor((s % 3600) / 60);
+        var sec = Math.floor(s % 60);
+        if (d > 0) return d + "d " + h + "h";
+        if (h > 0) return h + "h " + m + "m";
+        if (m > 0) return m + "m " + sec + "s";
+        return sec + "s";
+    }
+    function pushSeries(series, value) {
+        series.push(value);
+        if (series.length > maxPoints) series.shift();
+    }
+
+    // drawSparkline:把 series 画进 canvas。auto-range 到 series 最大值。
+    // multiSeries=false:单条线;true:传入 {up: [...], down: [...]} 两条同色板。
+    function drawSparkline(canvas, data, opts) {
+        opts = opts || {};
+        var ctx = canvas.getContext("2d");
+        var w = canvas.clientWidth || 600;
+        var h = canvas.clientHeight || 80;
+        if (canvas.width !== w * window.devicePixelRatio) {
+            canvas.width = w * window.devicePixelRatio;
+            canvas.height = h * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+        ctx.clearRect(0, 0, w, h);
+        // 背景网格(2026-07-18 暗色改版:网格/文字/线色对齐 SECURE.CORE 主题)
+        ctx.strokeStyle = "#1c2a22";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (var i = 0; i <= 4; i++) {
+            var y = (h - 1) * i / 4 + 0.5;
+            ctx.moveTo(0, y); ctx.lineTo(w, y);
+        }
+        ctx.stroke();
+        // 计算上下界
+        var allValues = [];
+        var seriesList = [];
+        if (Array.isArray(data)) {
+            seriesList.push({ values: data, color: opts.color || "#2fe98c" });
+            allValues = data;
+        } else {
+            for (var key in data) {
+                var s = data[key];
+                seriesList.push({ values: s.values, color: s.color, label: s.label });
+                allValues = allValues.concat(s.values);
+            }
+        }
+        var max = 0;
+        for (var j = 0; j < allValues.length; j++) {
+            if (isFinite(allValues[j]) && allValues[j] > max) max = allValues[j];
+        }
+        if (opts.percentMax) max = 100;
+        if (max <= 0) max = 1; // 防零除,空数据画一条平线
+        // 画线
+        seriesList.forEach(function (s) {
+            ctx.strokeStyle = s.color;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            var n = s.values.length;
+            for (var k = 0; k < n; k++) {
+                var v = s.values[k];
+                if (!isFinite(v)) continue;
+                var x = (k / Math.max(maxPoints - 1, 1)) * w;
+                var y = h - (v / max) * (h - 2) - 1;
+                if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        });
+        // 右上角写"max: ..."参考线值
+        if (opts.label) {
+            ctx.fillStyle = "#6d8377";
+            ctx.font = "11px -apple-system,Segoe UI,sans-serif";
+            ctx.textAlign = "right";
+            ctx.fillText(opts.label(max), w - 4, 12);
+        }
+    }
+
+    // ----- 序列存储 -----
+    var cpuSeries = [];      // 百分比
+    var memSeries = [];      // 百分比
+    var vpnUpSeries = [];    // bytes/s
+    var vpnDownSeries = [];  // bytes/s
+    var nicSeries = {};      // name → {rxSeries:[...], txSeries:[...]}
+
+    // 用 prev 缓存做差分。null 表示首帧,跳过差分。
+    var prev = null;
+
+    var samples = 0;
+
+    function showBanner(id, msgId, msg) {
+        var el = document.getElementById(id);
+        var msgEl = document.getElementById(msgId);
+        if (msg) {
+            msgEl.textContent = msg;
+            el.style.display = "";
+        } else {
+            el.style.display = "none";
+        }
+    }
+
+    function render(resp) {
+        showBanner("sysmon-banner-host", "sysmon-banner-host-msg", resp.host_error || "");
+        showBanner("sysmon-banner-vpn", "sysmon-banner-vpn-msg", resp.vpn_error || "");
+
+        // ts_source(2026-05-26):clock skew 检查。web 跟 server 同机部署时偏差 < 1ms,
+        // 不同机时取决于 NTP 同步质量。> 5s 报 banner,因为差分速度算法依赖时间戳
+        // 单调递增,偏差太大可能让某帧 dt 变成负数或巨大值,折线图失真。
+        // 老 server fallback 路径 server_ts_ms 缺失(0)或等于 ts_ms,skew = 0 不报。
+        var skewMsg = "";
+        if (resp.server_ts_ms && resp.ts_ms) {
+            var skewMs = Math.abs(resp.server_ts_ms - resp.ts_ms);
+            if (skewMs > 5000) {
+                skewMsg = "{{T "sysmon.jsClockSkewPre"}}" + (skewMs / 1000).toFixed(1) + "s";
+            }
+        }
+        showBanner("sysmon-banner-skew", "sysmon-banner-skew-msg", skewMsg);
+
+        samples++;
+        document.getElementById("sysmon-samples").textContent = samples;
+        document.getElementById("sysmon-status").textContent = "{{T "sysmon.jsLastSample"}}" + new Date(resp.ts_ms).toLocaleTimeString();
+        document.getElementById("server-uptime").textContent = fmtDurationSecs(resp.server_uptime_seconds);
+
+        // N5(2026-05-26):counter wrap 检测。如果本帧 counter < 上帧 → server
+        // 重启了(VPN bytes 归零),或 host /proc namespace 重置(容器场景)。
+        //
+        // N5.5(2026-05-26):**per-dimension** 处理 — 不再 `prev = null` 把所有
+        // 维度一起拖累。之前 vpnWrap 时(server 重启,host 没重启),CPU / NIC
+        // 折线也被空跳一帧,折线上会有视觉断层。改成只对 wrap 的那一维度做最小
+        // 改写,让对应差分块自然跳过:
+        //
+        //   - VPN: prev.vpn_available = false → 下方 `if (prev.vpn_available)` 不进
+        //   - CPU: prev.host.cpu_total_jiffies = resp.host.cpu_total_jiffies →
+        //          dTotal = 0,`if (dTotal > 0)` 不 push;cores 信息不变
+        //   - NIC: 单网卡的 wrap 在 renderNICs 内单独处理(N5 原本就只清单条 series)
+        //
+        // 同时清对应的 series(memSeries 是采样瞬时值不清,renderer 直接用 host 当前帧)。
+        if (prev) {
+            var vpnWrap = resp.vpn_available && prev.vpn_available &&
+                          (resp.vpn_bytes_up < prev.vpn_bytes_up ||
+                           resp.vpn_bytes_down < prev.vpn_bytes_down);
+            var cpuWrap = resp.host && prev.host &&
+                          resp.host.cpu_total_jiffies < prev.host.cpu_total_jiffies;
+            if (vpnWrap) {
+                vpnUpSeries.length = 0;
+                vpnDownSeries.length = 0;
+                prev.vpn_available = false;  // 本帧 vpn 差分被跳过
+            }
+            if (cpuWrap) {
+                cpuSeries.length = 0;
+                // 把 prev.host.cpu_total_jiffies 改成 resp 的值,dTotal = 0 不 push
+                prev.host.cpu_total_jiffies = resp.host.cpu_total_jiffies;
+                prev.host.cpu_idle_jiffies = resp.host.cpu_idle_jiffies;
+            }
+        }
+
+        var host = resp.host;
+        if (host) {
+            // 内存(gauge,直接画)
+            var memUsed = host.mem_total_bytes - host.mem_available_bytes;
+            var memPct = host.mem_total_bytes > 0 ? (memUsed / host.mem_total_bytes) * 100 : 0;
+            document.getElementById("mem-pct").textContent = memPct.toFixed(1) + " %";
+            document.getElementById("mem-used").textContent = fmtBytes(memUsed);
+            document.getElementById("mem-avail").textContent = fmtBytes(host.mem_available_bytes);
+            document.getElementById("mem-total").textContent = fmtBytes(host.mem_total_bytes);
+            document.getElementById("mem-cached").textContent = fmtBytes(host.mem_cached_bytes);
+            var swapUsed = host.swap_total_bytes - host.swap_free_bytes;
+            document.getElementById("mem-swap").textContent = host.swap_total_bytes > 0
+                ? (fmtBytes(swapUsed) + " / " + fmtBytes(host.swap_total_bytes))
+                : "—";
+            pushSeries(memSeries, memPct);
+            drawSparkline(document.getElementById("mem-spark"), memSeries, {
+                color: "#e8b45a", percentMax: true,
+                label: function () { return "max 100%"; }
+            });
+            // CPU(counter,差分算 busy%)
+            document.getElementById("cpu-cores").textContent = host.cpu_cores + "{{T "sysmon.jsCoresSuffix"}}";
+            if (prev && prev.host) {
+                var dTotal = host.cpu_total_jiffies - prev.host.cpu_total_jiffies;
+                var dIdle = host.cpu_idle_jiffies - prev.host.cpu_idle_jiffies;
+                if (dTotal > 0) {
+                    var busyPct = (1 - dIdle / dTotal) * 100;
+                    if (busyPct < 0) busyPct = 0;
+                    if (busyPct > 100) busyPct = 100;
+                    document.getElementById("cpu-pct").textContent = busyPct.toFixed(1) + " %";
+                    pushSeries(cpuSeries, busyPct);
+                }
+            }
+            drawSparkline(document.getElementById("cpu-spark"), cpuSeries, {
+                color: "#2fe98c", percentMax: true,
+                label: function () { return "max 100%"; }
+            });
+            // 网卡(counter,差分算 bytes/s)
+            renderNICs(host.nics, resp.ts_ms);
+        } else {
+            document.getElementById("cpu-pct").textContent = "—";
+            document.getElementById("mem-pct").textContent = "—";
+        }
+
+        // VPN(counter,差分算 bytes/s)
+        if (resp.vpn_available) {
+            document.getElementById("vpn-up-total").textContent = fmtBytes(resp.vpn_bytes_up);
+            document.getElementById("vpn-down-total").textContent = fmtBytes(resp.vpn_bytes_down);
+            if (prev && prev.vpn_available && prev.ts_ms) {
+                var dt = (resp.ts_ms - prev.ts_ms) / 1000;
+                if (dt > 0) {
+                    var upRate = Math.max(0, (resp.vpn_bytes_up - prev.vpn_bytes_up) / dt);
+                    var downRate = Math.max(0, (resp.vpn_bytes_down - prev.vpn_bytes_down) / dt);
+                    document.getElementById("vpn-up-rate").textContent = fmtRate(upRate);
+                    document.getElementById("vpn-down-rate").textContent = fmtRate(downRate);
+                    pushSeries(vpnUpSeries, upRate);
+                    pushSeries(vpnDownSeries, downRate);
+                }
+            }
+            drawSparkline(document.getElementById("vpn-spark"), {
+                up:   { values: vpnUpSeries,   color: "#4da3ff", label: "{{T "deviceDetail.up"}}" },
+                down: { values: vpnDownSeries, color: "#2fe98c", label: "{{T "deviceDetail.down"}}" }
+            }, { label: function (m) { return "max " + fmtRate(m); } });
+        } else {
+            document.getElementById("vpn-up-rate").textContent = "—";
+            document.getElementById("vpn-down-rate").textContent = "—";
+            document.getElementById("vpn-up-total").textContent = "—";
+            document.getElementById("vpn-down-total").textContent = "—";
+        }
+
+        prev = resp;
+    }
+
+    // renderNICs:把物理 + TUN 网卡画出来,每个网卡一个 mini 卡片 + 折线。
+    //
+    // A8(2026-05-26):server 端已经过滤,只返 IsPhysical||IsTUN — 前端不再需要
+    // 二次 filter。仍保留 keep 变量名让逻辑清晰、以防未来 server 端契约变化。
+    function renderNICs(nics, tsMs) {
+        var keep = nics || [];
+        var container = document.getElementById("nic-list");
+        if (keep.length === 0) {
+            container.innerHTML = "<p class=\"muted\">{{T "sysmon.jsNoNics"}}</p>";
+            return;
+        }
+        // 给每个网卡初始化序列
+        keep.forEach(function (n) {
+            if (!nicSeries[n.name]) {
+                nicSeries[n.name] = { rx: [], tx: [] };
+            }
+        });
+        // 差分 + 写入序列。
+        //
+        // N5(2026-05-26):单网卡 wrap 检测 — n.rx_bytes < p.rx_bytes 说明该网卡
+        // counter 被重置(网卡 down → up,或主机重启)。这种 case 清空该网卡的
+        // rx/tx 速度序列,跳过本帧差分,下帧起重新建立基线。
+        if (prev && prev.host && prev.host.nics && prev.ts_ms) {
+            var dt = (tsMs - prev.ts_ms) / 1000;
+            if (dt > 0) {
+                var prevMap = {};
+                prev.host.nics.forEach(function (n) { prevMap[n.name] = n; });
+                keep.forEach(function (n) {
+                    var p = prevMap[n.name];
+                    if (!p) return;
+                    if (n.rx_bytes < p.rx_bytes || n.tx_bytes < p.tx_bytes) {
+                        nicSeries[n.name].rx.length = 0;
+                        nicSeries[n.name].tx.length = 0;
+                        return;
+                    }
+                    var rxRate = (n.rx_bytes - p.rx_bytes) / dt;
+                    var txRate = (n.tx_bytes - p.tx_bytes) / dt;
+                    pushSeries(nicSeries[n.name].rx, rxRate);
+                    pushSeries(nicSeries[n.name].tx, txRate);
+                });
+            }
+        }
+        // 渲染卡片
+        var rows = keep.map(function (n) {
+            var s = nicSeries[n.name];
+            var lastRx = s.rx.length > 0 ? s.rx[s.rx.length - 1] : NaN;
+            var lastTx = s.tx.length > 0 ? s.tx[s.tx.length - 1] : NaN;
+            var kindBadge = n.is_tun
+                ? "<span class=\"badge neutral\" title=\"{{T "sysmon.jsTunTitle"}}\">TUN</span>"
+                : "<span class=\"badge ok\" title=\"{{T "sysmon.jsPhysTitle"}}\">{{T "sysmon.jsPhysBadge"}}</span>";
+            return ""
+                + "<div class=\"grid-stats\" style=\"margin-top:8px\">"
+                + "  <div class=\"stat\" style=\"grid-column: span 2\">"
+                + "    <div class=\"label\">" + kindBadge + " " + escapeHTML(n.name) + "</div>"
+                + "    <div class=\"value\" style=\"font-size:14px\">"
+                + "      ↓ " + fmtRate(lastRx) + "  /  ↑ " + fmtRate(lastTx)
+                + "    </div>"
+                + "  </div>"
+                + "  <div class=\"stat\"><div class=\"label\">{{T "sysmon.jsCumRx"}}</div><div class=\"value\" style=\"font-size:14px\">" + fmtBytes(n.rx_bytes) + "</div></div>"
+                + "  <div class=\"stat\"><div class=\"label\">{{T "sysmon.jsCumTx"}}</div><div class=\"value\" style=\"font-size:14px\">" + fmtBytes(n.tx_bytes) + "</div></div>"
+                + "  <div class=\"stat\" style=\"grid-column: 1 / -1\">"
+                + "    <canvas id=\"nic-spark-" + escapeAttr(n.name) + "\" height=\"60\" style=\"width:100%;display:block\"></canvas>"
+                + "  </div>"
+                + "</div>";
+        }).join("");
+        container.innerHTML = rows;
+        // 画图(必须在 innerHTML 之后,canvas 才有 DOM 节点)。
+        //
+        // A1(2026-05-26):canvas id 必须跟上面 HTML 构造时**用同一个** escape
+        // 函数 — escapeAttr 会把 `eth0:1` / `br-1234.10` / `wg0.1` 之类含特殊
+        // 字符的网卡名转成 `eth0_1` / `br-1234_10` 等;之前 getElementById 用
+        // 原始 n.name 会拿 null,canvas 不画。VLAN / docker veth / wg 子接口
+        // 真实场景都会撞,生产服务器上常见。
+        keep.forEach(function (n) {
+            var canvas = document.getElementById("nic-spark-" + escapeAttr(n.name));
+            if (!canvas) return;
+            var s = nicSeries[n.name];
+            drawSparkline(canvas, {
+                rx: { values: s.rx, color: "#4da3ff", label: "RX" },
+                tx: { values: s.tx, color: "#e8b45a", label: "TX" }
+            }, { label: function (m) { return "max " + fmtRate(m); } });
+        });
+    }
+
+    // XSS 防御:网卡名 admin 可控吗?理论上是 kernel 提供的 ifname,字符集受限,
+    // 但稳健起见仍做 escape。同时 escapeAttr 避免 id 里的特殊字符破坏 selector。
+    function escapeHTML(s) {
+        return String(s).replace(/[&<>"']/g, function (c) {
+            return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c];
+        });
+    }
+    function escapeAttr(s) {
+        return String(s).replace(/[^a-zA-Z0-9_-]/g, "_");
+    }
+
+    // A2+A3(2026-05-26):tick 从 setInterval 改 setTimeout 递归,自带串行化:
+    //   - server 慢 5s 时不会有多个 in-flight fetch 堆积(setInterval 是固定 2s
+    //     触发,无视上次是否完成);
+    //   - AbortController 给 fetch 设 5s 硬超时,防 control sock hang 时浏览器
+    //     永远 pending(浏览器默认 fetch 无 timeout)。
+    //
+    // 取消下次:跑完(无论成功失败 / 隐藏) → setTimeout 排下一次。这样最快
+    // sysmonIntervalMs 触发一次,最慢按上次响应耗时延后。隐藏标签页不发请求
+    // 但仍排时;切回来时立刻发(下次 tick 触发的 if 检查通过)。
+    //
+    // N13.3(2026-05-26):加 inflight 守门 — 避免 visibilitychange 触发 tick
+    // 时上一次 fetch 还在 in-flight 导致并发两次 fetch、prev 缓存错乱。
+    //
+    //   场景:tick 发 fetch → 用户隐藏标签 → fetch 仍 in-flight → 用户切回
+    //         → visibilitychange 立即调 tick → 第二次 fetch 启动。两个 fetch
+    //         返回顺序不保证(后启动可能先完成),prev 被两次更新顺序错乱。
+    //
+    //   修法:tick 启动时 inflight=true,fetch 完成时 inflight=false。tick 入口
+    //         检测 inflight=true 直接 return(不重发,不 scheduleNext — 因为
+    //         in-flight fetch 完成时会自己 scheduleNext)。
+    var fetchTimeoutMs = 5000;
+    var inflight = false;
+
+    function tick() {
+        if (document.hidden) {
+            scheduleNext();
+            return;
+        }
+        if (inflight) {
+            // N13.3:重入保护。in-flight fetch 完成时会自动 scheduleNext,这里
+            // 直接 return 不需要再排 — 否则跟它的 scheduleNext 双排。
+            return;
+        }
+        inflight = true;
+        var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+        var to = ctrl ? setTimeout(function () { ctrl.abort(); }, fetchTimeoutMs) : null;
+        var opts = { credentials: "same-origin", cache: "no-store" };
+        if (ctrl) opts.signal = ctrl.signal;
+        fetch("/sysmon/data", opts)
+            .then(function (r) {
+                if (!r.ok) throw new Error("HTTP " + r.status);
+                return r.json();
+            })
+            .then(render)
+            .catch(function (err) {
+                var msg = (err && err.name === "AbortError")
+                    ? "{{T "sysmon.jsSampleTimeoutPre"}}" + (fetchTimeoutMs / 1000) + "s)"
+                    : "{{T "sysmon.jsSampleFail"}}" + err.message;
+                document.getElementById("sysmon-status").textContent = msg;
+            })
+            .then(function () {
+                inflight = false;
+                if (to) clearTimeout(to);
+                scheduleNext();
+            });
+    }
+
+    // pendingTimer:scheduleNext 排的 setTimeout 句柄,visibilitychange 触发
+    // 立即 tick 时用来取消它,避免一次切回触发两次 fetch(visibilitychange + 旧 timer)。
+    var pendingTimer = null;
+    function scheduleNext() {
+        if (pendingTimer) clearTimeout(pendingTimer);
+        pendingTimer = setTimeout(tick, sysmonIntervalMs);
+    }
+
+    // N13(2026-05-26):visibilitychange 立即 tick — 用户切到后台标签 N 秒回来,
+    // 不用等下一个 setTimeout(最多 2s 空白期)就能看到新数据。
+    //
+    // N13.3(2026-05-26):只在非 inflight 时立即 tick — 跟 tick 内部的 inflight
+    // 守门配合,防止 fetch in-flight 时切回触发并发 fetch。如果 inflight,
+    // pending timer 已被清,等当前 fetch 完成时 scheduleNext 会自然重排。
+    document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) {
+            if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+            if (!inflight) tick();
+        }
+    });
+
+    tick(); // 立即来一次,不用等 2s;tick 跑完会 scheduleNext。
+})();
+</script>
+
+{{template "footer" .}}

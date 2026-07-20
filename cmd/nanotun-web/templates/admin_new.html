@@ -1,0 +1,33 @@
+{{template "header" .}}
+
+<div class="crumb"><a href="/admins" class="back">&larr; {{T "adminPwd.backToList"}}</a> &middot; SYSTEM &middot; <b>ADMINS</b></div>
+<h1>{{T "adminNew.title"}}</h1>
+
+<div class="card">
+<form method="post" action="/admins/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+        <label for="username">{{T "userNew.usernameRequired"}}</label>
+        <input id="username" name="username" type="text" required minlength="3">
+    </div>
+    <div class="field">
+        <label for="role">{{T "common.role"}}</label>
+        <select id="role" name="role">
+            <option value="admin">{{T "adminNew.roleAdmin"}}</option>
+            <option value="viewer">{{T "adminNew.roleViewer"}}</option>
+        </select>
+    </div>
+    <div class="field">
+        <label for="password">{{T "setup.passwordLabel"}}</label>
+        <input id="password" name="password" type="password" required minlength="12">
+    </div>
+    <div class="field">
+        <label for="password_confirm">{{T "common.repeatPassword"}}</label>
+        <input id="password_confirm" name="password_confirm" type="password" required minlength="12">
+    </div>
+    <button type="submit" class="btn">{{T "common.create"}}</button>
+    <a href="/admins" class="btn secondary">{{T "common.cancel"}}</a>
+</form>
+</div>
+
+{{template "footer" .}}

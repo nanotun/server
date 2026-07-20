@@ -1,0 +1,62 @@
+{{template "header" .}}
+
+{{if .Data.FirstTime}}
+    <h1>{{T "totpCodes.enabledTitle"}}</h1>
+    <div class="flash ok">
+        {{T "totpCodes.enabledFlash"}}
+    </div>
+{{else}}
+    <h1>{{T "totpCodes.regenTitle"}}</h1>
+    <div class="flash ok">
+        {{T "totpCodes.regenFlash"}}
+    </div>
+{{end}}
+
+<div class="card">
+    <div class="card-header"><h2>{{T "totpCodes.saveHeading"}}</h2></div>
+    <div class="flash warn">
+        ⚠ <strong>{{T "totpCodes.warnStrong"}}</strong>{{T "totpCodes.warnPost"}}
+    </div>
+    <p class="muted">
+        {{T "totpCodes.desc"}}
+    </p>
+
+    <div class="recovery-codes" style="
+        display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));
+        gap:8px;margin-top:16px;padding:16px;
+        background:var(--c-pre-bg);border-radius:8px;">
+        {{range .Data.Codes}}
+            <code style="
+                font-size:16px;font-family:monospace;letter-spacing:1px;
+                padding:10px;background:rgba(255,255,255,0.06);
+                color:var(--c-pre-fg);
+                border-radius:4px;
+                text-align:center;user-select:all">{{.}}</code>
+        {{end}}
+    </div>
+
+    <div style="margin-top:16px;display:flex;gap:8px">
+        <button class="btn secondary" type="button" onclick="copyAllCodes()">{{T "totpCodes.copyAll"}}</button>
+        <button class="btn secondary" type="button" onclick="window.print()">{{T "totpCodes.print"}}</button>
+        <a href="/me" class="btn">{{T "totpCodes.savedReturn"}}</a>
+    </div>
+</div>
+
+<script>
+function copyAllCodes() {
+    var codes = Array.from(document.querySelectorAll('.recovery-codes code'))
+                    .map(function(el){ return el.textContent.trim(); });
+    var text = codes.join('\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function(){
+            alert('{{T "totpCodes.jsCopiedPre"}}' + codes.length + '{{T "totpCodes.jsCopiedPost"}}');
+        }, function(err){
+            alert('{{T "totpCodes.jsCopyFail"}}' + err);
+        });
+    } else {
+        prompt('{{T "totpCodes.jsManualCopy"}}', text);
+    }
+}
+</script>
+
+{{template "footer" .}}

@@ -1,0 +1,72 @@
+{{template "header" .}}
+
+<h1>{{T "pskReset.title" .Data.User.Username}}</h1>
+
+<div class="flash warn">
+{{T "pskReset.warnPre"}}<b>{{T "userCreated.onlyOnce"}}</b>{{T "pskReset.warnPost"}}
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "pskReset.newPsk"}}</h2></div>
+    <div class="psk-display" id="psk-value">{{.Data.PSK}}</div>
+    {{/* 2026-07-19 易用性:一键复制,同 user_created 页。 */}}
+    <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
+        <button class="btn secondary" type="button" onclick="copyPSK()">{{T "psk.copy"}}</button>
+        <span id="psk-copy-status" class="muted" style="font-size:12px"></span>
+    </div>
+    <p class="hint">{{T "userCreated.pskLoginHintPre"}}<code>{{.Data.User.Username}}</code>{{T "userCreated.pskLoginHintPost"}}</p>
+</div>
+
+<script>
+function copyPSK() {
+    var el = document.getElementById('psk-value');
+    var status = document.getElementById('psk-copy-status');
+    var text = el ? el.textContent.trim() : '';
+    function ok() { status.textContent = '{{T "psk.copied"}}'; }
+    function fail() {
+        if (el && window.getSelection) {
+            var range = document.createRange();
+            range.selectNodeContents(el);
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }
+        status.textContent = '{{T "psk.copyFailed"}}';
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(ok, fail);
+    } else {
+        fail();
+    }
+}
+</script>
+
+{{if .Data.CredQRImage}}
+<div class="card">
+    <div class="card-header"><h2>{{T "userDetail.credQrLabel"}}</h2></div>
+    <p class="hint">{{T "pskReset.credQrScanHintPre"}}<b>{{T "userCreated.containsPsk"}}</b>{{T "pskReset.credQrScanHintPost"}}</p>
+    <div style="display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap;margin-top:12px">
+        <div>
+            <img src="{{.Data.CredQRImage}}" alt="credentials QR" width="256" height="256"
+                 style="border:1px solid #444;border-radius:8px;background:#fff;padding:8px">
+        </div>
+        <div style="flex:1;min-width:300px">
+            <table class="kv">
+                <tr><th>{{T "userCreated.forServer"}}</th>
+                    <td>{{if .Data.Host}}<code>{{.Data.Host}}</code>{{else}}<span class="muted">{{T "userCreated.hostUnsetPre"}}</span>{{T "userCreated.hostUnsetMid"}}<code>server_id</code>{{T "userCreated.hostUnsetMid2"}}<a href="/settings">/settings</a>{{T "userCreated.hostUnsetPost"}}<code>advertised_host</code>{{end}}</td></tr>
+                <tr><th>Credential ID</th><td><code>{{.Data.User.CredentialID}}</code></td></tr>
+                <tr><th>{{T "pskReset.rotateTime"}}</th><td>{{.Data.CredCreated}}</td></tr>
+            </table>
+            <details style="margin-top:12px">
+                <summary class="muted" style="cursor:pointer">{{T "userCreated.fullCredUrl"}}</summary>
+                <code style="user-select:all;display:block;margin-top:8px;word-break:break-all;font-size:11px;background:var(--c-pre-bg);color:var(--c-pre-fg);padding:8px;border-radius:4px">{{.Data.CredURL}}</code>
+            </details>
+            <p class="hint" style="margin-top:8px">{{T "userCreated.noticePre"}}<b>{{T "userCreated.profileQr"}}</b>{{T "userCreated.noticePost"}}</p>
+        </div>
+    </div>
+</div>
+{{end}}
+
+<a href="/users/{{.Data.User.ID}}" class="btn">{{T "pskReset.backToUser"}}</a>
+
+{{template "footer" .}}

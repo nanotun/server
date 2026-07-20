@@ -1,0 +1,141 @@
+{{template "header" .}}
+
+<div class="crumb"><a href="/users" class="back">&larr; {{T "userDetail.backToList"}}</a> &middot; NETWORK &middot; <b>USERS</b></div>
+<h1>{{T "userDetail.userPrefix"}}{{.Data.User.Username}} <span class="muted">(id={{.Data.User.ID}})</span></h1>
+
+<div class="card">
+<div class="card-header"><h2>{{T "userDetail.accountInfo"}}</h2></div>
+<table class="tbl">
+    <tr><th>ID</th><td>{{.Data.User.ID}}</td></tr>
+    <tr><th>{{T "common.username"}}</th><td>{{.Data.User.Username}}</td></tr>
+    <tr><th>{{T "userDetail.thIsAdmin"}}</th><td>{{fmtBool .Data.User.IsAdmin}}</td></tr>
+    <tr><th>{{T "userDetail.thExitAllowed"}}</th><td>{{fmtBool .Data.User.ExitAllowed}}</td></tr>
+    <tr><th>{{T "userDetail.thPlatforms"}}</th><td>{{if .Data.User.AllowedPlatforms}}<code>{{.Data.User.AllowedPlatforms}}</code>{{else}}<span class="muted">{{T "userDetail.platformsUnlimited"}}</span>{{end}}</td></tr>
+    <tr><th>{{T "userDetail.thMaxSessions"}}</th><td>
+        {{if gt .Data.User.MaxSessions 0}}<code>{{.Data.User.MaxSessions}}</code> <span class="muted">{{T "userDetail.maxSessionsOverride"}}</span>
+        {{else if lt .Data.User.MaxSessions 0}}<span class="muted">{{T "userDetail.maxSessionsUnlimited"}}</span>
+        {{else}}<span class="muted">{{T "userDetail.maxSessionsFollowGlobal"}}</span>{{end}}
+    </td></tr>
+    <tr><th>{{T "common.status"}}</th><td>{{if eq .Data.User.DisabledAt 0}}<span class="badge ok">enabled</span>{{else}}<span class="badge warn">disabled ({{fmtTime .Data.User.DisabledAt}})</span>{{end}}</td></tr>
+    <tr><th>{{T "common.createdAt"}}</th><td>{{fmtTime .Data.User.CreatedAt}}</td></tr>
+    <tr><th>Credential ID</th><td>
+        {{if .Data.User.CredentialID}}<code>{{.Data.User.CredentialID}}</code>{{else}}<span class="muted">{{T "users.credNotGenerated"}}</span>{{end}}
+    </td></tr>
+    <tr><th>{{T "userDetail.credCreatedAt"}}</th><td>
+        {{if gt .Data.User.CredentialCreatedAt 0}}{{.Data.CredCreated}}{{else}}<span class="muted">{{T "users.credNotGenerated"}}</span>{{end}}
+    </td></tr>
+</table>
+<p class="hint">{{T "userDetail.hint1Pre"}}<b>{{T "userDetail.deviceWord"}}</b>{{T "userDetail.hint1Post"}}</p>
+<p class="hint">{{T "userDetail.hint2Pre"}}<b>{{T "userDetail.credQrLabel"}}</b>{{T "userDetail.hint2Mid"}}<b>{{T "userDetail.resetPskQuoted"}}</b>{{T "userDetail.hint2Post"}}</p>
+</div>
+
+{{if eq .Admin.Role "admin"}}
+<div class="card">
+<div class="card-header"><h2>{{T "common.actions"}}</h2></div>
+<div class="actions">
+    {{if eq .Data.User.DisabledAt 0}}
+        <form method="post" action="/users/{{.Data.User.ID}}/disable" class="inline">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit" class="btn secondary"
+                onclick="return confirm('{{T "userDetail.disableConfirm"}}')">{{T "common.disable"}}</button>
+        </form>
+    {{else}}
+        <form method="post" action="/users/{{.Data.User.ID}}/enable" class="inline">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit" class="btn">{{T "common.enable"}}</button>
+        </form>
+    {{end}}
+    <form method="post" action="/runtime/kick" class="inline">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <input type="hidden" name="kind" value="user">
+        <input type="hidden" name="id" value="{{.Data.User.ID}}">
+        <input type="hidden" name="reason" value="kicked_by_admin_ui">
+        {{/* Referrer-Policy: no-referrer — 回跳必须显式带 return_to。 */}}
+        <input type="hidden" name="return_to" value="/users/{{.Data.User.ID}}">
+        <button type="submit" class="btn secondary"
+            onclick="return confirm('{{T "userDetail.kickConfirm"}}')">{{T "userDetail.kickAll"}}</button>
+    </form>
+</div>
+<form method="post" action="/users/{{.Data.User.ID}}/set-platforms"
+    style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+        <label>{{T "userNew.platformsLabel"}}</label>
+        <div class="check-grid" style="margin-bottom:10px">
+            {{range .Data.PlatformChecks}}
+            <label><input type="checkbox" name="platforms" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>
+            {{end}}
+        </div>
+        <button type="submit" class="btn secondary">{{T "userDetail.setPlatforms"}}</button>
+        <div class="hint">{{T "userDetail.platformsHint"}}</div>
+    </div>
+</form>
+<form method="post" action="/users/{{.Data.User.ID}}/set-max-sessions"
+    style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+        <label for="max-sessions">{{T "userDetail.maxSessionsLabel"}}</label>
+        <input id="max-sessions" name="max_sessions" type="number" min="-1" step="1"
+            value="{{.Data.User.MaxSessions}}" style="width:140px" required>
+        <button type="submit" class="btn secondary">{{T "userDetail.setMaxSessions"}}</button>
+        <div class="hint">{{T "userDetail.maxSessionsHint"}}</div>
+    </div>
+</form>
+</div>
+{{end}}
+
+<div class="card">
+<div class="card-header"><h2>{{T "common.thDevice"}} ({{len .Data.Devices}})</h2></div>
+<table class="tbl">
+    <thead><tr><th>ID</th><th>{{T "devices.thName"}}</th><th>UUID</th><th>{{T "devices.thPlatform"}}</th>
+        <th>{{T "devices.thFixedV4"}}</th><th>{{T "devices.thFixedV6"}}</th><th>{{T "devices.thLastSeen"}}</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Devices}}
+        <tr>
+            <td>{{.ID}}</td>
+            <td>{{if .Alias}}{{.Alias}} <span class="muted">({{.DeviceName}})</span>{{else}}{{.DeviceName}}{{end}}</td>
+            <td class="muted">{{if gt (len .DeviceUUID) 12}}<code title="{{.DeviceUUID}}">{{slice .DeviceUUID 0 8}}…</code>{{else}}{{.DeviceUUID}}{{end}}</td>
+            <td>{{.Platform}}</td>
+            <td>{{if .FixedVIPv4}}<code>{{.FixedVIPv4}}</code>{{else}}<span class="muted">-</span>{{end}}</td>
+            <td>{{if .FixedVIPv6}}<code>{{.FixedVIPv6}}</code>{{else}}<span class="muted">-</span>{{end}}</td>
+            <td><span title="{{.LastSeenAt}}">{{fmtDuration .LastSeenAt}}</span></td>
+            <td><a href="/devices/{{.ID}}" class="btn small secondary">{{T "common.details"}}</a></td>
+        </tr>
+    {{else}}
+        <tr><td colspan="8" class="muted">{{T "userDetail.noDevices"}}</td></tr>
+    {{end}}
+    </tbody>
+</table>
+</div>
+
+{{if eq .Admin.Role "admin"}}
+{{/* 2026-07-19 易用性改版:破坏性操作(重置 PSK / 删除)从常规操作卡拆出,
+     收进红边「危险操作」分区,每项带后果说明,避免与踢线/禁用混排误点。
+     重置 PSK 从主色按钮降级为 danger 描边 —— 它会立刻作废旧凭证。 */}}
+<div class="card danger-zone">
+<div class="card-header"><h2>{{T "userDetail.dangerZone"}}</h2></div>
+<div class="danger-item">
+    <div class="desc"><b>{{T "userDetail.resetPsk"}}</b>{{T "userDetail.resetPskDesc"}}</div>
+    {{if ne .Data.User.DisabledAt 0}}
+    {{/* 后端对 disabled 用户 rotate 直接 409;按钮不该引导 admin 去撞这堵墙。 */}}
+    <span class="muted">{{T "userDetail.resetPskDisabledHint"}}</span>
+    {{else}}
+    <form method="post" action="/users/{{.Data.User.ID}}/reset-psk" class="inline">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <button type="submit" class="btn danger"
+            onclick="return confirm('{{T "userDetail.resetPskConfirm"}}')">{{T "userDetail.resetPsk"}}</button>
+    </form>
+    {{end}}
+</div>
+<div class="danger-item">
+    <div class="desc"><b>{{T "userDetail.deleteUser"}}</b>{{T "userDetail.deleteUserDesc"}}</div>
+    <form method="post" action="/users/{{.Data.User.ID}}/delete" class="inline">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <button type="submit" class="btn danger"
+            onclick="return confirm('{{T "userDetail.deleteConfirm"}}')">{{T "common.delete"}}</button>
+    </form>
+</div>
+</div>
+{{end}}
+
+{{template "footer" .}}

@@ -1,0 +1,183 @@
+package store
+
+import (
+	"context"
+	"embed"
+	"fmt"
+	"io/fs"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
+// Migrate 顺序执行 migrations/ 目录下编号严格递增的 .sql 文件。
+//
+// 文件名约定：NNNN_<slug>.sql，NNNN 是 4 位起的整数，按数值升序执行。
+// 已执行版本号记录在 app_settings.schema_version。重复运行幂等。
+//
+// I8: 跨进程互斥。Migrate 现在用 <db>.migrate.lock 上 flock(LOCK_EX) 串行化跨
+// 进程并发(vpn-server + nanotun-admin 同时启动时尤其重要),内存库 / 空 path
+// 自动 noop;Windows 上退化为单进程 sync.Mutex 行为(详见 migrate_lock_other.go)。
+func (s *Store) Migrate(ctx context.Context) error {
+	unlock, err := acquireMigrateLock(s.path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ensureSettingsTable(ctx); err != nil {
+		return err
+	}
+
+	current, err := s.currentSchemaVersion(ctx)
+	if err != nil {
+		return err
+	}
+
+	files, err := listMigrations()
+	if err != nil {
+		return err
+	}
+
+	for _, m := range files {
+		if m.version <= current {
+			continue
+		}
+		body, err := migrationsFS.ReadFile("migrations/" + m.name)
+		if err != nil {
+			return fmt.Errorf("store: read migration %s: %w", m.name, err)
+		}
+
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("store: begin tx for %s: %w", m.name, err)
+		}
+		if _, err := tx.ExecContext(ctx, string(body)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("store: exec migration %s: %w", m.name, err)
+		}
+		// 写回 schema_version
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO app_settings(key,value) VALUES('schema_version',?)
+			 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+			strconv.Itoa(m.version),
+		); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("store: write schema_version for %s: %w", m.name, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("store: commit %s: %w", m.name, err)
+		}
+	}
+
+	// 运行时初始化 hook:Migration 之后兜底确保 `server_id` 已生成。
+	//
+	// 为什么不放进 SQL migration 文件?UUID v4 必须 Go 端生成,纯 SQL 没法做到
+	// "首次落库随机 UUID,后续幂等"。这里用 Go hook 模拟「DEFAULT uuid_generate_v4()」
+	// 语义:每个跑过 Migrate 的进程都触发一次 ensureServerID,first-writer-wins。
+	//
+	// 失败只 wrap 成 error 返回(让 Migrate 自身的 caller 决定 fatal / warn) —
+	// 实务里只有写权限丢失才会失败,那时整个 schema 已经丢一半,这里 fail 也合理。
+	if _, err := s.ensureServerID(ctx); err != nil {
+		return fmt.Errorf("store: ensure server_id after migrate: %w", err)
+	}
+	return nil
+}
+
+// ensureSettingsTable 在 schema_version 还没记录时也能让首条 migration 顺利运行。
+// app_settings 本身就在 0001_init.sql 里建出来；这里仅是兜底，避免 currentSchemaVersion
+// 在尚未迁移过的库上炸 "no such table"。
+func (s *Store) ensureSettingsTable(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS app_settings (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`)
+	if err != nil {
+		return fmt.Errorf("store: create app_settings: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) currentSchemaVersion(ctx context.Context) (int, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key='schema_version'`)
+	var v string
+	if err := row.Scan(&v); err != nil {
+		// 不存在视为 0。
+		return 0, nil //nolint:nilerr
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("store: bad schema_version %q: %w", v, err)
+	}
+	return n, nil
+}
+
+type migrationFile struct {
+	version int
+	name    string
+}
+
+func listMigrations() ([]migrationFile, error) {
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("store: read migrations dir: %w", err)
+	}
+	var out []migrationFile
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		// 跳过 macOS resource fork（"._xxx.sql"）。本仓 source tree 不会有这种文件,
+		// 但如果通过 macOS tar / zip 传输时带了 com.apple.provenance 等 xattr,
+		// 元数据会以 `._0001_init.sql` 形式落到 migrations/ 目录,然后被
+		// `//go:embed migrations/*.sql` 当成真 migration 拉进 binary,启动时
+		// `strconv.Atoi("._0001")` 直接 fatal。这里 defensive 兜底,让任何打包
+		// 路径都不会让服务起不来。
+		if strings.HasPrefix(e.Name(), "._") {
+			continue
+		}
+		idx := strings.IndexByte(e.Name(), '_')
+		if idx <= 0 {
+			return nil, fmt.Errorf("store: invalid migration name %q", e.Name())
+		}
+		v, err := strconv.Atoi(e.Name()[:idx])
+		if err != nil {
+			return nil, fmt.Errorf("store: invalid version in %q: %w", e.Name(), err)
+		}
+		out = append(out, migrationFile{version: v, name: e.Name()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
+	for i := 1; i < len(out); i++ {
+		if out[i].version == out[i-1].version {
+			return nil, fmt.Errorf("store: duplicate migration version %d", out[i].version)
+		}
+	}
+	return out, nil
+}
+
+// SettingsGet/SettingsSet 提供给上层读写应用级元数据。
+func (s *Store) SettingsGet(ctx context.Context, key string) (string, bool, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key=?`, key)
+	var v string
+	if err := row.Scan(&v); err != nil {
+		return "", false, nil //nolint:nilerr
+	}
+	return v, true, nil
+}
+
+func (s *Store) SettingsSet(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO app_settings(key,value) VALUES(?,?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		key, value,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set %s: %w", key, err)
+	}
+	return nil
+}

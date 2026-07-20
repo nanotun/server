@@ -1,0 +1,13 @@
+[Unit]
+Description=Create TUN devices for VPN (10/192.168/172.16)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 安装时把 tun-setup.sh、tun-isolate.sh 复制到 /usr/local/bin/ 并 chmod +x；setup 会顺带执行 isolate
+ExecStart=/usr/local/bin/nanotun-tun-setup.sh
+
+[Install]
+WantedBy=multi-user.target

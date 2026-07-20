@@ -1,0 +1,176 @@
+{{template "header" .}}
+
+<div class="crumb">NETWORK &middot; <b>SESSIONS</b></div>
+<h1>{{T "sessions.title"}}</h1>
+
+{{if .Data.RuntimeErr}}
+<div class="flash warn">{{T "sessions.dataplaneUnavailable"}}{{.Data.RuntimeErr}}<br>
+    <span class="muted">{{T "dashboard.checkServer"}}</span></div>
+{{end}}
+
+<div class="toolbar">
+    <span class="muted">{{T "common.totalPre"}}{{len .Data.Sessions}}{{T "sessions.activeSuffix"}}</span>
+    {{/* 2026-07-19 易用性:自动刷新开关(10s,标签页隐藏时暂停)。 */}}
+    {{if .Data.AutoRefresh}}
+    <a href="/sessions" class="btn small" style="margin-left:auto" title="{{T "sessions.autoRefreshOnTitle"}}">{{T "sessions.autoRefreshOn"}}</a>
+    <a href="/sessions?autorefresh=1" class="btn small secondary">{{T "sessions.refresh"}}</a>
+    {{else}}
+    <a href="/sessions?autorefresh=1" class="btn small secondary" style="margin-left:auto" title="{{T "sessions.autoRefreshOffTitle"}}">{{T "sessions.autoRefreshOff"}}</a>
+    <a href="/sessions" class="btn small secondary">{{T "sessions.refresh"}}</a>
+    {{end}}
+</div>
+
+<div class="card">
+<table class="tbl">
+    <thead><tr>
+        <th>{{T "common.thUser"}}</th>
+        <th>{{T "common.thDevice"}}</th>
+        <th>vIPv4</th>
+        <th>vIPv6</th>
+        <th>{{T "sessions.fixedVip"}}</th>
+        <th>{{T "common.thConnDuration"}}</th>
+        <th>{{T "common.thExit"}}</th>
+        <th>{{T "sessions.rate"}}</th>
+        <th>conn_id</th>
+        <th style="width:80px">{{T "common.actions"}}</th>
+    </tr></thead>
+    <tbody>
+    {{range .Data.Sessions}}
+        <tr>
+            <td>
+                {{if .Username}}
+                    {{/* 第十轮深扫:有 store ID 直达用户详情,不再甩到列表页自己找。 */}}
+                    {{if .StoreUserID}}<a href="/users/{{.StoreUserID}}">{{.Username}}</a>{{else}}<a href="/users">{{.Username}}</a>{{end}}
+                {{else}}
+                    <span class="muted">{{if .UserID}}{{.UserID}}{{else}}{{T "sessions.anon"}}{{end}}</span>
+                {{end}}
+            </td>
+            <td>
+                {{if .DeviceName}}
+                    {{/* 第十一轮:设备名直达设备详情(改限速/固定 vIP/别名都在那边)。 */}}
+                    {{if .DeviceID}}<a href="/devices/{{.DeviceID}}">{{.DeviceName}}</a>{{else}}{{.DeviceName}}{{end}}
+                {{else}}
+                    <span class="muted">—</span>
+                {{end}}
+                {{if .Platform}}<span class="badge" style="margin-left:4px">{{.Platform}}</span>{{end}}
+                {{if .DeviceUUID}}
+                    {{/* 2026-07-19 易用性:UUID 截断 8 位,悬停看全量。 */}}
+                    <div class="muted" style="font-family:monospace;font-size:11px" title="{{.DeviceUUID}}">{{if gt (len .DeviceUUID) 12}}{{slice .DeviceUUID 0 8}}…{{else}}{{.DeviceUUID}}{{end}}</div>
+                {{end}}
+            </td>
+            <td>
+                <code>{{if .VIPv4}}{{.VIPv4}}{{else}}—{{end}}</code>
+                {{if and .VIPv4 (eq .VIPv4 .FixedVIPv4)}}<span class="badge ok" title="{{T "sessions.lockTitle"}}">🔒</span>{{end}}
+            </td>
+            <td>
+                <code>{{if .VIPv6}}{{.VIPv6}}{{else}}—{{end}}</code>
+                {{if and .VIPv6 (eq .VIPv6 .FixedVIPv6)}}<span class="badge ok" title="{{T "sessions.lockTitle"}}">🔒</span>{{end}}
+            </td>
+            <td>
+                {{if .DeviceID}}
+                    {{if .HasAnyFixedVIP}}
+                        {{/* 已绑 — 显示当前固定值 + 解绑按钮(仅 admin) */}}
+                        <div style="font-size:12px;line-height:1.5">
+                            {{if .FixedVIPv4}}<div><span class="muted">v4=</span><code>{{.FixedVIPv4}}</code></div>{{end}}
+                            {{if .FixedVIPv6}}<div><span class="muted">v6=</span><code>{{.FixedVIPv6}}</code></div>{{end}}
+                        </div>
+                        {{if eq $.Admin.Role "admin"}}
+                        <form method="post" action="/devices/{{.DeviceID}}/set-fixed-vip" class="inline" style="margin-top:4px">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <input type="hidden" name="fixed_vip_v4" value="">
+                            <input type="hidden" name="fixed_vip_v6" value="">
+                            <input type="hidden" name="return_to" value="{{if $.Data.AutoRefresh}}/sessions?autorefresh=1{{else}}/sessions{{end}}">
+                            <button class="btn small secondary" type="submit"
+                                    onclick="return confirm('{{T "sessions.unbindConfirm"}}');">
+                                {{T "sessions.unbind"}}
+                            </button>
+                        </form>
+                        {{end}}
+                    {{else}}
+                        {{/* 未绑 — 提供一键绑定按钮(仅 admin,且当前必须有 vIP) */}}
+                        {{if and (eq $.Admin.Role "admin") (or .VIPv4 .VIPv6)}}
+                        <form method="post" action="/devices/{{.DeviceID}}/set-fixed-vip" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <input type="hidden" name="fixed_vip_v4" value="{{.VIPv4}}">
+                            <input type="hidden" name="fixed_vip_v6" value="{{.VIPv6}}">
+                            <input type="hidden" name="return_to" value="{{if $.Data.AutoRefresh}}/sessions?autorefresh=1{{else}}/sessions{{end}}">
+                            <button class="btn small" type="submit"
+                                    title="{{T "sessions.bindTitle"}}"
+                                    onclick="return confirm('{{T "sessions.bindConfirmPre"}}{{.VIPv4}}{{if and .VIPv4 .VIPv6}} / {{end}}{{.VIPv6}}{{T "sessions.bindConfirmMid"}}{{.DeviceName}}{{T "sessions.bindConfirmPost"}}');">
+                                {{T "sessions.bindCurrentIp"}}
+                            </button>
+                        </form>
+                        {{else if not (or .VIPv4 .VIPv6)}}
+                            <span class="muted">{{T "sessions.noVip"}}</span>
+                        {{else}}
+                            <span class="muted">{{T "sessions.notBound"}}</span>
+                        {{end}}
+                    {{end}}
+                {{else}}
+                    <span class="muted" title="{{T "sessions.noDeviceIdTitle"}}">—</span>
+                {{end}}
+            </td>
+            <td title="{{fmtTime .CreatedAt}}">{{fmtDuration .CreatedAt}}</td>
+            <td>{{if .ExitAllowed}}<span class="badge ok">ON</span>{{else}}<span class="badge">OFF</span>{{end}}</td>
+            <td class="muted">
+                {{if or .BWUpBPS .BWDownBPS}}
+                    ↑{{fmtBytes .BWUpBPS}}/s · ↓{{fmtBytes .BWDownBPS}}/s
+                {{else}}
+                    {{T "sessions.noRateLimit"}}
+                {{end}}
+            </td>
+            <td class="muted" style="font-family:monospace;font-size:11px">{{.ConnID}}</td>
+            <td>
+                {{if eq $.Admin.Role "admin"}}
+                <form method="post" action="/runtime/kick" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="kind" value="session">
+                    <input type="hidden" name="id" value="{{.ConnID}}">
+                    <input type="hidden" name="reason" value="kicked_via_web_sessions_page">
+                    {{/* Referrer-Policy: no-referrer — 回跳必须显式带 return_to。 */}}
+                    <input type="hidden" name="return_to" value="{{if $.Data.AutoRefresh}}/sessions?autorefresh=1{{else}}/sessions{{end}}">
+                    <button class="btn small danger" type="submit"
+                            onclick="return confirm('{{T "sessions.kickConfirm"}}');">
+                        {{T "sessions.kick"}}
+                    </button>
+                </form>
+                {{else}}
+                    <span class="muted" title="{{T "sessions.viewerNoKick"}}">—</span>
+                {{end}}
+            </td>
+        </tr>
+    {{else}}
+        <tr><td colspan="10" class="muted">{{T "dashboard.noOnlineSessions"}}</td></tr>
+    {{end}}
+    </tbody>
+</table>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "sessions.notesHeading"}}</h2></div>
+    <ul class="muted" style="line-height:1.7">
+        <li>{{T "sessions.note1Pre"}}<code>/status</code>{{T "sessions.note1Post"}}</li>
+        <li><strong>{{T "sessions.note2Strong"}}</strong>{{T "sessions.note2Post"}}</li>
+        <li><strong>{{T "sessions.note3Strong"}}</strong>{{T "sessions.note3Post"}}</li>
+        <li>{{T "sessions.note4Pre"}}<code>runtime.kick.ok</code>{{T "sessions.note4Post"}}</li>
+        <li>{{T "sessions.note5Pre"}}<code>kick.device_supersede</code>{{T "sessions.note5Post"}}</li>
+    </ul>
+</div>
+
+{{if .Data.AutoRefresh}}
+<script>
+// 自动刷新(2026-07-19):10s 整页 reload;标签页隐藏时跳过(document.hidden),
+// 切回后下一个 tick 再刷。与 sysmon 的 hidden 守门策略一致,省流量也不打扰后台标签。
+// reload 前剥掉 flash / flash_kind:一次性提示不该每 10 秒重现;
+// location.replace 不产生 history 条目,后退键不会陷进刷新历史里。
+setInterval(function () {
+    if (document.hidden) return;
+    var u = new URL(location.href);
+    u.searchParams.delete('flash');
+    u.searchParams.delete('flash_kind');
+    location.replace(u.toString());
+}, 10000);
+</script>
+{{end}}
+
+{{template "footer" .}}

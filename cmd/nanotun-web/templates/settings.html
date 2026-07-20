@@ -1,0 +1,113 @@
+{{template "header" .}}
+
+<div class="crumb">SYSTEM &middot; <b>SETTINGS</b></div>
+<h1>{{T "settings.title"}}</h1>
+
+{{if eq .Admin.Role "admin"}}
+<div class="card">
+<div class="card-header"><h2>{{T "settings.dialHostHeading"}} <span class="badge">{{T "settings.required"}}</span></h2></div>
+<p class="hint">{{Th "settings.dialHostHint"}}</p>
+<form method="post" action="/settings/server-dial-host" id="server-dial-host-form"
+    onsubmit="document.getElementById('dh-submit').disabled=true;document.getElementById('dh-submit').textContent='{{T "dashboard.probing"}}';document.getElementById('dh-progress').style.display='inline';">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+        <label>{{T "settings.dialHostFieldLabel"}}</label>
+        {{/* 2026-05-27 第二十一轮:空值预填 — 未配置时用「访问本页时 URL 的 host」
+             作候选 value(`deriveServerDialHostSuggestion`),admin 不必手动 retype
+             浏览器地址栏。已配置时仍显示 DB 当前值。候选派生失败(IPv6 link-local /
+             非法 hostname)时退回空,提示走「未配置」分支。 */}}
+        <input name="server_dial_host"
+            value="{{if .Data.ServerDialHost}}{{.Data.ServerDialHost}}{{else}}{{.Data.ServerDialHostSuggestion}}{{end}}"
+            placeholder="{{T "settings.dialHostPh"}}" maxlength="253">
+        <small class="muted">
+            {{- if .Data.ServerDialHost -}}
+                {{T "settings.currentColon"}}<code>{{.Data.ServerDialHost}}</code>
+            {{- else if .Data.ServerDialHostSuggestion -}}
+                <em>{{T "settings.dialHostUnsetSuggestPre"}}<code>{{.Data.ServerDialHostSuggestion}}</code>{{T "settings.dialHostUnsetSuggestPost"}}</em>
+            {{- else -}}
+                <em>{{T "settings.dialHostUnset"}}</em>
+            {{- end -}}
+        </small>
+    </div>
+    <div class="field">
+        <label><input type="checkbox" name="skip_probe" value="1"> {{T "settings.skipProbePre"}}<strong>{{T "settings.skipProbeStrong"}}</strong>{{T "settings.skipProbePost"}}</label>
+        <small class="muted">{{Th "settings.skipProbeHelp"}}</small>
+    </div>
+    {{/* 2026-05-27 第十四轮(A7):server_dial_host 保存路径要跑 DNS + ICMP probe,
+         多 A/AAAA 域名最长 ~18s;原表单无反馈,admin 等 20s 误以为页面 hang。
+         onsubmit 禁用按钮 + 显示进度提示;请勿删此 hint,删了 ops 会以为 web 挂了。 */}}
+    <button type="submit" id="dh-submit" class="btn">{{T "common.save"}}</button>
+    <span id="dh-progress" class="muted" style="display:none;margin-left:12px;font-size:13px">
+        {{T "settings.dhProgress"}}
+    </span>
+</form>
+</div>
+
+<div class="card">
+<div class="card-header"><h2>{{T "settings.advertisedHeading"}} <span class="badge muted">{{T "settings.optional"}}</span></h2></div>
+<p class="hint">{{Th "settings.advertisedHint"}}</p>
+<form method="post" action="/settings/advertised-host">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+        <label>{{T "settings.advertisedFieldLabel"}}</label>
+        <input name="advertised_host" value="{{.Data.AdvertisedHost}}"
+            placeholder="{{T "settings.advertisedPh"}}" maxlength="253">
+        <small class="muted">{{if .Data.AdvertisedHost}}{{T "settings.currentColon"}}<code>{{.Data.AdvertisedHost}}</code>{{else}}<em>{{T "settings.advertisedUnsetEm"}}</em>{{end}}</small>
+    </div>
+    <button type="submit" class="btn">{{T "common.save"}}</button>
+</form>
+</div>
+
+<div class="card">
+<div class="card-header"><h2>{{T "settings.rateHeading"}}</h2></div>
+<p class="hint">{{Th "settings.rateHint"}}</p>
+{{if .Data.ControlAvailable}}
+<p class="hint muted">
+    {{T "settings.tomlFallbackPre"}}<code>{{.Data.TomlUpHuman}}</code>{{T "settings.tomlFallbackMid1"}}<code>{{.Data.TomlDownHuman}}</code>{{T "settings.tomlFallbackMid2"}}<code>{{.Data.EffectiveBurstHuman}}</code>{{T "settings.tomlFallbackPost"}}
+</p>
+{{else}}
+<p class="hint muted">{{T "settings.rateUnavailable"}}</p>
+{{end}}
+<form method="post" action="/settings/rate">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="row">
+        <div class="field">
+            <label>{{T "settings.defaultUploadLabel"}}</label>
+            <input name="rate_default_upload_mibs" value="{{.Data.RateUpStr}}"
+                placeholder="{{T "settings.rateUpPh"}}" inputmode="decimal">
+            <small class="muted">{{T "deviceDetail.currentEffective"}}{{.Data.RateUpHuman}}</small>
+        </div>
+        <div class="field">
+            <label>{{T "settings.defaultDownloadLabel"}}</label>
+            <input name="rate_default_download_mibs" value="{{.Data.RateDownStr}}"
+                placeholder="{{T "settings.rateDownPh"}}" inputmode="decimal">
+            <small class="muted">{{T "deviceDetail.currentEffective"}}{{.Data.RateDownHuman}}</small>
+        </div>
+        <div class="field">
+            <label>{{T "settings.burstLabel"}}</label>
+            <input name="rate_burst_kib" value="{{.Data.BurstKiBStr}}"
+                placeholder="{{T "settings.burstPh"}}" inputmode="decimal">
+            <small class="muted">{{T "settings.currentSettingsValue"}}{{.Data.BurstHuman}}</small>
+        </div>
+    </div>
+    <button type="submit" class="btn">{{T "common.saveHot"}}</button>
+</form>
+</div>
+{{end}}
+
+<div class="card">
+<div class="card-header"><h2>{{T "settings.fullTableHeading"}}</h2></div>
+<p class="muted">{{T "settings.fullTablePre"}}<code>app_settings</code>{{T "settings.fullTablePost"}}</p>
+<table class="tbl">
+    <thead><tr><th>{{T "settings.thKey"}}</th><th>{{T "settings.thValue"}}</th></tr></thead>
+    <tbody>
+    {{range .Data.Settings}}
+        <tr><td><code>{{.K}}</code></td><td><code>{{.V}}</code></td></tr>
+    {{else}}
+        <tr><td colspan="2" class="muted">{{T "settings.noSettings"}}</td></tr>
+    {{end}}
+    </tbody>
+</table>
+</div>
+
+{{template "footer" .}}

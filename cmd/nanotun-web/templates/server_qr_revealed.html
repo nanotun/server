@@ -1,0 +1,113 @@
+{{template "header" .}}
+
+<h1>{{T "dashboard.serverQrCard"}}</h1>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "qrShow.verifiedHeading"}}</h2></div>
+    <div class="flash warn" style="margin-bottom:16px">
+        {{Th "qrShow.warn"}}
+    </div>
+    <div style="display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap">
+        <div>
+            <!-- 2026-05-26 第六轮 P0 修复 — 跨屏摄像头扫码失败:
+                 原 width="320" 把 384px PNG bilinear 缩到 320 = 边界糊。
+                 改 width="512" 配合 admin CLI 升级后的 1024px 原生 PNG = 精确 2:1
+                 downscale,Retina HDPI 屏直接 1:1 显示 1024 物理像素,普通屏看到 512
+                 CSS px(显示器 96 DPI 下约 13.5 cm,30 cm 距离手机摄像头 ~5.8 px/module,
+                 高于 zxing / iOS Vision 推荐密度 4 px/module 阈值)。 -->
+            <img src="{{.Data.QRDataURL}}" alt="server profile QR"
+                 width="512" height="512"
+                 style="border:1px solid #444;border-radius:8px;background:#fff;padding:12px">
+        </div>
+        <div style="flex:1;min-width:260px">
+            <table class="kv">
+                {{/* 2026-05-26 第九轮扫描修:原来只展示 advertised_host 当 "host" 行,
+                     但 QR PNG / URL 里嵌的实际是 server_dial_host(真实拨号目标),
+                     admin 扫码后看到的 client decode 结果与本页"host"列对不上。
+                     拆两行展示与 server_qr_password.html 同款:
+                       - 客户端拨号地址(server_dial_host):必填、QR 里实际嵌的;
+                       - 展示 label(advertised_host):可选、客户端 UI 副标题用。 */}}
+                <tr><th>{{Th "qrPwd.dialHostLabel"}}</th>
+                    <td><code>{{.Data.DialHost}}</code></td></tr>
+                {{if .Data.AdvertisedHost}}
+                <tr><th>{{Th "qrPwd.advertisedLabel"}}</th>
+                    <td><code>{{.Data.AdvertisedHost}}</code></td></tr>
+                {{else}}
+                <tr><th>{{Th "qrPwd.advertisedLabel"}}</th>
+                    <td class="muted">{{T "qrPwd.advertisedUnset"}}</td></tr>
+                {{end}}
+                {{if .Data.ServerID}}
+                {{/* 2026-05-27 第十三轮:server_id 嵌入 QR(nanotun://v2 wire format),
+                     客户端按它做 profile upsert。admin 灾备 / 跨机迁移时对照本字段;
+                     若 server_id 与既有 client profile 不一致,客户端会当作全新 server 创建条目。 */}}
+                <tr><th>{{Th "qrShow.stableFingerprint"}}</th>
+                    <td><code>{{.Data.ServerID}}</code></td></tr>
+                {{end}}
+                <tr><th>schema</th><td><code>nanotun://v2</code>{{T "qrShow.noPskSuffix"}}</td></tr>
+                <tr><th>{{T "qrShow.afterScan"}}</th>
+                    <td class="muted">{{T "qrShow.afterScanPre"}}<code>nanotun-cred://v1</code>{{T "qrShow.afterScanPost"}}</td></tr>
+            </table>
+            <div style="margin-top:16px">
+                <a href="/server-qr" class="btn secondary">{{T "qrShow.closeToPwd"}}</a>
+                <a href="/" class="btn secondary" style="margin-left:8px">{{T "qrShow.backToOverview"}}</a>
+            </div>
+            <p class="muted" style="margin-top:16px;font-size:12px">
+                {{T "qrShow.auditedPre"}}<code>server_profile_qr_show</code>{{T "qrShow.auditedPost"}}
+            </p>
+        </div>
+    </div>
+
+    <!-- 2026-05-26 第七轮:URL 文本展示
+         作用:跨屏拍摄扫码失败时的兜底 — admin 可手动复制 nanotun://v2 URL,粘到
+         客户端「导入 profile」输入框直接走 universal import router 完成同样的
+         server-only profile 落库。
+         安全姿态:URL 含 hy2 password / hy2 mTLS 私钥 / REALITY public_key 等敏感
+         字段,与 PNG QR 同等敏感(QR 解码后就是这串 URL),不增加暴露面;但文本
+         比图更易意外复制粘贴到聊天工具,所以默认 <details> 折叠,并在 summary 标
+         注「敏感」。复制按钮用 navigator.clipboard,与 /me/totp/codes 的复制全部恢复
+         码同款模式。
+         同源一致性:此 URL 与上方 PNG 由同一次 nanotun-admin profile show fork
+         产出,内嵌 Hy2 mTLS 客户端证书完全相同 — 用户扫码 vs 复制文本两条路径会拿
+         到 byte-equal 的 server profile。 -->
+    <details style="margin-top:24px">
+        <summary style="cursor:pointer;font-weight:600">
+            {{T "qrShow.showUrlSummary"}}
+        </summary>
+        <div class="flash warn" style="margin-top:12px;font-size:12px">
+            {{T "qrShow.urlWarn"}}
+        </div>
+        <textarea id="serverProfileURL" readonly
+                  rows="6"
+                  style="width:100%;font-family:'SF Mono','Menlo','Consolas',monospace;font-size:11px;line-height:1.5;word-break:break-all;background:#1a1a1a;color:#e0e0e0;border:1px solid #444;border-radius:6px;padding:10px;box-sizing:border-box"
+                  onclick="this.select()">{{.Data.URLText}}</textarea>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+            <button class="btn secondary" type="button" onclick="copyServerProfileURL()">
+                {{T "qrShow.copyClipboard"}}
+            </button>
+            <span class="muted" style="font-size:12px">
+                {{T "qrShow.lengthPre"}}<code>{{len .Data.URLText}}</code>{{T "qrShow.bytesProtoMid"}}<code>nanotun://v2</code>{{T "qrShow.noPskParen"}}
+            </span>
+        </div>
+    </details>
+</div>
+
+<script>
+function copyServerProfileURL() {
+    var t = document.getElementById('serverProfileURL');
+    if (!t) return;
+    var text = t.value;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+            alert('{{T "qrShow.jsCopiedPre"}}' + text.length + '{{T "qrShow.jsCopiedPost"}}');
+        }, function (err) {
+            t.select();
+            alert('{{T "qrShow.jsClipUnavailable"}}' + err);
+        });
+    } else {
+        t.select();
+        alert('{{T "qrShow.jsNoClipApi"}}');
+    }
+}
+</script>
+
+{{template "footer" .}}

@@ -1,0 +1,78 @@
+[Unit]
+Description=nanotun self-hosted VPN gateway (M0 PSK mode)
+Documentation=file:///etc/nanotun/README.md
+After=network-online.target nanotun-tun-setup.service
+Wants=network-online.target
+Requires=nanotun-tun-setup.service
+
+[Service]
+# J2(2026-05-22):Type=notify + WatchdogSec= 让 systemd 能
+#   (a) 等启动真正完成(server 内部 sdNotifyReady 之后)再标记 active —— 让
+#       依赖 nanotun 的 unit(比如监控)能正确排在 After= 之后;
+#   (b) 检测死锁:server 内部每 WatchdogSec/2 发一次 WATCHDOG=1,卡死时
+#       systemd 会 SIGTERM 强制重启,自愈成本远低于人介入。
+# 不跑在 systemd 下时(裸 ./nanotund),NOTIFY_SOCKET 为空 → 全部 no-op,
+# 不影响 dev 用法。
+Type=notify
+WatchdogSec=30s
+User=root
+Group=root
+WorkingDirectory=/etc/nanotun
+ExecStart=/usr/local/bin/nanotund -config /etc/nanotun/config.toml
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+# 关闭 isolate（mesh 默认互通）；如需重新启用，把下行去掉或改为 1
+Environment=NANOTUN_TUN_ISOLATE=0
+
+# E4(2026-05-22) systemd hardening：在保持 root + TUN/iptables 能力的前提下尽量
+# 降低 blast radius。任何一条让 server 起不来时,请先看 journalctl,再视场景松绑。
+#
+# - NoNewPrivileges: 任何 child 进程都不能再 setuid 提权;server 没有 exec 第三方
+#   二进制的合法理由(iptables/ip 命令本身 setuid 不靠);
+# - ProtectSystem=strict: /usr 等只读;ReadWritePaths 显式给出可写区(数据库 / 控制 socket);
+# - PrivateTmp: 独立 /tmp,防同主机其它进程通过 /tmp 文件名碰撞做 race;
+# - ProtectHome: server 不需要任何 /home 访问;
+# - 不开 ProtectKernelTunables / ProtectKernelModules: server 要写 /proc/sys/net/ipv4/ip_forward
+#   且依赖 iptables 内核模块,关掉会让 EnableIPForward / SetupIptables fail;
+# - 不限 RestrictAddressFamilies: 数据面要 AF_INET / AF_INET6 / AF_NETLINK / AF_UNIX,
+#   遍历一遍把对的列出 trade-off 不值。
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# 数据库与控制 socket 默认路径,如运维改了 [store].db_path / [server].control_socket_path,
+# 请同步修改这里(否则 server 起来就因为只读拒写直接退)。
+ReadWritePaths=/var/lib/nanotun /run/nanotun
+
+# K(2026-05-23):RuntimeDirectory= 让 systemd 在 ExecStart 之前自动创建 /run/nanotun
+# (mode 0750,owner=User/Group),stop 后清理。否则与 ProtectSystem=strict +
+# ReadWritePaths=/run/nanotun 配合,目录不存在会让 mount namespacing fail
+# (Failed to set up mount namespacing → status=226/NAMESPACE),server 直接拉不起。
+# 显式 RuntimeDirectoryMode 防止默认 0755 让同主机他人可访问 control.sock 文件路径。
+#
+# K3(2026-05-23):RuntimeDirectoryPreserve=yes — nanotun-web.service 与本 unit
+# 共享 RuntimeDirectory=nanotun;默认 preserve=no 会让 systemd 在另一边
+# (re)start 时 wipe-and-recreate 该目录,把这里 listen 的 control.sock 一并干掉。
+# Preserve=yes 让 systemd 只确保目录存在 + chmod,不清空。两个 unit 必须同时设。
+RuntimeDirectory=nanotun
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+
+# G_exit_code(2026-05-22):util/exit_codes.go 定义的语义化退出码 = 配置/证书类的
+# 「无解致命错」,systemd 不要无脑重启 —— 否则 5s 后又拉起一遍同样的 fatal,污染
+# journal 且掩盖真实问题。把这些 code 列入 RestartPreventExitStatus,让单元落到
+# failed 状态等运维介入。
+#   10 ExitConfigParse        配置 TOML 解析失败 / 必填字段缺失
+#   11 ExitConfigSemantic     配置语义错(冲突字段同设 / 范围越界 / firewall 名单空)
+#   20 ExitTLSCert            TLS 证书加载失败 / 过期
+# 注意:30 ExitListenInUse 仍交给 on-failure 重启 —— 端口被占有时是上次进程残留,
+# 给 3s 后再试一遍可以自愈;真不能 listen 才升级到 failed,与 2026-05-21 事故里
+# 「systemctl start 死循环」的诊断成本是不同量级。
+RestartPreventExitStatus=10 11 20
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

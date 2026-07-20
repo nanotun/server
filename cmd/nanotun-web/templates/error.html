@@ -1,0 +1,17 @@
+{{template "header" .}}
+
+<div class="card center-card">
+    <h1>{{T "error.h1"}} {{.Data.Status}}</h1>
+    <p>{{.Data.Message}}</p>
+    {{/* 2026-05-27 第二十四轮 P3-2:caller 通过 `renderErrorWithCTA` 可显式传
+         secondary action(典型如 412 ICMP softfail → 「到设置页勾跳过 ICMP 重试」),
+         CTAURL 非空时渲染主样式按钮置左,引导优先点击;否则只显示「返回首页」。 */}}
+    {{if .Data.CTAURL}}
+    <a href="{{.Data.CTAURL}}" class="btn">{{.Data.CTALabel}}</a>
+    <a href="/" class="btn secondary" style="margin-left:8px">{{T "common.backHome"}}</a>
+    {{else}}
+    <a href="/" class="btn">{{T "common.backHome"}}</a>
+    {{end}}
+</div>
+
+{{template "footer" .}}

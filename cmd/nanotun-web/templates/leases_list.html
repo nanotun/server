@@ -1,0 +1,41 @@
+{{template "header" .}}
+
+<div class="crumb">NETWORK &middot; <b>LEASES</b></div>
+<h1>{{T "leases.title"}}</h1>
+
+<div class="card">
+<table class="tbl">
+    <thead><tr><th>{{T "common.thUser"}}</th><th>{{T "common.thDevice"}}</th><th>v4</th><th>v6</th>
+        <th title="{{T "leases.thManualTitle"}}">{{T "leases.thManual"}}</th><th>{{T "leases.assignedAt"}}</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Leases}}
+        <tr>
+            <td><a href="/users/{{.UserID}}">{{.Username}}</a></td>
+            {{/* 2026-07-19 易用性:设备列显示别名/上报名(人话),UUID 收进 tooltip。 */}}
+            <td>
+                <a href="/devices/{{.DeviceID}}" title="{{.DeviceUUID}}">
+                    {{- if .Alias}}{{.Alias}}{{else if .DeviceName}}{{.DeviceName}}{{else}}{{if gt (len .DeviceUUID) 12}}{{slice .DeviceUUID 0 8}}…{{else}}{{.DeviceUUID}}{{end}}{{end -}}
+                </a>
+            </td>
+            <td><code>{{.VIPv4}}</code></td>
+            <td><code>{{.VIPv6}}</code></td>
+            <td>{{fmtBool .Manual}}</td>
+            <td><span title="{{.AssignedAt}}">{{fmtTime .AssignedAt}}</span></td>
+            <td>
+                {{if eq $.Admin.Role "admin"}}
+                <form method="post" action="/leases/{{.DeviceID}}/release" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button class="btn danger small"
+                        onclick="return confirm('{{T "leases.releaseConfirm"}}')">{{T "leases.release"}}</button>
+                </form>
+                {{end}}
+            </td>
+        </tr>
+    {{else}}
+        <tr><td colspan="7" class="muted">{{T "leases.none"}}</td></tr>
+    {{end}}
+    </tbody>
+</table>
+</div>
+
+{{template "footer" .}}

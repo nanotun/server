@@ -1,0 +1,51 @@
+-- nanotun schema v15 — RENAME app_settings 中的 key `public_host` → `advertised_host`
+--
+-- 改名动机(2026-05-26):
+-- `public_host` 字面像"服务器自己的公网主机",会被误以为是某种内置语义(类似
+-- listen_addr 的对立面)。实际语义是 admin 显式宣告"客户端应当用这个地址来连我",
+-- 是个**主动宣告**字段:server 自己不强制验证这个值是否真的指向自己,所有 profile
+-- QR / credentials QR 的 `host` 字段从这里取值,客户端拿到后用作 socket dial 目标。
+--
+-- 类比:Kafka 的 `advertised.listeners` / etcd 的 `--initial-advertise-peer-urls`。
+-- 这条 migration 把 db key 改成业界更常见的 `advertised_host`,语义即代码,避免
+-- 后来人看到 `public_host` 误以为它是"被动公网检测"出来的值。
+--
+-- ---- 幂等 + 撞键防御(第二轮加固,2026-05-26) ----
+--
+-- 简单 `UPDATE app_settings SET key=... WHERE key=...` 在 4 种 db 状态里只有 3 种安全,
+-- 第 4 种会**违反 PRIMARY KEY UNIQUE** 让整个 migration tx rollback → schema_version
+-- 卡在 14 → server 起不来。该故障一旦发生,需要 ops 上机器 sqlite3 修库,代价巨大。
+--
+-- 4 种状态枚举:
+--   1. 只有 public_host:UPDATE 改名 → OK
+--   2. 只有 advertised_host(已迁移过):UPDATE 0 行 → no-op
+--   3. 都不存在(全新建库):UPDATE 0 行 → no-op
+--   4. **两者同时存在**:UPDATE 想把 public_host 改名,目标 key 已存在,撞 PRIMARY KEY → FAIL
+--
+-- 状态 4 在正常代码路径下不该出现(老代码只写 public_host,Migrate 之前 advertised_host
+-- 行根本无人写),但**任何手动 sqlite3 干预**(ops 调试 / 测试夹具 / 备份恢复 / 半截
+-- migration)都能制造这个状态。Defensive SQL 几乎零成本就能消除这条尾巴风险。
+--
+-- 改用 INSERT OR REPLACE + DELETE 两步走:
+--   - INSERT OR REPLACE 把 public_host 的 value 写到 advertised_host 行,覆盖任何已有值
+--     (语义:"改名"以老 key 为权威源 — 既然在跑改名 migration,说明老 key 才是 admin
+--     实际配置的活值,新 key 即使被手动塞过也应当被老值压回);
+--   - DELETE 干掉老行。
+--
+-- 4 种状态在新写法下的行为:
+--   1. 只有 public_host:INSERT 一新 advertised_host 行 + DELETE public_host → OK
+--   2. 只有 advertised_host:INSERT...SELECT 源是空集 → no-op,DELETE no-op → OK
+--   3. 都不存在:两步都 no-op → OK
+--   4. 两者同时存在:INSERT OR REPLACE 用 public_host 的 value 覆盖 advertised_host 行,
+--      DELETE public_host → OK,无撞键
+--
+-- 不存在"同时存在 public_host + advertised_host"的可能(单进程 Migrate 跑过后,
+-- 旧 key 就被 SQL 改掉了;新 code 之后不会再写老 key)。
+--
+-- **不**做 wire 协议改名:credentials/profile QR 里 JSON 字段名仍然是 `host`(对
+-- 客户端友好),这次改名只触及 server 端 db key + 内部代码符号 + UI 文案。
+
+INSERT OR REPLACE INTO app_settings(key, value)
+    SELECT 'advertised_host', value FROM app_settings WHERE key = 'public_host';
+
+DELETE FROM app_settings WHERE key = 'public_host';

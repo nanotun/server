@@ -1,0 +1,41 @@
+{{template "header" .}}
+
+<div class="card center-card">
+    <div class="auth-brand">
+        <img src="/static/appicon.png" alt="nanotun">
+        <div><span class="name">nanotun</span><span class="tag">secure.core &middot; admin</span></div>
+    </div>
+    <h1>{{T "setup.title"}}</h1>
+    <p class="muted">{{T "setup.intro"}}</p>
+    <form method="post" action="/setup">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <div class="field">
+            <label for="username">{{T "setup.usernameLabel"}}</label>
+            <input id="username" name="username" type="text" autocomplete="username" required minlength="3">
+        </div>
+        <div class="field">
+            <label for="password">{{T "setup.passwordLabel"}}</label>
+            <input id="password" name="password" type="password" autocomplete="new-password" required minlength="12">
+        </div>
+        <div class="field">
+            <label for="password_confirm">{{T "common.repeatPassword"}}</label>
+            <input id="password_confirm" name="password_confirm" type="password" autocomplete="new-password" required minlength="12">
+        </div>
+        {{with .Data.Captcha}}
+        <div class="field">
+            <label for="captcha">{{T "login.captcha"}}</label>
+            <div class="captcha-row">
+                <img src="{{.DataURL}}" alt="captcha" class="captcha-img"
+                     title="{{T "login.captchaImgTitle"}}">
+                <input id="captcha" name="captcha" type="text" inputmode="numeric"
+                       pattern="[0-9 ]*" autocomplete="off" required
+                       maxlength="8" placeholder="{{T "login.captchaPlaceholder"}}">
+            </div>
+            <div class="hint">{{T "login.captchaHintPrefix"}}<a href="/setup">{{T "login.captchaRefresh"}}</a></div>
+        </div>
+        {{end}}
+        <button class="btn" type="submit">{{T "setup.submit"}}</button>
+    </form>
+</div>
+
+{{template "footer" .}}

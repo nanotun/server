@@ -1,0 +1,69 @@
+[Unit]
+Description=nanotun self-hosted mesh — admin web backend
+Documentation=https://github.com/your-org/nanotun/tree/main/nanotun-web
+# 数据库与 nanotun 数据面共享;启动顺序上不强制依赖,nanotun-web 可以独立
+# 跑起来(只是 dashboard 的 "运行时数据" 会显示不可用)。
+Wants=nanotun.service
+After=network-online.target nanotun.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 复用 nanotun 自带账号;web 后台对该账号只需要 /var/lib/nanotun (DB) +
+# /run/nanotun (control.sock) 读写权限,不需要 CAP_NET_ADMIN / TUN。
+# 如果未来想完全用 DynamicUser=yes,需要把 db_path / cert_dir / control_socket
+# 都改到一个可以被新建用户 owns 的目录。当前与 nanotun.service 同 user 最稳。
+User=root
+Group=root
+
+ExecStart=/usr/local/bin/nanotun-web \
+    -listen=0.0.0.0:7443 \
+    -db=/var/lib/nanotun/nanotun.db \
+    -control-socket=/run/nanotun/control.sock \
+    -cert-dir=/etc/nanotun/certs
+
+# 优雅退出窗口
+TimeoutStopSec=15
+
+# ============================================================================
+# 安全沙盒(与 nanotun.service 对齐,不引入更严格的 SystemCallFilter / Memory
+# DenyWriteExecute / LockPersonality —— 这些在 Go runtime + crypto/x509 自签
+# 证书生成路径上会触发 SIGSYS,在 nanotun.service 也没启用,有需要再单独加测试)。
+# ============================================================================
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+# K(2026-05-23):同 nanotun.service:systemd 启动前自动建好 /run/nanotun,
+# 否则与 ProtectSystem=strict + ReadWritePaths=/run/nanotun 配合时会
+# Failed to set up mount namespacing → status=226/NAMESPACE。
+#
+# K3(2026-05-23):RuntimeDirectoryPreserve=yes — 否则 systemd 在 nanotun-web
+# 启动 / 重启时会 wipe-and-recreate /run/nanotun,把 nanotun.service 之前
+# 写进去的 control.sock 一并删除,导致 dashboard 上 "运行时数据不可用"。
+# Preserve=yes 让 systemd 只确保目录存在 + chmod,不清空。两个 unit 都要
+# 同时设 yes,任一不设都会触发 wipe(已实战验证)。
+RuntimeDirectory=nanotun
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+
+# 只允许它读写自己需要的几条路径
+ReadWritePaths=/var/lib/nanotun /etc/nanotun/certs /run/nanotun
+
+# Web 后台不需要任何 cap;数据面进程才需要 CAP_NET_ADMIN。
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nanotun-web
+
+# 自动重启,但失败过快就不要无限循环。StartLimit* 必须放在 [Unit] 段,
+# 这里只用 Restart / RestartSec / TimeoutStopSec 即可。
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

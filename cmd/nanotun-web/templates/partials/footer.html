@@ -1,0 +1,18 @@
+{{define "footer"}}
+</main>
+{{if .Admin}}
+{{/* 登录后:内容区底部终端风状态条(对齐 mac 客户端窗口底栏),并闭合 header 打开的
+     .content / .shell 两层 div。未登录页保持简单版权行。 */}}
+<footer class="statusbar">
+    <span>MESH: <b>{{if .Nav.MeshEnabled}}ON{{else}}OFF{{end}}</b></span>
+    {{if .Nav.ServerHost}}<span>NODE: <b>{{.Nav.ServerHost}}</b></span>{{end}}
+    <span>nanotun admin &middot; {{.Nav.Version}}</span>
+</footer>
+    </div>
+</div>
+{{else}}
+<footer class="foot">nanotun-web {{.Nav.Version}} — {{T "footer.tagline"}}</footer>
+{{end}}
+</body>
+</html>
+{{end}}

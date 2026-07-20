@@ -1,0 +1,28 @@
+# 构建产物
+dist/
+bin/
+/nanotund
+/nanotun-admin
+/nanotun-web
+cmd/nanotund/nanotund
+cmd/nanotun-admin/nanotun-admin
+cmd/nanotun-web/nanotun-web
+*.exe
+*.test
+*.out
+
+# 本地数据与运行时生成物
+data/
+cmd/nanotund/certs/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# 依赖
+vendor/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/

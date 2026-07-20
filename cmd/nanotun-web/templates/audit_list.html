@@ -1,0 +1,57 @@
+{{template "header" .}}
+
+<div class="crumb">SYSTEM &middot; <b>AUDIT</b></div>
+<h1>{{T "audit.title"}}</h1>
+
+{{/* 2026-07-19 易用性改版:快捷时间预设(保留 actor/action/limit 过滤条件)。
+     过滤参数必须逐个字面拼接(& 和参数名写死在模板里,只有值来自数据)——
+     handler 预拼整段 query 会被 html/template 在 query 位置二次转义弄坏。 */}}
+{{define "audit-filter-params"}}{{if .Actor}}&actor={{.Actor}}{{end}}{{if .Action}}&action={{.Action}}{{end}}{{if .LimitParam}}&limit={{.LimitParam}}{{end}}{{end}}
+<div class="toolbar">
+    <span class="muted">{{T "audit.quickRange"}}</span>
+    <a href="/audit?range=1h{{template "audit-filter-params" .Data}}" class="btn small {{if ne .Data.Range "1h"}}secondary{{end}}">{{T "audit.range1h"}}</a>
+    <a href="/audit?range=24h{{template "audit-filter-params" .Data}}" class="btn small {{if ne .Data.Range "24h"}}secondary{{end}}">{{T "audit.range24h"}}</a>
+    <a href="/audit?range=7d{{template "audit-filter-params" .Data}}" class="btn small {{if ne .Data.Range "7d"}}secondary{{end}}">{{T "audit.range7d"}}</a>
+    <a href="/audit?range=30d{{template "audit-filter-params" .Data}}" class="btn small {{if ne .Data.Range "30d"}}secondary{{end}}">{{T "audit.range30d"}}</a>
+</div>
+
+{{/* since/until 从裸 unix 秒输入改为 datetime-local 控件(2026-07-19)。 */}}
+<form method="get" action="/audit" class="toolbar">
+    <span class="muted">{{T "audit.since"}}</span><input name="since" type="datetime-local" value="{{.Data.SinceStr}}" style="width:190px">
+    <span class="muted">{{T "audit.until"}}</span><input name="until" type="datetime-local" value="{{.Data.UntilStr}}" style="width:190px">
+    <span class="muted">{{T "audit.actorContains"}}</span><input name="actor" value="{{.Data.Actor}}" style="width:120px" placeholder="{{T "audit.actorPh"}}">
+    <span class="muted">{{T "audit.actionContains"}}</span><input name="action" value="{{.Data.Action}}" style="width:120px" placeholder="{{T "audit.actionPh"}}">
+    <span class="muted">{{T "audit.perPage"}}</span><input name="limit" type="number" value="{{.Data.Limit}}" style="width:80px" min="1" max="1000">
+    <button class="btn secondary small" type="submit">{{T "audit.filter"}}</button>
+    <a href="/audit" class="btn small secondary">{{T "audit.reset"}}</a>
+</form>
+
+<div class="card">
+<table class="tbl">
+    <thead><tr><th>{{T "common.thTime"}}</th><th>{{T "audit.thActor"}}</th><th>{{T "audit.thAction"}}</th><th>{{T "audit.thTarget"}}</th><th>{{T "audit.thDetail"}}</th></tr></thead>
+    <tbody>
+    {{range .Data.Logs}}
+        <tr>
+            <td><span title="{{.At}}">{{fmtTime .At}}</span></td>
+            <td>{{.Actor}}</td>
+            <td>{{.Action}}</td>
+            <td>{{.Target}}</td>
+            <td class="muted">{{.Detail}}</td>
+        </tr>
+    {{else}}
+        <tr><td colspan="5" class="muted">{{T "audit.none"}}</td></tr>
+    {{end}}
+    </tbody>
+</table>
+</div>
+
+{{/* 分页(2026-07-19):上一页/下一页,保留全部过滤条件。 */}}
+{{if or .Data.PrevURL .Data.NextURL}}
+<div class="toolbar">
+    {{if .Data.PrevURL}}<a href="{{.Data.PrevURL}}" class="btn small secondary">&larr; {{T "audit.prevPage"}}</a>{{end}}
+    {{if .Data.Logs}}<span class="muted">{{T "audit.shownRange" .Data.ShownFrom .Data.ShownTo}}</span>{{end}}
+    {{if .Data.NextURL}}<a href="{{.Data.NextURL}}" class="btn small secondary">{{T "audit.nextPage"}} &rarr;</a>{{end}}
+</div>
+{{end}}
+
+{{template "footer" .}}

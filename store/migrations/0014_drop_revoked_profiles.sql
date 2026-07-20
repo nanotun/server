@@ -1,0 +1,25 @@
+-- nanotun schema v14 — DROP TABLE revoked_profiles(2026-05-26)
+--
+-- 0004 历史上引入了 per-profile pid 黑名单(profile QR 含 PSK 时,被截屏 / 抄走需要
+-- 远程让单张 profile 失效)。0013 credentials 解耦后:
+--
+--   * profile QR 不再含 PSK,可以公开传阅;
+--   * 服务端登录路径已经不读 revoked_profiles(0014 cleanup,Go 代码层面);
+--   * `nanotun-admin profile revoke / unrevoke / revocations` 已移除。
+--
+-- 表本身却被留在 schema 里当 dead table。任何 dead schema 都是后续 migration / 备份
+-- 工具 / 运维脚本的潜在脚雷:
+--   - DBA 看到表名以为还在用,误打补丁;
+--   - 巡检 / 脱敏脚本会扫所有表,白白多一份噪声;
+--   - schema dump / diff 工具会持续报告这一行,运维要么忽略要么伪修。
+--
+-- 这次正式 DROP。**前置条件**(已在 grep 全仓核对):
+--   - server / nanotun-admin / nanotun-web 没有任何 INSERT / SELECT 引用本表;
+--   - LoginReq.profile_id 字段已从 wire protocol 与 store 路径去除;
+--   - 老备份恢复 → 跑 migration 后会被 DROP,数据丢失没关系(本来就用不到了);
+--   - 全新建库 → 0001~0013 不会再创建本表,0014 一上来就 DROP IF EXISTS = no-op。
+--
+-- 要让 server 把「登录时检查 pid 黑名单」这条路径恢复回来,请走新 migration 加表 +
+-- 改 LoginReq schema(0013 解耦后语义不再合理,基本不会走回头路)。
+
+DROP TABLE IF EXISTS revoked_profiles;

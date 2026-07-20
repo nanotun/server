@@ -1,0 +1,230 @@
+{{template "header" .}}
+
+<div class="crumb">ACCESS.CTRL &middot; <b>ROUTES</b> &middot; {{T "routes.crumbSuffix"}}</div>
+<h1>{{T "routes.h1"}}</h1>
+<p class="sub">{{T "routes.descPre"}}<b>{{T "routes.descStrong"}}</b>{{T "routes.descPost"}}</p>
+
+<div class="card">
+<div class="card-title"><span class="hl">EXIT.NODES</span> {{T "routes.exits"}} <span class="line"></span> <span class="count">{{len .Data.Exits}}</span></div>
+{{range .Data.Exits}}
+    <div class="map-row">
+        <div class="map-info">
+            <div class="map-title">
+                <a class="dev" href="/devices/{{.DeviceID}}">{{if .DeviceName}}{{.DeviceName}}{{else}}device/{{.DeviceID}}{{end}}</a>
+                {{if .DeviceUUID}}<span class="uuid">{{printf "%.8s" .DeviceUUID}}</span>{{end}}
+            </div>
+            <div class="map-sub">
+                {{if .HasV4}}<span class="pill ok">v4</span>{{end}}
+                {{if .HasV6}}<span class="pill ok">v6</span>{{end}}
+                &nbsp;{{T "routes.exitFixedVip"}}: {{if .FixedVIPv4}}<code>{{.FixedVIPv4}}</code>{{end}} {{if .FixedVIPv6}}<code>{{.FixedVIPv6}}</code>{{end}}{{if and (not .FixedVIPv4) (not .FixedVIPv6)}}<span class="muted">-</span>{{end}}
+            </div>
+        </div>
+        {{if eq $.Admin.Role "admin"}}
+        <div class="map-actions">
+            <form method="post" action="/routes/exit/revoke" class="inline">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="device_id" value="{{.DeviceID}}">
+                <button class="btn small danger" onclick="return confirm('{{T "routes.revokeExitConfirm"}}')">{{T "routes.revokeExit"}}</button>
+            </form>
+        </div>
+        {{end}}
+    </div>
+{{else}}
+    <div class="empty">{{T "routes.noExits"}}</div>
+{{end}}
+
+{{/* 客户端 --exit-node 自荐:合并展示,按钮直接「批准作为出口」(走 designate,一次批 v4+v6)。 */}}
+{{if .Data.PendingExits}}
+<div class="card-title" style="margin-top:18px"><span class="hl">PENDING.EXIT</span> {{T "routes.pendingExits"}} <span class="line"></span> <span class="count">{{len .Data.PendingExits}}</span></div>
+{{range .Data.PendingExits}}
+    <div class="map-row">
+        <div class="map-info">
+            <div class="map-title">
+                <a class="dev" href="/devices/{{.DeviceID}}">{{if .DeviceName}}{{.DeviceName}}{{else}}device/{{.DeviceID}}{{end}}</a>
+                {{if .DeviceUUID}}<span class="uuid">{{printf "%.8s" .DeviceUUID}}</span>{{end}}
+                {{if .Platform}}<span class="badge" style="margin-left:6px">{{.Platform}}</span>{{end}}
+            </div>
+            <div class="map-sub">
+                {{if .HasV4}}<span class="pill ok">v4</span>{{end}}
+                {{if .HasV6}}<span class="pill ok">v6</span>{{end}}
+                &nbsp;<span class="muted">{{T "routes.advertisedAt"}} {{fmtTime .AdvertisedAt}}</span>
+                {{if not .Capable}}
+                <br><span class="muted">{{T "routes.pendingExitIncapable" .Platform}}</span>
+                {{end}}
+            </div>
+        </div>
+        {{if eq $.Admin.Role "admin"}}
+        <div class="map-actions">
+            {{if .Capable}}
+            <form method="post" action="/routes/exit/designate" class="inline">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="device_id" value="{{.DeviceID}}">
+                <button class="btn small" type="submit"
+                    onclick="return confirm('{{T "routes.approveAsExitConfirm"}}')">{{T "routes.approveAsExit"}}</button>
+            </form>
+            {{end}}
+            <form method="post" action="/routes/exit/reject" class="inline">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="device_id" value="{{.DeviceID}}">
+                <input name="reason" placeholder="{{T "routes.rejectReasonPh"}}" style="width:140px">
+                <button class="btn small danger" type="submit">{{T "routes.reject"}}</button>
+            </form>
+        </div>
+        {{end}}
+    </div>
+{{end}}
+{{end}}
+
+{{/* 已拒绝的出口自荐:必须可见 —— 客户端重复自荐不会翻回 pending(upsert 只刷时间戳),
+     误拒后这里是唯一的 UI 恢复入口:直接批准,或清除记录让下次自荐重新进待批。 */}}
+{{if .Data.RejectedExits}}
+<div class="card-title" style="margin-top:18px"><span class="hl">REJECTED.EXIT</span> {{T "routes.rejectedExits"}} <span class="line"></span> <span class="count">{{len .Data.RejectedExits}}</span></div>
+{{range .Data.RejectedExits}}
+    <div class="map-row">
+        <div class="map-info">
+            <div class="map-title">
+                <a class="dev" href="/devices/{{.DeviceID}}">{{if .DeviceName}}{{.DeviceName}}{{else}}device/{{.DeviceID}}{{end}}</a>
+                {{if .DeviceUUID}}<span class="uuid">{{printf "%.8s" .DeviceUUID}}</span>{{end}}
+                {{if .Platform}}<span class="badge" style="margin-left:6px">{{.Platform}}</span>{{end}}
+            </div>
+            <div class="map-sub">
+                {{if .Reason}}<span class="muted">{{T "deviceDetail.thReason"}}: {{.Reason}}</span>{{else}}<span class="muted">&mdash;</span>{{end}}
+            </div>
+        </div>
+        {{if eq $.Admin.Role "admin"}}
+        <div class="map-actions">
+            {{if .Capable}}
+            <form method="post" action="/routes/exit/designate" class="inline">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="device_id" value="{{.DeviceID}}">
+                <button class="btn small" type="submit"
+                    onclick="return confirm('{{T "routes.approveAsExitConfirm"}}')">{{T "routes.approveAsExit"}}</button>
+            </form>
+            {{end}}
+            <form method="post" action="/routes/exit/revoke" class="inline">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="device_id" value="{{.DeviceID}}">
+                <input type="hidden" name="mode" value="clear">
+                <button class="btn small" type="submit"
+                    onclick="return confirm('{{T "routes.clearRejectedConfirm"}}')">{{T "routes.clearRejected"}}</button>
+            </form>
+        </div>
+        {{end}}
+    </div>
+{{end}}
+{{end}}
+
+{{if eq .Admin.Role "admin"}}
+<form method="post" action="/routes/exit/designate" class="vform" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+        <label for="exit-device">{{T "routes.designateLabel"}}</label>
+        {{if .Data.ExitCandidates}}
+        <select id="exit-device" name="device_id" required>
+            {{range .Data.ExitCandidates}}
+            <option value="{{.ID}}">#{{.ID}} {{if .DisplayName}}{{.DisplayName}}{{else}}device/{{.ID}}{{end}} &middot; {{.Platform}} &middot; {{printf "%.8s" .DeviceUUID}}</option>
+            {{end}}
+        </select>
+        <div class="hint">{{T "routes.designateHint"}}</div>
+        {{else}}
+        <div class="muted">{{T "routes.noCandidates"}}</div>
+        {{end}}
+    </div>
+    {{if .Data.ExitCandidates}}
+    <button class="btn-primary" type="submit">{{T "routes.designateBtn"}}</button>
+    {{end}}
+</form>
+{{end}}
+</div>
+
+<div class="card">
+<div class="card-title"><span class="hl">PENDING</span> {{T "routes.pending"}} <span class="line"></span> <span class="count">{{len .Data.Pending}}</span></div>
+<table class="tbl">
+    <thead><tr><th>{{T "common.thDevice"}}</th><th>CIDR</th><th>{{T "routes.advertisedAt"}}</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Pending}}
+        <tr>
+            <td><a href="/devices/{{.DeviceID}}">{{with index $.Data.DevNames .DeviceID}}{{.}}{{else}}device/{{.DeviceID}}{{end}}</a></td>
+            <td><code>{{.CIDR}}</code></td>
+            <td>{{fmtTime .AdvertisedAt}}</td>
+            <td>
+                {{if eq $.Admin.Role "admin"}}
+                <form method="post" action="/routes/{{.DeviceID}}/{{.CIDR | urlquery}}/approve" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button class="btn small" type="submit">{{T "routes.approve"}}</button>
+                </form>
+                <form method="post" action="/routes/{{.DeviceID}}/{{.CIDR | urlquery}}/reject" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input name="reason" placeholder="{{T "routes.rejectReasonPh"}}" style="width:160px">
+                    <button class="btn small danger" type="submit">{{T "routes.reject"}}</button>
+                </form>
+                {{end}}
+            </td>
+        </tr>
+    {{else}}
+        <tr><td colspan="4" class="muted">{{T "routes.noPending"}}</td></tr>
+    {{end}}
+    </tbody>
+</table>
+</div>
+
+<div class="card">
+<div class="card-title"><span class="hl">APPROVED</span> {{T "routes.approved"}} <span class="line"></span> <span class="count">{{len .Data.Approved}}</span></div>
+<table class="tbl">
+    <thead><tr><th>{{T "common.thDevice"}}</th><th>CIDR</th><th>{{T "deviceDetail.thApprovedAt"}}</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Approved}}
+        <tr>
+            <td><a href="/devices/{{.DeviceID}}">{{with index $.Data.DevNames .DeviceID}}{{.}}{{else}}device/{{.DeviceID}}{{end}}</a></td>
+            <td><code>{{.CIDR}}</code></td>
+            <td>{{fmtTime .ApprovedAt}}</td>
+            <td>
+                {{if eq $.Admin.Role "admin"}}
+                <form method="post" action="/routes/{{.DeviceID}}/{{.CIDR | urlquery}}/delete" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button class="btn small danger" onclick="return confirm('{{T "routes.deleteConfirm"}}')">{{T "common.delete"}}</button>
+                </form>
+                {{end}}
+            </td>
+        </tr>
+    {{else}}
+        <tr><td colspan="4" class="muted">{{T "routes.noApproved"}}</td></tr>
+    {{end}}
+    </tbody>
+</table>
+</div>
+
+{{if .Data.Rejected}}
+<div class="card">
+<div class="card-title"><span class="hl">REJECTED</span> {{T "routes.rejected"}} <span class="line"></span> <span class="count">{{len .Data.Rejected}}</span></div>
+<table class="tbl">
+    <thead><tr><th>{{T "common.thDevice"}}</th><th>CIDR</th><th>{{T "deviceDetail.thReason"}}</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Rejected}}
+        <tr>
+            <td><a href="/devices/{{.DeviceID}}">{{with index $.Data.DevNames .DeviceID}}{{.}}{{else}}device/{{.DeviceID}}{{end}}</a></td>
+            <td><code>{{.CIDR}}</code></td>
+            <td class="muted">{{.Reason}}</td>
+            <td>
+                {{/* 与出口自荐同口径:rejected 不是死状态 —— upsert 不会翻回 pending,
+                     误拒必须有 UI 恢复入口(重新批准 / 删除记录让下次上报重进待批)。 */}}
+                {{if eq $.Admin.Role "admin"}}
+                <form method="post" action="/routes/{{.DeviceID}}/{{.CIDR | urlquery}}/approve" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button class="btn small" type="submit">{{T "routes.approve"}}</button>
+                </form>
+                <form method="post" action="/routes/{{.DeviceID}}/{{.CIDR | urlquery}}/delete" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button class="btn small danger" type="submit"
+                        onclick="return confirm('{{T "routes.clearRejectedConfirm"}}')">{{T "routes.clearRejected"}}</button>
+                </form>
+                {{end}}
+            </td>
+        </tr>
+    {{end}}
+    </tbody>
+</table>
+</div>
+{{end}}
+
+{{template "footer" .}}

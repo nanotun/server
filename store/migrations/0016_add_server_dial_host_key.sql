@@ -1,0 +1,52 @@
+-- nanotun schema v16 — 引入新 setting key `server_dial_host`,拆字段。
+--
+-- 背景(2026-05-26 第六轮拆字段):
+-- 此前 `advertised_host`(原 `public_host`)兼任两个角色 ——
+--   (a) admin 起的展示标签(用于 UI 显示);
+--   (b) 客户端 PacketTunnel / NEVPN `tunnelRemoteAddress` 实际拨号目标。
+-- 现场踩坑:admin 把 advertised_host 配成 `test-203.0.113.10` 想做"带前缀的标签",
+-- 客户端把这个字符串塞进 NEPacketTunnelNetworkSettings 触发 `Invalid
+-- NETunnelNetworkSettings tunnelRemoteAddress` 隧道挂掉。`test-203.0.113.10`
+-- 末段 `.158` 是纯数字,RFC 952/3696 明确 TLD 不能纯数字,DNS 不可解析。
+--
+-- 拆解:
+--   - `advertised_host`: 退化为**纯展示 label**,放宽校验,admin 可填任意短语
+--     (中文、emoji、`test-xxx` 都行),客户端不解析、不连接;
+--   - `server_dial_host` (本 migration 引入): **真实可拨号地址**,strict validation
+--     接受 IPv4 / IPv6 / 末段含字母的合法 RFC 1035 hostname,客户端从 profile.host
+--     直接拼端口给 PacketTunnel。
+--
+-- ---- 为什么不 auto-backfill advertised_host → server_dial_host ----
+--
+-- 升级用户的 advertised_host 可能本就是合法 IP(`203.0.113.10`),拷过去无害;
+-- 也可能是踩坑字符串(`test-203.0.113.10`),拷过去 ValidateServerDialHost 拒掉,
+-- 反正 admin 必须重新配。
+--
+-- 纯 SQL 无法做 IPv4/IPv6/RFC1035 校验(SQLite 内置函数不够),只能盲拷或不拷。
+-- 盲拷之后:
+--   - 合法值:升级零运维 ✓
+--   - 非法值:server_dial_host 落了一个永远 fail-fast 的字符串,admin 看不到差别
+--     仍然需要去 /settings 重新配
+--
+-- 不拷之后:
+--   - admin 升级后,/settings 显式提示「⚠️ server_dial_host 未配置」+「⚠️ 服务器
+--     QR 暂不可生成」,引导显式声明真实 dial 地址;
+--   - 即使旧 advertised_host 是合法 IP,显式配置一次也强化了"label 与 dial 是
+--     两件事"的心智模型,避免再次踩坑。
+--
+-- **选择不 backfill,优先正确性**(handler 端有 fail-fast,settings 页有警告
+-- banner,admin 不会卡死)。
+--
+-- ---- 本 migration 实际做什么 ----
+--
+-- 严格说什么也不必做 —— `app_settings.SettingsGet/SettingsSet` 对未存在的 key
+-- 自然返回空,无需提前插入空行。本文件存在主要是:
+--   (a) 占用 0016 编号,锚定 schema 版本与"拆字段"这条历史变更;
+--   (b) 写 NOP statement 让 migrations runner 把 schema_version 推进到 16
+--       (避免后来人误以为该编号"漏了"而打错版本号);
+--   (c) 把语义说明留在 db 文件里(`schema_migrations` 等表 dump 出来时,通过
+--       migration 文件名能立刻还原历史)。
+
+-- NOP: 已经存在则不变,不存在则插入 schema_version key(实际由 migrations runner 维护,
+-- 这里仅作占位,确保 SQL 文件非空)。
+SELECT 1 WHERE 1=0;

@@ -1,0 +1,253 @@
+# 对外 VPN：listen_addr 上 HTTP + WebSocket Upgrade；链路帧在 WS Binary 中。
+# 自托管 PSK 模式:用户/PSK 由本机 SQLite([store].db_path)维护,由 nanotun-admin
+# CLI 管理。详见 nanotun-admin/README.md。
+
+[server]
+listen_addr = ":8080"
+# Linux:true 时按 [server].jump_host_allowed_ips 限制「仅本监听 TCP 端口」入站
+# (固定 ipset nanotun_jump_src、链 NANOTUN_JUMP)。需 ipset/iptables;换 listen
+# 端口不改上述名字。
+# 进程正常退出 / SIGINT / SIGTERM 都会按 LIFO defer 链清理(jump_host → hy2 porthop
+# → store WAL checkpoint → TUN close)。异常路径(SIGKILL / panic / OOM)规则会
+# 残留,但下次启动时各模块会先 sweep 同名规则再重建,保证幂等。
+jump_host_firewall = false
+# 启用 jump_host_firewall 时必须在此列出跳板机 IPv4 名单(127.0.0.1 自动加入)。
+# 留空 + jump_host_firewall=true 会 Fatal,避免「以为开了限制实际全网开放」陷阱。
+# jump_host_allowed_ips = ["1.2.3.4", "5.6.7.8"]
+# 与 hy2 开发证书可共用；相对路径请在 server 目录下启动；不配则仍为明文 ws
+tls_cert_file = "certs/dev-cert.pem"
+tls_key_file = "certs/dev-key.pem"
+# WebSocket 路径（须以 / 开头）；环回 hy2/REALITY 与公网客户端须一致；省略时用代码内置默认长路径
+vpn_websocket_path = "/internal/vpn-port/data-plane/ws/v1/a9f2e8c47b1d6e304c52d8917f4a0e83b6c5d221"
+# VPN 单 TCP 链路上的吞吐限速（字节/秒）；0 表示不限制
+upload_rate = 20971520   # 20 MiB/s，对客户端→服务端方向（Read）
+download_rate = 20971520 # 20 MiB/s，对服务端→客户端方向（Write）
+# 按登录 JSON 的 platform（小写，与 runtime.GOOS 一致）覆盖；某项为 0 表示该方向仍用上面全局值
+# [server.rate_limit_by_platform.android]
+# upload_rate = 1048576
+# download_rate = 2097152
+
+# per-IP 登录限速：每个源 IP 每分钟最多多少次登录尝试（进 argon2 verify 之前判定）。
+#   0 = 不限制（默认）；N>0 = 每 IP 每分钟最多 N 次（突发固定 3），超出回 429。
+# 防暴破主力是始终启用的 PoW + argon2id 并发上限；本项仅可选兜底，弱网频繁重连场景建议保持 0。
+# 可 SIGHUP 热更（切 0 立即放行）。
+login_rate_limit_per_min = 0
+
+# P2#11 Magic DNS:server 内置 DNS server,把 peer 主机名(`<device>.<user>.<suffix>`)
+# 解析成 vIP,客户端无需记 100.64.0.x。默认 disabled,启用后需注意:
+#
+# ★ 关键 — listen_port 默认 = 53,务必读完下面三个部署陷阱再启用:
+#
+#   1. 客户端 stub resolver 永远打 :53。如果运维改成 5353 之类非标端口,
+#      server 会跳过给客户端 prepend gateway DNS(打 Warn 一次,见日志),
+#      客户端 DNS 维持 [tun].dns_servers_v4。非标端口仅适合"server 自己用
+#      dnsmasq / systemd-resolved 在 :53 上做转发器,真正解析转给 :5353"
+#      这类拓扑。
+#
+#   2. 系统级 DNS 端口冲突:
+#      - systemd-resolved 默认 listen 在 127.0.0.53:53(具体 IP),
+#        与 server 的 100.x.x.x:53 不同 IP,**不**冲突,直接启用即可;
+#      - dnsmasq / Pi-hole 等若 listen 在 0.0.0.0:53(全 IP),会和
+#        server bind TUN gateway IP:53 冲突 → server 启动报 "address
+#        already in use",magic_dns 模块不起(但 server 主进程继续跑)。
+#        修法:把 dnsmasq 改为只 listen 在具体 IP(`bind-interfaces`
+#        + `listen-address=127.0.0.1`),或把 nanotun 的 listen_port
+#        换 5353 + 自行做 53→5353 转发(见上一条)。
+#
+#   3. 权限:server 进程已经以 root 启动(TUN 需要),直接绑 :53 没额外
+#      成本;非 root 部署(rootless container)需 cap_net_bind_service。
+#
+# 其它行为:
+#   - 客户端登录会收到 TUN gateway IP 作为头号 DNS server,系统全局 DNS 先打这里;
+#   - 没配 upstream_v4/v6 时非 magic 域名查询会回 SERVFAIL —— "magic-only" 模式;
+#   - DNS server 只在 TUN gateway IP 上 listen,不暴露 WAN。
+#   - 与出口 DNS 接管(exit_dns_redirect,默认 auto)共存已自动处理:enabled=true 时
+#     server 在 nat PREROUTING 给「网关 IP:53」加一条 RETURN(排在出口接管的 :53 DNAT
+#     之前),并在 filter INPUT 放行「网关 IP:53」(绕开 -P INPUT DROP / ufw)。否则发往
+#     magic DNS 的查询会被出口接管 DNAT 劫持走 / 被默认 INPUT 策略丢弃。仅 listen_port=53
+#     生效(非标端口客户端 stub 不会查网关,见上文陷阱 1)。
+#
+# Magic 域名命名规则(去掉尾部 .<suffix> 后按段数 / 首段区分,均严格匹配):
+#   A) 设备名   <device>.<user>.<suffix>              → 该设备的 mesh 虚拟 IP(A/AAAA)
+#      例: vultr.smoker.lan                           → 10.201.0.36
+#   B) 4via6    <v4-dashed>via<siteID>.<suffix>       → 该站点内网主机的 4via6 地址(AAAA)
+#      例: 192-168-199-1via3.lan                      → fdbc:4a60::3:c0a8:c701 (siteID=3)
+#      · <v4-dashed> = 目标内网 IPv4,把点写成连字符(192.168.199.1 → 192-168-199-1);
+#      · <siteID> = 宣告方在 via6_sites 表的全局唯一站点号(AUTOINCREMENT,≥1),紧跟字面 "via"
+#        (为可读性也接受 "-via-" 变体,如 192-168-199-1-via-3);去 suffix 后须为**单段**(不含 ".")才判为 4via6,否则回落 A 规则;
+#      · 为何用 siteID 而非 device/user(对齐 Tailscale 4via6):site_id 全局唯一且稳定,设备名可能同用户下重名 →
+#        用名字会错路由甚至 fail-closed。故 4via6 名只含「目标 v4 + 数字 siteID」,与设备名/用户名彻底解耦(见 magic_dns.go parseVia6Hostname);
+#      · 用途:客户端本地 LAN 与宣告方网段重叠时消歧——直连该 v4 只命中本地,用此名字经 4via6 才穿到宣告方内网的同网段主机;
+#      · 仅当目标 v4 落在该 siteID 对应宣告方**已批准的宣告网段**内才解析成功(否则 NameError)。
+#   A 规则的 <device>/<user> 匹配做 normalize(小写 + 空格/下划线 → 连字符),
+#   故「Alice 的 MacBook」可写成 alice-的-macbook.<user>.<suffix>。
+#   URL 里的端口是目标服务端口(与 DNS 无关),如 http://192-168-199-1via3.lan:8899/
+#   解析出 IPv6 后实际连的是 [fdbc:4a60::3:c0a8:c701]:8899。
+#
+[server.magic_dns]
+enabled = true
+domain_suffix = "lan"
+listen_port = 53
+# upstream_v4/v6：非 magic 域名的上游解析器，**务必配置**。留空 → 非 magic 查询回 SERVFAIL（"magic-only"）：
+# 客户端拿网关作头号/唯一 DNS，全隧道下公网 DNS 会全断（mac 客户端更是把隧道 DNS 收敛为唯一网关）。配置后网关
+# 转发上游，magic 名字本地解析、公网名字照常（应答含 A/AAAA）。选就近可达的上游（本机为非中国节点时建议把中性的排前）。
+upstream_v4 = ["223.5.5.5", "8.8.8.8"]
+upstream_v6 = ["2001:4860:4860::8888"]
+
+[log]
+level = "info"
+
+[tun]
+device_name = "tun0"
+tcp_connlimit_per_ip = 40
+udp_connlimit_per_ip = 60
+# 从 TUN 转发出站按目的端口 DROP（不需要时改为 false）
+forward_block_bt = false
+forward_block_tracker_6969 = false
+forward_block_smtp_25 = false
+# 自托管 mesh 默认：同 TUN 客户端可互访（远程桌面 / SMB / SSH / VoIP）。
+# true：在 FORWARD 链插入 device→device DROP，禁止任何客户端互访（公共出口型 / 访客网络）。
+# 应用层细粒度策略由 store/acl.go 管理（user_a, user_b → allow/deny），与本开关无关。
+# 注:P2#16 起 exit_mode 优先,client_isolate 只在 exit_mode 留空 / 未识别时作为兼容路径。
+client_isolate = false
+# P2#16:TUN 出口三档开关。比 client_isolate 表达更细的拓扑。
+#   mesh    (默认)允许同 TUN 客户端互访 + 允许出 WAN(SNAT/MASQUERADE)。
+#   isolate 禁止同 TUN 客户端互访,仍允许出 WAN(公共出口/访客网络)。
+#   off     禁止出 WAN(不装 NAT,FORWARD device->wan DROP),仅允许同 TUN 客户端互访(纯组网)。
+# 留空 → 回退 client_isolate 兼容路径(true→isolate, false→mesh)。
+# 想要 off 模式必须显式写 exit_mode = "off"。
+# 该字段 SIGHUP 不可热更(改 conntrack 表 + NAT 链涉及在线连接);改后须 systemctl restart。
+exit_mode = "mesh"
+# 10.200~10.202/16，避免与常见局域网 10.0.x 冲突
+subnets = [
+  "10.200.0.0/16",
+  "10.201.0.0/16",
+  "10.202.0.0/16",
+]
+# IPv6 ULA 网段（可选）；为空则不分配 IPv6 虚拟地址
+subnets_v6 = [
+  "fd00:200::/64",
+]
+# 登录成功后随 ConvSaltLite 下发；无 IPv6 虚拟网段或未启用 v6 隧道时不下发 dns_servers_v6
+dns_servers_v4 = [
+  "8.8.8.8",
+  "114.114.114.114",
+]
+dns_servers_v6 = [
+  "2001:4860:4860::8888",
+  "2001:4860:4860::8844",
+]
+
+# 主 VPN 明文端口上：若同时配置本段 [smux] 且启用下方 [hysteria] 或 [reality]，则 hy2/REALITY 环回 127.0.0.1:<[server].listen_addr> 共用一条 TCP，其上用 smux 多流承载各 VPN 会话（首包魔法前缀 VPN1）。不配 [smux] 时仍为「每 hy2 TCP 流 / 每 REALITY 客户端」各 dial 一次。
+# server-simple / client-simple 的 KCP 仍用各自目录下 config 中的 [smux]。
+
+[smux]
+version = 1
+# keepalive_disabled = false
+# keepalive_interval_s = 10
+# keepalive_timeout_s = 30
+# max_frame_size = 32768
+# 环回 smux；与 [server] 链路限速同量级时可再收，省 RSS
+max_receive_buffer = 1048576
+max_stream_buffer = 32768
+
+# 进程内 Hysteria 2（QUIC/UDP）。password + tls_cert_file + tls_key_file 三项同时非空则启用。
+# 证书路径相对「当前工作目录」解析;缺证书时可先跑 scripts/ensure-server-assets.sh 自签。本仓库内启动: cd cmd/nanotund && ./nanotund -config config.toml
+# 绑定 UDP :443 常需 root 或 setcap；无权限时可改 listen_addr 为 ":8443" 等高端口。
+# 端口跳跃（抗 UDP 单端口封锁）：listen_addr = ":443,8443,5000-5100"（Linux 上自动 iptables REDIRECT 至首端口 443）。
+# port_hop_interval_sec = 30  # 可选，下发给客户端；亦可用 port_hop_interval_min_sec / max_sec 随机间隔。
+# I3: port_hop_iface = "eth0"  # 可选;Linux iptables PREROUTING REDIRECT 规则的入接口限定。
+#                                 留空 = 不限定接口(向后兼容);多网卡 / 容器宿主机强烈建议显式指定外网卡。
+# TCP 出口指向本机 [server] 端口：未配 [smux] 时每 hy2 流一次 Dial；配 [smux] 时经环回 smux 多流。详见 cmd/nanotund/hysteria.go。
+[hysteria]
+listen_addr = ":443"
+tls_cert_file = "certs/dev-cert.pem"
+tls_key_file = "certs/dev-key.pem"
+# Hy2 mTLS（默认开）：客户端证书走 profile 派发；admin 已切 Ed25519 + PKCS8
+# (~950 B/对) + 顶层共享，开启后单/多入口 profile URL 仍能进 QR Low 2953。
+# 极端不需要 mTLS 时（例如带外控制访问、profile 体积要进 QR Medium 2331）
+# 注释掉下行即可只靠 password + obfs。
+# 2026-07-17:独立 WSS 保活(:8444/keepalive_ws_*)已下线,数据面 1s 链路 Ping 覆盖其全部功能。
+tls_client_ca_file = "certs/dev-client-ca.pem"
+password = "REPLACE_WITH_A_LONG_RANDOM_PASSWORD"
+# 与官方客户端 obfs.salamander.password 须完全一致；≥4 字节
+obfs_salamander_password = "REPLACE_WITH_ANOTHER_RANDOM_OBFS_PASSWORD"
+
+# 与官方 hysteria 客户端 mtu 一致，随 node_login 下发（字节）
+mtu = 1280
+
+# QUIC（0 = hysteria 默认 ≈ 流 8MiB / 连接 20MiB）。公网 hy2 在 [server] 限速之前仍受窗口×RTT 约束：吞吐约 ≤ max_conn_window/RTT，过小会卡在约 10MiB/s（例如 2MiB 窗 + 200ms RTT）
+# 与 upload/download 约 20+ MiB/s 对齐；可改为全 0 回 hysteria 默认，或按更高带宽再调大（须 ≥ 16384）
+quic_max_idle_timeout_sec = 15
+quic_initial_stream_recv_window = 1048576
+quic_max_stream_recv_window = 8388608
+quic_initial_conn_recv_window = 4194304
+quic_max_conn_recv_window = 16777216
+quic_max_incoming_streams = 16
+# quic_disable_path_mtu_discovery = false
+
+# bandwidth_max_tx_bps = 0
+# bandwidth_max_rx_bps = 0
+# ignore_client_bandwidth = false
+# udp_relay_enabled = false
+# udp_idle_timeout_sec = 10
+# forward_dial_timeout_sec = 0
+
+masquerade_dir = "masquerade"
+
+# nanotun-admin 生成 profile 时使用(不影响服务端运行);自签证书时建议
+# insecure_hint=true,客户端 tls.insecure: true。生产部署用合法证书时把
+# insecure_hint 改成 false 即可。
+report_tls_sni = "localhost"
+report_tls_insecure_hint = true
+
+# REALITY 入站（与 Xray-core v26.3.27 / rust_reality 同栈）。握手成功后环回本机 [server].listen_addr（如 127.0.0.1:8080）：
+# 未配 [smux] 时为每客户端一次 TCP dial；配 [smux] 且与 [hysteria] 或本段同时生效时，与 hy2 共用环回 smux（单 TCP + VPN1 + 多 stream）。
+# 与 Hysteria 转 VPN 一致，Accept 侧经 dispatch 后走同一套登录帧 + TUN。dest 须可达；启动时会向 dest 拨测握手记录长度。
+[reality]
+listen_addr = ":8443"
+dest = "www.microsoft.com:443"
+type = "tcp"
+xver = 0
+# private_key 为 X25519 私钥(RawURL Base64)。生成方式任选其一:
+#   xray x25519                          # Xray 自带,同时打印 private/public
+#   openssl genpkey -algorithm X25519    # 再自行导出 raw 并 base64url 编码
+# 对应公钥供客户端 / Xray realitySettings.publicKey、rust_reality 公钥配置使用
+# (勿把私钥下发客户端)。**务必替换,不要使用任何示例值上线。**
+private_key = "REPLACE_WITH_YOUR_X25519_PRIVATE_KEY"
+server_names = ["www.microsoft.com"]
+# 可配置多条：客户端 shortId 命中任一即可。每项为 8 字节 = 16 个十六进制字符（亦可更短左侧补 0，生产建议写满 16 位）。
+# 生成: openssl rand -hex 8。**替换示例值再上线。**
+short_ids = [
+  "0123456789abcdef",
+  "fedcba9876543210",
+]
+show = false
+max_time_diff_ms = 0
+client_addr = "example.com:8443"
+
+# ===========================
+# 自托管 PSK 持久化层
+# ===========================
+# 用户 / 设备 / vIP 租约 / ACL / audit_logs 都存在本机 SQLite 中,
+# 由 nanotun-admin CLI 管理(见 nanotun-admin/README.md)。
+
+[store]
+# SQLite 数据库文件路径。首次启动时会自动创建并迁移到最新 schema。
+# 部署期搬迁数据库时务必同步迁数据,详见 scripts/install-self-hosted.sh
+# 的 K1 「Old DB 自检」分支与 docs/POSTMORTEM-20260521-db-path-migration.md。
+#
+# K2(2026-05-23):用绝对路径,与 install-self-hosted.sh 的 LIB_DIR + systemd
+# ReadWritePaths=/var/lib/nanotun 完全对齐。旧值 "data/nanotun.db" 是相对
+# WorkingDirectory=/etc/nanotun 的,配合 systemd ProtectSystem=strict 直接报
+# "read-only file system";且 admin CLI 走 --db-path /var/lib/nanotun/nanotun.db,
+# 两边不一致会让 server 启空库 + admin 看不到用户(2026-05-21 事故的近邻场景)。
+db_path = "/var/lib/nanotun/nanotun.db"
+
+[admin]
+# 管理后台 Web UI 的占位配置:当前由 nanotun-admin CLI 直接读 SQLite,
+# Web 后台留待后续里程碑(M2)落地,enabled 暂时保持 false。
+enabled = false
+listen_addr = ":8443"
+tls_cert_file = "certs/admin-cert.pem"
+tls_key_file = "certs/admin-key.pem"

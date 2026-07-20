@@ -1,0 +1,51 @@
+{{template "header" .}}
+
+<h1>{{T "totpSetup.title"}}</h1>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "totpSetup.step1"}}</h2></div>
+    <p class="muted">{{T "totpSetup.recommendPre"}}<strong>Google Authenticator</strong> / <strong>Microsoft Authenticator</strong> / <strong>Authy</strong> / <strong>1Password</strong> / <strong>Bitwarden</strong>{{T "totpSetup.recommendPost"}}</p>
+    <div style="display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap;margin-top:16px">
+        <div>
+            <img src="{{.Data.QRDataURL}}" alt="TOTP QR code" width="256" height="256"
+                 style="border:1px solid #444;border-radius:8px;background:#fff;padding:8px">
+        </div>
+        <div style="flex:1;min-width:300px">
+            <p>{{T "totpSetup.manualHint"}}</p>
+            <table class="kv">
+                <tr><th>{{T "totpSetup.account"}}</th><td><code>{{.Data.Account}}</code></td></tr>
+                <tr><th>{{T "totpSetup.secret"}}</th><td><code style="user-select:all">{{.Data.Secret}}</code></td></tr>
+                <tr><th>{{T "totpSetup.type"}}</th><td>Time-based (TOTP)</td></tr>
+                <tr><th>{{T "totpSetup.algo"}}</th><td>SHA1</td></tr>
+                <tr><th>{{T "totpSetup.digits"}}</th><td>6</td></tr>
+                <tr><th>{{T "totpSetup.period"}}</th><td>{{T "totpSetup.period30"}}</td></tr>
+            </table>
+            <details style="margin-top:12px">
+                <summary class="muted" style="cursor:pointer">{{T "totpSetup.fullOtpauth"}}</summary>
+                <code style="user-select:all;display:block;margin-top:8px;word-break:break-all;font-size:11px;background:var(--c-pre-bg);color:var(--c-pre-fg);padding:8px;border-radius:4px">{{.Data.OtpauthURI}}</code>
+            </details>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "totpSetup.step2"}}</h2></div>
+    <p class="muted">{{T "totpSetup.step2Desc"}}</p>
+    <form method="post" action="/me/totp/enable" style="display:flex;gap:8px;align-items:flex-end">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <div class="field">
+            <label for="code">{{T "totp.code6"}}</label>
+            <input id="code" name="code" type="text" inputmode="numeric"
+                   pattern="[0-9]{6}" maxlength="6"
+                   autocomplete="one-time-code" autofocus required
+                   placeholder="123456">
+        </div>
+        <button class="btn" type="submit">{{T "totpSetup.confirmEnable"}}</button>
+        <a href="/me" class="btn secondary">{{T "common.cancel"}}</a>
+    </form>
+    <p class="muted" style="margin-top:16px;font-size:12px">
+        {{T "totpSetup.timeHint"}}
+    </p>
+</div>
+
+{{template "footer" .}}

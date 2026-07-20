@@ -1,0 +1,47 @@
+{{template "header" .}}
+
+<div class="card center-card">
+    <div class="auth-brand">
+        <img src="/static/appicon.png" alt="nanotun">
+        <div><span class="name">nanotun</span><span class="tag">secure.core &middot; admin</span></div>
+    </div>
+    <h1>{{T "totp.loginTitle"}}</h1>
+    <p class="muted">{{T "totp.loginIntroPre"}}<strong>{{.Data.Username}}</strong>{{T "totp.loginIntroPost"}}</p>
+
+    <form method="post" action="/login/totp">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        {{with .Data.Next}}<input type="hidden" name="next" value="{{.}}">{{end}}
+        <div class="field">
+            <label for="code">{{T "totp.code6"}}</label>
+            <input id="code" name="code" type="text"
+                   inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+                   autocomplete="one-time-code" autofocus
+                   placeholder="123456">
+        </div>
+        <button class="btn" type="submit">{{T "totp.verify"}}</button>
+    </form>
+
+    <details style="margin-top:24px">
+        <summary class="muted" style="cursor:pointer">{{T "totp.useRecoverySummary"}}</summary>
+        <form method="post" action="/login/totp" style="margin-top:12px">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            {{with .Data.Next}}<input type="hidden" name="next" value="{{.}}">{{end}}
+            <div class="field">
+                <label for="recovery_code">{{T "totp.recoveryLabel"}}</label>
+                <input id="recovery_code" name="recovery_code" type="text"
+                       autocomplete="off" placeholder="XXXX-XXXX">
+            </div>
+            <button class="btn secondary" type="submit">{{T "totp.recoveryLogin"}}</button>
+            <p class="muted" style="margin-top:8px">
+                {{T "totp.recoveryNotePre"}}<strong>{{T "totp.recoveryNoteStrong"}}</strong>{{T "totp.recoveryNotePost"}}
+            </p>
+        </form>
+    </details>
+
+    <p class="muted" style="margin-top:24px;font-size:12px">
+        {{T "totp.transitNotePre"}}
+        <a href="/login">{{T "totp.backToLogin"}}</a>{{T "totp.transitNoteEnd"}}
+    </p>
+</div>
+
+{{template "footer" .}}

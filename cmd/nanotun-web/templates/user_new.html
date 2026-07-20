@@ -1,0 +1,36 @@
+{{template "header" .}}
+
+<div class="crumb"><a href="/users" class="back">&larr; {{T "userDetail.backToList"}}</a> &middot; NETWORK &middot; <b>USERS</b></div>
+<h1>{{T "userNew.title"}}</h1>
+
+<div class="card">
+<form method="post" action="/users/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+        <label for="username">{{T "userNew.usernameRequired"}}</label>
+        <input id="username" name="username" type="text" required>
+        <div class="hint">{{T "userNew.usernameHint"}}</div>
+    </div>
+    <div class="field">
+        <label><input type="checkbox" name="is_admin"> {{T "userNew.setPskAdmin"}}</label>
+    </div>
+    <div class="field">
+        <label><input type="checkbox" name="exit_allowed" checked> {{T "userNew.allowExit"}}</label>
+    </div>
+    <div class="field">
+        <label>{{T "userNew.platformsLabel"}}</label>
+        <div class="check-grid">
+            {{range .Data.PlatformChecks}}
+            <label><input type="checkbox" name="platforms" value="{{.Name}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>
+            {{end}}
+        </div>
+        <div class="hint">{{T "userNew.platformsHint"}}</div>
+    </div>
+    <p class="muted">{{T "userNew.pskAutoGen"}}</p>
+    <p class="hint">{{T "userNew.fixedVipHintPre"}}<a href="/devices">{{T "userNew.deviceMgmt"}}</a>{{T "userNew.fixedVipHintPost"}}</p>
+    <button class="btn" type="submit">{{T "common.create"}}</button>
+    <a href="/users" class="btn secondary">{{T "common.cancel"}}</a>
+</form>
+</div>
+
+{{template "footer" .}}

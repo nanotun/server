@@ -1,0 +1,104 @@
+{{template "header" .}}
+
+<div class="crumb">TUNNEL.CTRL &middot; <b>PORT.FORWARD</b> &middot; {{T "portForward.crumbSuffix"}}</div>
+<h1>{{T "portForward.h1"}}</h1>
+<p class="sub">
+    {{T "portForward.descPre"}}<b>{{T "portForward.publicPortWord"}}</b>{{T "portForward.descMid1"}}<code>{{T "portForward.serverIpPublicPort"}}</code>{{T "portForward.descMid2"}}<b>{{T "portForward.ownPortWord"}}</b>{{T "portForward.descMid3"}}<b>{{T "portForward.lanDeviceWord"}}</b>{{T "portForward.descMid4"}}<b>{{T "portForward.publicOpenWord"}}</b>{{T "portForward.descPost"}}
+</p>
+
+<div class="grid-stats" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+    <div class="stat hot"><div class="label">{{T "portForward.statTotal"}}</div><div class="value">{{.Data.Stats.Total}}</div></div>
+    <div class="stat"><div class="label">{{T "portForward.statListening"}}</div><div class="value">{{.Data.Stats.Listening}}</div></div>
+    <div class="stat"><div class="label">{{T "portForward.statDegraded"}}</div><div class="value">{{.Data.Stats.Degraded}}</div></div>
+    <div class="stat"><div class="label">{{T "portForward.statDisabled"}}</div><div class="value">{{.Data.Stats.Disabled}}</div></div>
+</div>
+
+{{if eq .Admin.Role "admin"}}
+<div class="card">
+<div class="card-title"><span class="hl">NEW.MAPPING</span> {{T "portForward.newMapping"}} <span class="line"></span></div>
+<form method="post" action="/port-forwards/new" class="vform">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+        <label for="pf-public-port">{{T "portForward.publicPortWord"}} <span class="req">*</span></label>
+        <input id="pf-public-port" name="public_port" type="number" min="1" max="65535" required placeholder="{{T "portForward.publicPortPh"}}">
+        <div class="hint">{{T "portForward.publicPortHint"}}</div>
+    </div>
+    <div class="field">
+        <label for="pf-device">{{T "portForward.targetDevice"}} <span class="req">*</span></label>
+        <select id="pf-device" name="device_uuid" required>
+            <option value="">{{T "portForward.selectDevice"}}</option>
+            {{range .Data.Devices}}
+            <option value="{{.DeviceUUID}}">{{.DisplayName}} · {{.Platform}} · {{printf "%.8s" .DeviceUUID}}</option>
+            {{end}}
+        </select>
+    </div>
+    <div class="field">
+        <label for="pf-target-ip">{{T "portForward.targetIp"}} <span class="req">*</span></label>
+        <input id="pf-target-ip" name="target_ip" type="text" required placeholder="10.201.0.6">
+        <div class="hint">{{T "portForward.targetIpPh"}}</div>
+    </div>
+    <div class="field">
+        <label for="pf-target-port">{{T "portForward.targetPort"}} <span class="req">*</span></label>
+        <input id="pf-target-port" name="target_port" type="number" min="1" max="65535" required placeholder="{{T "portForward.targetPortPh"}}">
+    </div>
+    <div class="field">
+        <label for="pf-comment">{{T "portForward.comment"}}</label>
+        <input id="pf-comment" name="comment" type="text" placeholder="{{T "portForward.optional"}}">
+    </div>
+    <button class="btn-primary" type="submit">+ {{T "portForward.add"}}</button>
+</form>
+</div>
+{{end}}
+
+<div class="card">
+<div class="card-title"><span class="hl">ACTIVE.MAPS</span> {{T "portForward.configuredMappings"}} <span class="line"></span> <span class="count">{{len .Data.Forwards}}</span></div>
+{{range .Data.Forwards}}
+    <div class="map-row">
+        <span class="port-badge">:{{.PublicPort}}</span>
+        <div class="map-info">
+            <div class="map-title">
+                {{if .DeviceID}}<a class="dev" href="/devices/{{.DeviceID}}">{{.DeviceName}}</a>{{else}}<span class="muted">{{T "portForward.unregistered"}}</span>{{end}}
+                <span class="uuid">{{printf "%.8s" .TargetDeviceUUID}}</span>
+                {{if .Comment}}{{.Comment}}{{end}}
+            </div>
+            <div class="map-sub">{{.Proto}} &middot; server:{{.PublicPort}} <span class="arrow">→</span> {{.TargetIP}}:{{.TargetPort}}</div>
+        </div>
+        {{if .Enabled}}
+            {{if eq .LiveState "listening"}}
+                <span class="pill ok" title="{{T "portForward.runningTitle"}}">{{T "portForward.running"}}</span>
+            {{else if eq .LiveState "bind_failed"}}
+                <span class="pill err" title="{{.LiveErr}}">{{T "portForward.bindFailed"}}</span>
+            {{else if eq .LiveState "route_degraded"}}
+                <span class="pill warn" title="{{.LiveErr}}">{{T "portForward.routeDegraded"}}</span>
+            {{else}}
+                <span class="pill off" title="{{T "portForward.stateUnknownTitle"}}">{{T "portForward.stateUnknown"}}</span>
+            {{end}}
+        {{else}}
+            <span class="pill off">{{T "portForward.disableWord"}}</span>
+        {{end}}
+        {{if eq $.Admin.Role "admin"}}
+        <div class="map-actions">
+            {{if .Enabled}}
+            <form method="post" action="/port-forwards/{{.ID}}/disable" class="inline">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <button class="btn small secondary" type="submit">{{T "portForward.disableWord"}}</button>
+            </form>
+            {{else}}
+            <form method="post" action="/port-forwards/{{.ID}}/enable" class="inline">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <button class="btn small secondary" type="submit">{{T "portForward.enableWord"}}</button>
+            </form>
+            {{end}}
+            <form method="post" action="/port-forwards/{{.ID}}/delete" class="inline">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <button class="btn small danger" onclick="return confirm('{{T "portForward.deleteConfirm"}}')">{{T "common.delete"}}</button>
+            </form>
+        </div>
+        {{end}}
+    </div>
+{{else}}
+    <div class="empty">{{T "portForward.none"}}</div>
+{{end}}
+</div>
+
+{{template "footer" .}}

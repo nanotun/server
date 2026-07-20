@@ -1,0 +1,68 @@
+{{template "header" .}}
+
+<div class="crumb">NETWORK &middot; <b>DEVICES</b></div>
+<div class="toolbar">
+    <h1 style="flex:1;margin:0">{{T "devices.title"}}</h1>
+    {{/* 2026-07-19 易用性:跨用户名/设备名/别名/UUID/平台/固定 vIP 的服务端过滤。 */}}
+    <form method="get" action="/devices" class="inline">
+        <input type="text" name="q" value="{{.Data.Query}}" placeholder="{{T "devices.searchPh"}}"
+               style="width:220px" aria-label="{{T "devices.searchPh"}}">
+        <button class="btn small secondary" type="submit">{{T "common.search"}}</button>
+        {{if .Data.Query}}<a href="/devices" class="btn small secondary" title="{{T "common.clearSearch"}}">✕</a>{{end}}
+    </form>
+</div>
+
+{{if not .Data.ControlAvailable}}
+<div class="flash warn">{{T "devices.controlUnavailable"}}</div>
+{{end}}
+
+{{range .Data.Rows}}
+<div class="card">
+    <div class="card-header">
+        <h2><a href="/users/{{.User.ID}}">{{.User.Username}}</a>
+            <span class="muted">({{len .Devices}}{{T "devices.unitSuffix"}})</span></h2>
+    </div>
+    {{if .Devices}}
+    <table class="tbl">
+        <thead><tr><th>ID</th><th>{{T "devices.thName"}}</th><th>UUID</th><th>{{T "devices.thPlatform"}}</th>
+            <th>{{T "devices.thFixedV4"}}</th><th>{{T "devices.thFixedV6"}}</th>
+            <th title="{{T "devices.thUpRateTitle"}}">{{T "devices.thUpRate"}}</th>
+            <th title="{{T "devices.thDownRateTitle"}}">{{T "devices.thDownRate"}}</th>
+            <th title="{{T "devices.thUpEffTitle"}}">{{T "devices.thUpEff"}}</th>
+            <th title="{{T "devices.thDownEffTitle"}}">{{T "devices.thDownEff"}}</th>
+            <th>{{T "devices.thLastSeen"}}</th><th></th></tr></thead>
+        <tbody>
+        {{range .Devices}}
+            <tr>
+                <td>{{.ID}}</td>
+                <td>{{if .Alias}}{{.Alias}} <span class="muted">({{.DeviceName}})</span>{{else}}{{.DeviceName}}{{end}}</td>
+                {{/* 2026-07-19 易用性:UUID 截断 8 位 + 悬停全量,原全量展示把表格撑得极宽。 */}}
+                <td class="muted">{{if gt (len .DeviceUUID) 12}}<code title="{{.DeviceUUID}}">{{slice .DeviceUUID 0 8}}…</code>{{else}}{{.DeviceUUID}}{{end}}</td>
+                <td>{{.Platform}}</td>
+                <td>{{if .FixedVIPv4}}<code>{{.FixedVIPv4}}</code>{{else}}<span class="muted">-</span>{{end}}</td>
+                <td>{{if .FixedVIPv6}}<code>{{.FixedVIPv6}}</code>{{else}}<span class="muted">-</span>{{end}}</td>
+                <td>{{if .RateUploadBPS}}<span class="muted">{{rateBytes .RateUploadBPS}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+                <td>{{if .RateDownloadBPS}}<span class="muted">{{rateBytes .RateDownloadBPS}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+                <td><strong>{{.EffUpHuman}}</strong></td>
+                <td><strong>{{.EffDownHuman}}</strong></td>
+                <td><span title="{{.LastSeenAt}}">{{fmtDuration .LastSeenAt}}</span></td>
+                <td><a href="/devices/{{.ID}}" class="btn small secondary">{{T "common.details"}}</a></td>
+            </tr>
+        {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <p class="muted">{{T "devices.noneForUser"}}</p>
+    {{end}}
+</div>
+{{else}}
+<div class="card">
+    {{if .Data.Query}}
+    <p class="muted">{{T "devices.noSearchResult"}}<code>{{.Data.Query}}</code></p>
+    {{else}}
+    <p class="muted">{{T "devices.noneAtAll"}}</p>
+    {{end}}
+</div>
+{{end}}
+
+{{template "footer" .}}

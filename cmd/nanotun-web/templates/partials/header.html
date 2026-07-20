@@ -1,0 +1,104 @@
+{{define "header"}}
+<!DOCTYPE html>
+<html lang="{{if eq .Lang "en"}}en{{else}}zh-CN{{end}}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    {{/* ?v= 版本号 cache-busting:配合 /static/ 的 Cache-Control(一天),
+         升级二进制后 URL 变化击穿浏览器旧缓存,不会拿陈旧 CSS 渲染新模板。 */}}
+    <link rel="icon" type="image/png" href="/static/appicon.png?v={{.Nav.Version}}">
+    <link rel="stylesheet" href="/static/style.css?v={{.Nav.Version}}">
+</head>
+<body>
+{{if .Admin}}
+{{/* 2026-07-18 全站改版:顶栏导航 → 左侧固定侧边栏(SECURE.CORE 暗色主题)。
+     骨架 .shell = aside.side(品牌/分组导航/组网+账号区) + .content(main + statusbar),
+     div 在 footer partial 里闭合。窄屏(<860px)侧栏由 CSS 自动收成顶部横排。 */}}
+<div class="shell">
+    <aside class="side">
+        <div class="side-brand">
+            <img src="/static/appicon.png?v={{.Nav.Version}}" alt="nanotun">
+            <div>
+                <span class="name">nanotun</span>
+                <span class="tag">secure.core &middot; {{.Nav.Version}}</span>
+            </div>
+        </div>
+        <nav class="side-nav">
+            <div class="group">{{T "nav.groupNetwork"}}</div>
+            <a href="/"        class="{{if eq .Nav.Active "dashboard"}}active{{end}}"><span class="ico">&#9678;</span>{{T "nav.dashboard"}}</a>
+            <a href="/users"   class="{{if eq .Nav.Active "users"}}active{{end}}"><span class="ico">&#9781;</span>{{T "nav.users"}}</a>
+            <a href="/devices" class="{{if eq .Nav.Active "devices"}}active{{end}}"><span class="ico">&#9974;</span>{{T "nav.devices"}}</a>
+            <a href="/leases"  class="{{if eq .Nav.Active "leases"}}active{{end}}"><span class="ico">&#8646;</span>{{T "nav.leases"}}</a>
+            <a href="/sessions"class="{{if eq .Nav.Active "sessions"}}active{{end}}"><span class="ico">&#9737;</span>{{T "nav.sessions"}}</a>
+            <div class="group">{{T "nav.groupAccess"}}</div>
+            <a href="/acl"     class="{{if eq .Nav.Active "acl"}}active{{end}}"><span class="ico">&#9930;</span>{{T "nav.acl"}}</a>
+            <a href="/routes"  class="{{if eq .Nav.Active "routes"}}active{{end}}"><span class="ico">&#8620;</span>{{T "nav.routes"}}</a>
+            <a href="/port-forwards" class="{{if eq .Nav.Active "portforward"}}active{{end}}" title="{{T "nav.portForwardTitle"}}"><span class="ico">&#8644;</span>{{T "nav.portForward"}}</a>
+            <div class="group">{{T "nav.groupSystem"}}</div>
+            <a href="/audit"   class="{{if eq .Nav.Active "audit"}}active{{end}}"><span class="ico">&#9998;</span>{{T "nav.audit"}}</a>
+            <a href="/sysmon"  class="{{if eq .Nav.Active "sysmon"}}active{{end}}" title="{{T "nav.sysmonTitle"}}"><span class="ico">&#9636;</span>{{T "nav.sysmon"}}</a>
+            <a href="/admins"  class="{{if eq .Nav.Active "admins"}}active{{end}}"><span class="ico">&#9819;</span>{{T "nav.admins"}}</a>
+            <a href="/me"      class="{{if eq .Nav.Active "me"}}active{{end}}" title="{{T "nav.meTitle"}}"><span class="ico">&#9787;</span>{{T "nav.me"}}</a>
+            <a href="/settings"class="{{if eq .Nav.Active "settings"}}active{{end}}"><span class="ico">&#9881;</span>{{T "nav.settings"}}</a>
+        </nav>
+        <div class="side-foot">
+            {{/* 组网模式快捷开关:任何页面一键切换。viewer 角色只读(handler 有 requireAdminRole 兜底)。 */}}
+            {{if eq .Admin.Role "admin"}}
+            <form method="post" action="/runtime/mesh-toggle" class="mesh-toggle-form"
+                  title="{{if .Nav.MeshEnabled}}{{T "nav.meshTitleOn"}}{{else}}{{T "nav.meshTitleOff"}}{{end}}">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                {{/* 显式传目标值,避免两个管理员并发切换时翻错方向。 */}}
+                <input type="hidden" name="to" value="{{if .Nav.MeshEnabled}}off{{else}}on{{end}}">
+                {{/* Referrer-Policy: no-referrer — 切完留在当前页要靠显式 return_to。 */}}
+                <input type="hidden" name="return_to" value="{{.Path}}">
+                <button type="submit"
+                        class="mesh-toggle {{if .Nav.MeshEnabled}}on{{else}}off{{end}}"
+                        onclick="return confirm('{{if .Nav.MeshEnabled}}{{T "nav.meshConfirmOff"}}{{else}}{{T "nav.meshConfirmOn"}}{{end}}');">
+                    <span class="dot"></span>
+                    {{T "nav.mesh"}} {{if .Nav.MeshEnabled}}ON{{else}}OFF{{end}}
+                </button>
+            </form>
+            {{else}}
+            <span class="mesh-toggle {{if .Nav.MeshEnabled}}on{{else}}off{{end}} readonly"
+                  title="{{T "nav.meshReadonlyTitle"}}{{if .Nav.MeshEnabled}}ON{{else}}OFF{{end}}">
+                <span class="dot"></span>
+                {{T "nav.mesh"}} {{if .Nav.MeshEnabled}}ON{{else}}OFF{{end}}
+            </span>
+            {{end}}
+            <div class="side-user" title="{{.Nav.ServerHost}}">
+                <span class="who"><a href="/me" title="{{T "nav.meTitle"}}">@{{.Admin.Username}}</a></span>
+                <span class="role-chip">{{.Admin.Role}}</span>
+            </div>
+            <div class="side-meta">
+                {{template "lang-switch" .}}
+                <form method="post" action="/logout" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <button class="btn-quit" type="submit">{{T "nav.logout"}}</button>
+                </form>
+            </div>
+        </div>
+    </aside>
+    <div class="content">
+{{else}}
+{{/* 未登录页(登录 / 初始化 / TOTP 转场 / 错误页):无侧栏,浮动语言切换器。 */}}
+<div class="lang-switch-floating">{{template "lang-switch" .}}</div>
+{{end}}
+
+<main>
+{{if .Flash}}
+<div class="flash {{.Flash.Kind}}">{{.Flash.Text}}</div>
+{{end}}
+{{end}}
+
+{{/* lang-switch:语言切换器。href 由 renderPage 预先算好(见 PageData.LangSwitchURLs):
+     保留当前页其它 query 参数,只把 lang 设成目标语言;withLang 中间件写 cookie 后
+     302 到剥掉 lang 参数的干净 URL。这样在带过滤条件(?show_disabled / audit filter)
+     的页面切换语言不会丢掉这些参数。 */}}
+{{define "lang-switch"}}
+<span class="lang-switch">
+    <a href="{{index .LangSwitchURLs "zh"}}" class="{{if eq .Lang "zh"}}active{{end}}" rel="nofollow">中文</a>
+    <span class="sep">/</span>
+    <a href="{{index .LangSwitchURLs "en"}}" class="{{if eq .Lang "en"}}active{{end}}" rel="nofollow">English</a>
+</span>
+{{end}}

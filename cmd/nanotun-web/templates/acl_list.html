@@ -1,0 +1,48 @@
+{{template "header" .}}
+
+<div class="crumb">ACCESS.CTRL &middot; <b>ACL</b></div>
+<div class="toolbar">
+    <h1 style="flex:1;margin:0">{{T "acl.title"}}</h1>
+    {{if eq .Admin.Role "admin"}}
+    <form method="post" action="/runtime/reload" class="inline">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        {{/* Referrer-Policy: no-referrer — 重载完回 ACL 页要靠显式 return_to。 */}}
+        <input type="hidden" name="return_to" value="/acl">
+        <button class="btn secondary" type="submit"
+            onclick="return confirm('{{T "acl.reloadConfirm"}}')">{{T "dashboard.reloadAcl"}}</button>
+    </form>
+    <a href="/acl/new" class="btn">{{T "acl.newRule"}}</a>
+    {{end}}
+</div>
+
+<div class="card">
+<table class="tbl">
+    <thead><tr><th>ID</th><th>{{T "acl.thAction"}}</th><th>{{T "acl.thSrc"}}</th><th>{{T "acl.thDst"}}</th><th>{{T "acl.thProto"}}</th><th>{{T "acl.thPort"}}</th><th>{{T "acl.thKind"}}</th><th>{{T "common.created"}}</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Rows}}
+        <tr>
+            <td>{{.ID}}</td>
+            <td>{{if eq .Action "allow"}}<span class="badge ok">allow</span>{{else}}<span class="badge err">deny</span>{{end}}</td>
+            <td>{{.SrcName}}</td>
+            <td>{{.DstName}}</td>
+            <td>{{if .Proto}}{{.Proto}}{{else}}*{{end}}</td>
+            <td>{{.PortRange}}</td>
+            <td>{{.DstKind}}</td>
+            <td><span title="{{.CreatedAt}}">{{fmtDuration .CreatedAt}}</span></td>
+            <td>
+                {{if eq $.Admin.Role "admin"}}
+                <form method="post" action="/acl/{{.ID}}/delete" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button class="btn danger small" onclick="return confirm('{{T "acl.deleteConfirm"}}')">{{T "common.delete"}}</button>
+                </form>
+                {{end}}
+            </td>
+        </tr>
+    {{else}}
+        <tr><td colspan="9" class="muted">{{T "acl.none"}}</td></tr>
+    {{end}}
+    </tbody>
+</table>
+</div>
+
+{{template "footer" .}}

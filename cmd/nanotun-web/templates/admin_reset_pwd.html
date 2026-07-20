@@ -1,0 +1,26 @@
+{{template "header" .}}
+
+{{/* 2026-07-19 易用性改版:原「改密」走 JS prompt() 弹窗 — 明文回显、无法二次
+     确认、无法前端校验长度。改成独立表单页:两次输入 + 密码框掩码 + 策略提示。 */}}
+<div class="crumb"><a href="/admins" class="back">&larr; {{T "adminPwd.backToList"}}</a> &middot; SYSTEM &middot; <b>ADMINS</b></div>
+<h1>{{T "adminPwd.title" .Data.Target.Username}}</h1>
+
+<div class="card" style="max-width:480px">
+<form method="post" action="/admins/{{.Data.Target.ID}}/reset-pwd">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+        <label for="password">{{T "adminPwd.newPwd"}}</label>
+        <input id="password" name="password" type="password" autocomplete="new-password" required minlength="12">
+        <div class="hint">{{T "adminPwd.policyHint"}}</div>
+    </div>
+    <div class="field">
+        <label for="password_confirm">{{T "common.repeatPassword"}}</label>
+        <input id="password_confirm" name="password_confirm" type="password" autocomplete="new-password" required minlength="12">
+    </div>
+    <p class="hint">{{T "adminPwd.sessionNote"}}</p>
+    <button class="btn" type="submit">{{T "adminPwd.submit"}}</button>
+    <a href="/admins" class="btn secondary">{{T "common.cancel"}}</a>
+</form>
+</div>
+
+{{template "footer" .}}

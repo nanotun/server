@@ -1,0 +1,97 @@
+{{template "header" .}}
+
+<div class="crumb">SYSTEM &middot; <b>MY.ACCOUNT</b></div>
+<h1>{{T "me.title"}}</h1>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "me.basicInfo"}}</h2></div>
+    <table class="kv">
+        <tr><th>{{T "common.username"}}</th><td>{{.Admin.Username}}</td></tr>
+        <tr><th>{{T "common.role"}}</th><td><span class="badge role">{{.Admin.Role}}</span></td></tr>
+        <tr><th>{{T "common.createdAt"}}</th><td>{{fmtTime .Admin.CreatedAt}}</td></tr>
+        <tr><th>{{T "me.lastLogin"}}</th><td>{{fmtTime .Admin.LastLoginAt}}{{if .Admin.LastLoginIP}} · {{.Admin.LastLoginIP}}{{end}}</td></tr>
+    </table>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "me.totpHeading"}}</h2></div>
+    {{if .Admin.TOTPEnabled}}
+        <p>{{T "me.statusColon"}}<span class="badge ok">{{T "me.enabled"}}</span>{{T "me.enabledSincePre"}}{{fmtTime .Admin.TOTPEnabledAt}}{{T "me.enabledSincePost"}}</p>
+        <p class="muted">{{T "me.totpEnabledDesc"}}</p>
+        <p>{{T "me.recoveryRemain"}}<strong>{{.Data.RecoveryCodesRemain}}</strong> / 10
+            {{if lt .Data.RecoveryCodesRemain 4}}
+                <span class="badge warn">{{T "me.recoveryLow"}}</span>
+            {{end}}
+        </p>
+
+        <h3 style="margin-top:24px">{{T "me.disableTotpHeading"}}</h3>
+        <p class="muted">{{T "me.disableTotpDesc"}}</p>
+        <form method="post" action="/me/totp/disable" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="field">
+                <label for="dis_code">{{T "totp.code6"}}</label>
+                <input id="dis_code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456">
+            </div>
+            <div class="field"><span class="muted">{{T "me.or"}}</span></div>
+            <div class="field">
+                <label for="dis_recovery">{{T "me.recoveryCodeLabel"}}</label>
+                <input id="dis_recovery" name="recovery_code" type="text" placeholder="XXXX-XXXX">
+            </div>
+            <button class="btn danger" type="submit"
+                    onclick="return confirm('{{T "me.disableTotpConfirm"}}')">
+                {{T "me.disableTotp"}}
+            </button>
+        </form>
+
+        <h3 style="margin-top:24px">{{T "me.regenHeading"}}</h3>
+        <p class="muted">{{T "me.regenDesc"}}</p>
+        <form method="post" action="/me/totp/regen-codes" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="field">
+                <label for="regen_code">{{T "totp.code6"}}</label>
+                <input id="regen_code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456">
+            </div>
+            <button class="btn secondary" type="submit"
+                    onclick="return confirm('{{T "me.regenConfirm"}}')">
+                {{T "me.regenBtn"}}
+            </button>
+        </form>
+
+    {{else}}
+        <p>{{T "me.statusColon"}}<span class="badge">{{T "me.notEnabled"}}</span></p>
+        <p class="muted">
+            {{T "me.enableDescPre"}}<strong>Google Authenticator</strong> / <strong>Microsoft Authenticator</strong> / <strong>Authy</strong> /
+            <strong>1Password</strong>{{T "me.enableDescPost"}}
+        </p>
+        <form method="post" action="/me/totp/setup">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button class="btn" type="submit">{{T "me.enableTotp"}}</button>
+        </form>
+    {{end}}
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "me.myActiveSessions"}}</h2>
+        <span class="muted" style="margin-left:8px">{{T "common.totalPre"}}{{len .Data.Sessions}}{{T "common.totalPost"}}</span>
+    </div>
+    <table class="tbl">
+        <thead><tr>
+            <th>IP</th><th>User-Agent</th><th>{{T "common.createdAt"}}</th><th>{{T "me.lastActive"}}</th><th>{{T "me.expiresAt"}}</th>
+        </tr></thead>
+        <tbody>
+        {{range .Data.Sessions}}
+            <tr>
+                <td>{{if .IP}}{{.IP}}{{else}}<span class="muted">-</span>{{end}}</td>
+                <td class="muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{.UserAgent}}">{{.UserAgent}}</td>
+                <td>{{fmtTime .CreatedAt}}</td>
+                <td>{{fmtDuration .LastSeenAt}}</td>
+                <td>{{fmtTime .ExpiresAt}}</td>
+            </tr>
+        {{else}}
+            <tr><td colspan="5" class="muted">{{T "me.noSessions"}}</td></tr>
+        {{end}}
+        </tbody>
+    </table>
+</div>
+
+{{template "footer" .}}

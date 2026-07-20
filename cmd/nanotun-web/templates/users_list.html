@@ -1,0 +1,57 @@
+{{template "header" .}}
+
+<div class="crumb">NETWORK &middot; <b>USERS</b></div>
+<div class="toolbar">
+    <h1 style="flex:1;margin:0">{{T "users.title"}}</h1>
+    {{/* 2026-07-19 易用性:服务端过滤搜索框。保留 show_disabled 状态(hidden 字段)。 */}}
+    <form method="get" action="/users" class="inline">
+        {{if .Data.ShowDisabled}}<input type="hidden" name="show_disabled" value="1">{{end}}
+        <input type="text" name="q" value="{{.Data.Query}}" placeholder="{{T "users.searchPh"}}"
+               style="width:180px" aria-label="{{T "users.searchPh"}}">
+        <button class="btn small secondary" type="submit">{{T "common.search"}}</button>
+        {{if .Data.Query}}<a href="/users{{if .Data.ShowDisabled}}?show_disabled=1{{end}}" class="btn small secondary" title="{{T "common.clearSearch"}}">✕</a>{{end}}
+    </form>
+    {{if .Data.ShowDisabled}}
+        <a href="/users{{if .Data.Query}}?q={{.Data.Query}}{{end}}" class="btn small secondary" title="{{T "users.hideDisabledTitle"}}">{{T "users.onlyActive"}}</a>
+    {{else}}
+        <a href="/users?show_disabled=1{{if .Data.Query}}&q={{.Data.Query}}{{end}}" class="btn small secondary" title="{{T "users.showDisabledTitle"}}">{{T "users.showDisabled"}}</a>
+    {{end}}
+    {{if eq .Admin.Role "admin"}}
+    <a href="/users/new" class="btn">{{T "users.newUser"}}</a>
+    {{end}}
+</div>
+
+<div class="card">
+<table class="tbl">
+    <thead><tr><th>ID</th><th>{{T "common.username"}}</th><th>{{T "users.thAdmin"}}</th>
+        <th>{{T "common.thExit"}}</th><th>{{T "common.status"}}</th><th>{{T "users.thCredential"}}</th><th>{{T "common.created"}}</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Users}}
+        <tr {{if ne .DisabledAt 0}}style="opacity:.5"{{end}}>
+            <td>{{.ID}}</td>
+            <td><a href="/users/{{.ID}}">{{.Username}}</a></td>
+            <td>{{if .IsAdmin}}<span class="badge ok">admin</span>{{end}}</td>
+            <td>{{fmtBool .ExitAllowed}}</td>
+            <td>{{if eq .DisabledAt 0}}<span class="badge ok">enabled</span>{{else}}<span class="badge warn">disabled</span>{{end}}</td>
+            <td>
+                {{- if .CredentialID -}}
+                    <code title="{{.CredentialID}}">{{printf "%.8s" .CredentialID}}…</code>
+                {{- else -}}
+                    <span class="muted">{{T "users.credNotGenerated"}}</span>
+                {{- end -}}
+            </td>
+            <td><span title="{{.CreatedAt}}">{{fmtTime .CreatedAt}}</span></td>
+            <td><a href="/users/{{.ID}}" class="btn small secondary">{{T "common.details"}}</a></td>
+        </tr>
+    {{else}}
+        {{if .Data.Query}}
+        <tr><td colspan="8" class="muted">{{T "users.noSearchResult"}}<code>{{.Data.Query}}</code></td></tr>
+        {{else}}
+        <tr><td colspan="8" class="muted">{{T "users.noUsersPre"}}<a href="/users/new">{{T "users.createFirst"}}</a></td></tr>
+        {{end}}
+    {{end}}
+    </tbody>
+</table>
+</div>
+
+{{template "footer" .}}

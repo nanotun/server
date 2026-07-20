@@ -1,0 +1,69 @@
+{{template "header" .}}
+
+<div class="crumb"><a href="/acl" class="back">&larr; {{T "aclNew.backToList"}}</a> &middot; ACCESS.CTRL &middot; <b>ACL</b></div>
+<h1>{{T "aclNew.title"}}</h1>
+
+<div class="card">
+{{/* 2026-07-19 易用性:开头交代规则语义 + 生效方式,原表单只有裸字段。 */}}
+<p class="hint">{{T "aclNew.intro"}}</p>
+<form method="post" action="/acl/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="row">
+        <div class="field">
+            <label for="src_user_id">{{T "aclNew.srcUser"}}</label>
+            <select id="src_user_id" name="src_user_id">
+                <option value="0">&lt;{{T "aclNew.any"}}&gt;</option>
+                {{range .Data.Users}}<option value="{{.ID}}">{{.Username}}</option>{{end}}
+            </select>
+        </div>
+        <div class="field">
+            <label for="dst_user_id">{{T "aclNew.dstUser"}}</label>
+            <select id="dst_user_id" name="dst_user_id">
+                <option value="0">&lt;{{T "aclNew.any"}}&gt;</option>
+                {{range .Data.Users}}<option value="{{.ID}}">{{.Username}}</option>{{end}}
+            </select>
+        </div>
+    </div>
+    <div class="row">
+        <div class="field">
+            <label for="action">{{T "aclNew.actionLabel"}}</label>
+            <select id="action" name="action">
+                <option value="allow">allow{{T "aclNew.actionAllowSuffix"}}</option>
+                <option value="deny">deny{{T "aclNew.actionDenySuffix"}}</option>
+            </select>
+        </div>
+        <div class="field">
+            <label for="proto">{{T "aclNew.protoLabel"}}</label>
+            <select id="proto" name="proto">
+                <option value="">{{T "aclNew.any"}}</option>
+                <option value="tcp">tcp</option>
+                <option value="udp">udp</option>
+                <option value="icmp">icmp</option>
+                <option value="icmpv6">icmpv6</option>
+            </select>
+        </div>
+        <div class="field">
+            <label for="dst_kind">{{T "aclNew.dstKindLabel"}}</label>
+            <select id="dst_kind" name="dst_kind">
+                <option value="user">{{T "aclNew.kindUser"}}</option>
+                <option value="exit">{{T "aclNew.kindExit"}}</option>
+            </select>
+        </div>
+    </div>
+    <div class="row">
+        <div class="field">
+            <label for="port_lo">{{T "aclNew.portLo"}}</label>
+            <input id="port_lo" name="port_lo" type="number" min="0" max="65535" value="0">
+        </div>
+        <div class="field">
+            <label for="port_hi">{{T "aclNew.portHi"}}</label>
+            <input id="port_hi" name="port_hi" type="number" min="0" max="65535" value="0">
+        </div>
+    </div>
+    <p class="hint">{{T "aclNew.portHint"}}</p>
+    <button type="submit" class="btn">{{T "common.create"}}</button>
+    <a href="/acl" class="btn secondary">{{T "common.cancel"}}</a>
+</form>
+</div>
+
+{{template "footer" .}}

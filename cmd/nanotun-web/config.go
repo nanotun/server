@@ -1,0 +1,197 @@
+// Package main: nanotun-web — nanotun 自托管模式下的 Web 管理后台。
+//
+// 设计上独立成 binary,与 nanotund 物理隔离:
+//   - 数据面 nanotund: 跑 root,持有 TUN/iptables/control socket;
+//   - 管理面 nanotun-web: 跑非特权用户(systemd DynamicUser=yes),只持有
+//     SQLite 文件 + control socket 读写权限,所有写操作都过 audit_logs;
+//   - 接管路径: Web → 直写 SQLite → SIGHUP(或调 /control/reload) → server 拿新 snapshot。
+//
+// 监听 0.0.0.0:7443,启动时自动生成 self-signed 证书放在 certs_dir,
+// 已存在则不覆盖。生产建议在前面套 nginx/caddy 走 Let's Encrypt + mTLS。
+
+package main
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// Config 是 nanotun-web 的运行时配置。来源:flag → env → default。
+//
+// 字段命名上保持与 nanotund config 风格一致(snake_case 的 flag,大写 env)。
+type Config struct {
+	// 监听地址。默认 0.0.0.0:7443。空串视为非法。
+	ListenAddr string
+
+	// SQLite 数据库路径。与 nanotund 共享同一文件。
+	DBPath string
+
+	// nanotund 的 control socket 路径,用于 /runtime/reload + /runtime/kick。
+	ControlSocketPath string
+
+	// 自签证书目录。生成的文件为 cert.pem + key.pem,权限 0600。
+	// 已存在 cert.pem + key.pem → 直接复用。
+	CertDir string
+
+	// SAN 列表的额外条目(domain 或 IP)。startup 时合并 hostname + 公网检测 +
+	// 这里手动写的,然后生成证书。
+	ExtraSANs []string
+
+	// session 滑动过期窗口(秒)。每次成功命中 session 都把 expires_at 往后顶。
+	SessionTTLSec int64
+
+	// 暴力破解防护:连续失败 N 次后锁 lock_seconds 秒。
+	MaxLoginFailures int64
+	LockoutSeconds   int64
+
+	// 是否暴露开发者 /debug/* 路由(pprof 之类)。生产关。
+	EnableDebug bool
+
+	// 写操作时是否同步调 nanotund /control/reload?acl(默认 true)。
+	// 关闭后管理员需要手动 systemctl reload nanotun 让 ACL 生效。
+	AutoReloadOnACLChange bool
+
+	// 启动 setup wizard 的阈值:web_admins 表空时 / true 才进 setup 模式。
+	// 当 admin 误删了所有账号,有意保留这个 wizard 入口而不是 fatal。
+	AllowSetup bool
+
+	// HTTP read header timeout,防止 Slowloris。默认 10s。
+	ReadHeaderTimeout time.Duration
+	// 整体写超时,防止下载 + slow client 长占连接。默认 60s。
+	WriteTimeout time.Duration
+	// keep-alive idle 上限。默认 120s。
+	IdleTimeout time.Duration
+
+	// VPNPortAdminPath:nanotun-admin CLI 二进制路径,用于 /server-qr 渲染
+	// 服务器 profile QR(2026-05-26 引入)。默认 /usr/local/bin/nanotun-admin。
+	//
+	// 为什么不抽包直接 import buildProfile?nanotun-admin 是 package main,无法
+	// 被 nanotun-web import。短期内 fork CLI 是最稳的复用方式:CLI 已经过
+	// 9 轮深扫验证,行为冻结;web 进程只是密码验证 + audit + cooldown 的"门卫"。
+	// 长期可考虑把 buildProfile / profileSchema 抽到 nanotun/profile/ 包。
+	//
+	// 测试时 inject 一个 stub binary path 即可(写个 bash 脚本输出固定 PNG)。
+	VPNPortAdminPath string
+
+	// ServerConfigPath:nanotun server 的 config.toml 路径,profile show 需要它
+	// 派生 reality / hy2 / gateway 字段。默认 /etc/nanotun/config.toml(install
+	// 脚本布局)。
+	ServerConfigPath string
+}
+
+// defaultConfig 返回填好默认值的 Config。
+func defaultConfig() Config {
+	return Config{
+		ListenAddr:            "0.0.0.0:7443",
+		DBPath:                "/var/lib/nanotun/nanotun.db",
+		ControlSocketPath:     "/run/nanotun/control.sock",
+		CertDir:               "/etc/nanotun/certs",
+		SessionTTLSec:         12 * 3600, // 12h 滑动窗口
+		MaxLoginFailures:      5,
+		LockoutSeconds:        15 * 60,
+		EnableDebug:           false,
+		AutoReloadOnACLChange: true,
+		AllowSetup:            true,
+		ReadHeaderTimeout:     10 * time.Second,
+		WriteTimeout:          60 * time.Second,
+		IdleTimeout:           120 * time.Second,
+		VPNPortAdminPath:      "/usr/local/bin/nanotun-admin",
+		ServerConfigPath:      "/etc/nanotun/config.toml",
+	}
+}
+
+// applyEnvOverrides 把 NANOTUN_WEB_* 环境变量覆盖到默认值之上。
+// 用环境变量而不是 viper / toml,是为了与 nanotund 一致地保留「单一 binary
+// 无外部依赖」属性,部署只要一个 systemd unit + 几个 Environment= 即可。
+func (c *Config) applyEnvOverrides() {
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_LISTEN")); v != "" {
+		c.ListenAddr = v
+	}
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_DB")); v != "" {
+		c.DBPath = v
+	}
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_CONTROL_SOCKET")); v != "" {
+		c.ControlSocketPath = v
+	}
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_CERT_DIR")); v != "" {
+		c.CertDir = v
+	}
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_EXTRA_SANS")); v != "" {
+		for _, s := range strings.Split(v, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				c.ExtraSANs = append(c.ExtraSANs, s)
+			}
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_DEBUG")); v != "" {
+		c.EnableDebug = parseBoolEnv(v, false)
+	}
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_DISABLE_AUTORELOAD")); v != "" {
+		c.AutoReloadOnACLChange = !parseBoolEnv(v, false)
+	}
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_ADMIN_PATH")); v != "" {
+		c.VPNPortAdminPath = v
+	}
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_SERVER_CONFIG")); v != "" {
+		c.ServerConfigPath = v
+	}
+}
+
+func parseBoolEnv(v string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	return def
+}
+
+// Validate 在 Listen 之前跑一遍合理性检查,把会让运维一脸懵的错误前置成清晰
+// 提示。任何返回 error 都让 main fatal。
+func (c *Config) Validate() error {
+	// 说明(多语言):Config.Validate 只在启动阶段(Listen 之前)跑,无 HTTP 请求
+	// 语言上下文,错误直接 main fatal 到运维 stderr / 日志 —— 与 CLI「默认英文」
+	// 一致,这里统一用英文,不走 catalog(启动期没有请求语言可翻)。
+	if strings.TrimSpace(c.ListenAddr) == "" {
+		return errors.New("listen_addr cannot be empty")
+	}
+	if !strings.Contains(c.ListenAddr, ":") {
+		return fmt.Errorf("listen_addr=%q is missing a port number, expected host:port like 0.0.0.0:7443", c.ListenAddr)
+	}
+	if strings.TrimSpace(c.DBPath) == "" {
+		return errors.New("db_path cannot be empty")
+	}
+	if !filepath.IsAbs(c.DBPath) && c.DBPath != ":memory:" {
+		return fmt.Errorf("db_path=%q must be an absolute path (required by systemd ReadWritePaths)", c.DBPath)
+	}
+	if strings.TrimSpace(c.CertDir) == "" {
+		return errors.New("cert_dir cannot be empty")
+	}
+	if !filepath.IsAbs(c.CertDir) {
+		return fmt.Errorf("cert_dir=%q must be an absolute path", c.CertDir)
+	}
+	if c.SessionTTLSec < 60 {
+		return fmt.Errorf("session_ttl_sec=%d is too short (<60s); logins would expire immediately", c.SessionTTLSec)
+	}
+	if c.MaxLoginFailures < 0 {
+		return fmt.Errorf("max_login_failures=%d cannot be < 0", c.MaxLoginFailures)
+	}
+	if c.LockoutSeconds < 0 {
+		return fmt.Errorf("lockout_seconds=%d cannot be < 0", c.LockoutSeconds)
+	}
+	if c.ReadHeaderTimeout <= 0 {
+		c.ReadHeaderTimeout = 10 * time.Second
+	}
+	if c.WriteTimeout <= 0 {
+		c.WriteTimeout = 60 * time.Second
+	}
+	if c.IdleTimeout <= 0 {
+		c.IdleTimeout = 120 * time.Second
+	}
+	return nil
+}

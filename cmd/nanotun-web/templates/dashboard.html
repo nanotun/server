@@ -1,0 +1,187 @@
+{{template "header" .}}
+
+<div class="crumb">SECURE.CORE &middot; <b>OVERVIEW</b></div>
+<h1>{{T "dashboard.title"}}</h1>
+
+{{/* 全局阻断 banner(2026-05-26 第七轮加):server_dial_host 是客户端拨号目标,
+     空了 → 服务器 QR 生成会 412 直接拒。dashboard 顶部红字告诉 admin 去哪配置,
+     避免点了「显示 QR」按钮才看到错误。 */}}
+{{if not .Data.ServerDialHost}}
+<div class="flash err">
+    <strong>⚠️ <code>server_dial_host</code> {{T "dashboard.dialHostUnset"}}</strong> —
+    {{T "dashboard.dialHostMissingBody"}}
+    {{- if .Data.ServerDialHostSuggestion}}
+    <br>{{T "dashboard.dialHostSuggestPre"}}<code>{{.Data.ServerDialHostSuggestion}}</code>{{T "dashboard.dialHostSuggestPost"}}
+    {{/* 2026-05-27 第二十三轮 A5:反向代理 / NAT 场景 r.Host 是前端域名 ≠ 后端
+         数据面真实拨号 IP,admin 若一键确认会把错的 host 入库并分发 QR。banner
+         warn 帮 admin 自检是否走代理(无法判断 r.Host 是否经过代理,只能让人脑判)。 */}}
+    <br><small class="muted">⚠️ <strong>{{T "dashboard.proxyWarnStrong"}}</strong>{{T "dashboard.proxyWarnPre"}}<a href="/settings">{{T "dashboard.settingsPage"}}</a>{{T "dashboard.proxyWarnPost"}}</small>
+    {{/* 2026-05-27 第二十二轮 UX:从「点设置 → 二跳保存」缩到「一键确认即生效」。
+         form POST 直接走 `/settings/server-dial-host`(同 settings 页同款 handler),
+         后端仍跑完整 `ValidateServerDialHost`(语法)+ `ProbeServerDialHost`
+         (DNS+ICMP)校验 — 任何非法/不可达 host 入不了库,安全语义零变化。
+         默认**不勾** `skip_probe`:走最严校验;若云厂商 ban ICMP 触发 412,
+         admin 仍可去 `/settings` 页勾「跳过 ICMP」重试(原工作流不变)。
+         为什么不直接放在 server_dial_host 后端 fallback:`r.Host` 可被浏览器
+         伪造,反向代理 / NAT 场景候选可能 ≠ 真实公网 IP,客户端拿到的 QR 会
+         分发到错的拨号目标。这里只让 admin 看见候选并显式 confirm。 */}}
+    {{/* 2026-05-27 第二十四轮 P3-4:banner 加 client-side 30s timeout fallback。
+         server probe 上限 20s,client 30s 留 10s 余量(网络往返 + 渲染)。30s 仍未
+         返回 → 大概率 nanotun-web hang / 网络中断。原 onsubmit 只 disable 按钮 +
+         改文案,30s 后用户对着「检测中…」干瞪眼无逃生路径。
+         setTimeout 触发时不解除 disable(避免重复提交),改文案为「⚠️ 服务端无响应,
+         请到设置页手动保存」+ 同位置加 link 到 /settings(候选已预填,直接保存即可)。
+         JS 失败(浏览器禁 JS)→ 行为退化为原 onsubmit(灰按钮 + 检测中文案),
+         不破坏 form submit 本身。 */}}
+    <form method="post" action="/settings/server-dial-host" class="inline" id="dial-host-banner-form"
+        style="display:inline;margin-left:8px"
+        onsubmit="var b=this.querySelector('button'),f=this;b.disabled=true;b.textContent='{{T "dashboard.probing"}}';setTimeout(function(){if(b.disabled){b.textContent='{{T "dashboard.probeNoResp"}}';var l=document.getElementById('dial-host-banner-fallback');if(l){l.style.display='inline';}}},30000);">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="server_dial_host" value="{{.Data.ServerDialHostSuggestion}}">
+        <input type="hidden" name="return_to" value="/">
+        <button type="submit" class="btn small">{{T "dashboard.dialHostConfirmBtn"}}</button>
+    </form>
+    <a id="dial-host-banner-fallback" href="/settings" style="display:none;margin-left:8px;font-size:12px"
+        class="btn small secondary">{{T "dashboard.dialHostBannerFallback"}}</a>
+    {{T "dashboard.orGoSettingsPre"}}<a href="/settings"><strong>{{T "dashboard.goSettingsStrong"}}</strong></a>{{T "dashboard.orGoSettingsPost"}}
+    {{- else}}
+    {{T "dashboard.dialHostGuidePre"}}<a href="/settings"><strong>{{T "dashboard.settingsWord"}}</strong></a>{{T "dashboard.dialHostGuideMid"}}<code>203.0.113.10</code>{{T "dashboard.orExample"}}<code>vpn.example.com</code>{{T "dashboard.dialHostGuidePost"}}
+    {{- end}}
+</div>
+{{end}}
+
+<div class="card">
+    <div class="card-header"><h2>{{T "dashboard.serverQrCard"}}</h2></div>
+    <p class="muted">{{T "dashboard.serverQrDescPre"}}<strong>{{T "dashboard.noPsk"}}</strong>{{T "dashboard.serverQrDescPost"}}</p>
+    {{if .Data.ServerDialHost}}
+    <p>{{T "dashboard.currentLabel"}}<code>server_dial_host</code>{{T "dashboard.dialTargetSuffix"}}<code>{{.Data.ServerDialHost}}</code>
+        <a href="/settings" class="muted" style="margin-left:8px;font-size:12px">{{T "dashboard.modify"}}</a></p>
+    {{if .Data.AdvertisedHost}}
+    <p>{{T "dashboard.currentLabel"}}<code>advertised_host</code>{{T "dashboard.displayLabelSuffix"}}<code>{{.Data.AdvertisedHost}}</code></p>
+    {{else}}
+    <p class="muted"><code>advertised_host</code>{{T "dashboard.advertisedUnsetSuffix"}}</p>
+    {{end}}
+    {{if .Data.ServerID}}
+    {{/* 2026-05-27 第十三轮:server_id 是稳定指纹(类比"机器永不变 hostname")。 */}}
+    {{/* admin 灾备 / 跨机迁移时需对照此值;客户端按 server_id upsert profile,server_id 变 = 客户端会当全新 server。 */}}
+    <p class="muted"><code>server_id</code>{{T "dashboard.serverIdSuffix"}}<code>{{.Data.ServerID}}</code></p>
+    {{end}}
+    <p><a href="/server-qr" class="btn">{{T "dashboard.showServerQr"}}</a></p>
+    {{else}}
+    {{/* 卡片保留禁用态按钮位置感,避免布局 ghost。文案根据是否有候选区分:
+         2026-05-27 第二十三轮 A3:有候选时引导回 banner 的「✓ 确认使用候选」按钮,
+         避免与顶部红 banner 的一键路径形成两条引导(admin 看完 banner 又看到
+         「请到设置配置」会犹豫)。无候选时退回原标准引导。 */}}
+    {{if .Data.ServerDialHostSuggestion}}
+    <p class="muted">{{T "dashboard.qrGuideSuggestPre"}}<strong>{{T "dashboard.qrGuideSuggestStrongPre"}}<code>{{.Data.ServerDialHostSuggestion}}</code></strong>{{T "dashboard.qrGuideSuggestMid"}}<a href="/settings">{{T "dashboard.settingsWord"}}</a>{{T "dashboard.qrGuideSuggestPost"}}</p>
+    {{else}}
+    <p class="muted">{{T "dashboard.qrGuideNoSuggestPre"}}<a href="/settings">{{T "dashboard.settingsWord"}}</a>{{T "dashboard.qrGuideNoSuggestPost"}}<code>server_dial_host</code>{{T "dashboard.qrGuideNoSuggestEnd"}}</p>
+    {{end}}
+    {{end}}
+</div>
+
+{{if .Data.RuntimeErr}}
+<div class="flash warn">{{T "dashboard.runtimeUnavailable"}}{{.Data.RuntimeErr}}<br>
+    <span class="muted">{{T "dashboard.checkServer"}}</span></div>
+{{end}}
+
+{{with .Data.Runtime}}
+<div class="card">
+    <div class="card-header"><h2>{{T "dashboard.dataplaneRuntime"}}</h2>
+        <form method="post" action="/runtime/reload" class="inline">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button class="btn small secondary" type="submit"
+                onclick="return confirm('{{T "dashboard.reloadAclConfirm"}}')">{{T "dashboard.reloadAcl"}}</button>
+        </form>
+    </div>
+    <div class="grid-stats">
+        <div class="stat"><div class="label">{{T "common.status"}}</div>
+            <div class="value">{{if .ok}}<span class="badge ok">OK</span>{{else}}<span class="badge err">DOWN</span>{{end}}</div></div>
+        <div class="stat"><div class="label">{{T "dashboard.statOnlineSessions"}}</div><div class="value">{{.conn_count}}</div></div>
+        <div class="stat"><div class="label">Uptime</div><div class="value">{{.uptime}}</div></div>
+        <div class="stat"><div class="label">ACL drop</div><div class="value">{{.acl_drop_total}}</div></div>
+        <div class="stat"><div class="label">{{T "dashboard.statExitDrop"}}</div><div class="value">{{.exit_gate_drops}}</div></div>
+        <div class="stat"><div class="label">Lease GC</div><div class="value">{{.lease_gc_total}}</div></div>
+        <div class="stat"><div class="label">{{T "dashboard.serverVer"}}</div><div class="value" style="font-size:13px">{{if and .server_version (ne .server_version "unknown")}}{{.server_version}}{{else}}<span class="muted">{{T "dashboard.serverVerNotInjected"}}</span>{{end}}</div></div>
+        {{/* Q6(2026-05-25)+ R10(2026-05-26):race_window_total = safeRLConn() 返 nil
+             累计。生产预期 0;非 0 多半是 N38 race window 被撞中(也可能历史遗留)。
+             模板逻辑:0 / 缺字段 → muted "0";非 0 → 红色徽标。
+             嵌套 if 已合并(原 {{if .x}}{{if gt .x 0.0}}...{{end}}{{else}}...{{end}}
+             的内层 gt 永远为真,冗余清理)。 */}}
+        <div class="stat" title="{{T "dashboard.raceWindowTip"}}">
+            <div class="label">race window</div>
+            <div class="value">
+                {{if .race_window_total}}<span class="badge err">{{.race_window_total}}</span>{{else}}<span class="muted">0</span>{{end}}
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}
+
+<div class="card">
+    <div class="card-header"><h2>{{T "dashboard.onlineSessionsTop5"}}</h2>
+        <span class="muted" style="margin-left:8px">{{T "common.totalPre"}}{{.Data.SessionsTotal}}{{T "common.totalPost"}}</span>
+        <a href="/sessions" class="btn small secondary" style="margin-left:auto">{{T "dashboard.viewAllKick"}}</a>
+    </div>
+    <table class="tbl">
+        <thead><tr>
+            <th>{{T "common.thUser"}}</th><th>{{T "common.thDevice"}}</th><th>vIPv4</th><th>vIPv6</th>
+            <th>{{T "common.thConnDuration"}}</th><th>{{T "common.thExit"}}</th><th>conn_id</th>
+        </tr></thead>
+        <tbody>
+        {{range .Data.Sessions}}
+            <tr>
+                {{/* 第十一轮:与会话页对齐 — 用户/设备可直达详情页,不再是死文本。 */}}
+                <td>{{if .Username}}{{if .StoreUserID}}<a href="/users/{{.StoreUserID}}">{{.Username}}</a>{{else}}{{.Username}}{{end}}{{else}}<span class="muted">{{.UserID}}</span>{{end}}</td>
+                <td>{{if .DeviceName}}{{if .DeviceID}}<a href="/devices/{{.DeviceID}}">{{.DeviceName}}</a>{{else}}{{.DeviceName}}{{end}}{{else}}<span class="muted">—</span>{{end}}
+                    {{if .Platform}}<span class="badge" style="margin-left:4px">{{.Platform}}</span>{{end}}</td>
+                <td><code>{{if .VIPv4}}{{.VIPv4}}{{else}}—{{end}}</code></td>
+                <td><code>{{if .VIPv6}}{{.VIPv6}}{{else}}—{{end}}</code></td>
+                <td>{{fmtDuration .CreatedAt}}</td>
+                <td>{{if .ExitAllowed}}<span class="badge ok">ON</span>{{else}}<span class="badge">OFF</span>{{end}}</td>
+                <td class="muted" style="font-family:monospace;font-size:11px">{{.ConnID}}</td>
+            </tr>
+        {{else}}
+            <tr><td colspan="7" class="muted">{{T "dashboard.noOnlineSessions"}}</td></tr>
+        {{end}}
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "dashboard.dbStats"}}</h2></div>
+    <div class="grid-stats">
+        <div class="stat"><div class="label">{{T "nav.users"}}</div><div class="value">{{.Data.DB.Users}}</div></div>
+        <div class="stat"><div class="label">{{T "nav.devices"}}</div><div class="value">{{.Data.DB.Devices}}</div></div>
+        <div class="stat"><div class="label">{{T "nav.leases"}}</div><div class="value">{{.Data.DB.Leases}}</div></div>
+        <div class="stat"><div class="label">{{T "dashboard.dbAcls"}}</div><div class="value">{{.Data.DB.ACLs}}</div></div>
+        <div class="stat"><div class="label">{{T "nav.routes"}}</div><div class="value">{{.Data.DB.Routes}}</div></div>
+        <div class="stat"><div class="label">{{T "nav.audit"}}</div><div class="value">{{.Data.DB.Audits}}</div></div>
+        <div class="stat"><div class="label">{{T "dashboard.dbAdmins"}}</div><div class="value">{{.Data.DB.Admins}}</div></div>
+        <div class="stat"><div class="label">Web sessions</div><div class="value">{{.Data.DB.WebSess}}</div></div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>{{T "dashboard.recentAudit"}}</h2>
+        <a href="/audit" class="btn small secondary">{{T "dashboard.viewAll"}}</a>
+    </div>
+    <table class="tbl">
+        <thead><tr><th>{{T "common.thTime"}}</th><th>{{T "audit.thActor"}}</th><th>{{T "audit.thAction"}}</th><th>{{T "audit.thTarget"}}</th><th>{{T "audit.thDetail"}}</th></tr></thead>
+        <tbody>
+        {{range .Data.Audit}}
+            <tr>
+                <td><span title="{{.At}}">{{fmtTime .At}}</span></td>
+                <td>{{.Actor}}</td>
+                <td>{{.Action}}</td>
+                <td>{{.Target}}</td>
+                <td class="muted">{{.Detail}}</td>
+            </tr>
+        {{else}}
+            <tr><td colspan="5" class="muted">{{T "dashboard.noAudit"}}</td></tr>
+        {{end}}
+        </tbody>
+    </table>
+</div>
+
+{{template "footer" .}}

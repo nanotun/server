@@ -1,0 +1,63 @@
+{{template "header" .}}
+
+<div class="crumb">SYSTEM &middot; <b>ADMINS</b></div>
+<div class="toolbar">
+    <h1 style="flex:1;margin:0">{{T "admins.title"}}</h1>
+    {{if eq .Admin.Role "admin"}}
+    <a href="/admins/new" class="btn">{{T "admins.newAdmin"}}</a>
+    {{end}}
+</div>
+
+<div class="card">
+<table class="tbl">
+    <thead><tr><th>ID</th><th>{{T "common.username"}}</th><th>{{T "common.role"}}</th><th>{{T "common.status"}}</th><th>{{T "admins.lastLogin"}}</th><th>{{T "admins.thLastIP"}}</th><th>{{T "admins.failCount"}}</th><th>{{T "common.created"}}</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Admins}}
+        <tr>
+            <td>{{.ID}}</td>
+            <td>{{.Username}}{{if eq .ID $.Admin.ID}} <span class="badge neutral">{{T "admins.you"}}</span>{{end}}</td>
+            <td><span class="badge role">{{.Role}}</span></td>
+            <td>{{if .Enabled}}<span class="badge ok">enabled</span>{{else}}<span class="badge warn">disabled</span>{{end}}
+                {{if and .LockedUntil (gt .LockedUntil (int64 0))}}<span class="badge err">locked</span>{{end}}</td>
+            <td>{{if .LastLoginAt}}{{fmtDuration .LastLoginAt}}{{else}}<span class="muted">{{T "admins.never"}}</span>{{end}}</td>
+            <td class="muted">{{.LastLoginIP}}</td>
+            <td>{{.FailedLogins}}</td>
+            <td>{{fmtTime .CreatedAt}}</td>
+            <td>
+                {{/* 2026-07-19 深扫:操作按钮对 viewer 隐藏(点了也是 403,
+                     与用户/ACL/租约页的角色守卫口径对齐)。 */}}
+                {{if eq $.Admin.Role "admin"}}
+                {{/* 2026-07-19 易用性改版:改密从 prompt() 弹窗改为独立表单页。 */}}
+                <a href="/admins/{{.ID}}/reset-pwd" class="btn small secondary">{{T "admins.changePwd"}}</a>
+                {{if ne .ID $.Admin.ID}}
+                {{if .Enabled}}
+                <form method="post" action="/admins/{{.ID}}/disable" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button class="btn small secondary" onclick="return confirm('{{T "admins.disableConfirm"}}')">{{T "common.disable"}}</button>
+                </form>
+                {{else}}
+                <form method="post" action="/admins/{{.ID}}/enable" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button class="btn small" type="submit">{{T "common.enable"}}</button>
+                </form>
+                {{end}}
+                <form method="post" action="/admins/{{.ID}}/delete" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button class="btn small danger" onclick="return confirm('{{T "admins.deleteConfirm"}}')">{{T "common.delete"}}</button>
+                </form>
+                {{end}}
+                {{if and .LockedUntil (gt .LockedUntil (int64 0))}}
+                <form method="post" action="/admins/{{.ID}}/unlock" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <button class="btn small" type="submit">{{T "admins.unlock"}}</button>
+                </form>
+                {{end}}
+                {{end}}
+            </td>
+        </tr>
+    {{end}}
+    </tbody>
+</table>
+</div>
+
+{{template "footer" .}}

@@ -1,0 +1,164 @@
+{{template "header" .}}
+
+<div class="crumb"><a href="/devices" class="back">&larr; {{T "deviceDetail.backToList"}}</a> &middot; NETWORK &middot; <b>DEVICES</b></div>
+<h1>{{T "deviceDetail.titlePrefix"}}{{.Data.Device.DisplayName}} <span class="muted">(id={{.Data.Device.ID}})</span></h1>
+
+<div class="card">
+<table class="tbl">
+    <tr><th>UUID</th><td class="muted">{{.Data.Device.DeviceUUID}}</td></tr>
+    <tr><th>{{T "deviceDetail.ownerUser"}}</th><td><a href="/users/{{.Data.Device.UserID}}">user/{{.Data.Device.UserID}}</a></td></tr>
+    <tr><th>{{T "deviceDetail.reportedName"}}</th><td>{{.Data.Device.DeviceName}}</td></tr>
+    <tr><th>{{T "deviceDetail.thAlias"}}</th><td>{{if .Data.Device.Alias}}<code>{{.Data.Device.Alias}}</code>{{else}}<span class="muted">-</span>{{end}}</td></tr>
+    <tr><th>{{T "devices.thPlatform"}}</th><td>{{.Data.Device.Platform}}</td></tr>
+    <tr><th>{{T "devices.thFixedV4"}}</th><td>{{if .Data.Device.FixedVIPv4}}<code>{{.Data.Device.FixedVIPv4}}</code>{{else}}<span class="muted">{{T "deviceDetail.autoAssign"}}</span>{{end}}</td></tr>
+    <tr><th>{{T "devices.thFixedV6"}}</th><td>{{if .Data.Device.FixedVIPv6}}<code>{{.Data.Device.FixedVIPv6}}</code>{{else}}<span class="muted">{{T "deviceDetail.autoAssign"}}</span>{{end}}</td></tr>
+    <tr><th>{{T "common.createdAt"}}</th><td>{{fmtTime .Data.Device.CreatedAt}}</td></tr>
+    <tr><th>{{T "deviceDetail.lastSeen"}}</th><td>{{fmtTime .Data.Device.LastSeenAt}} ({{fmtDuration .Data.Device.LastSeenAt}})</td></tr>
+</table>
+</div>
+
+{{if eq .Admin.Role "admin"}}
+<div class="card">
+<div class="card-header"><h2>{{T "deviceDetail.aliasHeading"}}</h2></div>
+<p class="hint">{{T "deviceDetail.aliasHint"}}</p>
+<form method="post" action="/devices/{{.Data.Device.ID}}/set-alias">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+        <label>{{T "deviceDetail.aliasLabel"}}</label>
+        <input name="alias" type="text" value="{{.Data.Device.Alias}}" placeholder="{{T "deviceDetail.aliasPh"}}" maxlength="128">
+    </div>
+    <button type="submit" class="btn">{{T "common.save"}}</button>
+</form>
+</div>
+
+<div class="card">
+<div class="card-header"><h2>{{T "deviceDetail.fixedVipHeading"}}</h2></div>
+<p class="hint">{{T "deviceDetail.fixedVipHint"}}</p>
+<form method="post" action="/devices/{{.Data.Device.ID}}/set-fixed-vip">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="row">
+        <div class="field">
+            <label>{{T "deviceDetail.fixedV4Label"}}</label>
+            <input name="fixed_vip_v4" value="{{.Data.Device.FixedVIPv4}}" placeholder="{{T "deviceDetail.fixedV4Ph"}}">
+        </div>
+        <div class="field">
+            <label>{{T "deviceDetail.fixedV6Label"}}</label>
+            <input name="fixed_vip_v6" value="{{.Data.Device.FixedVIPv6}}" placeholder="{{T "deviceDetail.fixedV6Ph"}}">
+        </div>
+    </div>
+    <p class="hint muted">{{T "deviceDetail.fixedVipHint2"}}</p>
+    <button type="submit" class="btn">{{T "common.save"}}</button>
+</form>
+</div>
+
+<div class="card">
+<div class="card-header"><h2>{{T "deviceDetail.bandwidthHeading"}}</h2></div>
+<p class="hint">{{T "deviceDetail.bwHintPre"}}<code>config.toml</code>{{T "deviceDetail.bwHintMid"}}<code>[server].upload_rate / download_rate</code>{{T "deviceDetail.bwHintPost"}}</p>
+<form method="post" action="/devices/{{.Data.Device.ID}}/set-rate">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="row">
+        <div class="field">
+            <label>{{T "deviceDetail.uploadLabel"}}</label>
+            <input name="rate_upload_mibs" value="{{.Data.DevRateUpStr}}"
+                placeholder="{{T "deviceDetail.rateUpPh"}}" inputmode="decimal">
+            <small class="muted">{{T "deviceDetail.currentEffective"}}{{.Data.DevRateUpHuman}}</small>
+        </div>
+        <div class="field">
+            <label>{{T "deviceDetail.downloadLabel"}}</label>
+            <input name="rate_download_mibs" value="{{.Data.DevRateDownStr}}"
+                placeholder="{{T "deviceDetail.rateDownPh"}}" inputmode="decimal">
+            <small class="muted">{{T "deviceDetail.currentEffective"}}{{.Data.DevRateDownHuman}}</small>
+        </div>
+    </div>
+    <button type="submit" class="btn">{{T "common.saveHot"}}</button>
+</form>
+
+{{/* N25:多层 cap 后实际生效值 + 各层值,运维一眼看清「device 写 0 但 settings/toml/user 还在 cap」 */}}
+<div class="effective-rate" style="margin-top:12px;padding:8px 10px;background:var(--card-2);border:1px solid var(--border);border-radius:6px;">
+    <strong>{{T "deviceDetail.effMin"}}</strong> {{T "deviceDetail.up"}} <code>{{.Data.EffRateUpHuman}}</code> / {{T "deviceDetail.down"}} <code>{{.Data.EffRateDownHuman}}</code>
+    {{if not .Data.ControlAvailable}}
+    <br><small class="muted">{{T "deviceDetail.effControlUnavailable"}}</small>
+    {{end}}
+    <details style="margin-top:6px;">
+        <summary class="muted">{{T "deviceDetail.expandLayers"}}</summary>
+        <table class="tbl" style="margin-top:6px;">
+            <tr><th>{{T "deviceDetail.thLayer"}}</th><th>{{T "deviceDetail.up"}}</th><th>{{T "deviceDetail.down"}}</th></tr>
+            <tr><td>{{T "deviceDetail.layerDevice"}}</td><td>{{.Data.DevRateUpHuman}}</td><td>{{.Data.DevRateDownHuman}}</td></tr>
+            <tr><td>app_settings.default</td><td>{{.Data.SettingsUpHuman}}</td><td>{{.Data.SettingsDownHuman}}</td></tr>
+            <tr><td>{{T "deviceDetail.layerToml"}}</td><td>{{.Data.TomlUpHuman}}</td><td>{{.Data.TomlDownHuman}}</td></tr>
+            <tr><td>{{T "deviceDetail.layerUser"}}</td>
+                {{if .Data.HasUser}}
+                <td>{{.Data.UserUpHuman}}</td><td>{{.Data.UserDownHuman}}</td>
+                {{else}}
+                <td colspan="2" class="muted">{{T "deviceDetail.noUser"}}</td>
+                {{end}}
+            </tr>
+        </table>
+        <small class="muted">{{T "deviceDetail.layerRule"}}</small>
+    </details>
+</div>
+</div>
+{{end}}
+
+{{with .Data.Lease}}
+<div class="card">
+<div class="card-header"><h2>{{T "deviceDetail.leaseHeading"}}</h2></div>
+<table class="tbl">
+    <tr><th>v4</th><td>{{.VIPv4}}</td></tr>
+    <tr><th>v6</th><td>{{.VIPv6}}</td></tr>
+    <tr><th title="{{T "leases.thManualTitle"}}">{{T "leases.thManual"}}</th><td>{{fmtBool .Manual}}</td></tr>
+    <tr><th>{{T "leases.assignedAt"}}</th><td>{{fmtTime .AssignedAt}}</td></tr>
+</table>
+{{if eq $.Admin.Role "admin"}}
+<form method="post" action="/leases/{{.DeviceID}}/release" class="inline" style="margin-top:8px">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <button class="btn danger small"
+        onclick="return confirm('{{T "deviceDetail.releaseLeaseConfirm"}}')">{{T "deviceDetail.releaseLease"}}</button>
+</form>
+{{end}}
+</div>
+{{else}}
+<div class="card"><p class="muted">{{T "deviceDetail.noLease"}}</p></div>
+{{end}}
+
+<div class="card">
+<div class="card-header"><h2>{{T "deviceDetail.subnetRoutes"}} ({{len .Data.Routes}})</h2></div>
+{{if .Data.Routes}}
+<table class="tbl">
+    <thead><tr><th>CIDR</th><th>{{T "common.status"}}</th><th>{{T "routes.advertisedAt"}}</th><th>{{T "deviceDetail.thApprovedAt"}}</th><th>{{T "deviceDetail.thReason"}}</th></tr></thead>
+    <tbody>
+    {{range .Data.Routes}}
+        <tr>
+            <td><code>{{.CIDR}}</code></td>
+            <td>{{if eq .Status "approved"}}<span class="badge ok">approved</span>
+                {{else if eq .Status "pending"}}<span class="badge warn">pending</span>
+                {{else}}<span class="badge err">{{.Status}}</span>{{end}}</td>
+            <td>{{fmtTime .AdvertisedAt}}</td>
+            <td>{{if .ApprovedAt}}{{fmtTime .ApprovedAt}}{{else}}-{{end}}</td>
+            <td class="muted">{{.Reason}}</td>
+        </tr>
+    {{end}}
+    </tbody>
+</table>
+{{else}}
+<p class="muted">{{T "deviceDetail.noRoutes"}}</p>
+{{end}}
+</div>
+
+{{if eq .Admin.Role "admin"}}
+{{/* 2026-07-19 易用性改版:删除设备收进「危险操作」分区,补后果说明 ——
+     原来是页面底部一个无标题孤按钮,误点成本高。 */}}
+<div class="card danger-zone">
+<div class="card-header"><h2>{{T "deviceDetail.dangerZone"}}</h2></div>
+<div class="danger-item">
+    <div class="desc"><b>{{T "deviceDetail.deleteDevice"}}</b>{{T "deviceDetail.deleteDesc"}}</div>
+    <form method="post" action="/devices/{{.Data.Device.ID}}/delete" class="inline">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <button class="btn danger"
+            onclick="return confirm('{{T "deviceDetail.deleteConfirm"}}')">{{T "deviceDetail.deleteDevice"}}</button>
+    </form>
+</div>
+</div>
+{{end}}
+
+{{template "footer" .}}

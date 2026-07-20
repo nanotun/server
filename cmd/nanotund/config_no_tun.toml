@@ -1,0 +1,38 @@
+# 与 config.toml 同结构,便于本地/最小化联调(文件名历史遗留;当前服务端仍要求
+# 至少配置 IPv4 或 IPv6 网段之一,否则无法启动)。
+#
+# macOS:TUN 需 device_name = "utun"(勿用 tun0),且创建 TUN 通常要 root/开发者
+# 环境授权;无 TUN 时服务端仍会启动,但无虚拟网卡转发。
+
+[server]
+listen_addr = ":8080"
+jump_host_firewall = false
+tls_cert_file = "certs/dev-cert.pem"
+tls_key_file = "certs/dev-key.pem"
+vpn_websocket_path = "/internal/vpn-port/data-plane/ws/v1/a9f2e8c47b1d6e304c52d8917f4a0e83b6c5d221"
+upload_rate = 20971520
+download_rate = 20971520
+
+[log]
+level = "info"
+
+[tun]
+device_name = "tun0"
+tcp_connlimit_per_ip = 40
+udp_connlimit_per_ip = 60
+forward_block_bt = true
+forward_block_tracker_6969 = true
+forward_block_smtp_25 = true
+subnets = ["10.200.0.0/16"]
+subnets_v6 = []
+
+[hysteria]
+listen_addr = ":443"
+tls_cert_file = ""
+tls_key_file = ""
+password = ""
+# obfs_salamander_password = ""   # 启用 hy2 时与 config.toml 一致，须 ≥4 字节
+# 其余 QUIC/带宽/udp_relay/masquerade 等同 config.toml [hysteria]
+
+[store]
+db_path = "data/nanotun.db"
