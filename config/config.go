@@ -31,6 +31,13 @@ type Duration time.Duration
 func (d *Duration) UnmarshalText(text []byte) error {
 	s := string(text)
 	if v, err := time.ParseDuration(s); err == nil {
+		// 深扫第十轮 MED:字符串路径也套用亚毫秒下限。第八轮只在「裸整数」分支拦了
+		// `= 30`(30ns),却漏了带单位但依然亚毫秒的 `"30ns"` / `"500us"` —— 它们
+		// 走 time.ParseDuration 成功分支直接放行,同样让 ticker 亚毫秒空转刷屏。
+		// 这里统一在「任何解析成功」后判正的亚毫秒并拒绝(0 保留=禁用)。
+		if err := rejectSubMillisecond(s, v); err != nil {
+			return err
+		}
 		*d = Duration(v)
 		return nil
 	}
@@ -42,14 +49,24 @@ func (d *Duration) UnmarshalText(text []byte) error {
 		// 每 30ns 触发一次 → CPU 空转 + 日志/网络刷屏。这类值直接拒绝并提示补单位,
 		// 而不是静默上线一个刷屏配置。0 保留(表示禁用),显式大整数纳秒(如 30000000000
 		// = 30s)仍照常接受。
-		if dur > 0 && dur < time.Millisecond {
-			return fmt.Errorf("config: duration %q parsed as %v — bare integers are nanoseconds; "+
-				"did you forget a unit? write %q or %q", s, dur, s+"s", s+"ms")
+		if err := rejectSubMillisecond(s, dur); err != nil {
+			return err
 		}
 		*d = Duration(dur)
 		return nil
 	}
 	return fmt.Errorf("config: invalid duration %q (expected forms: \"30s\" / \"5m\" / 30000000000)", s)
+}
+
+// rejectSubMillisecond 拒绝「正且 < 1ms」的时长:本项目里所有 Duration 字段(目前仅
+// data_plane_ping_interval)都是「间隔」语义,亚毫秒几乎必然是忘带单位的误配,会导致
+// ticker 空转刷屏。0 表示禁用,保留放行。
+func rejectSubMillisecond(raw string, dur time.Duration) error {
+	if dur > 0 && dur < time.Millisecond {
+		return fmt.Errorf("config: duration %q parsed as %v — sub-millisecond intervals are almost "+
+			"always a missing-unit typo; use at least 1ms (e.g. %q)", raw, dur, "30s")
+	}
+	return nil
 }
 
 // Config 是服务端的完整配置（从 config.toml 加载）

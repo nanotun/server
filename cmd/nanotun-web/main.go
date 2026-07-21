@@ -113,11 +113,22 @@ func main() {
 	if *noAutoReload {
 		cfg.AutoReloadOnACLChange = false
 	}
-	if *trustedProxies != "" {
-		cfg.TrustedProxies = splitCSV(*trustedProxies)
-	}
+	// TrustedProxies 优先级:显式 -trusted-proxies flag > NANOTUN_WEB_TRUSTED_PROXIES env。
+	// 深扫第十轮 LOW:此前 flag 在 env 之前赋值、env 又无条件覆盖 → flag 永远被 env 压过,
+	// 运维无法用命令行覆盖 systemd 里设的 env。改为「只有显式给了 flag 才在 env 之后覆盖」,
+	// 并支持 -trusted-proxies=none/off/"" 显式清空。
+	trustedProxiesFromFlag := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "trusted-proxies" {
+			trustedProxiesFromFlag = true
+		}
+	})
 
 	cfg.applyEnvOverrides()
+
+	if trustedProxiesFromFlag {
+		cfg.TrustedProxies = splitTrustedProxies(*trustedProxies)
+	}
 	if err := cfg.Validate(); err != nil {
 		logrus.WithError(err).Fatal("[web] 配置校验失败,退出")
 	}

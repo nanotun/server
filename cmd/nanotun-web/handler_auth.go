@@ -398,6 +398,14 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 		next := r.FormValue("next")
 		ip := clientIP(r)
 
+		// 深扫第十轮 MED:空提交(既没填 TOTP 码也没填恢复码)不计入账号锁定计数器,
+		// 与 handler_me(disable/regen)、/server-qr 空输入豁免对齐。否则误点提交
+		// MaxLoginFailures 次会触发**账号级锁定**(比 step-up IP 冷却更重)。
+		if code == "" && recoveryCode == "" {
+			s.loginTOTPRetry(w, r, tr(r, "me.totpCodeRequired"), admin.Username, next)
+			return
+		}
+
 		// 优先按 6 位 TOTP 码校验;失败再尝试当作恢复码。两种都不行返回 401。
 		ok, usedRecovery, recoveryID, verr := s.verifyTOTPOrRecovery(ctx, admin, code, recoveryCode)
 		if !ok {

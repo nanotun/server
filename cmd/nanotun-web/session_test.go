@@ -228,6 +228,19 @@ func TestClientIP_TrustedProxy(t *testing.T) {
 			t.Fatalf("want 2001:db8::9, got %q", got)
 		}
 	})
+
+	t.Run("multiple XFF headers are aggregated (Header.Add)", func(t *testing.T) {
+		nets, _ := parseTrustedProxies([]string{"10.0.0.0/8"})
+		setTrustedProxies(nets)
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.0.0.5:5555"
+		// 攻击者塞入伪造首值,可信跳把真实客户端用 Add 追加为第二条 header。
+		r.Header.Add("X-Forwarded-For", "8.8.8.8")
+		r.Header.Add("X-Forwarded-For", "198.51.100.7")
+		if got := clientIP(r); got != "198.51.100.7" {
+			t.Fatalf("multi-header XFF must aggregate; want 198.51.100.7, got %q", got)
+		}
+	})
 }
 
 func TestParseTrustedProxies_RejectsGarbage(t *testing.T) {
@@ -238,6 +251,24 @@ func TestParseTrustedProxies_RejectsGarbage(t *testing.T) {
 		if _, err := parseTrustedProxies([]string{bad}); err == nil {
 			t.Errorf("parseTrustedProxies(%q) should fail-fast, got nil", bad)
 		}
+	}
+	// 深扫第十轮 LOW:全零前缀等于信任所有对端,必须拒绝。
+	for _, zero := range []string{"0.0.0.0/0", "::/0"} {
+		if _, err := parseTrustedProxies([]string{zero}); err == nil {
+			t.Errorf("parseTrustedProxies(%q) should reject zero-length prefix, got nil", zero)
+		}
+	}
+}
+
+func TestSplitTrustedProxies_Sentinel(t *testing.T) {
+	for _, clear := range []string{"", "none", "off", "  NONE  ", "Off"} {
+		if got := splitTrustedProxies(clear); got != nil {
+			t.Errorf("splitTrustedProxies(%q) = %v, want nil (cleared)", clear, got)
+		}
+	}
+	got := splitTrustedProxies("127.0.0.1, 10.0.0.0/8")
+	if len(got) != 2 || got[0] != "127.0.0.1" || got[1] != "10.0.0.0/8" {
+		t.Fatalf("splitTrustedProxies parsed wrong: %v", got)
 	}
 }
 

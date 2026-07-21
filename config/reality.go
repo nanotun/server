@@ -41,8 +41,21 @@ func (r *RealityConfig) Validate() error {
 	if err := validateRealityDest(r.Dest); err != nil {
 		return fmt.Errorf("dest: %w", err)
 	}
+	// 深扫第十轮 LOW:xver 只有 0/1/2 三个合法值(PROXY protocol 关闭 / v1 / v2)。
+	// 此前 Validate 不查、listener 又把它 byte(r.Xver) 直传底层 —— 写成 3 会静默让 PROXY
+	// 头行为未定义(既非关闭也非合法版本)。这里启动期 fail-fast。
+	if r.Xver < 0 || r.Xver > 2 {
+		return fmt.Errorf("xver 须为 0(关闭)/1(PROXY v1)/2(PROXY v2),得 %d", r.Xver)
+	}
 	if _, err := DecodeRealityPrivateKey(r.PrivateKey); err != nil {
 		return fmt.Errorf("private_key: %w", err)
+	}
+	// 深扫第十轮 LOW:mldsa65 seed 非空时应能解码成 32 字节,提前到启动期校验,
+	// 而不是等 listener 起来时才失败(此前 config 校验完全不碰这个字段)。
+	if strings.TrimSpace(r.Mldsa65SeedBase64) != "" {
+		if _, err := DecodeRealityMldsa65Seed(r.Mldsa65SeedBase64); err != nil {
+			return fmt.Errorf("mldsa65_seed_base64: %w", err)
+		}
 	}
 	if len(r.ServerNames) == 0 {
 		return fmt.Errorf("server_names 至少一项")
@@ -125,6 +138,27 @@ func ParseRealityShortID(s string) ([8]byte, error) {
 // DecodeRealityPrivateKey 解码 Xray 格式的 REALITY X25519 私钥（32 字节）。
 func DecodeRealityPrivateKey(s string) ([]byte, error) {
 	return decodeRealityPrivateKey(s)
+}
+
+// DecodeRealityMldsa65Seed 解码 mldsa65_seed_base64 为 32 字节 seed,接受
+// RawURL / URL / RawStd / Std 四种 Base64(与 reality listener 侧同口径)。
+// 单一实现供 config.Validate(启动期校验)与 listener(实际取 key)共用。
+func DecodeRealityMldsa65Seed(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, fmt.Errorf("不能为空")
+	}
+	for _, enc := range []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	} {
+		if b, err := enc.DecodeString(s); err == nil && len(b) == 32 {
+			return b, nil
+		}
+	}
+	return nil, fmt.Errorf("须解码为 32 字节")
 }
 
 func decodeRealityPrivateKey(s string) ([]byte, error) {

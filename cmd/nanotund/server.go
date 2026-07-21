@@ -746,6 +746,31 @@ func validateVPNListenAddr(listenAddr string) {
 			"请改用 127.0.0.1:<port>(推荐)或 0.0.0.0:<port>", host)
 }
 
+// probeLoopbackVPNReachable 在监听建立后做一次「环回自拨」自检:hy2/REALITY 终结后
+// 固定拨 127.0.0.1:<port>(见 vpn_listen.go loopbackVPNWebSocketURL),但静态的
+// validateVPNListenAddr 挡不住「listen_addr = "[::]:port" 且内核 net.ipv6.bindv6only=1」
+// 这类**运行期**才暴露的绑定 —— 此时 listener 只在 IPv6 回环,IPv4 127.0.0.1 的拨号打
+// 不进来,hy2/REALITY 数据面静默全断。这里启动早期主动拨一次,连不上直接 fail-fast,
+// 而不是等第一个 hy2/REALITY 客户端上来才发现。小重试消除 accept backlog 就绪的微竞态。
+func probeLoopbackVPNReachable(listenAddr string, port int) {
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		lastErr = err
+		time.Sleep(200 * time.Millisecond)
+	}
+	util.FatalExit(util.ExitConfigSemantic,
+		logrus.Fields{"listen_addr": listenAddr, "probe_addr": addr, "err": fmt.Sprintf("%v", lastErr)},
+		"[server] 环回自检失败:无法拨通 %s(%v)。hy2/REALITY 终结后固定回连 127.0.0.1,"+
+			"当前 listen_addr=%q 的绑定收不到该拨号(常见于 [::]:port 且内核 bindv6only=1);"+
+			"请把 listen_addr 改为 127.0.0.1:<port> 或 0.0.0.0:<port>", addr, lastErr, listenAddr)
+}
+
 func main() {
 	globalContext, globalContextCancel = context.WithCancel(context.Background())
 	defer globalContextCancel()
@@ -1199,6 +1224,11 @@ func main() {
 		util.FatalExit(util.ClassifyListenError(errLn), logrus.Fields{"listen_addr": cfg.Server.ListenAddr, "err": errLn.Error()}, "VPN Listen %s: %v", cfg.Server.ListenAddr, errLn)
 	}
 	defer vpnLn.Close()
+
+	// 深扫第十轮 MED:环回自检。静态 validateVPNListenAddr 只挡「显式非回环具体 IP」,
+	// 挡不住 "[::]:port" 在 bindv6only=1 主机上只绑 IPv6 回环、IPv4 127.0.0.1 拨不进来的
+	// 运行期问题。这里趁 listener 刚 bind(内核已可完成回环握手进 backlog)拨一次自检。
+	probeLoopbackVPNReachable(cfg.Server.ListenAddr, vpnTCPPort)
 
 	// E3(P1-3): 在 tls.NewListener 之前先套一层握手 deadline listener,Slow-loris /
 	// 半开 TLS 连接最多挂 wssHandshakeTimeout 就被断开,后续 dispatchVPNIncoming 入口

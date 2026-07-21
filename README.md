@@ -146,9 +146,10 @@ Web 后台同款:`/users` 列表展示 `credential_id` 前 8 位;新建用户 / 
   gateway IP 的 :53 上跑内置 stub DNS,把 `<device>.<user>.<suffix>` 解析为 vIP。
   `listen_port` 必须 = 53,否则 server 会跳过给客户端 prepend gateway DNS
   (避免把客户端 DNS 指到查不到的端口)。配置范例见 `cmd/nanotund/config.toml` 注释。
-- **Subnet route advertise**(P2#12,**控制面 only**)客户端可声明本地子网,
-  管理员通过 `nanotun-admin route approve <device_id> <cidr>` 审批。
-  ⚠️ 数据面 forwarding 排在下一 milestone;approved CIDR 暂不会真正承载流量,
+- **Subnet route advertise**(P2#12,**数据面已落地 SR-M1**)客户端可声明本地子网,
+  管理员通过 `nanotun-admin route approve <device_id> <cidr>` 审批。审批后,只要宣告方
+  device 在线、且请求方→宣告方的 ACL 放行,发往该 CIDR 的流量就会由 server 真正投递到
+  宣告方会话,再由宣告方本机转发 / NAT 进其 LAN(需宣告方客户端支持 SR-M2 的 LAN 转发)。
   详见 `docs/DESIGN_SUBNET_ROUTES.md`。
 
 ## 可观测性 / 监控

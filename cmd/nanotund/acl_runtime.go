@@ -133,6 +133,16 @@ func reloadACLSnapshotFromStore(st *store.Store) (int, error) {
 				def = store.ACLDeny
 			case store.ACLAllow:
 				def = store.ACLAllow
+			default:
+				// 深扫第十轮 MED:无法识别的非空值(拼错,如 "deni" / "allo")过去静默保留
+				// allow —— fail-open,把本想 default-deny 的部署敞开。改为 fail-closed 到
+				// deny + Warn(与 exit_mode/exit_dns_redirect 的 fail-fast 同思路;这里不 Fatal,
+				// 避免一次手抖 DB 编辑把在跑的数据面打挂——deny 是安全方向,修正值 reload 即恢复)。
+				// CLI `setting set acl_default_action` 也已加 write 校验(见 cmd_setting.go),
+				// 正常路径拼错根本落不了库,这里是最后一道兜底。
+				logrus.WithField("acl_default_action", v).Warn(
+					"[acl] 无法识别的 acl_default_action 值,按 fail-closed 处理为 deny;请改回 allow/deny")
+				def = store.ACLDeny
 			}
 		}
 		mesh, merr := st.GetMeshEnabled(ctx)

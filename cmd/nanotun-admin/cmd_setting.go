@@ -48,6 +48,11 @@ var validatedSettingKeys = map[string]func(string) error{
 	// `setting set server_dial_host test-203.0.113.10` 会让 server 端 QR
 	// 生成成功但客户端隧道挂掉(末段纯数字 TLD DNS 不可解析)。
 	"server_dial_host": store.ValidateServerDialHost,
+	// 深扫第十轮 MED/LOW:安全相关的枚举/布尔 setting 走 raw `setting set` 时也必须校验,
+	// 防拼错落库。acl_default_action 拼错会被数据面兜到 fail-closed(deny),mesh_enabled
+	// 拼错会被兜到默认 on —— 两者都让运维误以为设成了别的值。
+	"acl_default_action": store.ValidateACLDefaultActionSetting,
+	"mesh_enabled":       store.ValidateMeshEnabledSetting,
 }
 
 func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {

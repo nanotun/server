@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ACLAction 列出当前支持的动作。
@@ -12,6 +13,18 @@ const (
 	ACLAllow = "allow"
 	ACLDeny  = "deny"
 )
+
+// ValidateACLDefaultActionSetting 校验 acl_default_action 的写入值:大小写/空白不敏感,
+// 必须是 "allow" 或 "deny"。用于 CLI `setting set acl_default_action` 的 write 路径兜底,
+// 防止拼错(如 "deni")落库后被数据面读取时按 fail-closed 兜到 deny(见 acl_runtime.go),
+// 运维却以为设成了别的值。
+func ValidateACLDefaultActionSetting(v string) error {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case ACLAllow, ACLDeny:
+		return nil
+	}
+	return fmt.Errorf("acl_default_action must be %q or %q, got %q", ACLAllow, ACLDeny, v)
+}
 
 // ACL dst_kind 取值。
 const (

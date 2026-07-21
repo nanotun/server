@@ -123,7 +123,12 @@ func startWSSDataPlaneKeepalive(ctx context.Context, c *Connection, w io.Writer,
 					"miss_window": time.Duration(missWindow).String(),
 					"ping_seq":    seq,
 				}).Warn("[keepalive] 数据面 WSS 连续 N 次 Ping 无 Pong,判定僵尸连接,主动 Close 触发客户端重连")
-				_ = c.linkConn.Close()
+				// 深扫第十轮 MED(既有):linkConn 是 interface,读必须走 linkWrMu(与登录路径
+				// `c.linkConn = rwc` 赋值同步)。此前锁外裸读并 Close 与之 data race,且和 kick/
+				// shutdown 路径「锁内快照 → 锁外 Close」的口径不一致。改用 safeLinkConn() 快照。
+				if lc := c.safeLinkConn(); lc != nil {
+					_ = lc.Close()
+				}
 				return
 			}
 		}

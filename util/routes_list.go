@@ -2,7 +2,7 @@ package util
 
 // subnet route（SR-M3）：server → client 推送的「可用子网路由列表」wire type（LinkTypeRoutesList=22 的 JSON body）。
 //
-// 语义见 docs/PLAN_SUBNET_ROUTE_DATAPLANE.md。server 在客户端连上时推一帧当前列表，并在 admin 改路由批准后广播更新；
+// 语义见 docs/DESIGN_SUBNET_ROUTES.md。server 在客户端连上时推一帧当前列表，并在 admin 改路由批准后广播更新；
 // 请求方据此把 CIDR 装进本机 TUN 路由（引流进隧道），发往这些内网网段的包才会到 server → 子网路由转发（SR-M1）。
 // 与出口选择器（ExitsList=21）并列、各自独立：ExitsList 是「可选公网出口设备」，RoutesList 是「可达内网子网」。
 

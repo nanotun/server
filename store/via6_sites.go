@@ -27,11 +27,23 @@ func (s *Store) GetOrAssignSiteID(ctx context.Context, deviceID int64) (uint16, 
 		return 0, err
 	}
 	// 分配一条新记录。
-	res, err := s.db.ExecContext(ctx,
+	//
+	// 深扫第十轮 LOW:改成**真事务**。旧实现是「INSERT 自动提交 → 若越界再 DELETE」,
+	// 两步之间崩溃会把越界脏行永久留在表里(siteIDByDevice 命中它继续报错,device 被钉死)。
+	// 现在在同一事务里 INSERT + 查 LastInsertId,越界直接 Rollback —— 越界脏行**从不提交**,
+	// 彻底消除崩溃窗口。AUTOINCREMENT 的 sqlite_sequence 递增也随事务回滚,行为保持「已达上限」。
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("store: assign site_id (begin): %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // 提交后为 no-op;各错误分支的兜底回滚。
+
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO via6_sites(device_id, created_at) VALUES(?,?)`,
 		deviceID, nowUnix())
 	if err != nil {
-		// 并发窗口:可能刚被另一路径插入(device_id UNIQUE 冲突)→ 再查一次取既有值。
+		// 并发窗口:可能刚被另一路径插入(device_id UNIQUE 冲突)→ 先回滚本事务再查一次取既有值。
+		_ = tx.Rollback()
 		if sid, e2 := s.siteIDByDevice(ctx, deviceID); e2 == nil {
 			return sid, nil
 		}
@@ -42,16 +54,12 @@ func (s *Store) GetOrAssignSiteID(ctx context.Context, deviceID int64) (uint16, 
 		return 0, fmt.Errorf("store: assign site_id (lastid): %w", err)
 	}
 	if id <= 0 || id > 65535 {
-		// 深扫第八轮 LOW:溢出前先把刚插入的这条脏行删掉。否则它会一直留在表里,
-		// 下次 GetOrAssignSiteID 走 siteIDByDevice 命中它、同样越界报错 —— 该 device
-		// 被永久钉死且留下一条死行。删除后回到「未分配」状态,虽然仍超上限会再次报错,
-		// 但至少不残留脏数据,上限问题解决后也无需人工清库。按 rowid(=site_id)删,精确。
-		_, delErr := s.db.ExecContext(ctx, `DELETE FROM via6_sites WHERE site_id=?`, id)
-		if delErr != nil {
-			return 0, fmt.Errorf("store: site_id %d overflow, and rollback of poisoned row failed: %w", id, delErr)
-		}
+		// 越界:直接 return,defer Rollback 撤销这条脏行(不落库)。
 		return 0, i18nErr("store.via6.siteIDOverflow",
 			fmt.Sprintf("store: site_id %d 超出 uint16 范围(4via6 站点数已达上限)", id), id)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("store: assign site_id (commit): %w", err)
 	}
 	return uint16(id), nil
 }

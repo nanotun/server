@@ -36,6 +36,10 @@ func TestDuration_UnmarshalText(t *testing.T) {
 		// 边界:0 表示「禁用」,保留;1ms 及以上照常接受。
 		{"bare_int_zero_ok", `d = 0`, 0, false},
 		{"bare_int_1ms_ok", `d = 1000000`, time.Millisecond, false},
+		// 深扫第十轮 MED:带单位但仍亚毫秒的字符串同样要拒(此前只拦裸整数)。
+		{"string_30ns_rejected", `d = "30ns"`, 0, true},
+		{"string_500us_rejected", `d = "500us"`, 0, true},
+		{"string_1ms_ok", `d = "1ms"`, time.Millisecond, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

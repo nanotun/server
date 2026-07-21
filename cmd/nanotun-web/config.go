@@ -152,9 +152,9 @@ func (c *Config) applyEnvOverrides() {
 	if v := strings.TrimSpace(os.Getenv("NANOTUN_SERVER_CONFIG")); v != "" {
 		c.ServerConfigPath = v
 	}
-	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_TRUSTED_PROXIES")); v != "" {
-		// env 覆盖(而非追加):显式给了就以 env 为准。
-		c.TrustedProxies = splitCSV(v)
+	if v, ok := os.LookupEnv("NANOTUN_WEB_TRUSTED_PROXIES"); ok {
+		// env 覆盖(而非追加):显式给了就以 env 为准。支持 none/off 哨兵显式清空。
+		c.TrustedProxies = splitTrustedProxies(v)
 	}
 }
 
@@ -167,6 +167,18 @@ func splitCSV(v string) []string {
 		}
 	}
 	return out
+}
+
+// splitTrustedProxies 解析 -trusted-proxies / NANOTUN_WEB_TRUSTED_PROXIES 的 CSV。
+// 深扫第十轮 LOW:支持 none/off 哨兵**显式清空**信任集合 —— 运维在 systemd 里设了 env,
+// 又想在命令行临时关掉 XFF 信任时,`-trusted-proxies=none` 就能清空(空串会被 flag.Visit
+// 判为"仍显式提供了 flag",同样清空)。
+func splitTrustedProxies(v string) []string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "none", "off":
+		return nil
+	}
+	return splitCSV(v)
 }
 
 // parseTrustedProxies 把 CIDR / 裸 IP 列表解析成前缀集合。裸 IP 视作 /32(IPv4)
@@ -183,6 +195,13 @@ func parseTrustedProxies(entries []string) ([]netip.Prefix, error) {
 			p, err := netip.ParsePrefix(s)
 			if err != nil {
 				return nil, fmt.Errorf("invalid trusted_proxies CIDR %q: %w", raw, err)
+			}
+			// 深扫第十轮 LOW:拒绝 0.0.0.0/0 与 ::/0 —— 全零前缀等于"信任所有对端",
+			// 会让任何直连来源的 X-Forwarded-For 都被采信,彻底打开 XFF 伪造面,
+			// 完全违背 trusted_proxies 的收敛意图。这几乎必然是误配,直接 fail-fast。
+			if p.Bits() == 0 {
+				return nil, fmt.Errorf("invalid trusted_proxies CIDR %q: a zero-length prefix trusts every "+
+					"peer and defeats XFF trust; list the reverse proxy's real IP/CIDR instead", raw)
 			}
 			out = append(out, p.Masked())
 			continue

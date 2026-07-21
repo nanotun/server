@@ -140,7 +140,11 @@ func dedupExitsByUUID(in []util.ExitInfo) []util.ExitInfo {
 
 // sendExitsListTo best-effort 给一条 exit_allowed 会话推一帧出口列表。
 func sendExitsListTo(c *Connection, exits []util.ExitInfo) {
-	if c == nil || c.linkConn == nil || !c.exitAllowed {
+	// 深扫第十轮 MED(既有):c.linkConn 是 interface(双字),读写都必须走 linkWrMu。
+	// 此前在锁外裸读 `c.linkConn == nil` 会与登录路径 `c.linkConn = rwc` 的赋值形成
+	// data race。改用 safeLinkConn()(内部持 linkWrMu 读快照,race-free)做预筛,
+	// 真正的 nil 判定再在下方写锁内复核(linkConn 一旦置位不会再被清空,无 TOCTOU)。
+	if c == nil || !c.exitAllowed || c.safeLinkConn() == nil {
 		return
 	}
 	body, err := util.MarshalExitsList(exits)
@@ -149,6 +153,9 @@ func sendExitsListTo(c *Connection, exits []util.ExitInfo) {
 	}
 	c.linkWrMu.Lock()
 	defer c.linkWrMu.Unlock()
+	if c.linkConn == nil {
+		return
+	}
 	// 深扫第四轮 C:这条链路写在 broadcastExitsList / pushInitialExitsList 持 exitsBroadcastMu 期间执行——给它钉一个
 	// 写超时(对齐 user_invalidate 的 1s、tunDemux 的 5s),否则一个卡死/写阻塞的 exit_allowed 客户端(TCP 窗口满)会
 	// 一直占着 exitsBroadcastMu,拖住**所有**出口列表广播与初始推送。超时后该帧写失败(仅 Debug 日志),不影响其它客户端。

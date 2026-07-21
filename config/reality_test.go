@@ -51,6 +51,50 @@ func TestParseRealityShortID(t *testing.T) {
 	}
 }
 
+// TestRealityConfig_Validate_XverAndSeed 钉住深扫第十轮 LOW:xver 只允许 0/1/2,
+// mldsa65 seed 非空时必须解码为 32 字节 —— 两者都在启动期 Validate 拦下,而非等
+// listener 起来才报错(或对 xver 干脆静默直传底层)。
+func TestRealityConfig_Validate_XverAndSeed(t *testing.T) {
+	// 与生产无关的随机 32 字节 base64 向量,私钥与 mldsa seed 复用。
+	const seed32 = "2pagi_xOuxmKJQNLl8lQ_Hh8kj7Nt8VUlV_lzGLk5Bg"
+	base := func() RealityConfig {
+		return RealityConfig{
+			ListenAddr:  ":443",
+			Dest:        "www.microsoft.com:443",
+			PrivateKey:  seed32,
+			ServerNames: []string{"www.microsoft.com"},
+			ShortIds:    []string{""},
+		}
+	}
+	if c := base(); c.Validate() != nil {
+		t.Fatalf("baseline 应通过: %v", c.Validate())
+	}
+	for _, x := range []int{-1, 3, 255} {
+		c := base()
+		c.Xver = x
+		if err := c.Validate(); err == nil {
+			t.Errorf("xver=%d 应报错", x)
+		}
+	}
+	for _, x := range []int{0, 1, 2} {
+		c := base()
+		c.Xver = x
+		if err := c.Validate(); err != nil {
+			t.Errorf("xver=%d 应通过: %v", x, err)
+		}
+	}
+	badSeed := base()
+	badSeed.Mldsa65SeedBase64 = "not-a-valid-32-byte-seed"
+	if err := badSeed.Validate(); err == nil {
+		t.Error("非法 mldsa seed 应报错")
+	}
+	okSeed := base()
+	okSeed.Mldsa65SeedBase64 = seed32
+	if err := okSeed.Validate(); err != nil {
+		t.Errorf("合法 mldsa seed 应通过: %v", err)
+	}
+}
+
 func TestDecodeRealityPrivateKey(t *testing.T) {
 	// 随机测试向量(与任何生产密钥无关);仅要求能 base64 解出 32 字节
 	const pk = "2pagi_xOuxmKJQNLl8lQ_Hh8kj7Nt8VUlV_lzGLk5Bg"

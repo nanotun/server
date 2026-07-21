@@ -300,6 +300,16 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 		}).Error("[reload] tun.exit_mode 不可热更(SNAT + FORWARD 链涉及活跃连接 conntrack),需重启 server")
 		out = append(out, "tun.exit_mode")
 	}
+	// 深扫第十轮 LOW:exit_dns_redirect 与 exit_mode 同为出口 DNS 拦截 iptables 规则,
+	// 启动时一次性落链,SIGHUP 不重建。此前漏进 deferred 列表 → 运维改了 off↔1.1.1.1
+	// reload 后无任何提示,误以为已生效。这里补上告警,和 exit_mode 一个口径。
+	if strings.TrimSpace(newCfg.TUN.ExitDNSRedirect) != strings.TrimSpace(old.TUN.ExitDNSRedirect) {
+		logrus.WithFields(logrus.Fields{
+			"old": old.TUN.ExitDNSRedirect,
+			"new": newCfg.TUN.ExitDNSRedirect,
+		}).Error("[reload] tun.exit_dns_redirect 不可热更(出口 DNS 拦截 iptables 规则启动时落链),需重启 server")
+		out = append(out, "tun.exit_dns_redirect")
+	}
 	// [server.pow] 段:hmac_key 启动随机,公式参数初始化时塞死,reload 不重建
 	// PoWService(否则会让运行中的所有 challenge 一次失效,等价于踢所有 pre-login
 	// 连接,反而比 restart 更激进)。统一 ERROR 提示 + 进 deferred 列表,让运维

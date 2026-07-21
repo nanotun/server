@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -54,6 +55,21 @@ func (s *Store) SetMeshEnabled(ctx context.Context, enabled bool) error {
 		v = "true"
 	}
 	return s.SettingsSet(ctx, MeshEnabledKey, v)
+}
+
+// ValidateMeshEnabledSetting 校验 mesh_enabled 的写入值必须是可**确定**解析的布尔量。
+// 拒绝那些会落到 parseMeshEnabled 兜底(默认 true)的拼写 —— 否则「想关 mesh 却把
+// false 拼成 flase」会静默保持开启。用于 CLI `setting set mesh_enabled` 的 write 兜底;
+// 正常运维应走 SetMeshEnabled(只写规范的 "true"/"false")。
+func ValidateMeshEnabledSetting(v string) error {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "false", "0", "no", "off", "true", "1", "yes", "on":
+		return nil
+	}
+	if _, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {
+		return nil
+	}
+	return fmt.Errorf("mesh_enabled must be a boolean (true/false/1/0/yes/no/on/off), got %q", v)
 }
 
 // parseMeshEnabled 把 setting value 字符串解析为 bool,容错处理常见多种写法。

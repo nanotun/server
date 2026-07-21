@@ -216,6 +216,10 @@ func cmdRouteDelete(ctx context.Context, st *store.Store, opts *globalOpts, args
 		}
 	}
 	if err := st.DeleteRoute(ctx, deviceID, cidr); err != nil {
+		// 深扫第十轮 LOW:与 approve/reject 同款本地化(此前 delete 裸抛 store 英文错误)。
+		if errors.Is(err, store.ErrNotFound) {
+			return errors.New(opts.T("route.notFound", deviceID, cidr))
+		}
 		return err
 	}
 	// 与 web(route_delete)对等的审计。

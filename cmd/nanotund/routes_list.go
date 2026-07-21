@@ -13,7 +13,7 @@ import (
 
 // subnet route 选择器（SR-M3）：server → client 推送「当前可用的已批准子网路由列表」(LinkTypeRoutesList=22)。
 //
-// 设计（docs/PLAN_SUBNET_ROUTE_DATAPLANE.md）：纯推送，客户端只听不问。
+// 设计（docs/DESIGN_SUBNET_ROUTES.md）：纯推送，客户端只听不问。
 //   - 初始：客户端连上后 server 推一帧当前列表（pushInitialRoutesList，推给**所有**客户端——任意用户都可能要访问内网资源，
 //     不像出口列表限 exit_allowed；细粒度 per-user 授权留 SR-M4 ACL）；
 //   - 变更：admin 改路由批准（/reload?what=routes）后 broadcastRoutesList 重算并广播给所有在线会话。
@@ -94,7 +94,9 @@ func deviceServesSubnetRoute(deviceID int64, prefix netip.Prefix) bool {
 
 // sendRoutesListTo best-effort 给一条会话推一帧子网路由列表。
 func sendRoutesListTo(c *Connection, routes []util.SubnetRouteInfo) {
-	if c == nil || c.linkConn == nil {
+	// 深扫第十轮 MED(既有):linkConn 的 nil 判定走 linkWrMu(interface 读写都走该锁),
+	// 用 safeLinkConn() race-free 预筛,写锁内再复核。见 sendExitsListTo 同款说明。
+	if c == nil || c.safeLinkConn() == nil {
 		return
 	}
 	body, err := util.MarshalRoutesList(routes)
@@ -103,6 +105,9 @@ func sendRoutesListTo(c *Connection, routes []util.SubnetRouteInfo) {
 	}
 	c.linkWrMu.Lock()
 	defer c.linkWrMu.Unlock()
+	if c.linkConn == nil {
+		return
+	}
 	// 与 sendExitsListTo 同口径钉 5s 写超时：避免一个卡死/写阻塞的客户端（TCP 窗口满）持 routesBroadcastMu 拖住
 	// **所有**子网路由广播与初始推送。超时后该帧写失败（仅 Debug），不影响其它客户端。
 	if dl, ok := c.linkConn.(interface{ SetWriteDeadline(time.Time) error }); ok {

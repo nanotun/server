@@ -229,9 +229,9 @@ type controlStatusResp struct {
 	// 数据面已落地(见 ExitNodeDataplaneEnabled),与下方「任意 CIDR subnet route 数据面」相互独立。
 	ExitNode ExitNodeStats `json:"exit_node,omitempty"`
 
-	// A3:subnet route 数据面尚未接入。client/server 控制面已能 advertise + approve,
-	// 但数据面 forwarding 还没把任意 approved CIDR 翻译成路由(出口 0/0 特例除外,见 ExitNode)。
-	// 设成常量 false,前端 admin UI / 巡检脚本可据此知道"approved != 真正生效"。
+	// A3:subnet route 数据面已落地(SR-M1)。client/server 控制面能 advertise + approve,
+	// 数据面 forwarding 也已把任意 approved 非 0/0 CIDR 转发给宣告方会话(出口 0/0 特例见 ExitNode)。
+	// 设成常量 true(见 routeDataplaneEnabled),前端 admin UI / 巡检脚本据此知道"approved == 真正生效"。
 	RouteAdvertiseDataplaneEnabled bool `json:"route_advertise_dataplane_enabled"`
 
 	// ExitNodeDataplaneEnabled:出口节点(approved 0/0)数据面转发是否已接入。已落地 = true
@@ -261,7 +261,7 @@ type controlStatusResp struct {
 const routeDataplaneEnabled = true
 
 // exitNodeDataplaneEnabled:出口节点(approved 0/0/::/0)数据面转发已落地(M2:forwardPacketToExitNode)。
-// 与 routeDataplaneEnabled(任意 CIDR subnet route，仍未接入)区分:出口是 0/0 的特例，已能真正承载流量。
+// 出口是 0/0 的特例(转进公网);任意 CIDR 的 subnet route 数据面见 routeDataplaneEnabled(同样已落地)。
 const exitNodeDataplaneEnabled = true
 
 var controlStartTime = time.Now()

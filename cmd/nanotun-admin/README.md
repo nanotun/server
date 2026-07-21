@@ -195,10 +195,12 @@ client 按 UUID 索引覆盖旧 PSK 的契约成立。
 
 ### Subnet route(P2#12)
 
-> ⚠️ **任意 CIDR 的数据面尚未接入**:`route approve <任意网段>` 暂不会真正承载流量
-> (server 启动横幅 + admin CLI 会显式提醒)。详见 `docs/DESIGN_SUBNET_ROUTES.md`。
+> ✅ **任意 CIDR 的数据面已落地(SR-M1)**:`route approve <device> <cidr>` 后,只要宣告方 device 在线、
+> 且请求方→宣告方的 ACL 放行,发往该 CIDR 的流量就会由 server 真正投递到宣告方会话,再由宣告方本机
+> 转发 / NAT 进其 LAN(需宣告方客户端支持 SR-M2 的 LAN 转发)。宣告方离线则该网段不可达(丢包)。
+> 详见 `docs/DESIGN_SUBNET_ROUTES.md`。
 >
-> ✅ **例外:出口节点 `0.0.0.0/0` / `::/0` 数据面已落地**(exit-node)。`route approve <device> 0.0.0.0/0`
+> ✅ **出口节点 `0.0.0.0/0` / `::/0` 数据面同样已落地**(exit-node)。`route approve <device> 0.0.0.0/0`
 > 后,该 device 在线且会话 `exit_allowed` 时,选它当出口的用户公网流量会真正经它转发(由出口客户端本机
 > NAT 出公网)。详见 `docs/DESIGN_EXIT_NODE.md`。
 

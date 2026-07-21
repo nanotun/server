@@ -70,9 +70,10 @@ func TestVia6Sites_BadDeviceID(t *testing.T) {
 	}
 }
 
-// TestVia6Sites_OverflowRollsBackPoisonedRow 钉住深扫第八轮 LOW 的回归:site_id 越过
-// uint16 上限时,刚 INSERT 的那条脏行必须被回滚删除,不能残留 —— 否则该 device 会被
-// 永久钉死(下次 GetOrAssignSiteID 走 siteIDByDevice 命中脏行,同样越界报错)。
+// TestVia6Sites_OverflowRollsBackPoisonedRow 钉住深扫第八/十轮 LOW 的回归:site_id 越过
+// uint16 上限时,刚 INSERT 的那条脏行绝不能落库(第十轮已从「先 commit 再 DELETE」改成
+// 真事务 Rollback)—— 否则该 device 会被永久钉死(下次 GetOrAssignSiteID 走 siteIDByDevice
+// 命中脏行,同样越界报错)。
 //
 // 手法:直接把 AUTOINCREMENT 计数器(sqlite_sequence)顶到 70000,下一条插入拿到
 // 70001 > 65535,触发溢出分支。

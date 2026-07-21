@@ -665,7 +665,9 @@ func handleEgressSelectFrame(ctx context.Context, c *Connection, payload []byte)
 
 // sendEgressSelectAck best-effort 回一帧 EgressSelectAck;写失败只 log。
 func sendEgressSelectAck(c *Connection, ack util.EgressSelectAck) {
-	if c == nil || c.linkConn == nil {
+	// 深扫第十轮 MED(既有):linkConn 的 nil 判定走 linkWrMu(interface 读写都走该锁),
+	// 用 safeLinkConn() race-free 预筛,写锁内再复核。见 sendExitsListTo 同款说明。
+	if c == nil || c.safeLinkConn() == nil {
 		return
 	}
 	body, err := util.MarshalEgressSelectAck(ack)
@@ -674,6 +676,9 @@ func sendEgressSelectAck(c *Connection, ack util.EgressSelectAck) {
 	}
 	c.linkWrMu.Lock()
 	defer c.linkWrMu.Unlock()
+	if c.linkConn == nil {
+		return
+	}
 	// 深扫第五轮:与 sendExitsListTo 同口径钉 5s 写超时。revalidateExitBindings 在循环里**内联**回 revoked ack,
 	// 一个 TCP 窗口满的被撤销客户端会卡在 Write、持着自己的 linkWrMu → 拖慢同一轮里排在后面的被撤销会话的 CAS 重置
 	// (也卡其 tunDemux)。超时后该帧写失败(仅 Debug),不影响其它会话。defer LIFO:复位 deadline 在 Unlock 之前跑。

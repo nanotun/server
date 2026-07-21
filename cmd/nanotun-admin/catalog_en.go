@@ -345,6 +345,7 @@ var catEN = map[string]string{
 	"acl.portRangeHiInvalid":   "--port-range hi %q is invalid: %s",
 	"acl.portRangeLoGtHi":      "--port-range %q lo>hi",
 	"acl.deleted":              "deleted ACL rule #%d",
+	"acl.notFound":             "ACL rule not found: #%d",
 
 	// ===== route =====
 	"route.flag.user":         "list only routes advertised by devices under the given user",

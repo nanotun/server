@@ -283,6 +283,10 @@ func cmdACLDelete(ctx context.Context, st *store.Store, opts *globalOpts, args [
 		return fmt.Errorf("%s: %w", opts.T("cli.invalidACLID", args[0]), err)
 	}
 	if err := st.DeleteACLPair(ctx, id); err != nil {
+		// 深扫第十轮 LOW:本地化 ErrNotFound(与 route 各 verb 同款,此前裸抛 store 英文错误)。
+		if errors.Is(err, store.ErrNotFound) {
+			return errors.New(opts.T("acl.notFound", id))
+		}
 		return err
 	}
 	// 与 web(acl_delete)对等的审计。

@@ -17,7 +17,7 @@ import (
 //
 //	"" / "auto" → 探测本机系统 DNS(detectSystemDNSv4);探不到返回 "" (不接管)
 //	"off"       → 返回 "" (不接管)
-//	"<IPv4>"    → 校验后原样返回;非法则告警 + 回退 auto 探测
+//	"<IPv4>"    → 校验后原样返回;非法则 fail-safe 到「不接管」("")
 func resolveExitDNSRedirect(setting string) string {
 	s := strings.ToLower(strings.TrimSpace(setting))
 	switch s {
@@ -29,9 +29,14 @@ func resolveExitDNSRedirect(setting string) string {
 		if ip := net.ParseIP(strings.TrimSpace(setting)); ip != nil && ip.To4() != nil {
 			return ip.String()
 		}
-		logrus.WithField("exit_dns_redirect", setting).Warn(
-			"iptables: exit_dns_redirect 不是合法 IPv4,回退 auto 探测系统 DNS")
-		return detectSystemDNSv4()
+		// 深扫第十轮 LOW:非法值 fail-safe 到「不接管」("")而非回退 auto 探测。
+		// 正常路径 config.ValidateExitDNSRedirect 已在启动期挡掉任何非 ""/auto/off/IPv4
+		// 的值(fail-fast),故对合法配置此分支不可达;这里仅作 defense-in-depth —— 万一有
+		// 调用方绕过 Validate,也宁可「不启用 DNS 拦截」,不把误配(如 "of" 想写 "off")
+		// 静默升级成 auto 接管 DNS。
+		logrus.WithField("exit_dns_redirect", setting).Error(
+			"iptables: exit_dns_redirect 不是合法 IPv4(应已被启动期校验拦截);按 fail-safe 不接管 DNS")
+		return ""
 	}
 }
 

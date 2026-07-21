@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/tls"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -75,21 +74,13 @@ func buildRealityTLSConfig(r *config.RealityConfig) (*reality.Config, error) {
 }
 
 func decodeMldsa65SeedBase64(s string) (*[32]byte, error) {
-	s = strings.TrimSpace(s)
-	var out [32]byte
-	for _, enc := range []*base64.Encoding{
-		base64.RawURLEncoding,
-		base64.URLEncoding,
-		base64.RawStdEncoding,
-		base64.StdEncoding,
-	} {
-		b, err := enc.DecodeString(s)
-		if err == nil && len(b) == 32 {
-			copy(out[:], b)
-			return &out, nil
-		}
+	b, err := config.DecodeRealityMldsa65Seed(s)
+	if err != nil {
+		return nil, fmt.Errorf("mldsa65_seed_base64 %w", err)
 	}
-	return nil, fmt.Errorf("mldsa65_seed_base64 须解码为 32 字节")
+	var out [32]byte
+	copy(out[:], b)
+	return &out, nil
 }
 
 // bridgeRealityToPlainVPN REALITY 握手完成后的明文连接环回本机 [server].listen_addr（WebSocket 数据面）。
@@ -159,9 +150,7 @@ func startRealityVPNListener(cfg *config.Config, smuxPool *loopbackSmuxPool, loo
 	if err := r.Validate(); err != nil {
 		return nil, 0, err
 	}
-	if r.Xver < 0 || r.Xver > 255 {
-		return nil, 0, fmt.Errorf("xver 须在 0–255")
-	}
+	// xver 合法区间(0/1/2)由 r.Validate() 统一把关(见 config/reality.go),此处不再重复。
 
 	rc, err := buildRealityTLSConfig(r)
 	if err != nil {

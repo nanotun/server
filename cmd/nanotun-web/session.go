@@ -481,7 +481,10 @@ func clientIP(r *http.Request) string {
 		// 直连对端不是可信反代 → XFF 不可信,一律用直连 IP。
 		return direct
 	}
-	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	// 深扫第十轮 MED:聚合**所有** X-Forwarded-For header 值再解析。Header.Get 只返回
+	// 第一条,若某跳用 Header.Add 追加真实客户端(而非拼进同一行),右往左扫会漏掉它 →
+	// 把限流/审计记到攻击者可控的伪造首值上。Values 拿到全部,按到达顺序拼成一条列表。
+	xff := strings.TrimSpace(strings.Join(r.Header.Values("X-Forwarded-For"), ","))
 	if xff == "" {
 		return direct
 	}
