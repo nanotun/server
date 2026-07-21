@@ -82,6 +82,45 @@ func TestACLAllows_DenyPriority(t *testing.T) {
 	}
 }
 
+// 深扫第十二轮 MED:normalizeACLAction 只把「allow(不分大小写/首尾空白)」判为 allow,
+// 其余(含 "Deny"/"DENY"/带空白的 deny / 空串 / permit / 任意脏值)一律归到 deny(fail-closed)。
+func TestNormalizeACLAction(t *testing.T) {
+	for _, v := range []string{"allow", "ALLOW", " allow ", "Allow", "\tallow\n"} {
+		if got := normalizeACLAction(v); got != store.ACLAllow {
+			t.Errorf("normalizeACLAction(%q) = %q, want allow", v, got)
+		}
+	}
+	for _, v := range []string{"deny", "DENY", " deny ", "Deny", "", "  ", "permit", "reject", "0", "garbage"} {
+		if got := normalizeACLAction(v); got != store.ACLDeny {
+			t.Errorf("normalizeACLAction(%q) = %q, want deny", v, got)
+		}
+	}
+}
+
+// 深扫第十二轮 MED:逐条规则 action 归一化的端到端验证。手抠 DB / 坏 SQL 写入的非规范
+// action(大小写 / 空白 / 未知词)此前会因 `e.action != "deny"` 被当 allow 命中,放行本该
+// 阻断的跨用户流量。归一化后:非 allow 的一律 fail-closed 到 deny;allow 的大小写/空白变体仍放行。
+func TestACLAllows_NonCanonicalAction_FailsClosed(t *testing.T) {
+	// default=allow 时,只有真正判为 deny 才会拦下 —— 用来暴露「非规范 deny 被当 allow」的旧缺口。
+	for _, act := range []string{"Deny", "DENY", "deny ", " deny", "permit", "", "garbage"} {
+		loadACLForTest([]*store.ACLPair{
+			{SrcUserID: 1, DstUserID: 2, Action: act, DstKind: store.ACLDstKindUser},
+		}, store.ACLAllow)
+		if aclAllows(1, 2) {
+			t.Fatalf("non-canonical action %q should fail closed to deny (was fail-open)", act)
+		}
+	}
+	// 反向:default=deny 时,allow 的大小写/空白变体仍应放行(不能误伤合法规则)。
+	for _, act := range []string{"allow", "ALLOW", " Allow "} {
+		loadACLForTest([]*store.ACLPair{
+			{SrcUserID: 1, DstUserID: 2, Action: act, DstKind: store.ACLDstKindUser},
+		}, store.ACLDeny)
+		if !aclAllows(1, 2) {
+			t.Fatalf("case/space variant of allow %q should be allowed", act)
+		}
+	}
+}
+
 // 有规则集但都不匹配 + default=allow → 放行(v3 语义)。
 func TestACLAllows_DefaultActionAllowFallback(t *testing.T) {
 	loadACLForTest([]*store.ACLPair{

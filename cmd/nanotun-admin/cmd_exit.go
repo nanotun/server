@@ -85,7 +85,7 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {
-		return fmt.Errorf("get device %d: %w", id, err)
+		return opts.notFoundErr(err, "device.notFound", id)
 	}
 
 	// 平台闸口(与 web /routes/exit/designate 同口径):iOS/Android 只有用户态 VPN
@@ -257,7 +257,7 @@ func cmdExitRevoke(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {
-		return fmt.Errorf("get device %d: %w", id, err)
+		return opts.notFoundErr(err, "device.notFound", id)
 	}
 	if !opts.yes {
 		ok, cerr := confirm(opts, opts.T("exit.confirmRevoke", id, d.DeviceUUID))

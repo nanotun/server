@@ -303,7 +303,9 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 	// 深扫第十轮 LOW:exit_dns_redirect 与 exit_mode 同为出口 DNS 拦截 iptables 规则,
 	// 启动时一次性落链,SIGHUP 不重建。此前漏进 deferred 列表 → 运维改了 off↔1.1.1.1
 	// reload 后无任何提示,误以为已生效。这里补上告警,和 exit_mode 一个口径。
-	if strings.TrimSpace(newCfg.TUN.ExitDNSRedirect) != strings.TrimSpace(old.TUN.ExitDNSRedirect) {
+	// 深扫第十一轮 LOW:比较前先归一化(大小写不敏感,且 ""/auto 语义等价)—— 否则
+	// SIGHUP 把 "auto"→"" 或 "Off"→"off" 这类「效果不变」的改动会被误报成延迟字段。
+	if normalizeExitDNSRedirect(newCfg.TUN.ExitDNSRedirect) != normalizeExitDNSRedirect(old.TUN.ExitDNSRedirect) {
 		logrus.WithFields(logrus.Fields{
 			"old": old.TUN.ExitDNSRedirect,
 			"new": newCfg.TUN.ExitDNSRedirect,
@@ -357,6 +359,17 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 		out = append(out, "server.pow.ttl_sec")
 	}
 	return out
+}
+
+// normalizeExitDNSRedirect 把 exit_dns_redirect 归一到「效果」维度用于 diff:大小写不敏感,
+// 且空串与 "auto" 语义等价(两者都走 detectSystemDNSv4 自动探测)。"off" 与具体 IP 保持区分。
+// 只用于 classifyDeferredFields 的 SIGHUP 前后比较,避免「效果不变」的写法被误报成延迟字段。
+func normalizeExitDNSRedirect(v string) string {
+	s := strings.ToLower(strings.TrimSpace(v))
+	if s == "" {
+		return "auto"
+	}
+	return s
 }
 
 // sameRateLimitMap 判断两个 RateLimitByPlatform 字典是否相等(key + value 完全一致)。

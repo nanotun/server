@@ -82,7 +82,10 @@ func parseMeshEnabled(v string) bool {
 		return true
 	}
 	// 兜底再试一次 strconv.ParseBool(它接受 "T","F","TRUE","FALSE" 等)。
-	if b, err := strconv.ParseBool(v); err == nil {
+	// 深扫第十一轮 MED:必须先 TrimSpace,与 ValidateMeshEnabledSetting(用 ParseBool(TrimSpace(v)))
+	// 对齐 —— 否则 `setting set mesh_enabled ' f '` 能通过写校验落库(去空白后=f=false),读时却因
+	// 带空白 ParseBool 失败落到下方 return true,把"想关 mesh"静默变成"保持开"。
+	if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {
 		return b
 	}
 	// 完全不认识的值 → 按默认 true 处理,避免坏数据让整网误隔离。

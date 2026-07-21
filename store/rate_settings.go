@@ -22,6 +22,15 @@ const (
 	settingRateBurstBytes         = "rate_burst_bytes"
 )
 
+// RateBurstBytesMin/Max 是 rate_burst_bytes 的有效区间(byte),= 数据面 effectiveBurst 的 clamp
+// 边界的**单一真源**。0 = 用代码默认(64 KiB)。cmd/nanotund 的 effectiveBurst 引用这两个常量,
+// 一个对齐测试(TestRateBurstBoundsMatchStore)钉住两侧不漂移。深扫第十二轮 MED:此前写校验
+// 只查「非负」,运行期却把 (0,4KiB) 夹到 4KiB、>16MiB 夹到 16MiB,运维设的小/大 burst 被静默改。
+const (
+	RateBurstBytesMin int64 = 4 * 1024
+	RateBurstBytesMax int64 = 16 * 1024 * 1024
+)
+
 // RateDefaults 全局默认带宽限速快照(byte/sec)+ burst 容量(byte)。
 //
 // 0 = 「该方向 / 该层不在 settings 层做强制」,登录路径会继续回退 toml / 代码 default;
@@ -94,6 +103,44 @@ func (s *Store) SetRateDefaults(ctx context.Context, d RateDefaults) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: set rate defaults commit: %w", err)
+	}
+	return nil
+}
+
+// ValidateNonNegativeInt64Setting 校验一个 app_settings value 是可解析的非负 int64。
+// 深扫第十一轮 MED:用于 CLI raw `setting set` 对 rate_default_* / rate_burst_bytes 做写入兜底。
+// 否则 `setting set rate_default_upload_bps notanumber` 落库后被 settingsGetInt64 静默当 0
+// (= 不限速),与运维「设一个限速」的本意相反,且没有任何报错。
+//
+// 刻意**不 TrimSpace** —— 必须与读路径 settingsGetInt64 的 strconv.ParseInt(v)(同样不 trim)
+// 逐字一致:否则 " 42 " 能通过写校验落库,读时却被 ParseInt 判失败静默当 0,重演本轮
+// mesh 那类「写校验放行、读路径解不出」的不一致。带空白 = 误配,直接拒。
+func ValidateNonNegativeInt64Setting(v string) error {
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return fmt.Errorf("must be a non-negative integer with no surrounding spaces, got %q", v)
+	}
+	if n < 0 {
+		return fmt.Errorf("must be >= 0, got %d", n)
+	}
+	return nil
+}
+
+// ValidateRateBurstSetting 校验 rate_burst_bytes 的写入值。深扫第十二轮 MED:与运行期
+// effectiveBurst 的 clamp 对齐 —— 只接受 0(= 用代码默认 64 KiB)或落在 [RateBurstBytesMin,
+// RateBurstBytesMax] 的值。落在 (0, min) 或 > max 的值运行期会被静默夹住,与运维本意不符,
+// 直接拒并给出区间提示。同样刻意不 TrimSpace,与读路径 settingsGetInt64 的 ParseInt 对齐。
+func ValidateRateBurstSetting(v string) error {
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return fmt.Errorf("must be an integer with no surrounding spaces, got %q", v)
+	}
+	if n == 0 {
+		return nil // 0 = 用代码默认(64 KiB)
+	}
+	if n < RateBurstBytesMin || n > RateBurstBytesMax {
+		return fmt.Errorf("must be 0 (use default) or within [%d, %d] bytes, got %d",
+			RateBurstBytesMin, RateBurstBytesMax, n)
 	}
 	return nil
 }

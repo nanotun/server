@@ -106,7 +106,7 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 
 	u, err := st.GetUserByUsername(ctx, username)
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.T("profile.queryUser", username), err)
+		return opts.notFoundErr(err, "user.notFound", username)
 	}
 	// P2#6(2026-05-26):rotate 路径与 user reset-psk 同款拒绝禁用账号 —— 「踢线」
 	// 与「下发新凭证」语义矛盾,且禁用账号 rotate 出来的 PSK 立即被 user_invalidate

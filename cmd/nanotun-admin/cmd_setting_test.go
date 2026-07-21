@@ -149,6 +149,70 @@ func TestSettingSet_ValidatedKey_AdvertisedHost_AcceptsValid(t *testing.T) {
 	}
 }
 
+// TestSettingSet_ValidatedKey_ACLMeshRate:深扫第十/十一轮 —— acl_default_action /
+// mesh_enabled / rate_default_* / rate_burst_bytes 走 raw `setting set` 也必须过 validator。
+// 拒拼写错 / 非数字 / 负数,放行合法值并确认落库。防「拼错落库 → 数据面兜底成别的行为」。
+func TestSettingSet_ValidatedKey_ACLMeshRate(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "aclmeshrate_validated.db")
+
+	// 拒:拼写错 / 非法值,且不落库。
+	for _, tc := range []struct{ key, val string }{
+		{"acl_default_action", "deni"},
+		{"acl_default_action", "alloww"},
+		{"mesh_enabled", "flase"},
+		{"mesh_enabled", "yeah"},
+		{"rate_default_upload_bps", "notanumber"},
+		{"rate_default_download_bps", "-1"},
+		{"rate_burst_bytes", "1.5"},
+		{"rate_burst_bytes", " 42 "}, // 带空白:与读路径 ParseInt 不 trim 对齐,拒
+	} {
+		t.Run("reject/"+tc.key+"/"+tc.val, func(t *testing.T) {
+			c, _, stderr := runCLI(t, db, "", "setting", "set", tc.key, tc.val)
+			if c == 0 {
+				t.Fatalf("非法 %s=%q 应被拒,但通过了", tc.key, tc.val)
+			}
+			if !strings.Contains(stderr, "校验失败") {
+				t.Errorf("拒错信息应含 \"校验失败\";got: %s", stderr)
+			}
+			// 关键不变量:被拒的 garbage 绝不能落库。get 到的值只可能是 migration 默认
+			//(如 acl_default_action=allow / rate_*=0)或未设置,绝不会是刚才尝试写的非法值。
+			_, stdout, _ := runCLI(t, db, "", "setting", "get", tc.key)
+			if strings.TrimSpace(stdout) == strings.TrimSpace(tc.val) {
+				t.Errorf("非法值 %q 竟落库到 %s(get=%q),说明绕过了 validator", tc.val, tc.key, stdout)
+			}
+		})
+	}
+
+	// 放行:合法值,且落**规范化**值(深扫第十二轮 LOW:校验过后写规范形,不再原样存 argv,
+	// 避免 DB 存下带空白 / 大小写不一的毛刺 —— acl_default_action→lower、mesh_enabled→bool 文本)。
+	for _, tc := range []struct{ key, val, want string }{
+		{"acl_default_action", "deny", "deny"},
+		{"acl_default_action", "allow", "allow"},
+		{"mesh_enabled", "false", "false"},
+		{"rate_default_upload_bps", "1048576", "1048576"},
+		{"rate_burst_bytes", "0", "0"},
+		{"rate_burst_bytes", "65536", "65536"}, // 区间内原样
+		// 规范化用例:输入带空白 / 大小写,落库应是规范形。
+		{"acl_default_action", " Deny ", "deny"},
+		{"acl_default_action", "ALLOW", "allow"},
+		{"mesh_enabled", " f ", "false"},
+		{"mesh_enabled", "TRUE", "true"},
+		{"mesh_enabled", "1", "true"},
+	} {
+		t.Run("accept/"+tc.key+"/"+tc.val, func(t *testing.T) {
+			c, _, stderr := runCLI(t, db, "", "setting", "set", tc.key, tc.val)
+			if c != 0 {
+				t.Fatalf("合法 %s=%q 应通过;stderr=%s", tc.key, tc.val, stderr)
+			}
+			c, stdout, _ := runCLI(t, db, "", "setting", "get", tc.key)
+			if c != 0 || strings.TrimSpace(stdout) != tc.want {
+				t.Errorf("get %s 应返回规范值 %q;code=%d got %q", tc.key, tc.want, c, stdout)
+			}
+		})
+	}
+}
+
 // TestSettingSet_ValidatedKey_ServerDialHost_RejectsInvalid:2026-05-26 第六轮拆字段。
 //
 // `server_dial_host` 是 client PacketTunnel 实际拨号目标,strict IPv4/IPv6/RFC1035

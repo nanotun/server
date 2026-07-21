@@ -71,6 +71,44 @@ type Server struct {
 	startedAt time.Time
 }
 
+// flagOverrides 收集 main 里已 Parse 的、需要按「显式 flag > env」复写的 flag 值快照。
+type flagOverrides struct {
+	listen         string
+	db             string
+	control        string
+	certDir        string
+	noAutoReload   bool
+	trustedProxies string
+}
+
+// applyFlagPrecedence 实现「显式 flag > env > default」:先用 env 覆盖默认值,再把**显式设过**
+// (setFlags 命中)的 flag 值复写回去,确保命令行始终压过环境变量。抽成独立函数以便单测 ——
+// main() 用全局 flag 包,test 无法在同进程重跑 flag.Parse。深扫第十二轮 LOW:补该 precedence
+// 的集成测试(见 main_precedence_test.go)。
+func applyFlagPrecedence(cfg *Config, setFlags map[string]bool, ov flagOverrides) {
+	cfg.applyEnvOverrides()
+	if setFlags["listen"] {
+		cfg.ListenAddr = ov.listen
+	}
+	if setFlags["db"] {
+		cfg.DBPath = ov.db
+	}
+	if setFlags["control-socket"] {
+		cfg.ControlSocketPath = ov.control
+	}
+	if setFlags["cert-dir"] {
+		cfg.CertDir = ov.certDir
+	}
+	if setFlags["no-auto-reload"] {
+		// bool flag:显式 -no-auto-reload → 关自动 reload;-no-auto-reload=false → 强制开(覆盖 env)。
+		cfg.AutoReloadOnACLChange = !ov.noAutoReload
+	}
+	if setFlags["trusted-proxies"] {
+		// 支持 -trusted-proxies=none/off/"" 显式清空。
+		cfg.TrustedProxies = splitTrustedProxies(ov.trustedProxies)
+	}
+}
+
 func main() {
 	cfg := defaultConfig()
 	flag.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "监听地址 host:port,默认 0.0.0.0:7443")
@@ -81,7 +119,6 @@ func main() {
 	flag.Int64Var(&cfg.SessionTTLSec, "session-ttl", cfg.SessionTTLSec, "session 滑动过期窗口(秒)")
 	flag.Int64Var(&cfg.MaxLoginFailures, "max-login-failures", cfg.MaxLoginFailures, "连续登录失败 N 次后锁定")
 	flag.Int64Var(&cfg.LockoutSeconds, "lockout-seconds", cfg.LockoutSeconds, "锁定时长(秒)")
-	flag.BoolVar(&cfg.EnableDebug, "debug", cfg.EnableDebug, "暴露 /debug/* 路由(生产关)")
 	noAutoReload := flag.Bool("no-auto-reload", false, "ACL 改动后不自动通知 server reload(默认自动)")
 	trustedProxies := flag.String("trusted-proxies", "", "可信前置反代 IP/CIDR 列表(逗号分隔),如 127.0.0.1,10.0.0.0/8;仅当直连对端落在此集合内才解析 X-Forwarded-For。默认空=不信任 XFF")
 	verbose := flag.Bool("v", false, "更详细的日志(debug 级)")
@@ -103,6 +140,19 @@ func main() {
 		TimestampFormat: "2006-01-02 15:04:05",
 	})
 
+	// 深扫第十一轮 MED:显式 CLI flag 一律优先于 env(precedence:显式 flag > env > 默认)。
+	// flag.*Var 已把 flag 值写进 cfg,但随后 applyEnvOverrides 会无条件用 env 覆盖 —— 运维用
+	// `-listen=127.0.0.1` 想只绑环回,却被 systemd 里的 NANOTUN_WEB_LISTEN 压回(意外公网暴露)。
+	// 上一轮只修了 -trusted-proxies,这里推广到所有 env-backed flag:先快照 flag 值,
+	// applyEnvOverrides 之后,对**显式设过**的 flag 再覆盖回来。
+	flagListen := cfg.ListenAddr
+	flagDB := cfg.DBPath
+	flagControl := cfg.ControlSocketPath
+	flagCertDir := cfg.CertDir
+
+	setFlags := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+
 	if *extraSANs != "" {
 		for _, s := range strings.Split(*extraSANs, ",") {
 			if s = strings.TrimSpace(s); s != "" {
@@ -110,25 +160,15 @@ func main() {
 			}
 		}
 	}
-	if *noAutoReload {
-		cfg.AutoReloadOnACLChange = false
-	}
-	// TrustedProxies 优先级:显式 -trusted-proxies flag > NANOTUN_WEB_TRUSTED_PROXIES env。
-	// 深扫第十轮 LOW:此前 flag 在 env 之前赋值、env 又无条件覆盖 → flag 永远被 env 压过,
-	// 运维无法用命令行覆盖 systemd 里设的 env。改为「只有显式给了 flag 才在 env 之后覆盖」,
-	// 并支持 -trusted-proxies=none/off/"" 显式清空。
-	trustedProxiesFromFlag := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "trusted-proxies" {
-			trustedProxiesFromFlag = true
-		}
+
+	applyFlagPrecedence(&cfg, setFlags, flagOverrides{
+		listen:         flagListen,
+		db:             flagDB,
+		control:        flagControl,
+		certDir:        flagCertDir,
+		noAutoReload:   *noAutoReload,
+		trustedProxies: *trustedProxies,
 	})
-
-	cfg.applyEnvOverrides()
-
-	if trustedProxiesFromFlag {
-		cfg.TrustedProxies = splitTrustedProxies(*trustedProxies)
-	}
 	if err := cfg.Validate(); err != nil {
 		logrus.WithError(err).Fatal("[web] 配置校验失败,退出")
 	}

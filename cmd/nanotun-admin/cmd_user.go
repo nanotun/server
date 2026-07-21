@@ -77,7 +77,7 @@ func cmdUserSetBandwidth(ctx context.Context, st *store.Store, opts *globalOpts,
 	}
 	u, err := st.GetUserByUsername(ctx, pos[0])
 	if err != nil {
-		return err
+		return opts.notFoundErr(err, "user.notFound", pos[0])
 	}
 	oldUp, oldDown := u.BandwidthUpBPS, u.BandwidthDownBPS
 	newUp := oldUp
@@ -126,7 +126,7 @@ func cmdUserSetMaxSessions(ctx context.Context, st *store.Store, opts *globalOpt
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {
-		return err
+		return opts.notFoundErr(err, "user.notFound", args[0])
 	}
 	n64, err := parseInt64(args[1])
 	if err != nil || n64 < -1 || n64 > store.MaxSessionsCap {
@@ -173,7 +173,7 @@ func cmdUserSetPlatforms(ctx context.Context, st *store.Store, opts *globalOpts,
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {
-		return err
+		return opts.notFoundErr(err, "user.notFound", args[0])
 	}
 	raw := ""
 	if len(args) == 2 {
@@ -381,7 +381,7 @@ func cmdUserShow(ctx context.Context, st *store.Store, opts *globalOpts, args []
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {
-		return err
+		return opts.notFoundErr(err, "user.notFound", args[0])
 	}
 	if opts.json {
 		return printJSON(opts.stdout, viewFromUser(u))
@@ -437,7 +437,7 @@ func cmdUserSetDisabled(ctx context.Context, st *store.Store, opts *globalOpts, 
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {
-		return err
+		return opts.notFoundErr(err, "user.notFound", args[0])
 	}
 	if disabled {
 		if err := st.DisableUser(ctx, u.ID); err != nil {
@@ -465,7 +465,7 @@ func cmdUserDelete(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {
-		return err
+		return opts.notFoundErr(err, "user.notFound", args[0])
 	}
 	if !opts.yes {
 		ok, err := confirm(opts, opts.T("user.confirmDelete", u.Username))
@@ -500,7 +500,7 @@ func cmdUserResetPSK(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	}
 	u, err := st.GetUserByUsername(ctx, pos[0])
 	if err != nil {
-		return err
+		return opts.notFoundErr(err, "user.notFound", pos[0])
 	}
 	// P2#6(2026-05-26):禁用账号不允许 rotate-psk —— 「踢线」与「下发新凭证」语义
 	// 矛盾(rotate 后 user_invalidate scan 仍会把这条踢掉,新 PSK 等于发了张废卡);

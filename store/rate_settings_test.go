@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 )
 
@@ -72,6 +73,56 @@ func TestRateDefaults_Invalid(t *testing.T) {
 	got, _ := st.GetRateDefaults(ctx)
 	if got.UploadBPS != 0 || got.DownloadBPS != 0 {
 		t.Errorf("after invalid: want 0/0 untouched, got %+v", got)
+	}
+}
+
+// TestValidateNonNegativeInt64Setting:深扫第十一轮 MED —— raw `setting set rate_default_*`
+// 的写入兜底校验。非数字 / 负数必须拒绝,合法非负整数(含带空白)放行。
+func TestValidateNonNegativeInt64Setting(t *testing.T) {
+	ok := []string{"0", "1", "1048576", "9223372036854775807"}
+	for _, v := range ok {
+		if err := ValidateNonNegativeInt64Setting(v); err != nil {
+			t.Errorf("ValidateNonNegativeInt64Setting(%q) = %v, want nil", v, err)
+		}
+	}
+	// 带空白刻意拒绝:读路径 settingsGetInt64 用 ParseInt(v)(不 trim),校验器必须逐字对齐。
+	bad := []string{"", "notanumber", "-1", "-1048576", "1.5", "1e6", "0x10", "  ", "12abc", " 42 ", "42 "}
+	for _, v := range bad {
+		if err := ValidateNonNegativeInt64Setting(v); err == nil {
+			t.Errorf("ValidateNonNegativeInt64Setting(%q) = nil, want error", v)
+		}
+	}
+}
+
+// TestValidateRateBurstSetting:深扫第十二轮 MED —— rate_burst_bytes 写校验必须与运行期
+// effectiveBurst 的 clamp 区间对齐:0(用默认)与 [Min,Max] 放行;(0,Min) / >Max / 非数字 /
+// 负数 / 带空白一律拒(否则「写得进却被静默夹住」)。
+func TestValidateRateBurstSetting(t *testing.T) {
+	ok := []string{
+		"0", // 0 = 用代码默认(64 KiB)
+		strconv.FormatInt(RateBurstBytesMin, 10),
+		strconv.FormatInt(RateBurstBytesMax, 10),
+		strconv.FormatInt(RateBurstBytesMin+1, 10),
+		"65536", // 64 KiB,区间内
+	}
+	for _, v := range ok {
+		if err := ValidateRateBurstSetting(v); err != nil {
+			t.Errorf("ValidateRateBurstSetting(%q) = %v, want nil", v, err)
+		}
+	}
+	bad := []string{
+		"1",   // 0<v<Min,运行期会被夹到 Min
+		"100", // 同上
+		strconv.FormatInt(RateBurstBytesMin-1, 10), // Min 下沿-1
+		strconv.FormatInt(RateBurstBytesMax+1, 10), // Max 上沿+1
+		"1073741824", // 1 GiB > Max
+		"-1", "notanumber", "1.5", "", "  ",
+		strconv.FormatInt(RateBurstBytesMax, 10) + " ", // 带空白(与读路径不 trim 对齐)
+	}
+	for _, v := range bad {
+		if err := ValidateRateBurstSetting(v); err == nil {
+			t.Errorf("ValidateRateBurstSetting(%q) = nil, want error", v)
+		}
 	}
 }
 

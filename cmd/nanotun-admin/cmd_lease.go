@@ -154,7 +154,7 @@ func cmdLeaseSet(ctx context.Context, st *store.Store, opts *globalOpts, args []
 		return fmt.Errorf("%s: %w", opts.T("cli.invalidDeviceID", pos[0]), err)
 	}
 	if _, err := st.GetDevice(ctx, deviceID); err != nil {
-		return err
+		return opts.notFoundErr(err, "device.notFound", deviceID)
 	}
 	if *v4 == "" && *v6 == "" {
 		return errors.New(opts.T("lease.needV4OrV6"))

@@ -175,11 +175,11 @@ func TestEffectiveBurst(t *testing.T) {
 		{"zero falls back to default", 0, defaultRateBurstBytes},
 		{"negative falls back to default", -1, defaultRateBurstBytes},
 		{"too small is clamped up", 1024, minRateBurstBytes},
-		{"min boundary unchanged", minRateBurstBytes, minRateBurstBytes},
+		{"min boundary unchanged", int64(minRateBurstBytes), minRateBurstBytes},
 		{"normal value passes through", 256 * 1024, 256 * 1024},
 		// N11:上界保护。
-		{"max boundary unchanged", maxRateBurstBytes, maxRateBurstBytes},
-		{"just over max clamped down", maxRateBurstBytes + 1, maxRateBurstBytes},
+		{"max boundary unchanged", int64(maxRateBurstBytes), maxRateBurstBytes},
+		{"just over max clamped down", int64(maxRateBurstBytes) + 1, maxRateBurstBytes},
 		{"1 GiB clamped to max", 1 << 30, maxRateBurstBytes},
 		{"int64 max clamped to max", 1 << 62, maxRateBurstBytes},
 	}

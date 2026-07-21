@@ -903,7 +903,13 @@ func main() {
 	// (硬编码 127.0.0.1)回连本机 WS listener。若 listen_addr 绑到一个 127.0.0.1 拨号
 	// 到不了的地址(具体非回环 IP、127.0.0.2/::1 等其它回环),listener 收不到环回拨号
 	// → hy2/REALITY 全线 login 失败且无启动期诊断。这里在启动早期 fail-fast 给出原因。
-	validateVPNListenAddr(cfg.Server.ListenAddr)
+	//
+	// 深扫第十二轮 MED:与 probeLoopbackVPNReachable 同口径 —— 该校验只为环回桥接服务,
+	// 仅当 hy2 / REALITY 实际启用时才有意义。纯 WSS 部署不走桥接,允许绑到具体网卡 IP
+	// (多网卡场景),不应被这条桥接自洽校验误 Fatal。上一轮只门控了 probe,漏了本校验。
+	if cfg.Hysteria.HysteriaActive() || strings.TrimSpace(cfg.Reality.ListenAddr) != "" {
+		validateVPNListenAddr(cfg.Server.ListenAddr)
+	}
 	// 深扫第八轮 MED:exit_mode 非空值必须是 mesh/isolate/off 之一,拼错即 fail-fast,
 	// 不再静默退回 mesh(避免一个 typo 把隔离部署翻成跨用户互通)。
 	if err := cfg.TUN.ValidateExitMode(); err != nil {
@@ -1228,7 +1234,13 @@ func main() {
 	// 深扫第十轮 MED:环回自检。静态 validateVPNListenAddr 只挡「显式非回环具体 IP」,
 	// 挡不住 "[::]:port" 在 bindv6only=1 主机上只绑 IPv6 回环、IPv4 127.0.0.1 拨不进来的
 	// 运行期问题。这里趁 listener 刚 bind(内核已可完成回环握手进 backlog)拨一次自检。
-	probeLoopbackVPNReachable(cfg.Server.ListenAddr, vpnTCPPort)
+	//
+	// 深扫第十一轮 MED:仅当 hy2 / REALITY 实际启用时才探测并 Fatal —— 只有它们会经环回桥接
+	// 回连 127.0.0.1(见 loopbackVPNWebSocketURL)。纯 WSS 部署不走桥接,即便 listen_addr
+	// 是 [::]:port + bindv6only=1、IPv6 客户端照常工作,不应被这条自检误 Fatal。
+	if cfg.Hysteria.HysteriaActive() || strings.TrimSpace(cfg.Reality.ListenAddr) != "" {
+		probeLoopbackVPNReachable(cfg.Server.ListenAddr, vpnTCPPort)
+	}
 
 	// E3(P1-3): 在 tls.NewListener 之前先套一层握手 deadline listener,Slow-loris /
 	// 半开 TLS 连接最多挂 wssHandshakeTimeout 就被断开,后续 dispatchVPNIncoming 入口
@@ -1279,7 +1291,7 @@ func main() {
 	// (保 QUIC 不空闲、刷 UDP NAT、8s 看门狗判死),这条 TCP 心跳与数据面五元组不同、
 	// 断了也不触发主隧道重连,功能全被覆盖;删监听减一个公网端口与流量特征。
 	// 旧客户端连 :8444 失败只影响其自身保活重试循环,不影响数据面。
-	realityClose, realityTCPPort, errReality := startRealityVPNListener(&cfg, loopbackSmuxPoolRef, loopbackWSTLS)
+	realityClose, realityStartAccept, realityTCPPort, errReality := startRealityVPNListener(&cfg, loopbackSmuxPoolRef, loopbackWSTLS)
 	if errReality != nil {
 		util.FatalExit(util.ClassifyListenError(errReality), logrus.Fields{"err": errReality.Error()}, "REALITY: %v", errReality)
 	}
@@ -1398,16 +1410,10 @@ func main() {
 		}
 	}()
 	if hySrv != nil {
+		// 深扫第十二轮 MED:defer 关闭保持在早处(与 realityClose / jumpFW.Teardown 的 LIFO
+		// teardown 次序对齐);真正的 hySrv.Serve() 推迟到环回 WS 服务就绪之后再起(见 main 末尾),
+		// 避免启动窗口内 hy2 连接 bridge 到尚未 Serve 的环回 WS。
 		defer func() { _ = hySrv.Close() }()
-		// P1-6: Hysteria Serve 用 safeGlobalGoroutine 包,panic 时触发 graceful
-		// shutdown(走 LIFO defer:撤 iptables / 关 TUN / DB checkpoint)而不是裸
-		// crash。Hysteria 库 panic 历史并不多,但走统一 wrapper 让所有 Serve
-		// 路径行为一致。
-		go safeGlobalGoroutine("hysteriaServe", globalContextCancel, func() {
-			if err := hySrv.Serve(); err != nil {
-				logrus.WithError(err).Error("Hysteria Serve 退出")
-			}
-		})
 	}
 
 	// G3: /health 独立 listener,默认 127.0.0.1:8081(在配置 HealthListenAddr 时生效)。
@@ -1472,6 +1478,23 @@ func main() {
 	// keep-alive 连接一个 5s graceful close 窗口;WebSocket 升级后的连接由各自
 	// cleanupConnection 路径处理。
 	defer vpnHTTPShutdown()
+
+	// 深扫第十二轮 MED:环回 WS 服务(hy2/REALITY 的 bridge 目标)现已开始 Serve,此刻才放
+	// 外部传输开始 Accept。此前 REALITY 在 ACL 装载前就 Accept、hy2 也早于 WS Serve,启动窗口
+	// (ACL 装载最多 3×5s + 其它 setup)内进来的连接会 bridge 到还没 Serve 的环回 WS,卡在
+	// backlog 直到 15s 拨号超时把 login 打回。改为「WS 先就绪,外部传输后 Accept」。
+	// P1-6: Hysteria Serve 用 safeGlobalGoroutine 包,panic 时触发 graceful shutdown
+	// (走 LIFO defer:撤 iptables / 关 TUN / DB checkpoint)而不是裸 crash。
+	if realityStartAccept != nil {
+		realityStartAccept()
+	}
+	if hySrv != nil {
+		go safeGlobalGoroutine("hysteriaServe", globalContextCancel, func() {
+			if err := hySrv.Serve(); err != nil {
+				logrus.WithError(err).Error("Hysteria Serve 退出")
+			}
+		})
+	}
 
 	errAcc := <-acceptErr
 	logrus.WithError(errAcc).Warn("VPN HTTP 服务退出")
@@ -2031,20 +2054,25 @@ type storeRateDefaultsView struct {
 //   - 入参 [4 KiB, 16 MiB]:原样使用。
 //
 // 不再用 const burstBytes;登录 / takeover / /rate/refresh 三条路径都从这里算。
+//
+// 深扫第十二轮 MED:clamp 上下界改为引用 store 的单一真源(store.RateBurstBytesMin/Max),
+// 与 CLI 写校验 store.ValidateRateBurstSetting 共用同一区间 —— 保证「写得进」的值运行期
+// 不会被静默夹住。
+const defaultRateBurstBytes = 64 * 1024
+
 const (
-	defaultRateBurstBytes = 64 * 1024
-	minRateBurstBytes     = 4 * 1024
-	maxRateBurstBytes     = 16 * 1024 * 1024
+	minRateBurstBytes = int(store.RateBurstBytesMin)
+	maxRateBurstBytes = int(store.RateBurstBytesMax)
 )
 
 func effectiveBurst(settingsBurst int64) int {
 	if settingsBurst <= 0 {
 		return defaultRateBurstBytes
 	}
-	if settingsBurst < minRateBurstBytes {
+	if settingsBurst < int64(minRateBurstBytes) {
 		return minRateBurstBytes
 	}
-	if settingsBurst > maxRateBurstBytes {
+	if settingsBurst > int64(maxRateBurstBytes) {
 		return maxRateBurstBytes
 	}
 	return int(settingsBurst)
@@ -2751,10 +2779,10 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	var convID uint32
 	var assignmentsForMsg []util.VirtualIPAssignment
 
-	if err := writeLinkLoginRespFull(raw, 0, "登录成功", userID, connIDStr, takeoverSecret); err != nil {
-		logrus.WithField("remote", remote).WithError(err).Warn("发送登录响应失败")
-		return
-	}
+	// 深扫第十二轮 MED:登录成功帧(code=0)推迟到 VIP 分配 + lease 持久化都成功之后再发
+	// (见下方 writeLinkLoginRespFull)。此前先发 code=0 再做 VIP/lease,一旦 IPv4 分配失败或
+	// lease 撞 UNIQUE,客户端已把「登录成功 + takeover_secret/session」当权威缓存,server 却
+	// 静默丢连或补发 code=1 —— 客户端拿到一个没有 vIP 的死会话。改成「全部成功再报成功」。
 
 	localIPs := localIPsForVPNAllocation(raw)
 
@@ -2833,6 +2861,9 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 						clientIPUsedMu.Unlock()
 						connectionsMu.Unlock()
 						logrus.WithField("remote", remote).Warnf("IPv4 虚拟 IP 原子分配失败：requested=%d assigned=%d", len(ipv4LocalIPs), len(assignments))
+						// 深扫第十二轮 MED:成功帧已后移,这里在丢连前显式回一条 code=1 失败,
+						// 避免客户端只看到「连接被静默关闭」而无法区分是拒登还是网络抖动。
+						_ = writeLinkLoginResp(raw, util.CodeServerError, clientLoginMessageForCode(util.CodeServerError), "")
 						return
 					}
 				}
@@ -2910,6 +2941,14 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 
 	if convID == 0 || c == nil {
 		logrus.WithField("remote", remote).Error("无法分配 convID")
+		return
+	}
+
+	// 深扫第十二轮 MED:到这里 VIP 分配 + lease 持久化 + vIP→user 映射都已成功,此刻才发
+	// 登录成功帧(code=0)。仍在 c.linkConn 被赋值(下方)之前,无并发写者,直接写 raw;
+	// 且成功帧仍先于 ConvSaltLite,线序不变。发送失败即放弃(defer cleanupConnection 兜底)。
+	if err := writeLinkLoginRespFull(raw, 0, "登录成功", userID, connIDStr, takeoverSecret); err != nil {
+		logrus.WithField("remote", remote).WithError(err).Warn("发送登录响应失败")
 		return
 	}
 

@@ -21,7 +21,9 @@ import (
 	"time"
 )
 
-// Config 是 nanotun-web 的运行时配置。来源:flag → env → default。
+// Config 是 nanotun-web 的运行时配置。优先级:显式 flag > env > default。
+// (env 覆盖默认值;若某项 flag 被显式传入,则在 applyEnvOverrides 之后再复写回来,
+// 确保命令行始终压过环境变量 —— 见 main.go 的 flag.Visit / setFlags 复写逻辑。)
 //
 // 字段命名上保持与 nanotund config 风格一致(snake_case 的 flag,大写 env)。
 type Config struct {
@@ -48,9 +50,6 @@ type Config struct {
 	// 暴力破解防护:连续失败 N 次后锁 lock_seconds 秒。
 	MaxLoginFailures int64
 	LockoutSeconds   int64
-
-	// 是否暴露开发者 /debug/* 路由(pprof 之类)。生产关。
-	EnableDebug bool
 
 	// 写操作时是否同步调 nanotund /control/reload?acl(默认 true)。
 	// 关闭后管理员需要手动 systemctl reload nanotun 让 ACL 生效。
@@ -106,7 +105,6 @@ func defaultConfig() Config {
 		SessionTTLSec:         12 * 3600, // 12h 滑动窗口
 		MaxLoginFailures:      5,
 		LockoutSeconds:        15 * 60,
-		EnableDebug:           false,
 		AutoReloadOnACLChange: true,
 		AllowSetup:            true,
 		ReadHeaderTimeout:     10 * time.Second,
@@ -139,9 +137,6 @@ func (c *Config) applyEnvOverrides() {
 				c.ExtraSANs = append(c.ExtraSANs, s)
 			}
 		}
-	}
-	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_DEBUG")); v != "" {
-		c.EnableDebug = parseBoolEnv(v, false)
 	}
 	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_DISABLE_AUTORELOAD")); v != "" {
 		c.AutoReloadOnACLChange = !parseBoolEnv(v, false)

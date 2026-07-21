@@ -40,6 +40,10 @@ func TestDuration_UnmarshalText(t *testing.T) {
 		{"string_30ns_rejected", `d = "30ns"`, 0, true},
 		{"string_500us_rejected", `d = "500us"`, 0, true},
 		{"string_1ms_ok", `d = "1ms"`, time.Millisecond, false},
+		// 深扫第十一轮 LOW:负数间隔没有意义(会被 keepalive 静默当禁用),显式拒绝。
+		// 覆盖字符串路径("-1s")与裸整数路径(负纳秒)。
+		{"string_neg_rejected", `d = "-1s"`, 0, true},
+		{"bare_int_neg_rejected", `d = -1000000`, 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

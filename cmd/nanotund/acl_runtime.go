@@ -24,7 +24,9 @@ import (
 //   • dst_port_lo..dst_port_hi:闭区间端口,仅对 tcp/udp 有意义;
 //   • dst_kind:'user' = 目标是某 user 的 vIP;'exit' = 出口公网(dst 不在任何 vIP);
 //   • default action:由 app_settings.acl_default_action 控制 'allow'(向后兼容)
-//     或 'deny'(白名单模型)。
+//     或 'deny'(白名单模型)。无法识别的值 fail-closed 兜到 deny(见 readSettings /
+//     buildACLSnapshot);逐条规则的 action 同样归一化,非 'allow' 一律按 'deny'
+//     处理(见 normalizeACLAction)。
 //
 // 设计原则未变:
 //   1) 全内存 immutable snapshot,atomic.Pointer 替换,reload(SIGHUP)时切换;
@@ -202,16 +204,32 @@ func reloadACLSnapshotFromStore(st *store.Store) (int, error) {
 	return len(rules), nil
 }
 
+// normalizeACLAction 把逐条规则的 action 归一到 store.ACLAllow / store.ACLDeny。
+// 深扫第十二轮 MED:evaluateUser/evaluateExit 用 `e.action == store.ACLDeny` 判定,裸存
+// r.Action 时,手抠 DB / 坏 SQL 写入的 "Deny" / "deny " / "" 等非规范值 != "deny",会被当成
+// allow 命中,放行本该阻断的跨用户流量(方向与 default action 的 fail-closed 相反)。写路径
+// 只收 allow/deny,所以正常数据无碍;这里对**未知/非规范一律兜成 deny**(fail-closed),
+// 与 default action、buildACLSnapshot 的兜底方向一致。
+func normalizeACLAction(a string) string {
+	if strings.EqualFold(strings.TrimSpace(a), store.ACLAllow) {
+		return store.ACLAllow
+	}
+	return store.ACLDeny
+}
+
 // buildACLSnapshot 把 store.ACLPair 切片折叠成查表友好的 immutable snapshot。
 //
 // 单独抽出来便于 unit test 不依赖 store。返回的 snapshot.meshEnabled 默认 true,
 // reloadACLSnapshotFromStore 会在调用本函数后覆盖该字段。测试想模拟「mesh off」
 // 直接给 snap.meshEnabled = false 赋值即可,不需要走 store。
 //
-// defaultAction 必须是 store.ACLAllow / store.ACLDeny;其它值会被规范化为 allow。
+// defaultAction 必须是 store.ACLAllow / store.ACLDeny;其它值会被规范化为 **deny**(fail-closed)。
+// 深扫第十一轮 MED:与 readSettings 的 fail-closed(未知值→deny)对齐。生产 reload 路径传进来的
+// 值已被 readSettings 规范化,不会命中这里;但本 helper 是导出给测试/未来调用方的独立入口,
+// 兜底方向必须是 deny 而非 allow —— 否则任何绕过 readSettings 的调用会重开 fail-open 缺口。
 func buildACLSnapshot(rules []*store.ACLPair, defaultAction string) *aclSnapshot {
 	if defaultAction != store.ACLAllow && defaultAction != store.ACLDeny {
-		defaultAction = store.ACLAllow
+		defaultAction = store.ACLDeny
 	}
 	s := &aclSnapshot{defaultAction: defaultAction, meshEnabled: true}
 
@@ -220,7 +238,7 @@ func buildACLSnapshot(rules []*store.ACLPair, defaultAction string) *aclSnapshot
 			continue
 		}
 		entry := ruleEntry{
-			action:   r.Action,
+			action:   normalizeACLAction(r.Action),
 			proto:    r.Proto,
 			portLo:   uint16(r.DstPortLo),
 			portHi:   uint16(r.DstPortHi),

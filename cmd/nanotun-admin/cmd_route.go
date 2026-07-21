@@ -68,7 +68,7 @@ func cmdRouteList(ctx context.Context, st *store.Store, opts *globalOpts, args [
 	if *username != "" {
 		u, err := st.GetUserByUsername(ctx, *username)
 		if err != nil {
-			return err
+			return opts.notFoundErr(err, "user.notFound", *username)
 		}
 		devs, err := st.ListDevicesByUser(ctx, u.ID)
 		if err != nil {
@@ -115,7 +115,7 @@ func cmdRouteApprove(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	if util.IsExitDefaultRoute(cidr) && !*force {
 		d, gerr := st.GetDevice(ctx, deviceID)
 		if gerr != nil {
-			return fmt.Errorf("get device %d: %w", deviceID, gerr)
+			return opts.notFoundErr(gerr, "device.notFound", deviceID)
 		}
 		if !store.IsExitCapablePlatform(d.Platform) {
 			return errors.New(opts.T("exit.platformUnsupported", dashIfEmpty(d.Platform)))

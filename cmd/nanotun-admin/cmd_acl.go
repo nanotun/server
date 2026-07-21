@@ -133,7 +133,7 @@ func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	if len(positional) != 2 {
 		return errors.New(opts.usage(fmt.Sprintf("nanotun-admin acl %s <src_user|*> <dst_user|*> [--proto X --port N --port-range LO-HI --exit]", action)))
 	}
-	src, err := resolveUserOrWildcard(ctx, st, positional[0])
+	src, err := resolveUserOrWildcard(ctx, st, opts, positional[0])
 	if err != nil {
 		return err
 	}
@@ -145,7 +145,7 @@ func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args 
 		}
 		dstKind = store.ACLDstKindExit
 	}
-	dst, err := resolveUserOrWildcard(ctx, st, dstRaw)
+	dst, err := resolveUserOrWildcard(ctx, st, opts, dstRaw)
 	if err != nil {
 		return err
 	}
@@ -263,13 +263,13 @@ func parsePortRange(s string) (int, int, error) {
 // resolveUserOrWildcard 把命令行里的 src/dst 参数转成 store ID。
 //   - "*" 表示通配（NULL 写入），返回 0；
 //   - 否则按 username 查找。
-func resolveUserOrWildcard(ctx context.Context, st *store.Store, raw string) (int64, error) {
+func resolveUserOrWildcard(ctx context.Context, st *store.Store, opts *globalOpts, raw string) (int64, error) {
 	if raw == "*" {
 		return 0, nil
 	}
 	u, err := st.GetUserByUsername(ctx, raw)
 	if err != nil {
-		return 0, fmt.Errorf("resolve user %q: %w", raw, err)
+		return 0, opts.notFoundErr(err, "user.notFound", raw)
 	}
 	return u.ID, nil
 }

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/nanotun/server/store"
 )
 
 // i18n:nanotun-admin(CLI)的多语言支持。
@@ -122,4 +125,14 @@ func (o *globalOpts) errText(err error) string {
 		return o.T(k, a...)
 	}
 	return err.Error()
+}
+
+// notFoundErr 把 store.ErrNotFound 翻成本地化的「不存在」消息(带标识 ident);其它错误原样返回。
+// 深扫第十一轮 LOW:route/acl/lease 各 verb 已本地化 ErrNotFound,而 user/device 的解析路径
+// 仍裸抛英文 "store: not found"。用本 helper 在这些 verb 的解析点统一口径,消除不一致。
+func (o *globalOpts) notFoundErr(err error, key string, ident any) error {
+	if errors.Is(err, store.ErrNotFound) {
+		return errors.New(o.T(key, ident))
+	}
+	return err
 }

@@ -141,25 +141,29 @@ func bridgeRealityToPlainVPN(realityConn net.Conn, vpnListenAddr, vpnWsPath stri
 
 // startRealityVPNListener 在 [reality].listen_addr 非空时启动与 Xray 同栈的 REALITY 监听；
 // 握手成功后环回本机 [server] 端口（smuxPool 非空时走 smux stream，与 hy2 一致）。
-// 第二返回值为实际上报 TCP 端口（含 listen_addr 为 :0 时由内核分配）；未启用时 close 为 nil、端口为 0。
-func startRealityVPNListener(cfg *config.Config, smuxPool *loopbackSmuxPool, loopbackWSTLS *tls.Config) (closeFn func(), tcpPort int, err error) {
+// tcpPort 为实际上报 TCP 端口（含 listen_addr 为 :0 时由内核分配）；未启用时全部返回 nil / 0。
+//
+// 深扫第十二轮 MED:bind 与 accept 拆开 —— 本函数只完成绑定(启动早期 fail-fast 端口冲突)并
+// 返回 startAccept;真正的 Accept loop 由调用方在**环回 WS 服务就绪之后**再调 startAccept() 启动,
+// 避免启动窗口内外部连接 bridge 到尚未 Serve 的环回 WS 而卡到超时。
+func startRealityVPNListener(cfg *config.Config, smuxPool *loopbackSmuxPool, loopbackWSTLS *tls.Config) (closeFn func(), startAccept func(), tcpPort int, err error) {
 	r := &cfg.Reality
 	if strings.TrimSpace(r.ListenAddr) == "" {
-		return nil, 0, nil
+		return nil, nil, 0, nil
 	}
 	if err := r.Validate(); err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	// xver 合法区间(0/1/2)由 r.Validate() 统一把关(见 config/reality.go),此处不再重复。
 
 	rc, err := buildRealityTLSConfig(r)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 
 	base, err := net.Listen("tcp", strings.TrimSpace(r.ListenAddr))
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	if ta, ok := base.Addr().(*net.TCPAddr); ok && ta != nil {
 		tcpPort = ta.Port
@@ -195,54 +199,56 @@ func startRealityVPNListener(cfg *config.Config, smuxPool *loopbackSmuxPool, loo
 		logrus.Infof("REALITY client_addr（仅文档/运维）: %s", ca)
 	}
 
-	go safeGlobalGoroutine("realityAccept", globalContextCancel, func() {
-		// I6: 区分 temporary error 与 fatal error。
-		//
-		// 之前任何 Accept 错误都直接退监听 → 整个 REALITY 入口对所有客户端不可用。
-		// 但实际上很多 Accept 错误是 transient(典型场景):
-		//   - EMFILE / ENFILE: 进程或系统 fd 用尽,过几秒回收后能恢复;
-		//   - ECONNABORTED: 客户端在 listen backlog 里就 RST,本次 Accept 失败但 listen 仍健康;
-		//   - "too many open files": 同 EMFILE。
-		// 这些都应该继续 Accept,只是需要 backoff 避免 hot-spin 把 CPU 拉满。
-		//
-		// 真正 fatal 的(应该退出 accept loop)是 listener 自己 Close —— Close 后 Accept 返
-		// 回 net.ErrClosed。globalContext.Done 时我们会主动 ln.Close,这条路径正确退出;
-		// 其它任何错误都 backoff 重试,让 REALITY 服务高可用。
-		var backoff time.Duration
-		const maxBackoff = 1 * time.Second
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				if errors.Is(err, net.ErrClosed) {
-					// 主动 Close 路径:静默退出,这是正常 shutdown。
-					logrus.Info("REALITY Accept: listener 已关闭,退出 accept loop")
-					return
-				}
-				// transient error:logrus.Warn 后短暂 backoff 再继续。
-				if backoff == 0 {
-					backoff = 5 * time.Millisecond
-				} else {
-					backoff *= 2
-					if backoff > maxBackoff {
-						backoff = maxBackoff
+	startAccept = func() {
+		go safeGlobalGoroutine("realityAccept", globalContextCancel, func() {
+			// I6: 区分 temporary error 与 fatal error。
+			//
+			// 之前任何 Accept 错误都直接退监听 → 整个 REALITY 入口对所有客户端不可用。
+			// 但实际上很多 Accept 错误是 transient(典型场景):
+			//   - EMFILE / ENFILE: 进程或系统 fd 用尽,过几秒回收后能恢复;
+			//   - ECONNABORTED: 客户端在 listen backlog 里就 RST,本次 Accept 失败但 listen 仍健康;
+			//   - "too many open files": 同 EMFILE。
+			// 这些都应该继续 Accept,只是需要 backoff 避免 hot-spin 把 CPU 拉满。
+			//
+			// 真正 fatal 的(应该退出 accept loop)是 listener 自己 Close —— Close 后 Accept 返
+			// 回 net.ErrClosed。globalContext.Done 时我们会主动 ln.Close,这条路径正确退出;
+			// 其它任何错误都 backoff 重试,让 REALITY 服务高可用。
+			var backoff time.Duration
+			const maxBackoff = 1 * time.Second
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					if errors.Is(err, net.ErrClosed) {
+						// 主动 Close 路径:静默退出,这是正常 shutdown。
+						logrus.Info("REALITY Accept: listener 已关闭,退出 accept loop")
+						return
 					}
+					// transient error:logrus.Warn 后短暂 backoff 再继续。
+					if backoff == 0 {
+						backoff = 5 * time.Millisecond
+					} else {
+						backoff *= 2
+						if backoff > maxBackoff {
+							backoff = maxBackoff
+						}
+					}
+					logrus.WithError(err).Warnf("REALITY Accept 失败,%s 后重试(transient)", backoff)
+					select {
+					case <-time.After(backoff):
+					case <-globalContext.Done():
+						return
+					}
+					continue
 				}
-				logrus.WithError(err).Warnf("REALITY Accept 失败,%s 后重试(transient)", backoff)
-				select {
-				case <-time.After(backoff):
-				case <-globalContext.Done():
-					return
-				}
-				continue
+				backoff = 0 // 成功 Accept 重置 backoff
+				go safeGoroutine("realityBridge/"+c.RemoteAddr().String(), func() {
+					bridgeRealityToPlainVPN(c, vpnLoop, wsPath, smuxPool, loopbackWSTLS)
+				})
 			}
-			backoff = 0 // 成功 Accept 重置 backoff
-			go safeGoroutine("realityBridge/"+c.RemoteAddr().String(), func() {
-				bridgeRealityToPlainVPN(c, vpnLoop, wsPath, smuxPool, loopbackWSTLS)
-			})
-		}
-	})
+		})
+	}
 
-	return func() { _ = ln.Close() }, tcpPort, nil
+	return func() { _ = ln.Close() }, startAccept, tcpPort, nil
 }
 
 const (

@@ -326,6 +326,51 @@ func TestApplyConfigReload_PoWFieldsDeferred(t *testing.T) {
 	}
 }
 
+// 深扫第十一轮 LOW:exit_dns_redirect 改了「效果」才进 deferred;仅大小写 / ""↔auto 这类
+// 「效果不变」的改动不该被误报。
+func TestApplyConfigReload_ExitDNSRedirect_DeferredWhenEffective(t *testing.T) {
+	cases := []struct {
+		name         string
+		old, updated string
+		wantDeferred bool
+	}{
+		{"off_to_ip_effective", "off", "1.1.1.1", true},
+		{"auto_to_off_effective", "auto", "off", true},
+		{"empty_to_auto_noop", "", "auto", false},
+		{"case_only_noop", "Off", "off", false},
+		{"whitespace_noop", "auto", "  auto ", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cur := newReloadCfg()
+			cur.TUN.ExitDNSRedirect = tc.old
+			rs := &reloadState{configPath: "fake.toml", cfg: &cur, jumpFW: newJumpHostFirewall(false, 8080)}
+			loader := func(path string) (config.Config, error) {
+				nc := newReloadCfg()
+				nc.TUN.ExitDNSRedirect = tc.updated
+				return nc, nil
+			}
+			_, deferred := applyConfigReload(rs, loader)
+			got := slices.Contains(deferred, "tun.exit_dns_redirect")
+			if got != tc.wantDeferred {
+				t.Fatalf("exit_dns_redirect %q→%q: deferred=%v, want %v (deferred=%v)",
+					tc.old, tc.updated, got, tc.wantDeferred, deferred)
+			}
+		})
+	}
+}
+
+// TestNormalizeExitDNSRedirect:归一化口径 —— 大小写不敏感,""/auto 等价,off 与具体 IP 保持区分。
+func TestNormalizeExitDNSRedirect(t *testing.T) {
+	eq := func(a, b string) bool { return normalizeExitDNSRedirect(a) == normalizeExitDNSRedirect(b) }
+	if !eq("", "auto") || !eq("AUTO", " auto ") || !eq("Off", "off") {
+		t.Fatal("大小写 / 空白 / \"\"↔auto 应归一为等价")
+	}
+	if eq("off", "auto") || eq("off", "1.1.1.1") || eq("1.1.1.1", "8.8.8.8") {
+		t.Fatal("off / auto / 不同 IP 之间不应等价")
+	}
+}
+
 // G6 单测 g:同样的配置 reload → no-op。
 func TestApplyConfigReload_NoChange(t *testing.T) {
 	cur := newReloadCfg()

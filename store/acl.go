@@ -194,6 +194,15 @@ func (s *Store) DeleteACLPair(ctx context.Context, id int64) error {
 //
 // 新增 / 删除规则后,需要 `kill -HUP $(pidof nanotund)` 或 `systemctl reload`
 // 让运行中进程把内存 snapshot 替换,**未 reload 不影响已建立连接的 packet routing**。
+//
+// ⚠️ 深扫第十二轮 LOW —— 语义边界(切勿在生产判定路径复用):本函数**不代表**真实数据面
+// ACL 裁决。它有意采用固定的「规则集非空且无命中 → deny」朴素默认,**不读取**
+// app_settings.acl_default_action(其 seed 默认恰是 allow),也**不考虑** proto / port /
+// dst_kind(user/exit)等 ACL v2 维度。真实裁决只在 cmd/nanotund/acl_runtime.go 的
+// snapshot 路径,那里按 acl_default_action + 逐条 proto/port/exit 规则做 deny-first。
+// 本函数仅供「用户对」粗判 / 单测。若未来需要「与数据面一致的后台核对」,应改为复用
+// acl_runtime 的 evaluate 逻辑,而不是在这里塞一个 acl_default_action 分支(会与既有
+// 单测的 default-deny 语义冲突)。
 func (s *Store) IsAllowed(ctx context.Context, srcUserID, dstUserID int64) (bool, error) {
 	if srcUserID == dstUserID {
 		return true, nil

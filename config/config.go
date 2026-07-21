@@ -35,7 +35,7 @@ func (d *Duration) UnmarshalText(text []byte) error {
 		// `= 30`(30ns),却漏了带单位但依然亚毫秒的 `"30ns"` / `"500us"` —— 它们
 		// 走 time.ParseDuration 成功分支直接放行,同样让 ticker 亚毫秒空转刷屏。
 		// 这里统一在「任何解析成功」后判正的亚毫秒并拒绝(0 保留=禁用)。
-		if err := rejectSubMillisecond(s, v); err != nil {
+		if err := rejectInvalidInterval(s, v); err != nil {
 			return err
 		}
 		*d = Duration(v)
@@ -49,7 +49,7 @@ func (d *Duration) UnmarshalText(text []byte) error {
 		// 每 30ns 触发一次 → CPU 空转 + 日志/网络刷屏。这类值直接拒绝并提示补单位,
 		// 而不是静默上线一个刷屏配置。0 保留(表示禁用),显式大整数纳秒(如 30000000000
 		// = 30s)仍照常接受。
-		if err := rejectSubMillisecond(s, dur); err != nil {
+		if err := rejectInvalidInterval(s, dur); err != nil {
 			return err
 		}
 		*d = Duration(dur)
@@ -58,10 +58,18 @@ func (d *Duration) UnmarshalText(text []byte) error {
 	return fmt.Errorf("config: invalid duration %q (expected forms: \"30s\" / \"5m\" / 30000000000)", s)
 }
 
-// rejectSubMillisecond 拒绝「正且 < 1ms」的时长:本项目里所有 Duration 字段(目前仅
-// data_plane_ping_interval)都是「间隔」语义,亚毫秒几乎必然是忘带单位的误配,会导致
-// ticker 空转刷屏。0 表示禁用,保留放行。
-func rejectSubMillisecond(raw string, dur time.Duration) error {
+// rejectInvalidInterval 拒绝对「间隔」语义无意义的时长:本项目里所有 Duration 字段
+// (目前仅 data_plane_ping_interval)都是「间隔」语义。
+//   - 正且 < 1ms:几乎必然是忘带单位的误配(如 `= 30` 本意 30s),会让 ticker 空转刷屏;
+//   - 负数(深扫第十一轮 LOW):没有任何间隔含义,当前会被 wss_keepalive 静默当成「禁用」,
+//     掩盖 `-1s` 这类打错的符号。显式拒绝,让运维知道要写 0 才是禁用。
+//
+// 0 表示禁用,保留放行。
+func rejectInvalidInterval(raw string, dur time.Duration) error {
+	if dur < 0 {
+		return fmt.Errorf("config: duration %q parsed as %v — negative intervals are not meaningful; "+
+			"use 0 to disable or a positive value (e.g. %q)", raw, dur, "30s")
+	}
 	if dur > 0 && dur < time.Millisecond {
 		return fmt.Errorf("config: duration %q parsed as %v — sub-millisecond intervals are almost "+
 			"always a missing-unit typo; use at least 1ms (e.g. %q)", raw, dur, "30s")

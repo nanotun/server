@@ -238,7 +238,7 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 		}
 		user, uerr := st.GetUserByUsername(ctx, username)
 		if uerr != nil {
-			return fmt.Errorf("%s: %w", opts.T("profile.queryUser", username), uerr)
+			return opts.notFoundErr(uerr, "user.notFound", username)
 		}
 		usernameForCertCN = user.Username
 	} else {

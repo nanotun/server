@@ -343,6 +343,8 @@ var catZH = map[string]string{
 	"acl.portRangeLoGtHi":      "--port-range %q lo>hi",
 	"acl.deleted":              "已删除 ACL 规则 #%d",
 	"acl.notFound":             "ACL 规则不存在:#%d",
+	"user.notFound":            "用户不存在:%s",
+	"device.notFound":          "设备不存在:#%d",
 
 	// ===== route =====
 	"route.flag.user":         "仅列出指定用户下设备声明的路由",

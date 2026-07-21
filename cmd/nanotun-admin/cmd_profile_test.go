@@ -1578,8 +1578,10 @@ func TestProfileShow_LegacyPerUserStillValidates(t *testing.T) {
 	if c == 0 {
 		t.Fatal("传不存在的 username 应失败(per-user 模式校验 user 存在)")
 	}
-	if !strings.Contains(stderr, "查询用户") {
-		t.Errorf("error message 应提示 \"查询用户\";got: %s", stderr)
+	// 深扫第十二轮 LOW:profile show 的 user 解析改走 notFoundErr,ErrNotFound 统一本地化为
+	// "用户不存在:<name>"(此前是 "查询用户 <name>: store: not found" 泄英文)。
+	if !strings.Contains(stderr, "用户不存在") {
+		t.Errorf("error message 应提示 \"用户不存在\";got: %s", stderr)
 	}
 }
 

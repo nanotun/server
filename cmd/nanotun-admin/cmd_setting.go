@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +54,34 @@ var validatedSettingKeys = map[string]func(string) error{
 	// 拼错会被兜到默认 on —— 两者都让运维误以为设成了别的值。
 	"acl_default_action": store.ValidateACLDefaultActionSetting,
 	"mesh_enabled":       store.ValidateMeshEnabledSetting,
+	// 深扫第十一轮 MED:限速三键 raw 写入非数字会被 settingsGetInt64 静默当 0(= 不限速),
+	// 与本意相反。加非负整数校验兜底(专用 CLI `setting rate` 仍是推荐路径)。
+	// 深扫第十二轮 MED:rate_burst_bytes 单独用 clamp-aware 校验 —— 运行期 effectiveBurst 会把
+	// (0,4KiB) / >16MiB 静默夹住,故写入区间外的值直接拒,避免「设了却被改」。
+	"rate_default_upload_bps":   store.ValidateNonNegativeInt64Setting,
+	"rate_default_download_bps": store.ValidateNonNegativeInt64Setting,
+	"rate_burst_bytes":          store.ValidateRateBurstSetting,
+}
+
+// canonicalizeValidatedSetting 把已通过校验的 validatedSettingKeys 值规范化后再落库。
+// 深扫第十二轮 LOW:各 key 的规范形与读路径 / typed setter / migration seed 对齐 ——
+//   - acl_default_action:ToLower(TrimSpace)(= "allow"/"deny",见 store 常量与 0003 seed);
+//   - mesh_enabled:ParseBool → "true"/"false"(= store.SetMeshEnabled 的写法);
+//   - 其余(advertised_host / server_dial_host):仅 TrimSpace;
+//   - rate_*:校验器本就拒空白,值必无空白,TrimSpace 为 no-op。
+func canonicalizeValidatedSetting(key, value string) string {
+	v := strings.TrimSpace(value)
+	switch key {
+	case "acl_default_action":
+		return strings.ToLower(v)
+	case "mesh_enabled":
+		if b, err := strconv.ParseBool(v); err == nil {
+			return strconv.FormatBool(b)
+		}
+		return v
+	default:
+		return v
+	}
 }
 
 func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
@@ -92,9 +121,14 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 			if verr := validator(value); verr != nil {
 				return errors.New(opts.T("setting.validateFailed", key, opts.errText(verr)))
 			}
+			// 深扫第十二轮 LOW:校验通过后落**规范化**值,避免 DB 存下带空白 / 大小写不一的
+			// 脏值(读路径虽已 trim/lower 容错,但 `setting list` 展示与未来读者不应看到毛刺;
+			// 与 typed setter / migration seed 的写法对齐)。
+			value = canonicalizeValidatedSetting(key, value)
 		}
-		// 层 3:其它 key → 原样落库(rate_* / acl_default_action 等有专用 CLI
-		// 的 key 仍允许 raw 写,与改动前的行为对齐 — 避免 ops 习惯路径被破坏)。
+		// 层 3:其它 key → 原样落库。注意:acl_default_action / mesh_enabled / rate_default_* /
+		// rate_burst_bytes 已在上面 validatedSettingKeys 里做写入校验(第十/十一轮),raw 写
+		// 仍允许但会先过 validator;其余无专用校验的 key 才是真正的「原样落库」。
 		if err := st.SettingsSet(ctx, key, value); err != nil {
 			return err
 		}

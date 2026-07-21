@@ -76,7 +76,7 @@ func cmdDeviceCreate(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	}
 	u, err := st.GetUserByUsername(ctx, username)
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.T("device.queryUser", username), err)
+		return opts.notFoundErr(err, "user.notFound", username)
 	}
 	existed := false
 	if d, gerr := st.GetDeviceByUUID(ctx, u.ID, uuidNorm); gerr == nil && d != nil {
@@ -112,7 +112,7 @@ func cmdDeviceList(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	if *username != "" {
 		u, err := st.GetUserByUsername(ctx, *username)
 		if err != nil {
-			return err
+			return opts.notFoundErr(err, "user.notFound", *username)
 		}
 		devs, err = st.ListDevicesByUser(ctx, u.ID)
 		if err != nil {
@@ -230,7 +230,7 @@ func cmdDeviceSetAlias(ctx context.Context, st *store.Store, opts *globalOpts, a
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {
-		return err
+		return opts.notFoundErr(err, "device.notFound", id)
 	}
 	alias := strings.TrimSpace(args[1])
 	if err := st.SetDeviceAlias(ctx, id, alias); err != nil {
@@ -259,7 +259,7 @@ func cmdDeviceDelete(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {
-		return err
+		return opts.notFoundErr(err, "device.notFound", id)
 	}
 	if !opts.yes {
 		ok, err := confirm(opts, opts.T("device.confirmDelete", d.ID, d.DeviceUUID))
@@ -320,7 +320,7 @@ func cmdDeviceSetFixedVIP(ctx context.Context, st *store.Store, opts *globalOpts
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {
-		return err
+		return opts.notFoundErr(err, "device.notFound", id)
 	}
 	newV4 := d.FixedVIPv4
 	if *v4 != "<keep>" {
@@ -410,7 +410,7 @@ func cmdDeviceSetRate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {
-		return err
+		return opts.notFoundErr(err, "device.notFound", id)
 	}
 
 	oldUp, oldDown := d.RateUploadBPS, d.RateDownloadBPS
