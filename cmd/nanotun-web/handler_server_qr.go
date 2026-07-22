@@ -205,6 +205,10 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 		s.renderServerQRPasswordPage(w, r, msg, status)
 		return
 	}
+	// step-up 密码验证成功 → 清零本 IP 的失败计数,与登录 / handler_me(disable/regen TOTP)成功即 Reset
+	// 一致。否则「几次手误 + 一次成功」的失败计数会一直累加,穿插几次误操作即可把自己推到 stepUpMaxFailures
+	// 冷却阈值(且连累同样用 step-up 的 TOTP disable/regen),形成管理员自锁。
+	s.stepUpFailures.Reset(ip)
 
 	// (6) fork nanotun-admin profile show
 	//

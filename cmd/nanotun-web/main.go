@@ -79,6 +79,7 @@ type flagOverrides struct {
 	certDir        string
 	noAutoReload   bool
 	trustedProxies string
+	allowSetup     bool
 }
 
 // applyFlagPrecedence 实现「显式 flag > env > default」:先用 env 覆盖默认值,再把**显式设过**
@@ -107,6 +108,10 @@ func applyFlagPrecedence(cfg *Config, setFlags map[string]bool, ov flagOverrides
 		// 支持 -trusted-proxies=none/off/"" 显式清空。
 		cfg.TrustedProxies = splitTrustedProxies(ov.trustedProxies)
 	}
+	if setFlags["allow-setup"] {
+		// 显式 -allow-setup=false 压过 env / 默认,彻底关闭 /setup 抢占面。
+		cfg.AllowSetup = ov.allowSetup
+	}
 }
 
 func main() {
@@ -121,6 +126,7 @@ func main() {
 	flag.Int64Var(&cfg.LockoutSeconds, "lockout-seconds", cfg.LockoutSeconds, "锁定时长(秒)")
 	noAutoReload := flag.Bool("no-auto-reload", false, "ACL 改动后不自动通知 server reload(默认自动)")
 	trustedProxies := flag.String("trusted-proxies", "", "可信前置反代 IP/CIDR 列表(逗号分隔),如 127.0.0.1,10.0.0.0/8;仅当直连对端落在此集合内才解析 X-Forwarded-For。默认空=不信任 XFF")
+	flag.BoolVar(&cfg.AllowSetup, "allow-setup", cfg.AllowSetup, "允许首次初始化向导 /setup 创建首个管理员;管理员建好后设为 false 可彻底关闭 setup(防公网抢占)")
 	verbose := flag.Bool("v", false, "更详细的日志(debug 级)")
 	showVersion := flag.Bool("version", false, "打印版本并退出")
 	flag.Parse()
@@ -161,6 +167,7 @@ func main() {
 		}
 	}
 
+	flagAllowSetup := cfg.AllowSetup
 	applyFlagPrecedence(&cfg, setFlags, flagOverrides{
 		listen:         flagListen,
 		db:             flagDB,
@@ -168,6 +175,7 @@ func main() {
 		certDir:        flagCertDir,
 		noAutoReload:   *noAutoReload,
 		trustedProxies: *trustedProxies,
+		allowSetup:     flagAllowSetup,
 	})
 	if err := cfg.Validate(); err != nil {
 		logrus.WithError(err).Fatal("[web] 配置校验失败,退出")
@@ -212,6 +220,17 @@ func main() {
 	// 仍正常启动(其它功能如用户管理 / dashboard 都还能用),只是 QR 生成会 412。
 	if dialHost, _ := st.GetServerDialHost(ctx); dialHost == "" {
 		logrus.Warn("[web] server_dial_host 未配置 — 服务器 QR 生成功能不可用,请到 /settings 页配置真实拨号目标(IPv4/IPv6/RFC1035 域名)")
+	}
+
+	// M4:全新安装(尚无任何管理员)+ setup 向导开启 + 监听非环回地址 = 「首次运行 TOFU 抢占」窗口:
+	// 管理员建成前,任何网络访客过了验证码即可 POST /setup 抢占首个管理员。启动日志显著告警,
+	// 建议先绑 127.0.0.1 / 防火墙尽快完成 /setup,或用 nanotun-admin 预置管理员后以 -allow-setup=false 关闭向导。
+	if cfg.AllowSetup && listenAddrIsPublic(cfg.ListenAddr) {
+		if n, _ := st.CountWebAdmins(ctx); n == 0 {
+			logrus.WithField("listen", cfg.ListenAddr).Warn(
+				"[web] 安全提示:尚无管理员且 setup 向导对公网开放 — 任何网络访客可能抢占首个管理员。" +
+					"建议先绑 127.0.0.1 或用防火墙限制来源,尽快完成 /setup;或用 nanotun-admin 预置管理员后以 -allow-setup=false 关闭向导")
+		}
 	}
 
 	tmpl, err := loadTemplates()

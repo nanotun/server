@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/sync/semaphore"
@@ -179,16 +178,28 @@ func parseArgonParams(s string) (memory, time uint32, threads uint8, err error) 
 		if !ok {
 			return 0, 0, 0, fmt.Errorf("auth: bad param %q", kv)
 		}
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			return 0, 0, 0, fmt.Errorf("auth: bad param %s: %w", kv, err)
+		n, perr := strconv.Atoi(v)
+		if perr != nil || n < 0 {
+			return 0, 0, 0, fmt.Errorf("auth: bad param %s: %w", kv, perr)
 		}
+		// 关键:**在**转成 uint32/uint8 **之前**按上限校验。否则大整数(如 m=2^32+65536)在
+		// uint32(n)/uint8(n) 处**回绕**成一个看似正常的小值,绕过 DecodePSK 里事后的 maxArgon* 上限
+		// 兜底(如回绕到 m=65536),让畸形条目照跑 verify。以 int 域比较,不受回绕影响。
 		switch k {
 		case "m":
+			if n > int(maxArgonMemoryKiB) {
+				return 0, 0, 0, fmt.Errorf("auth: argon m=%d exceeds cap %d", n, maxArgonMemoryKiB)
+			}
 			memory = uint32(n)
 		case "t":
+			if n > int(maxArgonTime) {
+				return 0, 0, 0, fmt.Errorf("auth: argon t=%d exceeds cap %d", n, maxArgonTime)
+			}
 			time = uint32(n)
 		case "p":
+			if n > int(maxArgonThreads) {
+				return 0, 0, 0, fmt.Errorf("auth: argon p=%d exceeds cap %d", n, maxArgonThreads)
+			}
 			threads = uint8(n)
 		default:
 			return 0, 0, 0, fmt.Errorf("auth: unknown param %s", k)
@@ -274,33 +285,21 @@ func (v *Verifier) VerifyLogin(ctx context.Context, username, plaintext string) 
 	return u, nil
 }
 
-// decoyHash 是用「不可能正确」的明文预先生成的 PHC 字符串，用于在用户不存在 / 已禁用
-// 分支里跑一次完整的 argon2id 计算，让响应时延向「用户存在但密码错」对齐。
+// decoyHash 是一段**固定**的合法 PHC 字符串，用于在用户不存在 / 已禁用分支里跑一次完整的 argon2id
+// 计算，让响应时延向「用户存在但密码错」的路径对齐（时序防护）。
 //
-// 只在首次需要时按 argon2id 默认参数生成；进程生命期内复用。如果生成失败（极罕见，
-// 一般是 crypto/rand 失败），decoy 路径退化为不耗时 —— 此时整个进程的 entropy 都
-// 出问题了，更紧迫的事是别让 takeover secret / PSK 生成等地方继续跑（其它路径已
-// 各自处理 crypto/rand 失败）。
-var (
-	decoyHash     string
-	decoyHashOnce sync.Once
+// 为什么用固定值而非运行时随机生成：decoy 不保护任何真实秘密——它只需触发一次等价耗时的 argon2id.IDKey。
+// 固定构造不依赖 crypto/rand，进程内**恒可用**。这修复了此前「用 sync.Once 惰性生成，一旦首次因 entropy
+// 故障失败，decoy 便**永久**退化为即时返回、时序防护对整个进程生命期彻底失效」的问题（sync.Once 不会重试）。
+// argon2id 的耗时与盐 / 明文内容无关（内存/迭代量由 m,t,p 决定），故固定盐不影响时延对齐；salt≥minSaltBytes、
+// hash=32B≥minHashBytes、参数在 maxArgon* 上限内，均满足 VerifyPSK/DecodePSK 的不变量。全零 hash 与真实
+// argon2 输出几乎必然不等，比较结果恒为「不匹配」，符合 decoy 语义。
+var decoyHash = EncodePSK(
+	[]byte("nanotun/decoy-salt-v1!!"), // 23B，> minSaltBytes(8)；内容任意、无需保密
+	make([]byte, argonKeyLen),         // 32B「哈希」占位，仅供 ConstantTimeCompare
+	argonMemory, argonTime, argonThreads,
 )
 
 func runDecoyVerify(plaintext string) {
-	decoyHashOnce.Do(func() {
-		// 任意 32 字节随机 plaintext，不需要保密 —— 我们仅用它的 hash 形态来跑 verify。
-		var raw [32]byte
-		if _, err := rand.Read(raw[:]); err != nil {
-			return
-		}
-		h, err := HashPSK(base64.RawStdEncoding.EncodeToString(raw[:]))
-		if err != nil {
-			return
-		}
-		decoyHash = h
-	})
-	if decoyHash == "" {
-		return
-	}
 	_, _ = VerifyPSK(plaintext, decoyHash)
 }

@@ -14,6 +14,22 @@ import (
 // 调用关系:nanotun-web 的 handler_me.go / handler_auth.go 全部走这一层,不直接
 // 拼 SQL。失败语义:不存在 = ErrNotFound;其它写错 = 原 SQL error 包一层。
 
+// ConsumeTOTPStep 原子「消费」一次成功登录用到的 TOTP 时间步 step,做重放保护(0022)。
+//
+// 语义:仅当 step **严格大于**当前记录的 totp_last_used_step 时才更新并返回 (true, nil);否则(同一枚码
+// 重放会匹配到同一步或更早步)命中 0 行、返回 (false, nil),调用方应把本次登录判为失败。id 不存在同样 (false,nil)
+// (但登录路径此时 admin 必然存在)。条件 UPDATE 在单条语句里完成,天然抗并发双重放。
+func (s *Store) ConsumeTOTPStep(ctx context.Context, id int64, step int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE web_admins SET totp_last_used_step=? WHERE id=? AND totp_last_used_step < ?`,
+		step, id, step)
+	if err != nil {
+		return false, fmt.Errorf("store: consume totp step: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // SetWebAdminTOTPSecret 把 secret 写到 web_admins.totp_secret,但不修改
 // totp_enabled —— 这是 setup 第一步:生成 secret 给用户扫码,用户输入正确 6 位
 // 码"确认绑定"后才会 ConfirmEnable 翻转 enabled=1。中途取消 / 离开页面留下的

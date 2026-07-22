@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -354,19 +355,20 @@ func qrPayload(s string) string {
 // helpers
 // =========================================================================
 
-// osHostname:本机 hostname,只 cache 一次。
-var cachedHostname string
+// osHostname:本机 hostname,只 cache 一次。用 sync.Once 消除此前惰性读写 cachedHostname 的良性
+// data race(go test -race 报警)。netHostnameOrLocal 始终有兜底返回("localhost"),故 Once 里必得值、
+// 不会像随机 decoy 那样有「首次失败即永久退化」的隐患。
+var (
+	cachedHostname     string
+	cachedHostnameOnce sync.Once
+)
 
 func osHostname() (string, error) {
-	if cachedHostname != "" {
-		return cachedHostname, nil
-	}
-	// hostname 失败大概率是 /etc/hostname 没设;给一个推断兜底。
-	h, err := netHostnameOrLocal()
-	if err == nil {
-		cachedHostname = h
-	}
-	return h, err
+	cachedHostnameOnce.Do(func() {
+		// hostname 失败大概率是 /etc/hostname 没设;netHostnameOrLocal 会兜底成 "localhost",不返回 error。
+		cachedHostname, _ = netHostnameOrLocal()
+	})
+	return cachedHostname, nil
 }
 
 func netHostnameOrLocal() (string, error) {

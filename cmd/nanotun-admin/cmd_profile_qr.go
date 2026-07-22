@@ -97,18 +97,55 @@ func writeQRPNG(opts *globalOpts, path, url string) error {
 	if len(url) > qrLowMaxURLBytes {
 		return newLocErr("profileqr.pngOverflow", path, len(url), qrLowMaxURLBytes)
 	}
-	err := qrcode.WriteFile(url, qrcode.Medium, defaultQRPNGPixels, path)
+	// 先在内存里编码 PNG,再用 0o600 从创建那一刻起收紧落盘。
+	//
+	// 不用 qrcode.WriteFile 的原因:它内部 ioutil.WriteFile(name, png, 0644) 先建**世界可读**
+	// 文件,我们事后再 os.Chmod(0600)——这中间存在 TOCTOU 窗口:QR 里编码的是 profile /
+	// credentials 明文(含 PSK / mTLS PEM),期间同机其它本地用户可短暂读到。改成在内存里
+	// qrcode.Encode 出字节、再经 writeFileTight 以 O_CREATE|0600 落盘(temp+rename),
+	// 文件自创建起就绝不对 group/other 可读,消除该窗口。
+	png, err := qrcode.Encode(url, qrcode.Medium, defaultQRPNGPixels)
 	if err != nil {
 		// go-qrcode 把所有 "too long" 都归到 errors.New("content too long to encode")。
 		// 降级 Low 重试一次。
-		errLow := qrcode.WriteFile(url, qrcode.Low, defaultQRPNGPixels, path)
+		var errLow error
+		png, errLow = qrcode.Encode(url, qrcode.Low, defaultQRPNGPixels)
 		if errLow != nil {
 			return newLocErr("profileqr.pngBothFail", path, err.Error(), errLow.Error())
 		}
 		// 写到 stderr 让运维看到 ——admin CLI 是 fork by nanotun-web 时,这条
 		// stderr 进 web logrus,事后审计可查「这次 QR 降级了 Low」。
 		fmt.Fprintln(opts.stderr, opts.T("profileqr.pngDowngrade", len(url)))
-		return os.Chmod(path, 0o600)
 	}
-	return os.Chmod(path, 0o600)
+	return writeFileTight(path, png, 0o600)
+}
+
+// writeFileTight 以 mode 从创建起就收紧的方式原子写文件:写 tmp(O_CREATE|O_TRUNC,mode)→
+// fsync → rename 覆盖目标 → chmod 兜底。避免「先建宽权限文件再 chmod 收紧」的 TOCTOU 窗口。
+func writeFileTight(path string, data []byte, mode os.FileMode) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", tmp, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("fsync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename %s: %w", path, err)
+	}
+	_ = os.Chmod(path, mode)
+	return nil
 }

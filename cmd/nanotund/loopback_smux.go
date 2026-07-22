@@ -182,6 +182,8 @@ func runLoopbackSmuxServerSide(rw io.ReadWriteCloser, gw *gatewayState, smuxCfg 
 		// per-stream goroutine:smux 单 stream panic 不应该拖死同 sess 上的其它复用 stream
 		// (一条 hy2/REALITY 多路复用承载着所有进入这个节点的连接,挂掉就是全节点断)。
 		// st.Close 在 safeGoroutine recover 后由 handleVPNLink 内的 defer raw.Close 兜底。
-		go safeGoroutine("handleVPNLink-smux", func() { handleVPNLink(st, gw) })
+		// M1:每条 loopback smux stream 开头都带一个 PROXY v2 头,readLoopbackClientAddr 先读出
+		// 真实客户端源地址并包装 conn,使 handleVPNLink 的 PoW/限流/审计看到真实 IP 而非环回地址。
+		go safeGoroutine("handleVPNLink-smux", func() { handleVPNLink(readLoopbackClientAddr(st), gw) })
 	}
 }

@@ -49,7 +49,29 @@ type aclDropBucket struct {
 	lastAtNS  atomic.Int64
 }
 
-var aclDropAggBuckets sync.Map // aclDropBucketKey → *aclDropBucket
+var (
+	aclDropAggBuckets sync.Map // aclDropBucketKey → *aclDropBucket
+	// aclDropAuditBucketCount:当前存活 bucket 的近似基数(soft cap 用)。recordACLDrop 新建 bucket 时 +1;
+	// flushACLDropAggregates 每轮以真实存活数 Store 回来纠偏(消除并发下的漂移)。
+	aclDropAuditBucketCount atomic.Int64
+)
+
+// aclDropAuditMaxBuckets 聚合 bucket 基数上限。达到后新 (src,dst,proto,port,kind) 组合不再各自建桶,
+// 而是折叠进单个 overflow 桶——防端口扫描一次就往 map 里塞进多达 65k 个 (dstPort) tuple、在 60s flush
+// 周期内造成瞬时内存尖峰(原 H2 只在 flush 时清零桶,窗口内仍会无界膨胀)。稳态一台机通常 << 上限,不受影响。
+const aclDropAuditMaxBuckets = 4096
+
+// aclDropOverflowKey 是超过基数上限后所有新组合折叠进的单一 overflow 桶键(仍如实累计丢包数,只是不再细分维度)。
+var aclDropOverflowKey = aclDropBucketKey{kind: "overflow"}
+
+// aclDropBucketBump 累加一次命中(count/first/last)。
+func aclDropBucketBump(b *aclDropBucket) {
+	now := time.Now().UnixNano()
+	if b.count.Add(1) == 1 {
+		b.firstAtNS.Store(now)
+	}
+	b.lastAtNS.Store(now)
+}
 
 // recordACLDrop 在数据面 drop 路径上调用(无锁、纳秒级)。
 //
@@ -65,17 +87,25 @@ func recordACLDrop(kind string, srcUserID, dstUserID int64, proto string, dstPor
 		dstPort:   dstPort,
 		kind:      kind,
 	}
-	v, ok := aclDropAggBuckets.Load(key)
-	if !ok {
-		// 双查:防止两个 goroutine 同时 Store。
-		v, _ = aclDropAggBuckets.LoadOrStore(key, &aclDropBucket{})
+	// 已存在的桶:直接累加(热路径常态,无需碰基数计数)。
+	if v, ok := aclDropAggBuckets.Load(key); ok {
+		aclDropBucketBump(v.(*aclDropBucket))
+		return
 	}
-	b := v.(*aclDropBucket)
-	now := time.Now().UnixNano()
-	if b.count.Add(1) == 1 {
-		b.firstAtNS.Store(now)
+	// 新组合:基数达上限则折叠进 overflow 单桶(soft cap:并发下可能略微超出,下次 flush 纠偏,可接受)。
+	if aclDropAuditBucketCount.Load() >= aclDropAuditMaxBuckets {
+		v, loaded := aclDropAggBuckets.LoadOrStore(aclDropOverflowKey, &aclDropBucket{})
+		if !loaded {
+			aclDropAuditBucketCount.Add(1)
+		}
+		aclDropBucketBump(v.(*aclDropBucket))
+		return
 	}
-	b.lastAtNS.Store(now)
+	v, loaded := aclDropAggBuckets.LoadOrStore(key, &aclDropBucket{})
+	if !loaded {
+		aclDropAuditBucketCount.Add(1)
+	}
+	aclDropBucketBump(v.(*aclDropBucket))
 }
 
 const (
@@ -135,6 +165,7 @@ func flushACLDropAggregates(ctx context.Context, st *store.Store) {
 		last  int64
 	}
 	var items []item
+	var remaining int64
 	aclDropAggBuckets.Range(func(k, v any) bool {
 		key := k.(aclDropBucketKey)
 		b := v.(*aclDropBucket)
@@ -145,6 +176,7 @@ func flushACLDropAggregates(ctx context.Context, st *store.Store) {
 			aclDropAggBuckets.Delete(key)
 			return true
 		}
+		remaining++
 		items = append(items, item{
 			key:   key,
 			count: c,
@@ -153,6 +185,8 @@ func flushACLDropAggregates(ctx context.Context, st *store.Store) {
 		})
 		return true
 	})
+	// 用真实存活数纠偏 soft-cap 计数,消除并发新建/删除造成的漂移(见 aclDropAuditBucketCount)。
+	aclDropAuditBucketCount.Store(remaining)
 	if len(items) == 0 {
 		return
 	}
@@ -174,6 +208,9 @@ func flushACLDropAggregates(ctx context.Context, st *store.Store) {
 
 // aclDropAuditTarget 给 audit.target 选一段人类可读的字符串。
 func aclDropAuditTarget(k aclDropBucketKey) string {
+	if k.kind == "overflow" {
+		return "<overflow>" // 超过 bucket 基数上限后折叠进来的丢包(维度已合并)
+	}
 	dst := userIDFromStoreID(k.dstUserID)
 	if k.kind == "exit_acl" || k.kind == "exit_gate" {
 		dst = "<exit>"

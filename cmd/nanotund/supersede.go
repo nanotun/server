@@ -53,6 +53,10 @@ import (
 // nanotun_session_supersede_total。client 端疯狂 reconnect 的 outlier 用它就能看见。
 var sessionSupersedeCount atomic.Uint64
 
+// sessionLimitEvictClientMsg 是「账号会话数超限被踢」时发给受害端 LinkTypeClose 帧的 reason 文案(M3)。
+// 客户端据 code=CodeSessionLimit(406)提示并退避,避免与其它设备来回争抢配额的重连震荡。
+const sessionLimitEvictClientMsg = "账号同时在线会话数已达上限，本连接被较新的登录挤下线"
+
 // supersedeWaitTimeout:supersede victim cleanup 的最大等待时间。
 //
 // 选 5s 的理由:

@@ -204,7 +204,7 @@ func TestTryResolvePublicViaExit_CachesAndServesFromCache(t *testing.T) {
 	if !ok {
 		t.Fatal("构造出口回包失败")
 	}
-	if !interceptExitDNSResponseIfPending(respPkt) {
+	if !interceptExitDNSResponseIfPending(exit, respPkt) {
 		t.Fatal("出口回包应被截获")
 	}
 	if !<-done {
@@ -340,7 +340,7 @@ func TestTryResolvePublicViaExit_ServfailNotCached(t *testing.T) {
 	if !ok {
 		t.Fatal("构造出口回包失败")
 	}
-	if !interceptExitDNSResponseIfPending(respPkt) {
+	if !interceptExitDNSResponseIfPending(exit, respPkt) {
 		t.Fatal("出口回包应被截获")
 	}
 	if !<-done {
@@ -447,7 +447,7 @@ func TestTryResolvePublicViaExit_SingleflightCollapsesConcurrent(t *testing.T) {
 	if !ok {
 		t.Fatal("构造出口回包失败")
 	}
-	if !interceptExitDNSResponseIfPending(respPkt) {
+	if !interceptExitDNSResponseIfPending(exit, respPkt) {
 		t.Fatal("出口回包应被截获")
 	}
 

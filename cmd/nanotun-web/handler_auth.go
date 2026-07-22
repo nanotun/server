@@ -17,6 +17,14 @@ import (
 // 在已运行系统上通过它劫持 admin。
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	// M4:setup 向导须显式启用。此前 handleSetup 只看「web_admins 是否为空」，从不查 AllowSetup，
+	// 于是即便运维想关闭 setup 也关不掉——全新安装到管理员建成前的 TOFU 窗口里，任何过了验证码的
+	// 网络访客都能 POST /setup 抢占管理员。现在 AllowSetup=false 直接 302 /login，setup 彻底关闭
+	// （此时首个管理员改由 CLI `nanotun-admin` provisioned）。与 handleLogin 对 AllowSetup 的判定一致。
+	if !s.cfg.AllowSetup {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
 	n, err := s.store.CountWebAdmins(ctx)
 	if err != nil {
 		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.countAccountsFailed")+err.Error())
@@ -465,11 +473,20 @@ func (s *Server) verifyTOTPOrRecovery(ctx context.Context, admin *store.WebAdmin
 	totpCode, recoveryCode string) (ok bool, usedRecovery bool, recoveryID int64, errReason string) {
 
 	if totpCode != "" {
-		if err := VerifyTOTP(admin.TOTPSecret, totpCode); err == nil {
+		step, err := VerifyTOTPStep(admin.TOTPSecret, totpCode)
+		if err == nil {
+			// 重放保护(0022):原子消费该时间步。同一枚码在其 ~90s 窗口内被重放会命中同一步 →
+			// ConsumeTOTPStep 返回 false → 本次登录判为失败(reason=totp_replay,便于审计区分)。
+			consumed, cerr := s.store.ConsumeTOTPStep(ctx, admin.ID, step)
+			if cerr != nil {
+				return false, false, 0, "totp_step_consume:" + cerr.Error()
+			}
+			if !consumed {
+				return false, false, 0, "totp_replay"
+			}
 			return true, false, 0, ""
-		} else {
-			errReason = "totp:" + err.Error()
 		}
+		errReason = "totp:" + err.Error()
 	}
 	if recoveryCode != "" {
 		norm, err := NormalizeRecoveryCode(recoveryCode)

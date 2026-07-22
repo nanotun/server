@@ -103,6 +103,15 @@ func bridgeRealityToPlainVPN(realityConn net.Conn, vpnListenAddr, vpnWsPath stri
 			_ = realityConn.Close()
 			return
 		}
+		// M1:在 stream 最前面写 PROXY v2 头透传真实客户端源地址(RemoteAddr)与入口(LocalAddr),
+		// 让环回 VPN 服务端按真实 IP 做 PoW/限流/失败计数/审计,而非全塌到 127.0.0.1。写失败必须关掉
+		// 本 stream —— 服务端对每条 loopback stream 都会先读一个头,缺头会把 VPN 帧误当头解析而错乱。
+		if werr := writeLoopbackProxyHeader(st, realityConn.RemoteAddr(), realityConn.LocalAddr()); werr != nil {
+			logrus.WithError(werr).Warn("REALITY 写 PROXY 头失败")
+			_ = st.Close()
+			_ = realityConn.Close()
+			return
+		}
 		plain = st
 	} else {
 		tlsOn := loopbackWSTLS != nil

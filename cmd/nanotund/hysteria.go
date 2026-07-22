@@ -53,7 +53,18 @@ func (o *vpnSmuxStreamOutbound) TCP(_ string) (net.Conn, error) {
 	if o.pool == nil {
 		return nil, fmt.Errorf("smux pool 未初始化")
 	}
-	return o.pool.OpenStream()
+	st, err := o.pool.OpenStream()
+	if err != nil {
+		return nil, err
+	}
+	// M1:hy2 共享 smux 池无法把某条 stream 关联回具体客户端(hysteria Outbound 接口不透出客户端
+	// 地址),写一个 LOCAL(无源)PROXY v2 头 —— 让服务端「每条 loopback stream 先读一个头」的约定
+	// 成立(否则会把 hy2 首个 VPN 帧误当 PROXY 头解析)。hy2 会话据此回退环回地址计,与既有行为一致。
+	if werr := writeLoopbackProxyHeaderLocal(st); werr != nil {
+		_ = st.Close()
+		return nil, werr
+	}
+	return st, nil
 }
 
 func (o *vpnSmuxStreamOutbound) UDP(string) (hyserver.UDPConn, error) {

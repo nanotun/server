@@ -38,6 +38,9 @@ type WebAdmin struct {
 	TOTPSecret    string
 	TOTPEnabled   bool
 	TOTPEnabledAt int64
+	// TOTPLastUsedStep(0022):最近一次成功 TOTP 登录消费的时间步 T=(unix/period)。用于重放保护
+	// (见 ConsumeTOTPStep)。0 = 从未用过。
+	TOTPLastUsedStep int64
 }
 
 // NewWebAdmin 创建新 Web 管理员的入参。Username + PasswordHash 必填。
@@ -269,7 +272,8 @@ const webAdminSelectSQL = `SELECT
 	created_at, COALESCE(created_by,0),
 	last_login_at, last_login_ip,
 	failed_logins, locked_until,
-	totp_secret, totp_enabled, totp_enabled_at
+	totp_secret, totp_enabled, totp_enabled_at,
+	COALESCE(totp_last_used_step,0)
 FROM web_admins`
 
 func (s *Store) scanWebAdminRow(row *sql.Row) (*WebAdmin, error) {
@@ -289,6 +293,7 @@ func (s *Store) scanWebAdminCols(sc rowScanner) (*WebAdmin, error) {
 		&a.LastLoginAt, &a.LastLoginIP,
 		&a.FailedLogins, &a.LockedUntil,
 		&a.TOTPSecret, &totpEnabled, &a.TOTPEnabledAt,
+		&a.TOTPLastUsedStep,
 	); err != nil {
 		return nil, err
 	}
@@ -343,7 +348,15 @@ func (s *Store) CreateWebSession(ctx context.Context, in WebSession) error {
 	return nil
 }
 
-// GetWebSession 取一条 session;过期返回 ErrNotFound(由上层删 / 让客户端重新登录)。
+// WebSessionAbsoluteMaxAge 是 web 会话的**绝对**生命周期上限(自 created_at 起,单位秒)。
+//
+// M5:滑动过期(TouchWebSession 每次请求把 expires_at 顺延)保证「活跃即不掉线」,但单有滑动窗口会让
+// 一枚被窃 cookie 只要持续被使用就**永不**失效(除非管理员显式 DeleteWebSessionsByAdmin)。这里补一个
+// 硬顶:无论多活跃,会话自创建起超过本时长即判过期,强制重新登录(密码 [+ TOTP])。取 30 天——远大于
+// 默认 12h 滑动窗口,正常用户几乎无感,却给失窃 token 一个确定的止损期限。
+const WebSessionAbsoluteMaxAge int64 = 30 * 24 * 60 * 60
+
+// GetWebSession 取一条 session;滑动过期或超过绝对生命周期上限均返回 ErrNotFound(由上层让客户端重新登录)。
 func (s *Store) GetWebSession(ctx context.Context, id string) (*WebSession, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, admin_id, created_at, last_seen_at, expires_at, ip, user_agent
@@ -356,7 +369,13 @@ func (s *Store) GetWebSession(ctx context.Context, id string) (*WebSession, erro
 		}
 		return nil, fmt.Errorf("store: get web session: %w", err)
 	}
-	if ws.ExpiresAt > 0 && ws.ExpiresAt <= nowUnix() {
+	now := nowUnix()
+	if ws.ExpiresAt > 0 && ws.ExpiresAt <= now {
+		return nil, ErrNotFound // 滑动窗口过期
+	}
+	// M5:绝对生命周期上限。命中后 LookupSession 会把请求当未登录处理,不再 TouchWebSession 续期,
+	// 该行 expires_at 停止顺延,最终被 session GC 清掉。
+	if ws.CreatedAt > 0 && now-ws.CreatedAt >= WebSessionAbsoluteMaxAge {
 		return nil, ErrNotFound
 	}
 	return &ws, nil

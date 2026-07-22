@@ -14,6 +14,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -141,6 +142,10 @@ func (c *Config) applyEnvOverrides() {
 	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_DISABLE_AUTORELOAD")); v != "" {
 		c.AutoReloadOnACLChange = !parseBoolEnv(v, false)
 	}
+	// M4:setup 向导开关。建好管理员后可设 NANOTUN_WEB_ALLOW_SETUP=0 彻底封堵 /setup 抢占。
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_ALLOW_SETUP")); v != "" {
+		c.AllowSetup = parseBoolEnv(v, c.AllowSetup)
+	}
 	if v := strings.TrimSpace(os.Getenv("NANOTUN_ADMIN_PATH")); v != "" {
 		c.VPNPortAdminPath = v
 	}
@@ -209,6 +214,26 @@ func parseTrustedProxies(entries []string) ([]netip.Prefix, error) {
 		out = append(out, netip.PrefixFrom(a, a.BitLen()))
 	}
 	return out, nil
+}
+
+// listenAddrIsPublic 判断监听地址是否绑在**非环回**(可被公网 / 局域网访问)地址上。
+// 空 host / 0.0.0.0 / :: = 所有网卡(视为公网);127.0.0.1 / ::1 / localhost = 环回。未知形态保守当公网。
+func listenAddrIsPublic(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		host = strings.TrimSpace(addr)
+	}
+	host = strings.Trim(host, "[]")
+	switch strings.ToLower(host) {
+	case "", "0.0.0.0", "::":
+		return true
+	case "127.0.0.1", "::1", "localhost":
+		return false
+	}
+	if a, perr := netip.ParseAddr(host); perr == nil {
+		return !a.IsLoopback()
+	}
+	return true
 }
 
 func parseBoolEnv(v string, def bool) bool {
