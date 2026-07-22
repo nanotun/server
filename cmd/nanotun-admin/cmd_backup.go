@@ -170,27 +170,38 @@ func cmdVacuum(ctx context.Context, st *store.Store, opts *globalOpts, _ []strin
 	return nil
 }
 
-// copyFileAtomic 把 src 拷到 dst.tmp,然后 rename → dst,保证半截文件不会被
-// server 拿来用。dst 已存在时直接覆盖。
+// copyFileAtomic 把 src 拷到一个私有临时文件,fsync 后 rename → dst,保证半截文件不会被 server 拿来用。
+//
+// 第三轮深扫 LM1 加固:此前临时文件用**可预测**名 dst+".tmp" 且 `O_CREATE|O_WRONLY|O_TRUNC`(无 O_EXCL)。
+// restore 拷贝的是**整库密材**(PSK 哈希 / TOTP secret / mTLS key)。若 db 目录他人可写、或攻击者预置
+// <dst>.tmp 为符号链接,OpenFile 会**跟随**它把整库写到链接目标(泄密 / 覆写受害文件);且既有 <dst>.tmp
+// 为 0644 时会**保留**该松权限。改用 os.CreateTemp(内部 O_CREATE|O_EXCL + 随机后缀,0600)+ 显式 fchmod +
+// fsync + 原子 rename —— 与 writeFileTight / cmdBackup 同姿态,消除符号链接跟随与权限保留窗口。
 func copyFileAtomic(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("open src: %w", err)
 	}
 	defer in.Close()
-	tmp := dst + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, backupFileMode)
+	dir := filepath.Dir(dst)
+	out, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("open tmp: %w", err)
+		return fmt.Errorf("create temp in %s: %w", dir, err)
 	}
+	tmp := out.Name()
+	// G2(2026-05-22):Copy / Chmod / Sync / Close / Rename 任一失败都必须清理 tmp,
+	// 否则残留半截文件占盘且持续没人收。
 	if _, err := io.Copy(out, in); err != nil {
 		_ = out.Close()
 		_ = os.Remove(tmp)
 		return fmt.Errorf("copy: %w", err)
 	}
-	// G2(2026-05-22):Sync / Close / Rename 任一失败都必须清理 tmp,
-	// 否则下次 backup 看到陈旧 .tmp,容易让人误以为是上次成功的备份;
-	// 残留半截文件占盘且持续没人收。
+	// CreateTemp 已是 0600;显式 fchmod 到 backupFileMode,确保与既定权限一致(rename 前生效,无宽权限窗口)。
+	if err := out.Chmod(backupFileMode); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod: %w", err)
+	}
 	if err := out.Sync(); err != nil {
 		_ = out.Close()
 		_ = os.Remove(tmp)

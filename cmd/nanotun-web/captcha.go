@@ -163,6 +163,16 @@ func (s *SessionService) VerifyCaptcha(r *http.Request, userAnswer string) error
 	if exp <= nowUnix() {
 		return ErrCaptchaExpired
 	}
+	// 一次性消费:cookie 真实且未过期后**立即**烧掉该 nonce —— 无论后续答案对错(第三轮深扫 L8)。
+	//
+	// 此前仅在答案**正确**时才 LoadOrStore(nonce),留下致命窗口:attacker 攥着一张截获(或自己领取)
+	// 的 captcha cookie,可在 5min TTL 内用同一 nonce 反复提交不同答案暴破 4 位数字(10^4 空间),
+	// captcha 形同虚设。改为验证 cookie 签名 + 未过期后立刻消费:每张 captcha 只准一次校验尝试,
+	// 答错即作废,retry 必须重新领图(受 GET 限流 / 自适应 PoW 约束)。LoadOrStore 让并发提交同 nonce
+	// 也只有一次赢,其余判重放。
+	if _, loaded := s.captchaUsed.LoadOrStore(string(nonce), exp); loaded {
+		return ErrCaptchaReplay
+	}
 	got := normalizeAnswer(userAnswer)
 	if got == "" {
 		return ErrCaptchaWrong
@@ -173,11 +183,6 @@ func (s *SessionService) VerifyCaptcha(r *http.Request, userAnswer string) error
 	gotHash := answerHash(s.captchaHMACKey, got, nonce)
 	if subtle.ConstantTimeCompare(gotHash, expectedHash) != 1 {
 		return ErrCaptchaWrong
-	}
-	// 答案正确 → 服务端一次性消费该 nonce。第二次见同 nonce(重放截获的
-	// cookie+answer)直接拒。LoadOrStore 让并发提交同一 nonce 也只有一次赢。
-	if _, loaded := s.captchaUsed.LoadOrStore(string(nonce), exp); loaded {
-		return ErrCaptchaReplay
 	}
 	return nil
 }

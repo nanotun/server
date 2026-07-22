@@ -93,22 +93,22 @@ func (s *Store) UpsertDevice(ctx context.Context, userID int64, uuid, name, plat
 	s.deviceUpsertMu.Lock()
 	defer s.deviceUpsertMu.Unlock()
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("store: upsert device begin tx: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if uniqueName, derr := dedupeDeviceNameTx(ctx, tx, userID, uuid, name); derr == nil {
+	// 去重读与写**分离**,而非同处一个事务(修第三轮深扫 M2):此前 BeginTx(默认 DEFERRED)先跑
+	// dedupe SELECT 建立读快照、再 INSERT 升级为写,若期间任何其它连接(Audit/UpsertLease/TouchDevice…)
+	// 提交,写升级会返回 SQLITE_BUSY_SNAPSHOT —— 这类错**不受 busy_timeout 重试**,导致 UpsertDevice
+	// 偶发失败(admin CLI `device create` 无重试兜底,会裸报驱动错)。
+	//
+	// 现改为:整段仍在 deviceUpsertMu 临界区内(串行化并发登录 UpsertDevice,dedupe 的 TOCTOU 窗口依旧
+	// 关闭),但 dedupe 用 s.db 直接读(不开事务),随后单条 `INSERT ... ON CONFLICT` 走 autocommit ——
+	// 该写以「取写锁」起手(不持陈旧读快照),纯锁争用只会得到 SQLITE_BUSY(由 busy_timeout 重试),
+	// 不会再出现 BUSY_SNAPSHOT。设备名去重是尽力而为,读用 s.db 与后续 INSERT 之间除并发 UpsertDevice
+	// (已被锁挡住)外,只有极罕见的管理端改名可能插入,不在并发登录热路径,可接受。
+	if uniqueName, derr := dedupeDeviceName(ctx, s.db, userID, uuid, name); derr == nil {
 		name = uniqueName
 	}
 	// SQLite 3.24+ 的 UPSERT 语法:冲突时只 update 业务字段,id / created_at 保留。
 	// modernc.org/sqlite 内置版本远高于 3.24,放心用。
-	if _, err := tx.ExecContext(ctx,
+	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO devices(user_id, device_uuid, device_name, platform, last_seen_at, created_at)
 		 VALUES(?,?,?,?,?,?)
 		 ON CONFLICT(user_id, device_uuid) DO UPDATE SET
@@ -123,14 +123,9 @@ func (s *Store) UpsertDevice(ctx context.Context, userID int64, uuid, name, plat
 		}
 		return nil, fmt.Errorf("store: upsert device: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: upsert device commit: %w", err)
-	}
-	committed = true
 
-	// 单独 SELECT 拿回行(包含可能与 excluded.* 不同的 id / created_at)。
-	// 这次 SELECT 与上面 INSERT 不在一个事务里,但仍在 deviceUpsertMu 临界区内(defer 到函数
-	// 返回才解锁),同 (user_id, uuid) 的并发 UpsertDevice 被串行化,不会在此处读到中间态;
+	// 单独 SELECT 拿回行(包含可能与 excluded.* 不同的 id / created_at)。仍在 deviceUpsertMu 临界区内
+	// (defer 到函数返回才解锁),同 (user_id, uuid) 的并发 UpsertDevice 被串行化,不会读到中间态;
 	// 且 (user_id, device_uuid) UNIQUE 不会重复行。
 	row := s.db.QueryRowContext(ctx,
 		deviceSelectSQL+` WHERE user_id=? AND device_uuid=?`,
@@ -143,23 +138,27 @@ func (s *Store) UpsertDevice(ctx context.Context, userID int64, uuid, name, plat
 	return d, err
 }
 
-// dedupeDeviceNameTx 为 (userID, uuid) 计算一个在该用户下**归一化唯一**的设备名（Tailscale 式的 "-N" 后缀）。
+// ctxRowQuerier 抽象 QueryContext,让 dedupeDeviceName 既能吃 *sql.DB(autocommit 读)也能吃 *sql.Tx。
+type ctxRowQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// dedupeDeviceName 为 (userID, uuid) 计算一个在该用户下**归一化唯一**的设备名（Tailscale 式的 "-N" 后缀）。
 //
-// **在调用方的事务内执行**（用 tx.QueryContext）：与紧随其后的 upsert INSERT 同处一个事务。TOCTOU
-// 串行化由 UpsertDevice 持有的进程级 s.deviceUpsertMu 保证（见 UpsertDevice），**不再**依赖
-// MaxOpenConns=1（连接池默认已是 4），因此「SELECT 与 INSERT 之间被并发 UpsertDevice 插入 → 两台
-// 同名都拿裸名」的窗口被 mutex 关掉。
+// 用调用方给的 querier(UpsertDevice 传 s.db,不再包在事务里 —— 见 M2 说明)。TOCTOU 串行化由
+// UpsertDevice 持有的进程级 s.deviceUpsertMu 保证（见 UpsertDevice），因此「SELECT 与 INSERT 之间被并发
+// UpsertDevice 插入 → 两台同名都拿裸名」的窗口被 mutex 关掉,与是否同事务无关。
 //
 // 归一按 util.NormalizeMagicHost（与 MagicDNS 主机名解析同口径），故消除的是「DNS 名」层面的冲突——
 // "home pi" / "home-pi" / "home_pi" 归一后同名也算撞名。比较时**排除本 uuid 自身**（重连不与自己冲突）。
 // 返回**原始大小写**的最终名（仅撞名时追加 "-N"）。空名（归一为空）不参与去重（无 magic 名，原样返回）。
 // 出错（如查询失败）时由调用方回退用原名 —— 去重是尽力而为，绝不因此阻断设备注册/登录。
-func dedupeDeviceNameTx(ctx context.Context, tx *sql.Tx, userID int64, uuid, requested string) (string, error) {
+func dedupeDeviceName(ctx context.Context, q ctxRowQuerier, userID int64, uuid, requested string) (string, error) {
 	if util.NormalizeMagicHost(requested) == "" {
 		return requested, nil // 空/纯符号名无 magic 主机名，无需去重
 	}
 	uuid = strings.ToLower(strings.TrimSpace(uuid))
-	rows, err := tx.QueryContext(ctx,
+	rows, err := q.QueryContext(ctx,
 		`SELECT device_uuid, device_name FROM devices WHERE user_id=?`, userID)
 	if err != nil {
 		return requested, err

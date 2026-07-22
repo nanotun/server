@@ -245,11 +245,11 @@ func (s *Store) DeleteWebAdmin(ctx context.Context, id int64) error {
 	return nil
 }
 
-// RecordWebAdminLoginSuccess 登录成功后调用:更新 last_login + 清失败计数。
+// RecordWebAdminLoginSuccess 登录成功后调用:更新 last_login + 清失败计数(含衰减用的 last_failure_at)。
 func (s *Store) RecordWebAdminLoginSuccess(ctx context.Context, id int64, ip string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE web_admins
-		    SET last_login_at=?, last_login_ip=?, failed_logins=0, locked_until=0
+		    SET last_login_at=?, last_login_ip=?, failed_logins=0, locked_until=0, last_failure_at=0
 		  WHERE id=?`,
 		nowUnix(), ip, id)
 	if err != nil {
@@ -260,21 +260,37 @@ func (s *Store) RecordWebAdminLoginSuccess(ctx context.Context, id int64, ip str
 
 // RecordWebAdminLoginFailure 失败计数 +1;到阈值时返回 locked_until 让上层提示。
 // 返回 (newFailedLogins, newLockedUntil)。
+//
+// 滑动窗口衰减(第三轮深扫 M1):lockSeconds 同时作为「失败聚合窗口」。若距上次失败已超过该窗口,
+// 计数先衰减归零再 +1 —— 关键是消除「锁定窗口一过、单次失败就重新锁满整个窗口」的永久 DoS:
+// 此前 failed_logins 只增不减,窗口过后它仍 ≥ 阈值,任意 1 次失败即重锁,只知用户名的攻击者能永久
+// 封住账号。改后攻击者必须在一个窗口内重新累积满 max_failures 次失败才能再次锁定。
 func (s *Store) RecordWebAdminLoginFailure(ctx context.Context, id int64,
 	maxFailures int64, lockSeconds int64) (int64, int64, error) {
 
 	now := nowUnix()
-	// 用条件 UPDATE 单语句完成「+1 并按阈值设 locked_until」,避免 SELECT-then-UPDATE 的
-	// race(同一 admin 并发多端口爆破时计数会丢)。SQLite 不支持 CASE in UPDATE 同时取
-	// 新值,所以分两步:先 +1,再 SELECT,但用同一事务保证一致性。
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, fmt.Errorf("store: begin tx record web admin failure: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 单条**写优先**的 UPDATE 完成「衰减判定 + 计数 +1 + 记录本次失败时刻」:
+	//   - last_failure_at>0 且 now-last_failure_at>window(=lockSeconds)→ 视为陈旧,计数重置为 1;
+	//   - 否则 failed_logins+1。
+	// 用 CASE 在同一语句内原子完成,既避免 SELECT-then-UPDATE 丢计数的 race,又保持事务以写(而非读快照)
+	// 起手,规避 modernc DEFERRED 事务「读后升级写」撞 SQLITE_BUSY_SNAPSHOT(该错不受 busy_timeout 重试)。
+	// window<=0(lockSeconds=0,即不锁)时 `now-last_failure_at>0` 几乎恒真 → 每次都重置为 1,与「不累积/不锁」
+	// 语义一致,无害。
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE web_admins SET failed_logins = failed_logins + 1 WHERE id=?`, id); err != nil {
+		`UPDATE web_admins
+		    SET failed_logins = CASE
+		            WHEN last_failure_at > 0 AND (? - last_failure_at) > ? THEN 1
+		            ELSE failed_logins + 1
+		        END,
+		        last_failure_at = ?
+		  WHERE id=?`,
+		now, lockSeconds, now, id); err != nil {
 		return 0, 0, fmt.Errorf("store: incr web admin failed_logins: %w", err)
 	}
 	var failed int64
@@ -305,7 +321,7 @@ func (s *Store) RecordWebAdminLoginFailure(ctx context.Context, id int64,
 // ResetWebAdminLockout admin 手动解锁。
 func (s *Store) ResetWebAdminLockout(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE web_admins SET failed_logins=0, locked_until=0 WHERE id=?`, id)
+		`UPDATE web_admins SET failed_logins=0, locked_until=0, last_failure_at=0 WHERE id=?`, id)
 	if err != nil {
 		return fmt.Errorf("store: reset web admin lockout: %w", err)
 	}

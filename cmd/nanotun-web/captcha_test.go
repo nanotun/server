@@ -138,7 +138,7 @@ func TestCaptcha_RoundTrip(t *testing.T) {
 		t.Fatalf("replay same captcha: want ErrCaptchaReplay, got %v", err)
 	}
 
-	// 换一张全新的 (answer, cookie) 验错答案 → ErrCaptchaWrong;验对答案 + 空格归一 → 通过。
+	// 换一张全新的 (answer, cookie) 验错答案 → ErrCaptchaWrong。
 	nonce2 := make([]byte, 16)
 	rand.Read(nonce2)
 	cookieVal2 := encodeCaptchaCookie(s.captchaHMACKey, answer, nonce2, exp)
@@ -147,9 +147,20 @@ func TestCaptcha_RoundTrip(t *testing.T) {
 	if err := s.VerifyCaptcha(req2, "0000"); err != ErrCaptchaWrong {
 		t.Fatalf("verify wrong answer: want ErrCaptchaWrong, got %v", err)
 	}
-	// 错答案不消费 nonce,同一张图输对(带空格)仍应通过。
-	if err := s.VerifyCaptcha(req2, " 4 2 7 1 "); err != nil {
-		t.Fatalf("verify with spaces: %v", err)
+	// 第三轮深扫 L8:一次错误尝试即**消费** nonce。同一张图再次提交(哪怕这次输对答案)
+	// 必须判重放 —— 杜绝 attacker 攥同一张 captcha cookie 暴破 4 位答案。
+	if err := s.VerifyCaptcha(req2, " 4 2 7 1 "); err != ErrCaptchaReplay {
+		t.Fatalf("错答案应烧掉 nonce:retry want ErrCaptchaReplay, got %v", err)
+	}
+
+	// 空格归一的正确答案在**全新**一张图上仍应通过(确认 normalizeAnswer 未受 L8 影响)。
+	nonce3 := make([]byte, 16)
+	rand.Read(nonce3)
+	cookieVal3 := encodeCaptchaCookie(s.captchaHMACKey, answer, nonce3, exp)
+	req3 := httptest.NewRequest("POST", "/login", nil)
+	req3.AddCookie(&http.Cookie{Name: captchaCookieName, Value: cookieVal3})
+	if err := s.VerifyCaptcha(req3, " 4 2 7 1 "); err != nil {
+		t.Fatalf("fresh captcha 正确答案(含空格)应通过: %v", err)
 	}
 
 	_ = rec // 占位,后面其它子用例会用 recorder 走 IssueCaptcha 路径

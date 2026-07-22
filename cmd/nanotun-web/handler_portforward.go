@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -52,12 +51,12 @@ func (s *Server) handlePortForwardList(w http.ResponseWriter, r *http.Request) {
 	}
 	pfs, err := s.store.ListPortForwards(r.Context())
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, "list port_forwards: "+err.Error())
+		s.renderInternalError(w, r, "portforward:list", err)
 		return
 	}
 	devs, err := s.store.ListAllDevices(r.Context())
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, "list devices: "+err.Error())
+		s.renderInternalError(w, r, "portforward:list_devices", err)
 		return
 	}
 	byUUID := make(map[string]*store.Device, len(devs))
@@ -151,7 +150,7 @@ func (s *Server) handlePortForwardNew(w http.ResponseWriter, r *http.Request) {
 		FormatTarget("port_forward", strconv.FormatInt(pf.ID, 10)),
 		FormatDetail("public_port", strconv.Itoa(publicPort), "target", targetIP+":"+strconv.Itoa(targetPort), "device_uuid", deviceUUID))
 	tryReloadPortForwardsBackground(s.control)
-	http.Redirect(w, r, "/port-forwards?flash="+url.QueryEscape(tr(r, "flash.portForwardAdded", publicPort)), http.StatusSeeOther)
+	flashRedirect(w, r, "/port-forwards", tr(r, "flash.portForwardAdded", publicPort), "")
 }
 
 func (s *Server) handlePortForwardAction(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +185,7 @@ func (s *Server) handlePortForwardAction(w http.ResponseWriter, r *http.Request)
 		}
 		s.audit.WriteFromRequest(r, "port_forward_delete", FormatTarget("port_forward", segs[1]), "")
 		tryReloadPortForwardsBackground(s.control)
-		http.Redirect(w, r, "/port-forwards?flash="+url.QueryEscape(tr(r, "flash.portForwardDeleted")), http.StatusSeeOther)
+		flashRedirect(w, r, "/port-forwards", tr(r, "flash.portForwardDeleted"), "")
 	case "enable", "disable":
 		enabled := verb == "enable"
 		if err := s.store.SetPortForwardEnabled(r.Context(), id, enabled); err != nil {
@@ -203,7 +202,7 @@ func (s *Server) handlePortForwardAction(w http.ResponseWriter, r *http.Request)
 		if enabled {
 			msg = tr(r, "flash.portForwardEnabled")
 		}
-		http.Redirect(w, r, "/port-forwards?flash="+url.QueryEscape(msg), http.StatusSeeOther)
+		flashRedirect(w, r, "/port-forwards", msg, "")
 	default:
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "err.unknownAction"))
 	}

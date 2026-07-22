@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -56,13 +55,13 @@ func (s *Server) handleRouteList(w http.ResponseWriter, r *http.Request) {
 	}
 	all, err := s.store.ListAllRoutes(r.Context())
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, "list routes: "+err.Error())
+		s.renderInternalError(w, r, "routes:list", err)
 		return
 	}
 	// 设备名索引:routes 行 / 出口卡片 / 指定出口下拉都要展示人类可读名。
 	devs, err := s.store.ListAllDevices(r.Context())
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, "list devices: "+err.Error())
+		s.renderInternalError(w, r, "routes:list_devices", err)
 		return
 	}
 	devByID := make(map[int64]*store.Device, len(devs))
@@ -342,7 +341,7 @@ func (s *Server) handleExitAction(w http.ResponseWriter, r *http.Request) {
 			FormatDetail("uuid", d.DeviceUUID, "fixed_v4", newV4, "fixed_v6", newV6))
 		tryReloadExitsBackground(s.control)
 		msg := tr(r, "flash.exitDesignated", deviceDisplayName(d)) + vipNote
-		http.Redirect(w, r, "/routes?flash="+url.QueryEscape(msg), http.StatusSeeOther)
+		flashRedirect(w, r, "/routes", msg, "")
 
 	case "revoke":
 		removed := 0
@@ -368,7 +367,7 @@ func (s *Server) handleExitAction(w http.ResponseWriter, r *http.Request) {
 		if mode == "clear" {
 			msg = tr(r, "flash.exitNominationCleared", deviceDisplayName(d))
 		}
-		http.Redirect(w, r, "/routes?flash="+url.QueryEscape(msg), http.StatusSeeOther)
+		flashRedirect(w, r, "/routes", msg, "")
 
 	case "reject":
 		// 拒绝客户端出口自荐:把 pending 的 0/0 + ::/0 一并标 rejected(一次按钮,不拆两行 CIDR)。
@@ -397,9 +396,7 @@ func (s *Server) handleExitAction(w http.ResponseWriter, r *http.Request) {
 		s.audit.WriteFromRequest(r, "exit_reject", FormatTarget("device", deviceID),
 			FormatDetail("uuid", d.DeviceUUID, "rejected", rejectedN, "reason", reason))
 		tryReloadExitsBackground(s.control)
-		http.Redirect(w, r,
-			"/routes?flash="+url.QueryEscape(tr(r, "flash.exitRejected", deviceDisplayName(d))),
-			http.StatusSeeOther)
+		flashRedirect(w, r, "/routes", tr(r, "flash.exitRejected", deviceDisplayName(d)), "")
 
 	default:
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "err.unknownAction"))
@@ -496,11 +493,8 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 		// 要等客户端重连 / 下次路由变更才收敛)。出口路由(0/0、::/0)走 exits 重算,
 		// 普通子网走 routes 重建。
 		notifyRouteChangeBackground(s.control, cidr)
-		// 第三轮深扫 P2-8:cidr 是 path 参数,虽 SetRouteStatus 已存入,但其原始形态
-		// 可能含 `/`(被 path encode 成 `%2F`),拼到 query 时仍要 QueryEscape 防混乱。
-		http.Redirect(w, r,
-			"/routes?flash="+url.QueryEscape(tr(r, "flash.routeApproved", cidr)),
-			http.StatusSeeOther)
+		// cidr 是 path 参数,可能含 `/`;flashRedirect 内部 QueryEscape + 附签名(第三轮 L5)。
+		flashRedirect(w, r, "/routes", tr(r, "flash.routeApproved", cidr), "")
 	case "reject":
 		// 仅允许 reject pending 行:SetRouteStatus 本身不看当前状态,不加这道闸,
 		// 绕过 UI 直 POST 能把 approved 子网路由悄悄翻成 rejected(等价隐式撤销,
@@ -531,7 +525,7 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 			FormatTarget("route", strconv.FormatInt(deviceID, 10)+"/"+cidr),
 			FormatDetail("cidr", cidr, "reason", reason))
 		notifyRouteChangeBackground(s.control, cidr)
-		http.Redirect(w, r, "/routes?flash="+url.QueryEscape(tr(r, "flash.routeRejected")), http.StatusSeeOther)
+		flashRedirect(w, r, "/routes", tr(r, "flash.routeRejected"), "")
 	case "delete":
 		if err := s.store.DeleteRoute(r.Context(), deviceID, cidr); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
@@ -545,7 +539,7 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 			FormatTarget("route", strconv.FormatInt(deviceID, 10)+"/"+cidr),
 			FormatDetail("cidr", cidr))
 		notifyRouteChangeBackground(s.control, cidr)
-		http.Redirect(w, r, "/routes?flash="+url.QueryEscape(tr(r, "flash.routeDeleted")), http.StatusSeeOther)
+		flashRedirect(w, r, "/routes", tr(r, "flash.routeDeleted"), "")
 	default:
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "err.unknownAction"))
 	}

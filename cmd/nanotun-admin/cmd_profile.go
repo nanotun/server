@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -340,8 +341,10 @@ func emitProfile(p *profileSchema, format, outputPath string, force bool, opts *
 		if err != nil {
 			return err
 		}
-		defer closeOut()
-		return writeJSONCompact(out, p)
+		if err := writeJSONCompact(out, p); err != nil {
+			return err
+		}
+		return closeOut()
 	}
 
 	f := strings.ToLower(strings.TrimSpace(format))
@@ -370,8 +373,10 @@ func emitProfile(p *profileSchema, format, outputPath string, force bool, opts *
 		if err != nil {
 			return err
 		}
-		defer closeOut()
-		return writeProfile(out, p, format, false)
+		if err := writeProfile(out, p, format, false); err != nil {
+			return err
+		}
+		return closeOut()
 	}
 }
 
@@ -817,31 +822,33 @@ func validFormat(s string) bool {
 	return false
 }
 
-func openProfileOutput(path string, fallback io.Writer, force bool) (io.Writer, func(), error) {
+// openProfileOutput 为 profile / credentials 输出选择 writer 及其收尾 closer。
+//
+//   - path 为空 → 直接写 fallback(stdout),closer 是 no-op(返回 nil)。
+//   - path 非空 → 写进内存缓冲;closer 通过 writeFileTight **原子落盘**。
+//
+// 第三轮深扫 M3 加固:此前 force=true 走 `os.OpenFile(path, O_CREATE|O_WRONLY|O_TRUNC, 0600)`,含两处缺陷——
+//   1. 无 O_EXCL / 无 Lstat:path 是符号链接时 open **跟随**它,把明文 PSK / hy2 密码 / mTLS client key
+//      写进链接目标(泄密)或截断受害文件;
+//   2. 0600 mode 只在**创建**文件时生效,覆盖既有 0644 文件会**保留** 0644 → 密材世界可读;
+//   且 closer 里 `_ = f.Sync(); _ = f.Close()` 吞掉刷盘错误,ENOSPC/EIO 下产出截断密材却报成功。
+// 改为复用兄弟函数 writeFileTight(CreateTemp O_EXCL + fchmod 0600 + fsync + 原子 rename):force 语义也交给它
+// (false=目标存在即拒;true=覆盖但仍经临时文件+rename,不跟随链接),并把落盘错误经 closer 返回值交回调用方。
+//
+// 调用方约定:先写 writer,再**检查 closer() 返回值**(不要 `defer closeOut()` 把错误丢掉);写失败时直接
+// 返回、不调 closer(不产出半截文件)。
+func openProfileOutput(path string, fallback io.Writer, force bool) (io.Writer, func() error, error) {
 	if strings.TrimSpace(path) == "" {
-		return fallback, func() {}, nil
+		return fallback, func() error { return nil }, nil
 	}
-	// profile 输出含明文 PSK / mTLS PEM。默认(force=false)用 O_EXCL:目标已存在(含符号链接)即失败,
-	// 既防误覆盖既有产物,又防「path 是指向 /etc/... 或他人文件的符号链接时 O_CREATE|O_TRUNC 跟随并
-	// 截断 / 写密到链接目标」。运维确需覆盖时传 --force(退回 O_TRUNC 覆盖既有文件)。
-	flags := os.O_CREATE | os.O_WRONLY
-	if force {
-		flags |= os.O_TRUNC
-	} else {
-		flags |= os.O_EXCL
+	buf := &bytes.Buffer{}
+	closer := func() error {
+		if err := writeFileTight(path, buf.Bytes(), 0o600, force); err != nil {
+			return fmt.Errorf("%s: %w", newLocErr("profile.openOutput", path).Error(), err)
+		}
+		return nil
 	}
-	f, err := os.OpenFile(path, flags, 0o600)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", newLocErr("profile.openOutput", path).Error(), err)
-	}
-	// G3(2026-05-22):profile 文件落盘前必须 fsync,否则机器突然掉电后,
-	// 用户拿到一个 0 字节(metadata 已 commit 但 data 还在 page cache)的
-	// .json,扫码 / import 直接失败。Close 前一次 Sync 足够,代价 ≤1ms。
-	closer := func() {
-		_ = f.Sync()
-		_ = f.Close()
-	}
-	return f, closer, nil
+	return buf, closer, nil
 }
 
 func writeProfile(w io.Writer, p *profileSchema, format string, jsonGlobal bool) error {

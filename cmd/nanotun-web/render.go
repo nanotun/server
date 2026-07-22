@@ -2,12 +2,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"html/template"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -73,18 +78,72 @@ type Flash struct {
 // 后续动作要做**的提示,用绿色成功横幅会误导 admin 以为万事大吉。
 // kind 白名单收口(ok/warn/err),非法值静默回落 ok(kind 只影响横幅配色)。
 func flashFromQuery(r *http.Request) *Flash {
-	text := r.URL.Query().Get("flash")
+	q := r.URL.Query()
+	text := q.Get("flash")
 	if text == "" {
 		return nil
 	}
-	kind := "ok"
-	switch r.URL.Query().Get("flash_kind") {
-	case "warn":
-		kind = "warn"
-	case "err":
-		kind = "err"
+	kind := normalizeFlashKind(q.Get("flash_kind"))
+	// 第三轮深扫 L5:必须带**合法签名**才渲染。此前 flashFromQuery 反射任意 `?flash=<text>`(HTML 转义故
+	// 非 XSS,但攻击者可给已登录 admin 发 `/users?flash=<伪装系统消息>&flash_kind=err` 造出以假乱真的
+	// 「系统」横幅做站内钓鱼)。现在 flash 由服务端 flashRedirect/flashQuery 签发时附 HMAC 签名,校验不过
+	// (缺失 / 伪造)一律静默丢弃 —— 攻击者不知进程随机的 flashHMACKey,无法为任意文本伪造签名。
+	if sig := q.Get("flash_sig"); sig == "" || !hmac.Equal([]byte(sig), []byte(flashSig(text, kind))) {
+		return nil
 	}
 	return &Flash{Kind: kind, Text: text}
+}
+
+// flashHMACKey 给 ?flash= 反射内容签名。进程随机:flash 在下一个 GET 即被消费,进程级 key 足够;
+// 重启只会丢掉「在途」flash 横幅(可接受)。
+var flashHMACKey = mustRandomKey(32)
+
+func mustRandomKey(n int) []byte {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic("nanotun-web: 初始化 flash hmac key 失败: " + err.Error())
+	}
+	return b
+}
+
+// normalizeFlashKind 把 flash_kind 收口到白名单;非法/空一律 "ok"(kind 只影响横幅配色)。
+func normalizeFlashKind(kind string) string {
+	switch kind {
+	case "warn", "err":
+		return kind
+	default:
+		return "ok"
+	}
+}
+
+// flashSig 对 (kind, text) 算 HMAC 签名(base64url)。kind 须已归一。
+func flashSig(text, kind string) string {
+	mac := hmac.New(sha256.New, flashHMACKey)
+	mac.Write([]byte(kind))
+	mac.Write([]byte{0})
+	mac.Write([]byte(text))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// flashQuery 构造带签名的 flash query 片段(不含前导 ? / &):flash=..[&flash_kind=..]&flash_sig=..
+// kind 空/非法视为 "ok"(不写 flash_kind)。所有写 ?flash= 的 redirect 都应经此(或 flashRedirect)。
+func flashQuery(text, kind string) string {
+	k := normalizeFlashKind(kind)
+	qs := "flash=" + url.QueryEscape(text)
+	if k != "ok" {
+		qs += "&flash_kind=" + k
+	}
+	qs += "&flash_sig=" + flashSig(text, k)
+	return qs
+}
+
+// flashRedirect 303(SeeOther)跳到 path 并附**签名** flash。path 可自带 query(自动选 ? / &)。
+func flashRedirect(w http.ResponseWriter, r *http.Request, path, text, kind string) {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	http.Redirect(w, r, path+sep+flashQuery(text, kind), http.StatusSeeOther)
 }
 
 // NavContext:顶栏上展示的当前页活跃 tab + 一些环境标识。
@@ -173,8 +232,10 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 	// 这里走「子模板 = 完整页面,内联了 layout 引用」模式 → 直接 ExecuteTemplate(子模板名)。
 	var buf bytes.Buffer
 	if err := clone.ExecuteTemplate(&buf, templateName, data); err != nil {
+		// 详情(含模板名 / 数据形状 / 内部错误)只进服务端日志;响应回固定通用文案。renderPage 也服务
+		// **未鉴权**页(login.html / setup.html),不能把 err.Error() 回显给匿名访客(第三轮深扫 L3)。
 		logrus.WithError(err).WithField("template", templateName).Error("[web] 渲染模板失败")
-		http.Error(w, "internal: render "+templateName+": "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -208,7 +269,11 @@ func (s *Server) renderStoreWriteErr(w http.ResponseWriter, r *http.Request, err
 		s.renderError(w, r, http.StatusNotFound, tr(r, notFoundKey))
 		return
 	}
-	s.renderError(w, r, http.StatusInternalServerError, tr(r, failKey)+err.Error())
+	// 详情(可能含 SQL 约束 / 库路径 / 内部状态)只进服务端日志,页面只显示通用 failKey 文案。
+	// 此前把裸 err.Error() 拼进错误页 —— viewer 角色也能触达部分会走到这里的写失败路径,构成信息泄漏
+	// (第三轮深扫 L4)。与 renderInternalError / L2 / L3 一致:详情进日志,不外泄。
+	logrus.WithError(err).WithField("ctx", failKey).WithField("ip", clientIP(r)).Error("[web] store write error")
+	s.renderError(w, r, http.StatusInternalServerError, tr(r, failKey))
 }
 
 // renderErrorWithCTA 在 error.html 默认「返回首页」按钮**之外**额外渲染一个

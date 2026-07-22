@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -80,7 +81,8 @@ func TestVerifyCSRFToken(t *testing.T) {
 	sess := NewSessionService(st, defaultConfig())
 
 	w := httptest.NewRecorder()
-	tok, err := sess.IssueCSRFToken(w)
+	issueReq := httptest.NewRequest(http.MethodGet, "/login", nil)
+	tok, err := sess.IssueCSRFToken(issueReq, w)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -122,6 +124,41 @@ func TestVerifyCSRFToken(t *testing.T) {
 			t.Fatalf("GET should bypass: %v", err)
 		}
 	})
+}
+
+// TestCSRFToken_SessionBound 覆盖第三轮深扫 L1:CSRF token 绑定到 session id,
+// 关掉 cookie-tossing —— 即便 cookie==form 自洽,绑到别的 session 的 token 也被拒。
+func TestCSRFToken_SessionBound(t *testing.T) {
+	st := newTestStore(t)
+	sess := NewSessionService(st, defaultConfig())
+
+	// 攻击者用自己的 session A 拿到一套自洽的 (cookie, form) token。
+	wA := httptest.NewRecorder()
+	rA := httptest.NewRequest(http.MethodGet, "/", nil).
+		WithContext(context.WithValue(context.Background(), ctxKeySessionID, "session-A"))
+	tokA, err := sess.IssueCSRFToken(rA, wA)
+	if err != nil {
+		t.Fatalf("issue A: %v", err)
+	}
+	cookieA := wA.Header().Get("Set-Cookie")
+
+	// 重放到受害者(session B)上下文 —— 模拟 cookie-tossing。cookie==form 但签名对 B 不合法 → 拒。
+	rB := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader("csrf_token="+tokA))
+	rB.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rB.Header.Set("Cookie", cookieA)
+	rB = rB.WithContext(context.WithValue(rB.Context(), ctxKeySessionID, "session-B"))
+	if err := sess.VerifyCSRFToken(rB); err == nil {
+		t.Fatal("cookie-tossing:绑到 session A 的 token 必须被 session B 拒绝")
+	}
+
+	// 同一 session A 上校验通过。
+	rA2 := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader("csrf_token="+tokA))
+	rA2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rA2.Header.Set("Cookie", cookieA)
+	rA2 = rA2.WithContext(context.WithValue(rA2.Context(), ctxKeySessionID, "session-A"))
+	if err := sess.VerifyCSRFToken(rA2); err != nil {
+		t.Fatalf("同 session 校验应通过: %v", err)
+	}
 }
 
 func TestEnsureCSRFToken_ReusesExistingCookie(t *testing.T) {

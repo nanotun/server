@@ -344,16 +344,24 @@ const (
 )
 
 // ComputeDifficulty 给定 IP 在过去窗口内的失败次数,算出应下发的 PoW 难度。
+//
+// 返回值语义:0 = 不下发 PoW(失败 < powFailuresEnable,平时无感);否则落在
+// [powBaseDifficulty, min(powAdaptiveCeiling, powMaxDifficulty)]。注意 base(14)已经 ≥
+// powMinDifficulty(4),故本函数产出的任何非零难度天然满足 IssueChallenge 的下限,无需再夹;
+// powMinDifficulty 仅对「运维/调用方手动指定的低难度」在 IssueChallenge 处兜底。
+//
+// 第三轮深扫 L9:曲线本身与出/校验/重放防御一致且正确,这里不改调参(base=14、step=2、
+// 3 次起、封顶 22),仅去掉恒不成立的 `d > powMaxDifficulty` 死分支——powAdaptiveCeiling(22)
+// < powMaxDifficulty(26),故经自适应天花板夹断后 d 必 ≤ 22 < 26。异常的 failures<0 也已被下面
+// 的 `< powFailuresEnable` 阈值覆盖(负数必 < 3 → 返回 0),无需额外兜底。
 func ComputeDifficulty(failures int) int {
 	if failures < powFailuresEnable {
 		return 0
 	}
 	d := powBaseDifficulty + powStepPerFailure*(failures-powFailuresEnable)
+	// 自适应天花板即最终上限(已恒 < powMaxDifficulty 硬顶,无需二次夹断)。
 	if d > powAdaptiveCeiling {
 		d = powAdaptiveCeiling
-	}
-	if d > powMaxDifficulty {
-		d = powMaxDifficulty
 	}
 	return d
 }
