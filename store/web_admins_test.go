@@ -33,6 +33,69 @@ func TestCreateFirstWebAdmin(t *testing.T) {
 	}
 }
 
+// TestRecordWebAdminLoginFailure_SlidingWindowDecay 覆盖第三轮深扫 M1:
+//   - 窗口内连续失败会累积并在阈值处锁定;
+//   - 距上次失败超过窗口(lockSeconds)后,单次失败被衰减为 1,**不**触发重锁(修永久 DoS);
+//   - 成功登录清零计数与 last_failure_at。
+func TestRecordWebAdminLoginFailure_SlidingWindowDecay(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	// 可控时钟。
+	orig := nowUnix
+	var clock int64 = 1_000_000
+	nowUnix = func() int64 { return clock }
+	t.Cleanup(func() { nowUnix = orig })
+
+	a, err := s.CreateWebAdmin(ctx, NewWebAdmin{Username: "root", PasswordHash: dummyPwdHash})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	const maxFailures = 5
+	const window = 900 // = lockSeconds
+
+	// 窗口内连打 5 次:第 5 次触发锁定。
+	var lastFailed, lastLock int64
+	for i := 1; i <= maxFailures; i++ {
+		clock += 10 // 均在窗口内
+		lastFailed, lastLock, err = s.RecordWebAdminLoginFailure(ctx, a.ID, maxFailures, window)
+		if err != nil {
+			t.Fatalf("failure %d: %v", i, err)
+		}
+		if lastFailed != int64(i) {
+			t.Fatalf("failure %d: failed_logins=%d, want %d", i, lastFailed, i)
+		}
+	}
+	if lastLock == 0 {
+		t.Fatal("第 5 次失败应触发锁定(locked_until>0)")
+	}
+
+	// 模拟锁定窗口过去:下一次失败必须被衰减为 1,且**不**重锁。
+	clock += window + 1
+	failed, lock, err := s.RecordWebAdminLoginFailure(ctx, a.ID, maxFailures, window)
+	if err != nil {
+		t.Fatalf("post-window failure: %v", err)
+	}
+	if failed != 1 {
+		t.Fatalf("窗口过后单次失败应衰减为 1,got %d(永久 DoS 回归!)", failed)
+	}
+	if lock != 0 {
+		t.Fatalf("窗口过后单次失败不应重新锁定,got locked_until=%d", lock)
+	}
+
+	// 成功登录清零。
+	if err := s.RecordWebAdminLoginSuccess(ctx, a.ID, "1.2.3.4"); err != nil {
+		t.Fatalf("RecordSuccess: %v", err)
+	}
+	got, err := s.GetWebAdmin(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("GetWebAdmin: %v", err)
+	}
+	if got.FailedLogins != 0 || got.LockedUntil != 0 {
+		t.Fatalf("成功后应清零,got failed=%d locked=%d", got.FailedLogins, got.LockedUntil)
+	}
+}
+
 // TestWebAdminCRUD 覆盖创建 / 重名 / 查询 / 改密 / 角色 / 启停 / 删除全链路。
 func TestWebAdminCRUD(t *testing.T) {
 	s := newTestStore(t)

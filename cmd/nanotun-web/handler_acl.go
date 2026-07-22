@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -32,7 +31,7 @@ func (s *Server) handleACLList(w http.ResponseWriter, r *http.Request) {
 	}
 	pairs, err := s.store.ListACLPairs(r.Context())
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, "list acl: "+err.Error())
+		s.renderInternalError(w, r, "acl:list", err)
 		return
 	}
 	users, _ := s.store.ListUsers(r.Context())
@@ -220,11 +219,8 @@ func (s *Server) aclChangeFlashQuery(r *http.Request, baseKey string) string {
 			msg, kind = base+tr(r, "flash.aclReloadedOK"), "ok"
 		}
 	}
-	qs := "flash=" + url.QueryEscape(msg)
-	if kind != "ok" {
-		qs += "&flash_kind=" + kind
-	}
-	return qs
+	// flashQuery 内部收口 kind 白名单 + QueryEscape + 附签名(第三轮 L5)。
+	return flashQuery(msg, kind)
 }
 
 // helpers

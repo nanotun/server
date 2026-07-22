@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"html/template"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -180,7 +179,7 @@ func (s *Server) handleMeTOTPEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cur.TOTPEnabled {
-		http.Redirect(w, r, "/me?flash="+url.QueryEscape(tr(r, "flash.totpEnabled")), http.StatusFound)
+		flashRedirect(w, r, "/me", tr(r, "flash.totpEnabled"), "")
 		return
 	}
 	if err := VerifyTOTP(cur.TOTPSecret, code); err != nil {
@@ -240,7 +239,7 @@ func (s *Server) handleMeTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !cur.TOTPEnabled {
-		http.Redirect(w, r, "/me?flash="+url.QueryEscape(tr(r, "flash.totpNotEnabled")), http.StatusFound)
+		flashRedirect(w, r, "/me", tr(r, "flash.totpNotEnabled"), "")
 		return
 	}
 	// 深扫第八轮 MED:关 2FA 是「输一个 6 位码即生效」的敏感操作,此前无任何限流 ——
@@ -283,7 +282,7 @@ func (s *Server) handleMeTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	s.audit.WriteFromRequest(r, "totp_disable",
 		FormatTarget("web_admin", admin.ID),
 		FormatDetail("via", choose(usedRecovery, "recovery", "totp")))
-	http.Redirect(w, r, "/me?flash="+url.QueryEscape(tr(r, "flash.totpDisabled")), http.StatusFound)
+	flashRedirect(w, r, "/me", tr(r, "flash.totpDisabled"), "")
 }
 
 // handleMeTOTPRegen:POST /me/totp/regen-codes

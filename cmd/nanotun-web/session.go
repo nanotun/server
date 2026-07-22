@@ -72,14 +72,23 @@ type SessionService struct {
 	// powUsed 重启清空,旧 challenge 既不能签也不能重放,完整断链。
 	powHMACKey []byte
 
+	// csrfHMACKey 用于把 CSRF token **绑定到 session**(第三轮深扫 L1)。此前 CSRF 纯 double-submit
+	// (仅校验 cookie==form),token 是无绑定随机串,唯一跨站防线是 SameSite=Lax;同注册域下的
+	// cookie-tossing(evil.sub.example 写 Domain=example 的 cookie)或明文兄弟源 MITM 注入 Set-Cookie
+	// 可让 cookie==form 自洽而绕过。改为 token = nonce + HMAC(csrfHMACKey, boundID‖nonce),boundID=已登录
+	// 的 web session id(未登录 setup/login 阶段为空);校验时用**当前请求**的 boundID 复算签名,攻击者
+	// 不知本 key、也无法对受害者的 session id 产生合法签名。独立 key,进程启动即随机。
+	csrfHMACKey []byte
+
 	// powUsed 记录已经成功消费过的 challenge_id → expireUnix,用于防重放。
 	// 单实例进程内 sync.Map 够用;runPoWGC goroutine 每 60s prune 过期项。
 	powUsed sync.Map
 
-	// captchaUsed 记录已成功验证过的 captcha nonce → expireUnix,做**服务端**一次性消费。
+	// captchaUsed 记录已**尝试**过的 captcha nonce → expireUnix,做**服务端**一次性消费。
 	// ClearCaptcha 只清响应里的 cookie,attacker 攥着截获的 (cookie, answer) 仍可在 5min TTL
-	// 内反复重放同一张验证码试不同密码;这里在验证通过时把 nonce 记下,再次提交同 nonce 直接
-	// 拒绝。与 powUsed 同套(sync.Map + runPoWGC 每 60s prune 过期项)。
+	// 内反复重放同一张验证码试不同密码;这里在校验时(答案对错前,见 VerifyCaptcha / L8)就把
+	// nonce 记下,再次提交同 nonce 直接拒绝 —— 每张 captcha 只准一次尝试,杜绝同图暴破。
+	// 与 powUsed 同套(sync.Map + runPoWGC 每 60s prune 过期项)。
 	captchaUsed sync.Map
 
 	// ipFailures 跟踪每个 IP 的滑动窗口失败次数,驱动自适应 PoW 难度。
@@ -105,6 +114,10 @@ func NewSessionService(st *store.Store, cfg Config) *SessionService {
 	if _, err := rand.Read(powKey); err != nil {
 		panic("nanotun-web: 无法初始化 pow hmac key: " + err.Error())
 	}
+	csrfKey := make([]byte, 32)
+	if _, err := rand.Read(csrfKey); err != nil {
+		panic("nanotun-web: 无法初始化 csrf hmac key: " + err.Error())
+	}
 	return &SessionService{
 		store:          st,
 		cfg:            cfg,
@@ -112,6 +125,7 @@ func NewSessionService(st *store.Store, cfg Config) *SessionService {
 		pendingHMACKey: key,
 		captchaHMACKey: capKey,
 		powHMACKey:     powKey,
+		csrfHMACKey:    csrfKey,
 		ipFailures:     NewIPFailureTracker(),
 	}
 }
@@ -322,42 +336,69 @@ func (s *SessionService) ClearTOTPPending(w http.ResponseWriter) {
 // CSRF token: double-submit cookie
 // =========================================================================
 
-// IssueCSRFToken 在 GET 渲染表单页时调用:生成 32 字节随机 token,写到一个
-// 非 HttpOnly cookie(让 JS 也能读 —— htmx 之类的可选,主要靠模板渲染到 hidden field)。
+// csrfBoundID 取「CSRF 绑定主体」:已登录请求(requireAuth 已注入 ctxKeySessionID)绑到 web session id;
+// 未登录的 setup / login / TOTP 前置页无 session,绑到空串。两处(签发 & 校验)必须用同一来源,
+// 保证同一浏览器视图内前后一致。
+func csrfBoundID(r *http.Request) string {
+	if v, ok := r.Context().Value(ctxKeySessionID).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// csrfSign 生成绑定 boundID 的 CSRF token:`<nonce>.<base64url(HMAC(key, boundID‖0x00‖nonce))>`。
+func (s *SessionService) csrfSign(boundID, nonce string) string {
+	mac := hmac.New(sha256.New, s.csrfHMACKey)
+	mac.Write([]byte(boundID))
+	mac.Write([]byte{0})
+	mac.Write([]byte(nonce))
+	return nonce + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// csrfValidFor 常量时间校验 token 是否是对 boundID 的合法签名。
+func (s *SessionService) csrfValidFor(token, boundID string) bool {
+	i := strings.IndexByte(token, '.')
+	if i <= 0 || i >= len(token)-1 {
+		return false
+	}
+	want := s.csrfSign(boundID, token[:i])
+	return subtle.ConstantTimeCompare([]byte(token), []byte(want)) == 1
+}
+
+// IssueCSRFToken 在 GET 渲染表单页时调用:生成绑定当前 boundID 的签名 token,写到一个非 HttpOnly
+// cookie(让 JS 也能读),并返回 token 给模板作为 hidden input 的 value。
 //
-// 同时返回 token 给模板,作为 hidden input 的 value。
+// 模式:**会话绑定**的 double-submit cookie(第三轮深扫 L1)。POST 时既校验 cookie==form,又校验 token
+// 是对当前请求 boundID 的合法 HMAC 签名。前者防常规跨站(叠加 SameSite=Lax),后者关掉 cookie-tossing
+// (攻击者塞入的自洽 cookie/form 值无法对受害者 session id 产生合法签名)。
 //
-// 模式:double-submit cookie。POST 时校验 cookie value === form value 即可,
-// 不需要服务端 state。前提:cookie SameSite=Lax 让跨站 form post 不带 cookie。
-//
-// K4(2026-05-23):**强制新签**只在没有合法 cookie 时使用。常规渲染请走
-// EnsureCSRFToken,避免「GET 页面 + 浏览器并发 favicon GET → 二次签发覆盖
-// → form 里嵌的旧 token 与 cookie 不一致」的经典坑(实测复现:点登录按钮
-// 直接 403 "CSRF: token 不匹配")。
-func (s *SessionService) IssueCSRFToken(w http.ResponseWriter) (string, error) {
-	token, err := generateRandomToken(32)
+// K4(2026-05-23):**强制新签**只在没有合法 cookie 时使用。常规渲染请走 EnsureCSRFToken,避免
+// 「GET 页面 + 浏览器并发 favicon GET → 二次签发覆盖 → form 里嵌的旧 token 与 cookie 不一致」的经典坑。
+func (s *SessionService) IssueCSRFToken(r *http.Request, w http.ResponseWriter) (string, error) {
+	nonce, err := generateRandomToken(24) // 32 base64url 字符;+ "." + 43 字符签名 ≈ 76 字符
 	if err != nil {
 		return "", err
 	}
+	token := s.csrfSign(csrfBoundID(r), nonce)
 	s.writeCSRFCookie(w, token)
 	return token, nil
 }
 
-// EnsureCSRFToken:有合法 cookie 就复用,否则新签。**所有渲染表单的 GET handler
-// 都应该用这个版本而不是 IssueCSRFToken**。复用保证「同一个浏览器视图里 form
-// hidden field 与浏览器 cookie 值始终一致」,即便页面在加载过程中触发了
-// 多次 GET(favicon、redirect 回环)也不会被覆盖错位。
+// EnsureCSRFToken:有对**当前 boundID** 仍合法的 cookie 就复用,否则新签。**所有渲染表单的 GET handler
+// 都应该用这个版本而不是 IssueCSRFToken**。复用保证「同一浏览器视图里 form hidden field 与 cookie 值
+// 始终一致」,即便页面加载中触发多次 GET(favicon、redirect 回环)也不会错位。
 //
-// 合法 = base64url 字符 + 长度落在 [32,128] 区间(IssueCSRFToken 写的就是 43 字符)。
-// 不做更严格的格式校验,因为本身就是不可猜测的随机串,长度即抗碰撞性。
+// 关键:登录跨越 pre-auth("")→ authed(session id)边界时,旧 cookie 对新 boundID 签名不再合法,
+// 这里会**自动重签**绑到新的 session id,无缝完成绑定切换。
 func (s *SessionService) EnsureCSRFToken(r *http.Request, w http.ResponseWriter) (string, error) {
+	boundID := csrfBoundID(r)
 	if ck, err := r.Cookie(csrfCookieName); err == nil &&
-		len(ck.Value) >= 32 && len(ck.Value) <= 128 {
+		len(ck.Value) >= 32 && len(ck.Value) <= 256 && s.csrfValidFor(ck.Value, boundID) {
 		// 刷新 cookie 的 MaxAge 让有效期顺延,但 value 不变。
 		s.writeCSRFCookie(w, ck.Value)
 		return ck.Value, nil
 	}
-	return s.IssueCSRFToken(w)
+	return s.IssueCSRFToken(r, w)
 }
 
 func (s *SessionService) writeCSRFCookie(w http.ResponseWriter, token string) {
@@ -374,7 +415,9 @@ func (s *SessionService) writeCSRFCookie(w http.ResponseWriter, token string) {
 
 // VerifyCSRFToken 在 POST/PUT/DELETE handler 第一行调用。
 //
-// 返回 nil → 通过;否则 handler 应回 403 + 描述。
+// 返回 nil → 通过;否则 handler 应回 403 + 描述。校验两层:
+//  1. cookie==form(double-submit,保留);
+//  2. form token 是对**当前请求 boundID**(已登录=session id)的合法 HMAC 签名(会话绑定,关 cookie-tossing)。
 func (s *SessionService) VerifyCSRFToken(r *http.Request) error {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 		return nil
@@ -392,6 +435,9 @@ func (s *SessionService) VerifyCSRFToken(r *http.Request) error {
 		return newLocErr("csrf.missingToken")
 	}
 	if !ConstantTimeStringEqual(ck.Value, formToken) {
+		return newLocErr("csrf.mismatch")
+	}
+	if !s.csrfValidFor(formToken, csrfBoundID(r)) {
 		return newLocErr("csrf.mismatch")
 	}
 	return nil

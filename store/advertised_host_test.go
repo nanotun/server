@@ -212,6 +212,12 @@ func openPreV15Store(ctx context.Context, t *testing.T) (*Store, int) {
 		`ALTER TABLE web_admins DROP COLUMN totp_last_used_step`); err != nil {
 		t.Fatalf("drop totp_last_used_step (rewind to pre-0022): %v", err)
 	}
+	// 同上:0024 的 web_admins.last_failure_at 也是裸 ADD COLUMN,重跑前先 DROP。
+	// (0023/0025/0026 是幂等的 index / UPDATE 迁移,无需 rewind DROP。)
+	if _, err := s.db.ExecContext(ctx,
+		`ALTER TABLE web_admins DROP COLUMN last_failure_at`); err != nil {
+		t.Fatalf("drop last_failure_at (rewind to pre-0024): %v", err)
+	}
 	return s, 14
 }
 

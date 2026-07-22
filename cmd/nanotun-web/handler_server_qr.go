@@ -30,7 +30,6 @@ import (
 	"errors"
 	"html/template"
 	"net/http"
-	"net/url"
 	"os/exec"
 	"strings"
 	"time"
@@ -448,10 +447,8 @@ func (s *Server) handleSettingsAdvertisedHostSet(w http.ResponseWriter, r *http.
 	if newHost == "" {
 		verb = tr(r, "flash.advertisedHostCleared")
 	}
-	// url.QueryEscape:与第九轮 mesh toggle / set-fixed-vip 同款,防止 verb 里的
-	// 空格 / `+` / 中文字节被 query decode 时错位。flash 字符串本身全是字面常量,
-	// 不含用户输入 — 但与其它 redirect 风格保持一致仍是对的。
-	http.Redirect(w, r, "/settings?flash="+url.QueryEscape(verb), http.StatusSeeOther)
+	// flashRedirect 内部 QueryEscape + 附签名(第三轮 L5)。
+	flashRedirect(w, r, "/settings", verb, "")
 }
 
 // =============================================================================
@@ -658,9 +655,6 @@ func (s *Server) handleSettingsServerDialHostSet(w http.ResponseWriter, r *http.
 	if rt := strings.TrimSpace(r.FormValue("return_to")); rt != "" {
 		dest = sanitizeReturnTo(rt, r.Referer())
 	}
-	sep := "?"
-	if strings.Contains(dest, "?") {
-		sep = "&"
-	}
-	http.Redirect(w, r, dest+sep+"flash="+url.QueryEscape(verb), http.StatusSeeOther)
+	// flashRedirect 内部 QueryEscape + 附签名(第三轮 L5)。
+	flashRedirect(w, r, dest, verb, "")
 }

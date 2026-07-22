@@ -29,6 +29,7 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,6 +37,12 @@ import (
 // 失败到达 powFailuresEnable=3 就开始下发 PoW;
 // 每多 1 次失败,难度 +2 bit。
 const ipFailureWindowSec = int64(5 * 60)
+
+// 全局 IP map 上限(第三轮深扫 L7,对齐 nanotund ip_failures.go 的 maxTrackedIPs=16384)。
+// 此前本 tracker 用无上限 sync.Map,attacker 用大量不同源 IP(或反代配错时伪造 XFF)持续 fail,
+// 能把 map 撑到「~2×window 的存活 IP 数」。加软上限:超限时先强制 Prune 回收陈旧项,仍满则丢弃
+// 本次新 IP 记录(失败计数偏少,仅跨 IP 洪泛才触发,正常用户无感)。每条 ~80B,16384 ≈ 1.3MB。
+const maxTrackedIPs = 16384
 
 // ipFailureRecord 是单条 IP 的滑动窗口状态。
 // 复用 sync.Mutex 而不是用 atomic 拆分 — 操作频率低(只在 GET/POST /login
@@ -51,6 +58,10 @@ type ipFailureRecord struct {
 // 写不冲突的 IP 之间完全无锁。
 type IPFailureTracker struct {
 	m sync.Map // map[string]*ipFailureRecord
+
+	// size 近似跟踪 m 里的 entry 数(sync.Map 无 Len)。仅在**新增** entry 时 +1、Prune 删除时 -1,
+	// 用于 maxTrackedIPs 软上限。并发下可能短暂偏差(可接受:软上限)。
+	size atomic.Int64
 }
 
 // NewIPFailureTracker 构造一个新跟踪器。
@@ -87,8 +98,26 @@ func (t *IPFailureTracker) Inc(ip string) int {
 	if ip == "" {
 		return 0
 	}
-	v, _ := t.m.LoadOrStore(ip, &ipFailureRecord{})
-	rec := v.(*ipFailureRecord)
+	// 快路径:已存在的 IP 直接更新,不动 size、不受上限影响(合法用户重试也走这里)。
+	if v, ok := t.m.Load(ip); ok {
+		return t.bump(v.(*ipFailureRecord))
+	}
+	// 慢路径:新 IP。受 maxTrackedIPs 软上限保护 —— 超限先 Prune,仍满则丢弃本次(防跨 IP 灌爆内存)。
+	if t.size.Load() >= maxTrackedIPs {
+		t.Prune()
+		if t.size.Load() >= maxTrackedIPs {
+			return 0
+		}
+	}
+	v, loaded := t.m.LoadOrStore(ip, &ipFailureRecord{})
+	if !loaded {
+		t.size.Add(1)
+	}
+	return t.bump(v.(*ipFailureRecord))
+}
+
+// bump 在持 record 锁下做「窗口过期归零 + 计数 +1 + 刷新 lastFail」,返回新计数。
+func (t *IPFailureTracker) bump(rec *ipFailureRecord) int {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	if t.shouldReset(rec) {
@@ -125,6 +154,7 @@ func (t *IPFailureTracker) Prune() {
 		rec.mu.Unlock()
 		if stale {
 			t.m.Delete(k)
+			t.size.Add(-1)
 		}
 		return true
 	})

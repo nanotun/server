@@ -34,7 +34,9 @@ func TestOpenProfileOutput_SyncsBeforeClose(t *testing.T) {
 	if _, err := w.Write([]byte(payload)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	closer()
+	if err := closer(); err != nil {
+		t.Fatalf("closer: %v", err)
+	}
 
 	got, err := os.ReadFile(path)
 	if err != nil {
@@ -42,6 +44,12 @@ func TestOpenProfileOutput_SyncsBeforeClose(t *testing.T) {
 	}
 	if string(got) != payload {
 		t.Fatalf("payload mismatch: got=%q want=%q", got, payload)
+	}
+	// M3:文件应以 0600 落盘(不受 umask 影响,writeFileTight fchmod)。
+	if fi, err := os.Stat(path); err != nil {
+		t.Fatalf("stat: %v", err)
+	} else if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("perm = %v, want 0600", fi.Mode().Perm())
 	}
 
 	// 也验证空路径走 fallback 分支不 panic。
@@ -51,7 +59,9 @@ func TestOpenProfileOutput_SyncsBeforeClose(t *testing.T) {
 		t.Fatalf("fallback path: %v", err)
 	}
 	_, _ = w2.Write([]byte("x"))
-	closer2()
+	if err := closer2(); err != nil {
+		t.Fatalf("fallback closer: %v", err)
+	}
 	if fallback.String() != "x" {
 		t.Fatalf("fallback content = %q", fallback.String())
 	}
@@ -628,31 +638,42 @@ func qrTestOpts() *globalOpts {
 	return &globalOpts{lang: langEN, stdout: &strings.Builder{}, stderr: &strings.Builder{}}
 }
 
-// TestOpenProfileOutput_RefusesExistingUnlessForce 验证含密 profile 输出默认不覆盖既有文件(O_EXCL),
-// 仅 --force 时覆盖。
+// TestOpenProfileOutput_RefusesExistingUnlessForce 验证含密 profile 输出默认不覆盖既有文件,
+// 仅 --force 时覆盖。M3 后拒绝发生在 closer()(经 writeFileTight 原子落盘)而非 open 时。
 func TestOpenProfileOutput_RefusesExistingUnlessForce(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "existing.json")
 	if err := os.WriteFile(path, []byte("old-secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// 默认拒绝覆盖。
-	if _, _, err := openProfileOutput(path, nil, false); err == nil {
-		t.Fatal("openProfileOutput 应拒绝覆盖已存在文件(默认)")
+	// 默认:open 不报错(缓冲写),但 closer 落盘时拒绝覆盖。
+	w, closer, err := openProfileOutput(path, nil, false)
+	if err != nil {
+		t.Fatalf("openProfileOutput(force=false): %v", err)
 	}
-	// 原文件未被截断。
+	_, _ = w.Write([]byte("new-secret"))
+	if err := closer(); err == nil {
+		t.Fatal("closer 应拒绝覆盖已存在文件(默认)")
+	}
+	// 原文件未被截断/覆盖。
 	if b, _ := os.ReadFile(path); string(b) != "old-secret" {
 		t.Fatalf("拒绝覆盖后原文件应保持不变,got %q", b)
 	}
 	// force 允许覆盖。
-	w, closer, err := openProfileOutput(path, nil, true)
+	w2, closer2, err := openProfileOutput(path, nil, true)
 	if err != nil {
 		t.Fatalf("force 应允许覆盖: %v", err)
 	}
-	_, _ = w.Write([]byte("new"))
-	closer()
+	_, _ = w2.Write([]byte("new"))
+	if err := closer2(); err != nil {
+		t.Fatalf("force closer: %v", err)
+	}
 	if b, _ := os.ReadFile(path); string(b) != "new" {
 		t.Fatalf("force 覆盖后应为新内容,got %q", b)
+	}
+	// 覆盖后仍为 0600(即便原文件被外部改宽也应收紧)。
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("force 覆盖后 perm = %v, want 0600", fi.Mode().Perm())
 	}
 }
 

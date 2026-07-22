@@ -242,8 +242,10 @@ func emitCredentials(c *credentialsSchema, format, outputPath string, force bool
 		if err != nil {
 			return err
 		}
-		defer closeOut()
-		return writeCredentialsJSONCompact(out, c)
+		if err := writeCredentialsJSONCompact(out, c); err != nil {
+			return err
+		}
+		return closeOut()
 	}
 
 	f := strings.ToLower(strings.TrimSpace(format))
@@ -272,8 +274,10 @@ func emitCredentials(c *credentialsSchema, format, outputPath string, force bool
 		if err != nil {
 			return err
 		}
-		defer closeOut()
-		return writeCredentials(out, c, format)
+		if err := writeCredentials(out, c, format); err != nil {
+			return err
+		}
+		return closeOut()
 	}
 }
 

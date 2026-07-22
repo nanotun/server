@@ -134,7 +134,7 @@ func (s *Server) handleAuditList(w http.ResponseWriter, r *http.Request) {
 	}
 	logs, err := s.store.QueryAudit(r.Context(), since, until, fetchN)
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, "query audit: "+err.Error())
+		s.renderInternalError(w, r, "audit:query", err)
 		return
 	}
 	// 应用 actor / action 过滤(数据库层没专门索引,内存过滤就够)。
@@ -283,7 +283,7 @@ func (s *Server) handleSettingsList(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.store.DB().QueryContext(r.Context(),
 		`SELECT key, value FROM app_settings ORDER BY key ASC`)
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, "list settings: "+err.Error())
+		s.renderInternalError(w, r, "settings:list", err)
 		return
 	}
 	defer rows.Close()
@@ -395,7 +395,7 @@ func (s *Server) handleSettingsRateSet(w http.ResponseWriter, r *http.Request) {
 			"old_burst_bytes", old.BurstBytes, "new_burst_bytes", burstBytes,
 		))
 	tryRateRefreshBackground(s.control, 0)
-	http.Redirect(w, r, "/settings?flash="+url.QueryEscape(tr(r, "flash.rateDefaultsUpdated")), http.StatusSeeOther)
+	flashRedirect(w, r, "/settings", tr(r, "flash.rateDefaultsUpdated"), "")
 }
 
 // =========================================================================
@@ -428,13 +428,7 @@ func (s *Server) handleRuntimeReload(w http.ResponseWriter, r *http.Request) {
 	// 不是甩去 dashboard)。return_to 表单字段优先,否则 Referer path-only,
 	// 都不可用回 /(sanitizeReturnTo 统一防开放重定向)。
 	dest := sanitizeReturnTo(r.FormValue("return_to"), r.Referer())
-	sep := "?"
-	if strings.Contains(dest, "?") {
-		sep = "&"
-	}
-	http.Redirect(w, r,
-		dest+sep+"flash="+url.QueryEscape(tr(r, "flash.aclReloaded", n)),
-		http.StatusSeeOther)
+	flashRedirect(w, r, dest, tr(r, "flash.aclReloaded", n), "")
 }
 
 // handleRuntimeMeshToggle:POST /runtime/mesh-toggle
@@ -520,18 +514,14 @@ func (s *Server) handleRuntimeMeshToggle(w http.ResponseWriter, r *http.Request)
 	// 在 evil.example.com 被钓鱼后点 toggle 会跳回 evil.example.com,且带上
 	// `?flash=已开启组网` 让攻击者拿到时序信号。对齐 devices `handler_devices.go`
 	// 的 `!HasPrefix("//")` 双斜杠防御 + `url.Parse` 取 path-only。
-	verb = url.QueryEscape(verb) // 第八轮 P2:flash 文本统一 URL 转义,防 query 拼接污染
 	dest := sanitizeReturnTo(r.FormValue("return_to"), r.Referer())
-	sep := "?"
-	if strings.Contains(dest, "?") {
-		sep = "&"
-	}
-	flashQS := "flash=" + verb
+	kind := ""
 	if reloadErr != nil {
 		// 2026-07-19:数据面未生效属于「需要 admin 后续动作」,横幅升级为 warn 色。
-		flashQS += "&flash_kind=warn"
+		kind = "warn"
 	}
-	http.Redirect(w, r, dest+sep+flashQS, http.StatusSeeOther)
+	// flashRedirect 内部 QueryEscape + 附签名(第三轮 L5)。
+	flashRedirect(w, r, dest, verb, kind)
 }
 
 // safeReturnToOrFallback 是 [sanitizeReturnTo] 的「caller 自定义 fallback」版本:
@@ -671,13 +661,7 @@ func (s *Server) handleRuntimeKick(w http.ResponseWriter, r *http.Request) {
 	// 2026-07-19 易用性:回跳发起页 —— 会话页踢线回会话页、用户详情「踢下线」
 	// 回该用户详情,不再一律甩回 dashboard 丢上下文。
 	dest := sanitizeReturnTo(r.FormValue("return_to"), r.Referer())
-	sep := "?"
-	if strings.Contains(dest, "?") {
-		sep = "&"
-	}
-	http.Redirect(w, r,
-		dest+sep+"flash="+url.QueryEscape(tr(r, "flash.sessionsKicked", resp.Kicked)),
-		http.StatusSeeOther)
+	flashRedirect(w, r, dest, tr(r, "flash.sessionsKicked", resp.Kicked), "")
 }
 
 // =========================================================================
@@ -689,7 +673,10 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if err := s.store.DB().PingContext(ctx); err != nil {
-		http.Error(w, "db ping fail: "+err.Error(), http.StatusServiceUnavailable)
+		// /healthz 是**公开**路由(未鉴权)。裸 err.Error() 对 SQLite 可能含库文件路径 / 内部状态,
+		// 不能回显给匿名访客(第三轮深扫 L2)。详情只进服务端日志,响应固定通用文案。
+		logrus.WithError(err).WithField("ip", clientIP(r)).Warn("[web] healthz db ping failed")
+		http.Error(w, "unhealthy\n", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -32,7 +31,7 @@ func (s *Server) handleDeviceList(w http.ResponseWriter, r *http.Request) {
 	// 所以这里仍然走 ListUsers + ListDevicesByUser(每用户 1 query,小规模 OK)。
 	users, err := s.store.ListUsers(r.Context())
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, "list users: "+err.Error())
+		s.renderInternalError(w, r, "devices:list_users", err)
 		return
 	}
 	// 产品方向(2026-05-24):列表页也展示 effective rate。
@@ -233,8 +232,7 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 		if alias == "" {
 			msg = tr(r, "flash.deviceAliasCleared")
 		}
-		http.Redirect(w, r,
-			fmt.Sprintf("/devices/%d?flash=%s", id, url.QueryEscape(msg)), http.StatusSeeOther)
+		flashRedirect(w, r, fmt.Sprintf("/devices/%d", id), msg, "")
 	case "delete":
 		if err := s.store.DeleteDevice(r.Context(), id); err != nil {
 			s.renderStoreWriteErr(w, r, err, "err.deviceNotFound", "err.deleteFailed")
@@ -246,7 +244,7 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 		// 快照 / 客户端可用列表陈旧（该设备网段在使用方侧黑洞、siteID→device 映射悬空）。best-effort，与 set-rate 的
 		// control 推送同模式；未配 control socket 时内部 no-op。
 		tryReloadRoutesBackground(s.control)
-		http.Redirect(w, r, "/devices?flash="+url.QueryEscape(tr(r, "flash.deviceDeleted")), http.StatusSeeOther)
+		flashRedirect(w, r, "/devices", tr(r, "flash.deviceDeleted"), "")
 	case "set-rate":
 		// 0011(2026-05-23):per-device 带宽限速。表单字段:rate_upload_mibs / rate_download_mibs
 		// (浮点 MiB/s,空 / 0 = 沿用全局默认)。保存后异步调 control sock 推送给 active conn。
@@ -276,8 +274,7 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 			))
 		// 立刻让 server 把 active conn 的 limiter 热更过去,不需要客户端重连。
 		tryRateRefreshBackground(s.control, id)
-		http.Redirect(w, r,
-			fmt.Sprintf("/devices/%d?flash=%s", id, url.QueryEscape(tr(r, "flash.deviceRateUpdated"))), http.StatusSeeOther)
+		flashRedirect(w, r, fmt.Sprintf("/devices/%d", id), tr(r, "flash.deviceRateUpdated"), "")
 	case "set-fixed-vip":
 		// 0008(2026-05-23):把固定 vIP 钉到具体 device 上。空串清除。
 		// 表单字段:fixed_vip_v4 / fixed_vip_v6。
@@ -420,17 +417,10 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 		// `safeReturnToOrFallback` —— 还会拒 URL-encoded `\` / scheme / host 绕过。
 		// 不安全 / 空 return_to 时回到 device detail,而不是首页。
 		//
-		// 第九轮 P2:flash verb 部分静态文本含字面 `+`(`"已更新+fixed_vip+..."`),
-		// 不 QueryEscape 会被 query decode 成空格,在目标页 UI 显示成 `已更新 fixed_vip ...`
-		// 错乱。统一 url.QueryEscape,与 mesh toggle 对齐。
-		encodedVerb := url.QueryEscape(verb)
+		// flashRedirect 内部 QueryEscape + 附签名(第三轮 L5);verb 含字面 `+` 也不会被 decode 成空格。
 		deviceDetail := "/devices/" + segs[1]
 		dest := safeReturnToOrFallback(r.FormValue("return_to"), "", deviceDetail)
-		sep := "?"
-		if strings.Contains(dest, "?") {
-			sep = "&"
-		}
-		http.Redirect(w, r, dest+sep+"flash="+encodedVerb, http.StatusSeeOther)
+		flashRedirect(w, r, dest, verb, "")
 	default:
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "err.unknownActionVerb", verb))
 	}
@@ -508,7 +498,7 @@ func (s *Server) handleLeaseList(w http.ResponseWriter, r *http.Request) {
 		  JOIN users   u ON u.id = d.user_id
 		 ORDER BY l.assigned_at DESC`)
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, "list leases: "+err.Error())
+		s.renderInternalError(w, r, "leases:list", err)
 		return
 	}
 	defer rows.Close()
@@ -518,7 +508,7 @@ func (s *Server) handleLeaseList(w http.ResponseWriter, r *http.Request) {
 		var manual int64
 		if err := rows.Scan(&x.DeviceID, &x.VIPv4, &x.VIPv6, &manual, &x.AssignedAt,
 			&x.DeviceUUID, &x.DeviceName, &x.Alias, &x.UserID, &x.Username); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, "scan: "+err.Error())
+			s.renderInternalError(w, r, "leases:scan", err)
 			return
 		}
 		x.Manual = manual != 0
@@ -565,7 +555,7 @@ func (s *Server) handleLeaseAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.audit.WriteFromRequest(r, "lease_release", FormatTarget("device", deviceID), "")
-		http.Redirect(w, r, "/leases?flash="+url.QueryEscape(tr(r, "flash.leaseReleased")), http.StatusSeeOther)
+		flashRedirect(w, r, "/leases", tr(r, "flash.leaseReleased"), "")
 	default:
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "err.unknownActionVerb", verb))
 	}

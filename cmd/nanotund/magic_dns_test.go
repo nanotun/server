@@ -435,6 +435,37 @@ func TestMagicDNS_PerClientCapIsolatesClients(t *testing.T) {
 	relB()
 }
 
+// TestMagicDNS_PerClientEvictOnRelease 覆盖第三轮深扫 L10:客户端在途计数归零后,
+// 其 magicDNSPerClient 条目应被就地驱逐,避免 vIP churn 下 map 只增不减地泄漏。
+func TestMagicDNS_PerClientEvictOnRelease(t *testing.T) {
+	// 用一个本测试专属、不与其它用例冲突的 vIP。
+	client := netip.MustParseAddr("100.64.7.77")
+	magicDNSPerClient.Delete(client) // 起点干净
+
+	rel, ok := tryAcquireMagicDNSSlot(client, true)
+	if !ok {
+		t.Fatal("首个 slot 应成功获取")
+	}
+	if _, present := magicDNSPerClient.Load(client); !present {
+		t.Fatal("获取后应在 map 中留有计数条目")
+	}
+
+	rel() // 归零 → 应驱逐
+	if _, present := magicDNSPerClient.Load(client); present {
+		t.Fatal("在途归零后条目应被 CompareAndDelete 驱逐,map 不应再保留(L10 泄漏回归)")
+	}
+
+	// 驱逐后再次获取应能重新建条目并正常工作(验证驱逐未破坏后续限流)。
+	rel2, ok := tryAcquireMagicDNSSlot(client, true)
+	if !ok {
+		t.Fatal("驱逐后重新获取应成功")
+	}
+	rel2()
+	if _, present := magicDNSPerClient.Load(client); present {
+		t.Fatal("再次归零后应再次被驱逐")
+	}
+}
+
 // ————————————————————— SR-VIA6：MagicDNS 4via6 解析 —————————————————————
 
 func TestParseVia6Hostname(t *testing.T) {

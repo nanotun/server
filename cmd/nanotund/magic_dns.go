@@ -89,7 +89,8 @@ const (
 )
 
 // magicDNSPerClient 记录每个客户端（键=vIP）当前在途的 DNS query 数，用于 magicDNSPerClientCap 限流。
-// 键空间受 mesh vIP 数量约束（有界），条目不主动清理（计数归零仍保留一个 *atomic.Int32，内存极小）。
+// 键空间受 mesh vIP 数量约束（有界）；在途计数归零时由 release() 用 CompareAndDelete **就地驱逐**
+// 空条目（第三轮深扫 L10），避免 vIP 长期 churn 下 map 只增不减地缓慢泄漏。
 var magicDNSPerClient sync.Map // netip.Addr -> *atomic.Int32
 
 // magicDNSInflightCap 是**全服务器**同时在处理的 DNS query 总量上限（单一全局信号量，所有客户端 / 会话 / 查询
@@ -327,7 +328,17 @@ func tryAcquireMagicDNSSlot(clientKey netip.Addr, haveKey bool) (release func(),
 	return func() {
 		<-magicDNSInflight
 		if clientCnt != nil {
-			clientCnt.Add(-1)
+			if clientCnt.Add(-1) == 0 {
+				// 归零即驱逐(第三轮深扫 L10):否则 vIP 随租约释放 / 重分配长期 churn 时,map 里会堆积
+				// 一堆计数为 0 的空 *atomic.Int32,寿命等于进程 —— 单条极小但只增不减,长跑服务下缓慢泄漏。
+				//
+				// 必须用 CompareAndDelete(而非 Delete):仅当「当前存的仍是本计数器指针」时才删。若此刻有并发
+				// LoadOrStore 拿到**同一**指针并 Add(1),CAD 仍可能删掉一个刚变正的计数器 → 该指针被后续查询
+				// 继续用(orphaned),而新查询 LoadOrStore 出新计数器。后果仅是该客户端瞬时可多占一份(≤2×cap),
+				// 全局池(magicDNSInflightCap)仍封顶,属可接受的软上限松弛;且 orphaned 指针的 Add(-1) 归零时
+				// CAD 因指针不匹配(map 已换新指针)会安全空操作,不会误删活跃项。
+				magicDNSPerClient.CompareAndDelete(clientKey, clientCnt)
+			}
 		}
 	}, true
 }

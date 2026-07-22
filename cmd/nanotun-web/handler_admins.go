@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -34,7 +33,7 @@ func (s *Server) handleAdminList(w http.ResponseWriter, r *http.Request) {
 	}
 	admins, err := s.store.ListWebAdmins(r.Context())
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, "list admins: "+err.Error())
+		s.renderInternalError(w, r, "admins:list", err)
 		return
 	}
 	s.renderPage(w, r, "admins_list.html", PageData{
@@ -91,10 +90,8 @@ func (s *Server) handleAdminNew(w http.ResponseWriter, r *http.Request) {
 		s.audit.WriteFromRequest(r, "webadmin_create",
 			FormatTarget("web_admin", newAdmin.ID),
 			FormatDetail("username", newAdmin.Username, "role", newAdmin.Role))
-		// 第三轮深扫 P2-8:username 是 admin 自由输入,需 QueryEscape 防止 `&`/`?` 污染 query。
-		http.Redirect(w, r,
-			"/admins?flash="+url.QueryEscape(tr(r, "flash.adminCreated", newAdmin.Username)),
-			http.StatusSeeOther)
+		// username 是 admin 自由输入;flashRedirect 内部 QueryEscape 并附签名(第三轮 L5)。
+		flashRedirect(w, r, "/admins", tr(r, "flash.adminCreated", newAdmin.Username), "")
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -208,7 +205,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.store.DeleteWebSessionsByAdmin(r.Context(), id)
 		s.audit.WriteFromRequest(r, "webadmin_reset_pwd",
 			FormatTarget("web_admin", id), FormatDetail("username", target.Username))
-		http.Redirect(w, r, "/admins?flash="+url.QueryEscape(tr(r, "flash.adminPwdReset")), http.StatusSeeOther)
+		flashRedirect(w, r, "/admins", tr(r, "flash.adminPwdReset"), "")
 
 	case "disable":
 		if target.Role == "admin" {
@@ -224,7 +221,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.store.DeleteWebSessionsByAdmin(r.Context(), id)
 		s.audit.WriteFromRequest(r, "webadmin_disable",
 			FormatTarget("web_admin", id), FormatDetail("username", target.Username))
-		http.Redirect(w, r, "/admins?flash="+url.QueryEscape(tr(r, "flash.adminDisabled")), http.StatusSeeOther)
+		flashRedirect(w, r, "/admins", tr(r, "flash.adminDisabled"), "")
 
 	case "enable":
 		if err := s.store.SetWebAdminEnabled(r.Context(), id, true); err != nil {
@@ -233,7 +230,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		}
 		s.audit.WriteFromRequest(r, "webadmin_enable",
 			FormatTarget("web_admin", id), FormatDetail("username", target.Username))
-		http.Redirect(w, r, "/admins?flash="+url.QueryEscape(tr(r, "flash.adminEnabled")), http.StatusSeeOther)
+		flashRedirect(w, r, "/admins", tr(r, "flash.adminEnabled"), "")
 
 	case "delete":
 		if target.Role == "admin" {
@@ -248,7 +245,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		}
 		s.audit.WriteFromRequest(r, "webadmin_delete",
 			FormatTarget("web_admin", id), FormatDetail("username", target.Username))
-		http.Redirect(w, r, "/admins?flash="+url.QueryEscape(tr(r, "flash.adminDeleted")), http.StatusSeeOther)
+		flashRedirect(w, r, "/admins", tr(r, "flash.adminDeleted"), "")
 
 	case "set-role":
 		newRole := strings.TrimSpace(r.FormValue("role"))
@@ -265,7 +262,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		s.audit.WriteFromRequest(r, "webadmin_set_role",
 			FormatTarget("web_admin", id),
 			FormatDetail("username", target.Username, "role", newRole))
-		http.Redirect(w, r, "/admins?flash="+url.QueryEscape(tr(r, "flash.adminRoleChanged")), http.StatusSeeOther)
+		flashRedirect(w, r, "/admins", tr(r, "flash.adminRoleChanged"), "")
 
 	case "unlock":
 		if err := s.store.ResetWebAdminLockout(r.Context(), id); err != nil {
@@ -274,7 +271,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		}
 		s.audit.WriteFromRequest(r, "webadmin_unlock",
 			FormatTarget("web_admin", id), FormatDetail("username", target.Username))
-		http.Redirect(w, r, "/admins?flash="+url.QueryEscape(tr(r, "flash.adminUnlocked")), http.StatusSeeOther)
+		flashRedirect(w, r, "/admins", tr(r, "flash.adminUnlocked"), "")
 
 	default:
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "err.unknownActionVerb", verb))

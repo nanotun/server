@@ -6,7 +6,6 @@ import (
 	"errors"
 	"html/template"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -68,7 +67,7 @@ func (s *Server) handleUserList(w http.ResponseWriter, r *http.Request) {
 		users, err = s.store.ListUsers(r.Context())
 	}
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, "list users: "+err.Error())
+		s.renderInternalError(w, r, "users:list", err)
 		return
 	}
 	// 2026-07-19 易用性:?q= 按用户名过滤(大小写不敏感 contains)。用户量级
@@ -361,8 +360,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 		// 第十轮深扫 P2:disable/enable/set-platforms 此前裸 redirect 不带 flash,
 		// detail 页的 flashFromQuery 永远读不到横幅 —— 与 delete/reset-psk/kick
 		// 的反馈口径不一致(detail 渲染处注释一直声称有横幅)。补上。
-		http.Redirect(w, r, "/users/"+segs[1]+"?flash="+
-			url.QueryEscape(tr(r, "flash.userDisabled", u.Username)), http.StatusSeeOther)
+		flashRedirect(w, r, "/users/"+segs[1], tr(r, "flash.userDisabled", u.Username), "")
 	case "enable":
 		if err := s.store.EnableUser(r.Context(), id); err != nil {
 			s.renderStoreWriteErr(w, r, err, "err.userNotFound", "err.enableFailed")
@@ -370,8 +368,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 		}
 		s.audit.WriteFromRequest(r, "user_enable", FormatTarget("user", id),
 			FormatDetail("username", u.Username))
-		http.Redirect(w, r, "/users/"+segs[1]+"?flash="+
-			url.QueryEscape(tr(r, "flash.userEnabled", u.Username)), http.StatusSeeOther)
+		flashRedirect(w, r, "/users/"+segs[1], tr(r, "flash.userEnabled", u.Username), "")
 	case "delete":
 		if err := s.store.DeleteUser(r.Context(), id); err != nil {
 			s.renderStoreWriteErr(w, r, err, "err.userNotFound", "err.deleteFailed")
@@ -379,11 +376,8 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 		}
 		s.audit.WriteFromRequest(r, "user_delete", FormatTarget("user", id),
 			FormatDetail("username", u.Username))
-		// **第三轮深扫 P2-8**:`u.Username` 是 admin 录入字符串,store 仅 TrimSpace
-		// 不限字符集;含 `&` `?` `#` 时直接拼会污染 query string。统一 url.QueryEscape。
-		http.Redirect(w, r,
-			"/users?flash="+url.QueryEscape(tr(r, "flash.userDeleted", u.Username)),
-			http.StatusSeeOther)
+		// u.Username 是 admin 录入字符串;flashRedirect 内部 QueryEscape + 附签名(第三轮 L5)。
+		flashRedirect(w, r, "/users", tr(r, "flash.userDeleted", u.Username), "")
 	case "reset-psk":
 		// P2#6(2026-05-26):disabled user 不允许 rotate-psk —— 「让账号被踢线但
 		// 同时下发新凭证」语义矛盾(rotate 后的 user_invalidate scan 还是会把这条踢
@@ -510,8 +504,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 		if csv == "" {
 			platformsFlash = tr(r, "flash.userPlatformsCleared")
 		}
-		http.Redirect(w, r, "/users/"+segs[1]+"?flash="+
-			url.QueryEscape(platformsFlash), http.StatusSeeOther)
+		flashRedirect(w, r, "/users/"+segs[1], platformsFlash, "")
 	case "set-max-sessions":
 		// 0021:按账号并发会话上限。0=跟随全局;>0=覆盖;-1=该账号不限。
 		// 仅对未来登录生效(登录时定格),现役会话不回踢 —— 与 CLI / 全局热更同口径。
@@ -531,8 +524,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 		}
 		s.audit.WriteFromRequest(r, "user_max_sessions_set", FormatTarget("user", id),
 			FormatDetail("username", u.Username, "max_sessions", strconv.Itoa(n)))
-		http.Redirect(w, r, "/users/"+segs[1]+"?flash="+
-			url.QueryEscape(tr(r, "flash.userMaxSessionsSet", n)), http.StatusSeeOther)
+		flashRedirect(w, r, "/users/"+segs[1], tr(r, "flash.userMaxSessionsSet", n), "")
 	// 0008(2026-05-23):user.set-fixed-vip 已移到 device 维度。
 	// 老前端表单 POST 到这里会给一个清晰提示,而不是悄悄 404 / 改成 noop。
 	case "set-fixed-vip":
