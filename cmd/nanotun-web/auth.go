@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"errors"
 	"strings"
 
@@ -167,28 +165,17 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 // decoy hash:登录 timing 防护
 // =========================================================================
 
-// decoyWebHashCached 在首次需要时生成一次 unguessable password 的 PHC,后续复用。
-// 与 nanotun/auth.runDecoyVerify 同思路。
-var decoyWebHashCached string
+// decoyWebHashCached 是一段**固定**的合法 PHC,用于登录 timing 防护:让「用户不存在」分支也跑一次等价
+// 耗时的 argon2id,避免通过响应时延枚举管理员用户名。
+//
+// 用固定构造(fallbackDecoy，不依赖运行时 crypto/rand)在包初始化时算一次:
+//   - 天然**无数据竞争**——此前用惰性写 `decoyWebHashCached string` 存在良性 data race(go test -race 报警);
+//   - 也不会像「sync.Once + 随机生成」那样一旦首次 entropy 抖动失败就永久退化为无 timing 防护
+//     (与 nanotun/auth 侧把 decoy 改成固定值同一思路)。
+// decoy 不保护任何真实秘密,只需触发等价耗时的 argon2 计算,故固定盐无碍。
+var decoyWebHashCached = fallbackDecoy()
 
 func decoyWebHash() string {
-	if decoyWebHashCached != "" {
-		return decoyWebHashCached
-	}
-	var raw [32]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		// rand 都炸了,这进程也不该继续提供服务 —— 但 verify 路径不该 panic。
-		// 退化:返回一个常量 hash,timing 仍走 argon2,无安全意义(decoy 不需要保密)。
-		decoyWebHashCached = fallbackDecoy()
-		return decoyWebHashCached
-	}
-	plain := base64.RawStdEncoding.EncodeToString(raw[:])
-	h, err := auth.HashPSK(plain)
-	if err != nil {
-		decoyWebHashCached = fallbackDecoy()
-		return decoyWebHashCached
-	}
-	decoyWebHashCached = h
 	return decoyWebHashCached
 }
 

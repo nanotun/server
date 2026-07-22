@@ -207,6 +207,11 @@ func openPreV15Store(ctx context.Context, t *testing.T) (*Store, int) {
 		`ALTER TABLE users DROP COLUMN max_sessions`); err != nil {
 		t.Fatalf("drop max_sessions (rewind to pre-0021): %v", err)
 	}
+	// 同上:0022 的 web_admins.totp_last_used_step 也是裸 ADD COLUMN,重跑前先 DROP。
+	if _, err := s.db.ExecContext(ctx,
+		`ALTER TABLE web_admins DROP COLUMN totp_last_used_step`); err != nil {
+		t.Fatalf("drop totp_last_used_step (rewind to pre-0022): %v", err)
+	}
 	return s, 14
 }
 

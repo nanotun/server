@@ -581,3 +581,73 @@ type TCPConfig struct {
 	UploadRate         int    `toml:"upload_rate"`          // 上传速率限制（字节/秒），0 表示不限制
 	DownloadRate       int    `toml:"download_rate"`        // 下载速率限制（字节/秒），0 表示不限制
 }
+
+// Validate 在加载配置后做一遍**语义**校验（超出 StrictCheck 的语法/未知字段层面），把「能在启动期就发现的
+// 明显错误」提前暴露成清晰错误，而不是等到运行期以晦涩的 net.Listen 失败 / 限速器异常 / 静默跳过网段的形式冒出来。
+//
+// 收敛原则：只挑「不会误伤任何已知合法配置」的**确定性**错误——
+//   - 各限速字段（字节/秒）不得为负：负速率无意义，喂给令牌桶会导致异常行为；
+//   - [tun].subnets / subnets_v6 中**非空**条目必须是合法 CIDR：拼错过去只是 WARN 静默跳过，难排查；
+//   - 若配置了 [server].listen_addr，其格式须能解析为 host:port / :port。
+//
+// **不**校验：MaxSessionsPerUser（-1 = 显式不限，合法负值）、hysteria 多端口并集语法、网段与本机冲突
+// （运行期按需跳过，非错误）。返回聚合后的可读错误；nil = 通过。
+func (c *Config) Validate() error {
+	var errs []string
+
+	checkRate := func(field string, v int64) {
+		if v < 0 {
+			errs = append(errs, fmt.Sprintf("%s 不能为负(%d);0 表示不限速", field, v))
+		}
+	}
+	checkRate("[server].upload_rate", int64(c.Server.UploadRate))
+	checkRate("[server].download_rate", int64(c.Server.DownloadRate))
+	checkRate("[server].exit_forward_rate_bps", c.Server.ExitForwardRateBPS)
+	for plat, rl := range c.Server.RateLimitByPlatform {
+		checkRate(fmt.Sprintf("[server].rate_limit_by_platform.%s.upload_rate", plat), int64(rl.UploadRate))
+		checkRate(fmt.Sprintf("[server].rate_limit_by_platform.%s.download_rate", plat), int64(rl.DownloadRate))
+	}
+	checkRate("[kcp].upload_rate", int64(c.KCP.UploadRate))
+	checkRate("[kcp].download_rate", int64(c.KCP.DownloadRate))
+	checkRate("[tcp].upload_rate", int64(c.TCP.UploadRate))
+	checkRate("[tcp].download_rate", int64(c.TCP.DownloadRate))
+
+	checkCIDRs := func(field string, list []string) {
+		for i, s := range list {
+			t := strings.TrimSpace(s)
+			if t == "" {
+				continue // 容忍 TOML 里的空串 / 占位项
+			}
+			if _, _, err := net.ParseCIDR(t); err != nil {
+				errs = append(errs, fmt.Sprintf("%s[%d]=%q 不是合法 CIDR: %v", field, i, s, err))
+			}
+		}
+	}
+	checkCIDRs("[tun].subnets", c.TUN.Subnets)
+	checkCIDRs("[tun].subnets_v6", c.TUN.SubnetsV6)
+
+	if la := strings.TrimSpace(c.Server.ListenAddr); la != "" {
+		if err := validateListenAddrFormat(la); err != nil {
+			errs = append(errs, fmt.Sprintf("[server].listen_addr=%q %v", c.Server.ListenAddr, err))
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("配置校验失败:\n  - %s", strings.Join(errs, "\n  - "))
+	}
+	return nil
+}
+
+// validateListenAddrFormat 校验监听地址是否为 "host:port" 或 ":port"，且端口在 1..65535。
+// 空 host（":8080"）合法（所有网卡）。不解析 IP 语义（那由 validateVPNListenAddr 在 hy2/REALITY 环回场景另做）。
+func validateListenAddrFormat(addr string) error {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("无法解析为 host:port(%v)", err)
+	}
+	p, perr := strconv.Atoi(port)
+	if perr != nil || p < 1 || p > 65535 {
+		return fmt.Errorf("端口 %q 非法(需 1..65535)", port)
+	}
+	return nil
+}

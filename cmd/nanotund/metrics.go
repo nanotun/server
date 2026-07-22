@@ -61,6 +61,8 @@ func writePrometheusMetrics(w io.Writer, gw *gatewayState) {
 	fmt.Fprintf(w, "nanotun_acl_drops_total{kind=\"exit_acl\"} %d\n", aclExitDropCount.Load())
 	fmt.Fprintf(w, "nanotun_acl_drops_total{kind=\"exit_gate\"} %d\n", exitGateDropCount.Load())
 	fmt.Fprintf(w, "nanotun_acl_drops_total{kind=\"mesh_off\"} %d\n", meshOffDropCount.Load())
+	// kind=src_spoof(M2 源地址反欺骗):普通会话以非本会话 vIP 作源发包被丢的总数(冒充他人 vIP / 注入伪造回包)。
+	fmt.Fprintf(w, "nanotun_acl_drops_total{kind=\"src_spoof\"} %d\n", srcSpoofDropCount.Load())
 
 	// mesh 总开关状态:0 / 1,gauge,便于报警「mesh 是不是被人误关了」。
 	meshOn := 0

@@ -123,22 +123,30 @@ func RenderTOTPQRCodePNG(otpauthURI string) ([]byte, error) {
 //   - code 长度 ≠ totpDigits → ErrTOTPBadFormat
 //   - 不匹配 → ErrTOTPMismatch
 //
-// 注意:这里不做 replay 防护(连续两次正确码不会被拒)。这对运维管理后台够用 —
-// 真要严防 replay 可以加一个 last_used_step 字段,但代价是 admin 偶尔会"刚输完就
-// 重输被拒"。
+// VerifyTOTP 本身不做 replay 防护(无状态);登录路径通过 VerifyTOTPStep 拿到匹配的时间步后,
+// 交给 store.ConsumeTOTPStep 原子「消费」该步来实现重放保护(0022)。非登录的 step-up 校验
+// (handler_me 的 enable/disable/regen)仍走本函数、不消费步,避免与同窗口内的正常登录相互抢占。
 func VerifyTOTP(secretBase32, code string) error {
+	_, err := VerifyTOTPStep(secretBase32, code)
+	return err
+}
+
+// VerifyTOTPStep 同 VerifyTOTP,但匹配成功时额外返回命中的时间步 T=(unix/period + skew),供登录路径
+// 做重放保护(store.ConsumeTOTPStep:仅当该步 > 已消费步才放行,同一枚码重放会命中同一步被拒)。
+// 不匹配 → (0, err)。
+func VerifyTOTPStep(secretBase32, code string) (int64, error) {
 	code = strings.TrimSpace(code)
 	if len(code) != totpDigits {
-		return ErrTOTPBadFormat
+		return 0, ErrTOTPBadFormat
 	}
 	for _, r := range code {
 		if r < '0' || r > '9' {
-			return ErrTOTPBadFormat
+			return 0, ErrTOTPBadFormat
 		}
 	}
 	key, err := decodeTOTPSecret(secretBase32)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	now := time.Now().Unix()
 	for skew := -int64(totpAllowedSkew); skew <= int64(totpAllowedSkew); skew++ {
@@ -146,10 +154,10 @@ func VerifyTOTP(secretBase32, code string) error {
 		got := truncatedHOTP(key, uint64(t))
 		expected := fmt.Sprintf("%0*d", totpDigits, got)
 		if subtle.ConstantTimeCompare([]byte(expected), []byte(code)) == 1 {
-			return nil
+			return t, nil
 		}
 	}
-	return ErrTOTPMismatch
+	return 0, ErrTOTPMismatch
 }
 
 // truncatedHOTP 算一次 HOTP(RFC 4226 §5.3)截断后的整数(0..10^digits-1)。

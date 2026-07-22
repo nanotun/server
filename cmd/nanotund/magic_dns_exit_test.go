@@ -115,7 +115,7 @@ func TestInterceptExitDNSCorrelation(t *testing.T) {
 	gw := netip.AddrFrom4([4]byte{10, 201, 0, 1})
 
 	ch := make(chan []byte, 1)
-	port, ok := registerExitDNSWaiter(ch)
+	port, ok := registerExitDNSWaiter(ch, nil, 0)
 	if !ok {
 		t.Fatal("registerExitDNSWaiter 失败")
 	}
@@ -129,7 +129,7 @@ func TestInterceptExitDNSCorrelation(t *testing.T) {
 	answer := []byte("\xab\xcd\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00answer")
 	resp, _ := buildIPv4UDP(netip.AddrFrom4([4]byte{8, 8, 8, 8}), 53, gw, port, answer)
 
-	if !interceptExitDNSResponseIfPending(resp) {
+	if !interceptExitDNSResponseIfPending(nil, resp) {
 		t.Fatal("应截获该回包")
 	}
 	select {
@@ -146,11 +146,59 @@ func TestInterceptExitDNSCorrelation(t *testing.T) {
 	}
 }
 
+// TestInterceptExitDNSRejectsForeignConn 覆盖 H1 加固：应答必须来自「查询被投递到的那条出口会话」，
+// 且 DNS 事务 id 须与在途查询一致——否则拒收且不消费等待者（留给真正的应答或超时）。
+func TestInterceptExitDNSRejectsForeignConn(t *testing.T) {
+	setServerGatewayAddrs("10.201.0.1/16", "")
+	gw := netip.AddrFrom4([4]byte{10, 201, 0, 1})
+
+	exitConn := &Connection{}
+	other := &Connection{}
+	ch := make(chan []byte, 1)
+	port, ok := registerExitDNSWaiter(ch, exitConn, 0xabcd) // qid=0xabcd 与下方 answer 首两字节一致
+	if !ok {
+		t.Fatal("registerExitDNSWaiter 失败")
+	}
+	defer unregisterExitDNSWaiter(port)
+
+	answer := []byte("\xab\xcd\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00answer")
+	resp, _ := buildIPv4UDP(netip.AddrFrom4([4]byte{8, 8, 8, 8}), 53, gw, port, answer)
+
+	// ① 来自「非投递出口会话」的应答：拒收，等待者保留。
+	if interceptExitDNSResponseIfPending(other, resp) {
+		t.Fatal("来自其它会话的伪造应答不应被截获")
+	}
+	if exitDNSInflight.Load() == 0 {
+		t.Fatal("拒收后等待者应仍在")
+	}
+	// ② 来自正确出口会话但 txn-id 不符：拒收。
+	badQid := []byte("\x00\x01\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00answer")
+	respBadQid, _ := buildIPv4UDP(netip.AddrFrom4([4]byte{8, 8, 8, 8}), 53, gw, port, badQid)
+	if interceptExitDNSResponseIfPending(exitConn, respBadQid) {
+		t.Fatal("txn-id 不符不应被截获")
+	}
+	// ③ 正确出口会话 + 匹配 txn-id：截获并交回载荷。
+	if !interceptExitDNSResponseIfPending(exitConn, resp) {
+		t.Fatal("正确出口会话 + 匹配 txn-id 应被截获")
+	}
+	select {
+	case got := <-ch:
+		if string(got) != string(answer) {
+			t.Fatalf("交回载荷不一致: %q", got)
+		}
+	default:
+		t.Fatal("等待者未收到载荷")
+	}
+	if exitDNSInflight.Load() != 0 {
+		t.Fatalf("截获后 in-flight 应归零, 实际 %d", exitDNSInflight.Load())
+	}
+}
+
 func TestInterceptExitDNSRejectsNon53Source(t *testing.T) {
 	setServerGatewayAddrs("10.201.0.1/16", "")
 	gw := netip.AddrFrom4([4]byte{10, 201, 0, 1})
 	ch := make(chan []byte, 1)
-	port, ok := registerExitDNSWaiter(ch)
+	port, ok := registerExitDNSWaiter(ch, nil, 0)
 	if !ok {
 		t.Fatal("registerExitDNSWaiter 失败")
 	}
@@ -158,7 +206,7 @@ func TestInterceptExitDNSRejectsNon53Source(t *testing.T) {
 
 	// 源端口非 53（伪造应答）→ 不应截获。
 	bad, _ := buildIPv4UDP(netip.AddrFrom4([4]byte{1, 2, 3, 4}), 12345, gw, port, []byte("evil"))
-	if interceptExitDNSResponseIfPending(bad) {
+	if interceptExitDNSResponseIfPending(nil, bad) {
 		t.Fatal("源端口非 53 不应被截获")
 	}
 	// 等待者仍在。
@@ -175,7 +223,7 @@ func TestInterceptExitDNSNoInflightFastPath(t *testing.T) {
 	gw := netip.AddrFrom4([4]byte{10, 201, 0, 1})
 	setServerGatewayAddrs("10.201.0.1/16", "")
 	pkt, _ := buildIPv4UDP(netip.AddrFrom4([4]byte{8, 8, 8, 8}), 53, gw, 45000, []byte("x"))
-	if interceptExitDNSResponseIfPending(pkt) {
+	if interceptExitDNSResponseIfPending(nil, pkt) {
 		t.Fatal("无 in-flight 时不应截获")
 	}
 }
@@ -498,7 +546,7 @@ func TestTryRelayPublicViaExit_RelaysRawResponse(t *testing.T) {
 	if !ok {
 		t.Fatal("构造出口回包失败")
 	}
-	if !interceptExitDNSResponseIfPending(respPkt) {
+	if !interceptExitDNSResponseIfPending(exit, respPkt) {
 		t.Fatal("出口回包应被截获")
 	}
 	if !<-done {

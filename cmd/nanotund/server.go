@@ -563,6 +563,12 @@ func loadConfig(path string) (config.Config, error) {
 			"[config] 配置中存在未知字段(可能是拼写错误或已废弃);设 %s=1 升级为 fatal",
 			config.StrictEnvVar)
 	}
+
+	// 语义校验:负速率 / 非法 CIDR / 非法 listen_addr 等在启动期 fail-fast(见 config.Config.Validate)。
+	// 这类错误若拖到运行期才暴露(net.Listen 失败 / 限速器异常 / 网段静默跳过),排查成本高得多。
+	if verr := cfg.Validate(); verr != nil {
+		return cfg, fmt.Errorf("配置语义校验未通过: %w", verr)
+	}
 	return cfg, nil
 }
 
@@ -1785,7 +1791,15 @@ readLoop:
 			// exit-node DNS 地理修正(direction 1)回程截获:magic resolver 经出口转发的公网 DNS 查询,其响应
 			// (出口→server,src=:53,dst=server 网关:关联端口)在此截获、交回等待的 resolver goroutine,不写 TUN
 			// (避免内核 rp_filter/conntrack 吞掉这条无出向记录的回包)。零 in-flight 时仅一次 atomic load。见 magic_dns_exit.go。
-			if interceptExitDNSResponseIfPending(payload) {
+			if interceptExitDNSResponseIfPending(c, payload) {
+				continue
+			}
+			// M2(源地址反欺骗):普通(非出口/非子网宣告方)会话只应以自己的 vIP 作源发包。源 IP 不属于本会话
+			// vIP 集合 = 伪造(冒充他人 vIP / 注入伪造回包),直接丢并计数。出口 / 子网宣告方会话合法中继「外网/LAN
+			// 回程」流量(源是任意公网/内网地址),故豁免——它们的回程由上面的 exit-DNS 截获或按 dst-vIP 投递处理。
+			// 仅在「本会话已分配同族 vIP 却对不上」时才丢(见 connSourceSpoofed),避免误伤未分到 vIP / 无 v6 的会话。
+			if connSourceSpoofed(c, payload) {
+				srcSpoofDropCount.Add(1)
 				continue
 			}
 			// subnet route(SR-M1):dst 命中某「已批准的内网网段」→ 投递给该网段的宣告方会话,由其本机转发进 LAN
@@ -1811,9 +1825,15 @@ readLoop:
 			}
 			// P0-1: ACL 数据面 enforcement。fast-path:无规则 / src==dst / dst 非 vIP 时
 			// 内部直接放行,只多两次 map lookup;有规则且命中 deny 时丢包,不写 tunWriteChan。
-			// userID 是 store.users.id(int64),从 c.userID 反解("u<id>");解析失败按
-			// 「无 user 上下文」处理(测试用例 / 客户端 connIDStr 异常等),不做 enforcement。
-			if aclDropPacketDirected(parseUserIDStr(c.userID), payload) {
+			// userID 是 store.users.id(int64),从 c.userID 反解("u<id>")。
+			uid := parseUserIDStr(c.userID)
+			// fail-closed 加固:会话**有** userID 却解析不出(身份损坏/异常)——不放行未知身份流量,直接丢。
+			// c.userID=="" 是测试 / 无 user 上下文的合法情形,仍走下方 srcUserID==0 的 no-op 语义。
+			if uid == 0 && c.userID != "" {
+				aclMalformedUserDropCount.Add(1)
+				continue
+			}
+			if aclDropPacketDirected(uid, payload) {
 				continue
 			}
 			// exit-node(M2):本会话若选定了出口节点，且此包是公网出口流量(dst 非 vIP)，
@@ -1841,7 +1861,9 @@ readLoop:
 			wg.Wait()
 			return
 		case util.LinkTypePing:
-			logrus.WithFields(logrus.Fields{"remote": remote, "payload_len": len(payload)}).Info("收到链路 Ping，回复 Pong")
+			// 数据面 keepalive 常态高频(每会话每隔数秒一次),Info 级会淹没日志——降到 Trace,
+			// 需要排障时再开 trace。回 Pong 的行为不变。
+			logrus.WithFields(logrus.Fields{"remote": remote, "payload_len": len(payload)}).Trace("收到链路 Ping，回复 Pong")
 			c.linkWrMu.Lock()
 			werr := util.WriteLinkFrame(rw, util.LinkTypePong, payload)
 			c.linkWrMu.Unlock()
@@ -2763,6 +2785,19 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		}
 		victim.linkWrMu.Lock()
 		if victim.linkConn != nil {
+			// M3:会话超限踢除(evict,非同 device supersede)是被动踢线——给受害端先发一帧带码
+			// Close(CodeSessionLimit),让客户端明确「账号会话数超限」并据此退避 / 提示,而不是收到
+			// 裸 TCP 断开盲目重连(两台设备来回踢的震荡)。best-effort:带 1s 写超时,写失败也照常 Close。
+			// supersede(同 device_uuid 重登)受害者是同一设备刚建立的新连接在接管,老连接静默关闭即可,
+			// 不发帧(与既有行为一致,避免客户端对自己的重登误报"被超限踢下线")。
+			if !isSupersede {
+				if body, mErr := util.MarshalCloseJSON(util.CodeSessionLimit, sessionLimitEvictClientMsg); mErr == nil {
+					if dl, ok := victim.linkConn.(interface{ SetWriteDeadline(time.Time) error }); ok {
+						_ = dl.SetWriteDeadline(time.Now().Add(1 * time.Second))
+					}
+					_ = util.WriteLinkFrame(victim.linkConn, util.LinkTypeClose, body)
+				}
+			}
 			_ = victim.linkConn.Close()
 		}
 		victim.linkWrMu.Unlock()

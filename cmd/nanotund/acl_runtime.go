@@ -106,6 +106,14 @@ var (
 	// meshOffDropCount(2026-05-23):mesh 总开关 = false 导致的跨用户流量丢包总数。
 	// 单独统计便于运维区分「ACL 规则丢的」与「mesh 主动关闭丢的」。
 	meshOffDropCount atomic.Uint64
+
+	// srcSpoofDropCount(M2 源地址反欺骗):普通会话以非本会话 vIP 作源发包被丢的总数。
+	// 持续增长 = 有会话在尝试冒充他人 vIP / 注入伪造回包。供 /metrics + control_socket 消费。
+	srcSpoofDropCount atomic.Uint64
+
+	// aclMalformedUserDropCount(fail-closed 加固):会话**有** userID 却解析不出 int64(损坏/异常身份)
+	// 时按 fail-closed 丢包的总数。正常会话 userID 恒为 "u<id>",此计数应恒为 0;非 0 = 出现了异常身份会话。
+	aclMalformedUserDropCount atomic.Uint64
 )
 
 // reloadACLSnapshotFromStore 从 store 拉取最新规则集与 default action,构建
@@ -280,6 +288,7 @@ func buildACLSnapshot(rules []*store.ACLPair, defaultAction string) *aclSnapshot
 
 // pktTuple 把数据面热路径上要参与 ACL 决策的字段固化下来,避免反复解析。
 type pktTuple struct {
+	src     netip.Addr // 源 IP（M2 源地址反欺骗用；v4-mapped 归一为 v4）
 	dst     netip.Addr
 	proto   string // "tcp" / "udp" / "icmp" / "icmpv6" / ""(未识别)
 	dstPort uint16 // tcp/udp 才有意义;其他 0
@@ -526,9 +535,10 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 		if ihl < 20 || ihl > len(p) {
 			return pktTuple{}, false
 		}
-		var dst [4]byte
+		var src, dst [4]byte
+		copy(src[:], p[12:16])
 		copy(dst[:], p[16:20])
-		out := pktTuple{dst: netip.AddrFrom4(dst)}
+		out := pktTuple{src: netip.AddrFrom4(src), dst: netip.AddrFrom4(dst)}
 		proto := p[9]
 		switch proto {
 		case 1:
@@ -549,9 +559,11 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 		if len(p) < 40 {
 			return pktTuple{}, false
 		}
-		var dst [16]byte
+		var src, dst [16]byte
+		copy(src[:], p[8:24])
 		copy(dst[:], p[24:40])
-		out := pktTuple{dst: netip.AddrFrom16(dst)}
+		// Unmap:把 v4-mapped-in-v6（::ffff:a.b.c.d）归一成 v4，避免 vIP 反查 / 源校验因表示差异漏判。
+		out := pktTuple{src: netip.AddrFrom16(src).Unmap(), dst: netip.AddrFrom16(dst).Unmap()}
 		nh := p[6]
 		switch nh {
 		case 58:
@@ -571,6 +583,45 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 	default:
 		return pktTuple{}, false
 	}
+}
+
+// connSourceSpoofed 判断会话 c 送来的包源 IP 是否为「伪造」——即普通会话以非本会话 vIP 作源（冒充他人 vIP /
+// 注入伪造回包）。返回 true = 应丢弃。M2 源地址反欺骗，用于 readLoop 热路径。
+//
+// 语义（保守，避免误伤合法流量）：
+//   - 出口 / 子网宣告方会话（advertisedExit / advertisedSubnetRoutes）合法中继「外网/LAN 回程」流量，源是任意
+//     公网/内网地址，一律豁免（它们的回程另由 exit-DNS 截获或按 dst-vIP 投递处理）。
+//   - 未分配 vIP 的会话（登录竞速窗口等）不校验。
+//   - **仅在本会话已持有与包同族（v4/v6）的 vIP、却与源对不上**时才判伪造。若会话尚无该族 vIP（如只分到 v4、
+//     却收到 v6 包），无从判定，放行交由后续 ACL / 出口闸处理——不在此环节误杀。
+func connSourceSpoofed(c *Connection, payload []byte) bool {
+	if c == nil || c.advertisedExit.Load() || c.advertisedSubnetRoutes.Load() {
+		return false
+	}
+	ips := c.safeClientIPs()
+	if len(ips) == 0 {
+		return false
+	}
+	t, ok := parsePacketTuple(payload)
+	if !ok || !t.src.IsValid() {
+		return false
+	}
+	src := t.src.Unmap()
+	sameFamily := false
+	for _, a := range ips {
+		pa, err := netip.ParseAddr(a.VirtualIP)
+		if err != nil {
+			continue
+		}
+		pa = pa.Unmap()
+		if pa == src {
+			return false // 源恰为本会话某 vIP → 合法
+		}
+		if pa.Is4() == src.Is4() {
+			sameFamily = true // 本会话持有同族 vIP，可作判定基准
+		}
+	}
+	return sameFamily // 有同族 vIP 却无一匹配 → 伪造
 }
 
 // vipOwner: vIP 文本 → 拥有者 userID(int64)。

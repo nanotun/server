@@ -172,12 +172,18 @@ func TestInterceptExitBoundDNS_ColdResolvesViaExit(t *testing.T) {
 	}
 
 	// 模拟出口回包 → 被关联端口截获 → 异步 goroutine 拿到结果 → 注入客户端。
+	// H1：截获须由「查询被投递到的那条出口会话」触发，故取该 device 的出口 conn 传入（与生产一致：
+	// 回包沿出口链路到达其 readLoop）。
+	exitConn := lookupRunningExitConnByDevice(103)
+	if exitConn == nil {
+		t.Fatal("找不到出口会话")
+	}
 	respPayload := buildDNSResponseA(t, "cold.example.com", 60, "198.51.100.20")
 	respPkt, bok := buildIPv4UDP(resolver, 53, gw, corrPort, respPayload)
 	if !bok {
 		t.Fatal("构造出口回包失败")
 	}
-	if !interceptExitDNSResponseIfPending(respPkt) {
+	if !interceptExitDNSResponseIfPending(exitConn, respPkt) {
 		t.Fatal("出口回包应被关联端口截获")
 	}
 

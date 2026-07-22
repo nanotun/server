@@ -91,6 +91,12 @@ func TestVerifyPSK_RejectsOversizedArgonParams(t *testing.T) {
 		"argon2id$v=19$m=65536,t=1000,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		// p 太大：128 线程
 		"argon2id$v=19$m=65536,t=2,p=128$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		// 整数回绕绕过尝试：m=2^32+65536，回绕到 uint32 后 == 65536（看似正常）——必须在转 uint32 前按 int 域拒掉。
+		"argon2id$v=19$m=4295032832,t=2,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		// t=2^32+2，回绕到 uint32 后 == 2；p=256 回绕到 uint8 后 == 0（后者原本被 ==0 兜底，前者不会）。
+		"argon2id$v=19$m=65536,t=4294967298,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		// p=257，回绕到 uint8 后 == 1（看似正常）——必须在转 uint8 前按 int 域拒掉。
+		"argon2id$v=19$m=65536,t=2,p=257$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 	}
 	for i, enc := range bad {
 		if _, err := VerifyPSK("any-pass", enc); err == nil {

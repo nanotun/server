@@ -49,12 +49,30 @@ const (
 	exitDNSWaitTimeout = 2 * time.Second
 )
 
-// exitDNS 关联表：关联端口 → 等待响应的 channel。零 in-flight 时 readLoop 的截获检查仅一次 atomic load。
+// exitDNSWaiter 记录一条在途「经出口 DNS 查询」的等待者。
+//
+// H1（跨用户 DNS 缓存投毒加固）：仅凭「关联端口 + src=:53 + dst=网关」匹配不足以证明应答
+// 来自真正的出口——任一已认证会话都能构造这样一份伪造包注入等待者。故绑定两项身份：
+//   - exitConn：查询被投递到的那条出口会话。截获时要求应答**恰好**从这条会话的 readLoop 到达，
+//     其它会话（含攻击者自己的）投递的伪造应答一律拒收。
+//   - qid：该查询的 DNS 事务 id，应答须回显同值（纵深防御，防出口会话被攻破后乱注入在途查询）。
+//
+// exitConn==nil / qid==0 表示「不约束」（仅单测旧桩会这样注册；生产路径两者恒非零）。
+type exitDNSWaiter struct {
+	ch       chan []byte
+	exitConn *Connection
+	qid      uint16
+}
+
+// exitDNS 关联表：关联端口 → 等待者。零 in-flight 时 readLoop 的截获检查仅一次 atomic load。
 var (
 	exitDNSMu       sync.Mutex
-	exitDNSWaiters  = make(map[uint16]chan []byte)
+	exitDNSWaiters  = make(map[uint16]*exitDNSWaiter)
 	exitDNSInflight atomic.Int64
 	exitDNSPortCtr  atomic.Uint32
+	// exitDNSForeignConnRejectCount：截获时因「应答来自非投递出口会话」而被拒的次数（H1 观测：
+	// 持续增长 = 有会话在尝试向关联端口注入伪造 DNS 应答）。
+	exitDNSForeignConnRejectCount atomic.Uint64
 	// magicDNSViaExitCount：成功经出口解析的公网查询数（观测用，供 /status 汇总）。
 	magicDNSViaExitCount atomic.Uint64
 	// magicDNSAAAAStripCount：所选出口**无 v6 出网**时，被就地回 NODATA（不绕出口、省一个 in-flight 占位）
@@ -246,8 +264,13 @@ func resolveExitDNS(exitConn *Connection, query []byte) ([]byte, bool) {
 	if g == nil || !g.v4.IsValid() {
 		return nil, false // 无 v4 网关（纯 v6 部署等）→ 回退本地上游
 	}
+	// H1：登记等待者时绑定出口会话 + 查询事务 id，截获路径据此拒收其它会话的伪造应答。
+	var qid uint16
+	if len(query) >= 12 {
+		qid = binary.BigEndian.Uint16(query[0:2])
+	}
 	ch := make(chan []byte, 1)
-	port, ok := registerExitDNSWaiter(ch)
+	port, ok := registerExitDNSWaiter(ch, exitConn, qid)
 	if !ok {
 		return nil, false // 关联端口耗尽（极端并发）→ 回退
 	}
@@ -268,8 +291,9 @@ func resolveExitDNS(exitConn *Connection, query []byte) ([]byte, bool) {
 	}
 }
 
-// registerExitDNSWaiter 分配一个未占用的关联端口并登记等待者。返回 (port, true)；无空闲端口时 (0,false)。
-func registerExitDNSWaiter(ch chan []byte) (uint16, bool) {
+// registerExitDNSWaiter 分配一个未占用的关联端口并登记等待者（绑定出口会话 + 查询 qid，见 exitDNSWaiter）。
+// 返回 (port, true)；无空闲端口时 (0,false)。exitConn==nil / qid==0 表示不约束（仅单测旧桩）。
+func registerExitDNSWaiter(ch chan []byte, exitConn *Connection, qid uint16) (uint16, bool) {
 	span := uint32(exitDNSPortHi-exitDNSPortLo) + 1
 	exitDNSMu.Lock()
 	defer exitDNSMu.Unlock()
@@ -278,7 +302,7 @@ func registerExitDNSWaiter(ch chan []byte) (uint16, bool) {
 		if _, used := exitDNSWaiters[p]; used {
 			continue
 		}
-		exitDNSWaiters[p] = ch
+		exitDNSWaiters[p] = &exitDNSWaiter{ch: ch, exitConn: exitConn, qid: qid}
 		exitDNSInflight.Add(1)
 		return p, true
 	}
@@ -298,13 +322,17 @@ func unregisterExitDNSWaiter(port uint16) {
 // interceptExitDNSResponseIfPending 若 payload 是「经出口转发的 DNS 查询」的响应（出口→server：src=任意:53、
 // dst=server v4 网关:关联端口，且该端口有等待者），截获其 UDP 载荷交回等待 goroutine，返回 true（调用方 continue，
 // 不写 TUN）。零 in-flight 时仅一次 atomic load 即返回，热路径几乎无开销。
-func interceptExitDNSResponseIfPending(payload []byte) bool {
+//
+// 参数 c 是投递本包的会话（readLoop 的 *Connection）。H1 加固：只接受来自「查询被投递到的那条出口会话」的应答，
+// 并校验 DNS 事务 id 与在途查询一致——任一其它已认证会话即便伪造 src=:53 命中关联端口，也因身份不符被拒收，
+// 杜绝跨用户 DNS 缓存投毒。src=:53 单靠端口是攻击者可控的，不足为凭（见 exitDNSWaiter 注释）。
+func interceptExitDNSResponseIfPending(c *Connection, payload []byte) bool {
 	if exitDNSInflight.Load() == 0 {
 		return false
 	}
 	_, dstIP, srcPort, dstPort, udp, ok := parseIPv4UDPForReturn(payload)
 	if !ok || srcPort != 53 {
-		return false // 只认「来自 :53」的回包（防使用方伪造应答注入关联端口）
+		return false // 只认「来自 :53」的回包（弱约束，真正把关的是下面的 conn/qid 校验）
 	}
 	if dstPort < exitDNSPortLo || dstPort > exitDNSPortHi {
 		return false
@@ -314,15 +342,27 @@ func interceptExitDNSResponseIfPending(payload []byte) bool {
 		return false
 	}
 	exitDNSMu.Lock()
-	ch, waiting := exitDNSWaiters[dstPort]
-	if waiting {
-		delete(exitDNSWaiters, dstPort) // 一次性：先摘除，防重复投递 / 与 resolveExitDNS 的 defer 双减
-		exitDNSInflight.Add(-1)
-	}
-	exitDNSMu.Unlock()
-	if !waiting {
+	w, waiting := exitDNSWaiters[dstPort]
+	if !waiting || w == nil {
+		exitDNSMu.Unlock()
 		return false
 	}
+	// H1 核心：应答必须来自查询被投递到的那条出口会话。不符即拒收（**不**消费等待者——留给真正的
+	// 出口应答或超时处理），并计数。exitConn==nil（旧单测桩）时不设此约束。
+	if w.exitConn != nil && w.exitConn != c {
+		exitDNSMu.Unlock()
+		exitDNSForeignConnRejectCount.Add(1)
+		return false
+	}
+	// 纵深防御：DNS 事务 id 须与在途查询一致（qid==0 表示旧单测桩不约束）。
+	if w.qid != 0 && (len(udp) < 12 || binary.BigEndian.Uint16(udp[0:2]) != w.qid) {
+		exitDNSMu.Unlock()
+		return false
+	}
+	delete(exitDNSWaiters, dstPort) // 一次性：先摘除，防重复投递 / 与 resolveExitDNS 的 defer 双减
+	exitDNSInflight.Add(-1)
+	ch := w.ch
+	exitDNSMu.Unlock()
 	// 复制 UDP 载荷：payload 底层是链路读缓冲，readLoop 之后会复用/归还。
 	cp := make([]byte, len(udp))
 	copy(cp, udp)
