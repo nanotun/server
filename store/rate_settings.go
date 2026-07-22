@@ -75,6 +75,13 @@ func (s *Store) SetRateDefaults(ctx context.Context, d RateDefaults) error {
 		return fmt.Errorf("store: rate defaults must be >= 0 (got up=%d down=%d burst=%d): %w",
 			d.UploadBPS, d.DownloadBPS, d.BurstBytes, ErrInvalid)
 	}
+	// burst 区间校验:与 CLI raw 写路径(ValidateRateBurstSetting)对齐同一 [Min, Max] 区间。此前这条
+	// 编程 / web 写路径只查非负,运维在设置页填 1 GiB 能落库,但运行期 effectiveBurst 会把它静默夹到 16 MiB
+	// —— 「写得进却被偷偷改」的不一致。0 = 用代码默认(64 KiB),其余必须落在 [Min, Max],否则直接拒并提示区间。
+	if d.BurstBytes != 0 && (d.BurstBytes < RateBurstBytesMin || d.BurstBytes > RateBurstBytesMax) {
+		return fmt.Errorf("store: rate burst must be 0 (use default) or within [%d, %d] bytes, got %d: %w",
+			RateBurstBytesMin, RateBurstBytesMax, d.BurstBytes, ErrInvalid)
+	}
 	// 深扫第九轮 LOW:三个键包进一个事务原子写入。此前是三次独立 autocommit,中途
 	// 失败 / 崩溃会留下「上行已改、下行没改」的撕裂态,且 MaxOpenConns>1 时并发读者
 	// 可能读到中间态。事务保证要么三个全改、要么全不改。

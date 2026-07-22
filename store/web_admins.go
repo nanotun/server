@@ -388,15 +388,24 @@ func (s *Store) TouchWebSession(ctx context.Context, id string, extendBy int64) 
 	// 深扫第八轮 LOW:检查 RowsAffected —— touch 一个不存在(已过期被 GC / 已 logout)
 	// 的 session id 应显式返回 ErrNotFound,而不是静默成功。上层据此可提前把请求当未登录
 	// 处理,不会误以为滑动续期成功。
+	// M5 补全:绝对生命周期守卫。此前 Touch 只按 id 更新,若一条 session 已超过 created_at+MaxAge
+	// 却因某种时序被再次 Touch,expires_at 会被继续顺延、把绝对上限「续」没了(与 GetWebSession 的绝对
+	// 上限判定相互矛盾)。加 WHERE 条件:已过绝对上限的行不再被 Touch(RowsAffected=0 → ErrNotFound,
+	// 与 GetWebSession 命中绝对上限时的语义一致);顺延 expires_at 时也用 MIN 夹住不超过绝对截止点。
+	absDeadlineClause := `(created_at <= 0 OR ? - created_at < ?)`
 	var res sql.Result
 	var err error
 	if extendBy > 0 {
 		res, err = s.db.ExecContext(ctx,
-			`UPDATE web_sessions SET last_seen_at=?, expires_at=? WHERE id=?`,
-			now, now+extendBy, id)
+			`UPDATE web_sessions
+			    SET last_seen_at=?,
+			        expires_at=CASE WHEN created_at > 0 THEN MIN(?, created_at + ?) ELSE ? END
+			  WHERE id=? AND `+absDeadlineClause,
+			now, now+extendBy, WebSessionAbsoluteMaxAge, now+extendBy, id, now, WebSessionAbsoluteMaxAge)
 	} else {
 		res, err = s.db.ExecContext(ctx,
-			`UPDATE web_sessions SET last_seen_at=? WHERE id=?`, now, id)
+			`UPDATE web_sessions SET last_seen_at=? WHERE id=? AND `+absDeadlineClause,
+			now, id, now, WebSessionAbsoluteMaxAge)
 	}
 	if err != nil {
 		return fmt.Errorf("store: touch web session: %w", err)
@@ -428,8 +437,18 @@ func (s *Store) DeleteWebSessionsByAdmin(ctx context.Context, adminID int64) (in
 }
 
 // PruneExpiredWebSessions 后台 GC 调用。
+//
+// M5 补全:除滑动窗口过期(expires_at <= now)外,也回收**已超过绝对生命周期上限**的 session
+// (created_at + MaxAge <= now)。此前只删 expires_at 过期的行 —— 一条刚被续期(expires_at 仍在未来)
+// 但已越过 30 天绝对上限的 session 会在库里滞留到其滑动窗口自然过期为止(GetWebSession 已拒绝使用它,
+// 但行不清理,占空间也误导 List)。两条件取并集,过期与超龄都清。
 func (s *Store) PruneExpiredWebSessions(ctx context.Context) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM web_sessions WHERE expires_at <= ?`, nowUnix())
+	now := nowUnix()
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM web_sessions
+		  WHERE expires_at <= ?
+		     OR (created_at > 0 AND ? - created_at >= ?)`,
+		now, now, WebSessionAbsoluteMaxAge)
 	if err != nil {
 		return 0, fmt.Errorf("store: prune web sessions: %w", err)
 	}
@@ -438,12 +457,19 @@ func (s *Store) PruneExpiredWebSessions(ctx context.Context) (int64, error) {
 }
 
 // ListWebSessionsByAdmin admin 自己看自己当前活跃设备用。
+//
+// M5 补全:除滑动窗口未过期(expires_at > now)外,也排除**已越过绝对生命周期上限**的 session,
+// 与 GetWebSession 的判定一致 —— 否则一条已超龄、GetWebSession 已当未登录处理的 session 仍会在
+// 「当前活跃设备」列表里显示为在线,误导 admin(以为还能用 / 还需手动 revoke)。
 func (s *Store) ListWebSessionsByAdmin(ctx context.Context, adminID int64) ([]*WebSession, error) {
+	now := nowUnix()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, admin_id, created_at, last_seen_at, expires_at, ip, user_agent
-		   FROM web_sessions WHERE admin_id=? AND expires_at > ?
+		   FROM web_sessions
+		  WHERE admin_id=? AND expires_at > ?
+		    AND (created_at <= 0 OR ? - created_at < ?)
 		   ORDER BY last_seen_at DESC`,
-		adminID, nowUnix())
+		adminID, now, now, WebSessionAbsoluteMaxAge)
 	if err != nil {
 		return nil, fmt.Errorf("store: list web sessions: %w", err)
 	}

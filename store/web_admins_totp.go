@@ -41,9 +41,12 @@ func (s *Store) SetWebAdminTOTPSecret(ctx context.Context, id int64, secretBase3
 	if secretBase32 == "" {
 		return errors.New("store: empty totp secret")
 	}
+	// 一并清 totp_last_used_step:写入的是**新** secret,其重放步计数器应从零开始。否则「禁用→立即
+	// 用新 secret 重新绑定」若落在同一 30s 时间步内,ConsumeTOTPStep 会因残留的旧 step 把新 secret 的
+	// 首次登录判为重放而拒绝(需干等一个时间步)。新凭据 = 新计数器。
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE web_admins
-		    SET totp_secret=?, totp_enabled=0, totp_enabled_at=0
+		    SET totp_secret=?, totp_enabled=0, totp_enabled_at=0, totp_last_used_step=0
 		  WHERE id=?`,
 		secretBase32, id)
 	if err != nil {
@@ -125,9 +128,11 @@ func (s *Store) DisableWebAdminTOTP(ctx context.Context, id int64) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 同时清 totp_last_used_step:disable 作废当前 secret,重放步计数器也应归零,保证将来重新绑定
+	// (新 secret)时从干净状态开始(见 SetWebAdminTOTPSecret 同款注释)。
 	res, err := tx.ExecContext(ctx,
 		`UPDATE web_admins
-		    SET totp_secret='', totp_enabled=0, totp_enabled_at=0
+		    SET totp_secret='', totp_enabled=0, totp_enabled_at=0, totp_last_used_step=0
 		  WHERE id=?`, id)
 	if err != nil {
 		return fmt.Errorf("store: disable totp: %w", err)

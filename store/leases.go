@@ -149,11 +149,21 @@ func (s *Store) GcOrphanLeases(ctx context.Context, idle int64) (int64, error) {
 		return 0, i18nErr("store.lease.gcIdlePositive", "store: GcOrphanLeases idle 必须 > 0 秒")
 	}
 	cutoff := nowUnix() - idle
+	// GC 守卫(纵深防御):除了 manual=0,再显式排除「lease 的 vip 正是该 device 的 fixed_vip」的行。
+	// 正常路径下 SetDeviceFixedVIP 已在同一事务里把 fixed_vip 与 leases.manual 同步,manual=1 本就挡住回收;
+	// 但历史行 / 老迁移 / 外部直接写库可能造成 manual 漂移成 0 而 fixed_vip 仍在 —— 只靠 manual 会把管理员手钉的
+	// 固定地址当空闲回收,设备再上线拿不回固定 vIP。这里以 fixed_vip 实值兜底,任何与 fixed_vip 匹配的 lease 永不回收。
 	res, err := s.db.ExecContext(ctx, `
 		DELETE FROM leases
 		WHERE manual = 0
 		  AND device_id IN (
 		      SELECT id FROM devices WHERE last_seen_at < ?
+		  )
+		  AND id NOT IN (
+		      SELECT l.id FROM leases l
+		      JOIN devices d ON d.id = l.device_id
+		      WHERE (COALESCE(d.fixed_vip_v4,'') <> '' AND d.fixed_vip_v4 = l.vip_v4)
+		         OR (COALESCE(d.fixed_vip_v6,'') <> '' AND d.fixed_vip_v6 = l.vip_v6)
 		  )`, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("store: gc orphan leases: %w", err)

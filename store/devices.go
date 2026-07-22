@@ -368,7 +368,17 @@ func (s *Store) SetDeviceAlias(ctx context.Context, id int64, alias string) erro
 // 用一个语句完成,避免事务复杂度;两个 UPDATE 之间发生进程崩溃的情况下,数据
 // 不一致仅停留到该设备下次登录,可以接受。
 func (s *Store) SetDeviceFixedVIP(ctx context.Context, id int64, fixedV4, fixedV6 string) error {
-	res, err := s.db.ExecContext(ctx,
+	// **事务包住两条 UPDATE**:devices.fixed_vip_* 与 leases.manual 必须同生同死。此前是两条独立
+	// ExecContext——若 devices 更新成功、leases 同步失败(锁 / IO),会留下「fixed_vip 已设但 leases.manual=0」
+	// 的错位:GC 会把这个手钉 vIP 的 lease 当空闲回收,下次登录该设备可能拿不回固定地址(前一句注释说的
+	// 「主语义已成功」其实掩盖了这个不一致)。放进一个 tx 里,任一失败整体回滚,fixed_vip 与 manual 保持一致。
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: set fixed vip begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
 		`UPDATE devices SET fixed_vip_v4=?, fixed_vip_v6=? WHERE id=?`,
 		nullableString(fixedV4), nullableString(fixedV6), id,
 	)
@@ -385,7 +395,8 @@ func (s *Store) SetDeviceFixedVIP(ctx context.Context, id int64, fixedV4, fixedV
 	}
 	// 同步 leases.manual。空 fixed_v4/v6 一律 0,任一匹配则 1。
 	// CASE WHEN 让单语句覆盖所有 (v4 匹配, v6 匹配, 都匹配, 都不匹配) 组合。
-	if _, err := s.db.ExecContext(ctx,
+	// lease 行可能根本不存在(device 没登录过)— UPDATE 影响 0 行不算错。
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE leases
 		    SET manual = CASE
 		        WHEN (?<>'' AND vip_v4=?) OR (?<>'' AND vip_v6=?) THEN 1
@@ -394,9 +405,10 @@ func (s *Store) SetDeviceFixedVIP(ctx context.Context, id int64, fixedV4, fixedV
 		  WHERE device_id=?`,
 		fixedV4, fixedV4, fixedV6, fixedV6, id,
 	); err != nil {
-		// lease 行可能根本不存在(device 没登录过)— UPDATE 影响 0 行不算错。
-		// 真正失败(锁、IO)只 wrap 返回 — 调用方可在 UI 上 flash 警告,DB 主语义已成功。
 		return fmt.Errorf("store: sync lease manual after fixed_vip: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: set fixed vip commit: %w", err)
 	}
 	return nil
 }
