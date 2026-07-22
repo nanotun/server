@@ -23,9 +23,14 @@ type ServerTLSOptions struct {
 	ClientCAs    *x509.CertPool
 	ClientAuth   tls.ClientAuthType
 
-	// 默认 true。VPN 没有 0-RTT / resumption 必要,关掉减少攻击面 + 简化合规。
-	// 设 false 显式启用(REALITY 自己有等价开关,这里走 reality 库不经过本工厂)。
-	SessionTicketsDisabled bool
+	// SessionTicketsEnabled 采用**opt-in**语义:零值(false)= 禁用 session ticket(安全默认),
+	// 与本结构体顶部注释「零值即合理默认(ticket 禁用)」一致。
+	//
+	// 修 API 语义陷阱:此前字段名为 SessionTicketsDisabled bool,但零值是 false → 实际**启用** ticket,
+	// 与文档承诺的「零值禁用」相反。唯一调用方虽显式传了 true 侥幸没踩雷,但任何依赖「零值=安全」的新
+	// 调用方都会被静默开启 ticket(ticket key 泄漏即面临 session resume 重放面)。改成 opt-in Enabled 后,
+	// 忘设 = 禁用,方向安全。确需启用(0-RTT / resumption)才显式置 true。
+	SessionTicketsEnabled bool
 
 	// 高级覆盖:留空时使用上述默认;非空时直接用调用方提供的内容(用于实验 / 兼容
 	// 老客户端)。
@@ -76,7 +81,7 @@ func NewServerTLSConfig(opts ServerTLSOptions) *tls.Config {
 		MinVersion:             minV,
 		CipherSuites:           suites,
 		NextProtos:             opts.NextProtos,
-		SessionTicketsDisabled: opts.SessionTicketsDisabled,
+		SessionTicketsDisabled: !opts.SessionTicketsEnabled, // 零值 opts → 禁用(安全默认)
 		ClientCAs:              opts.ClientCAs,
 		ClientAuth:             opts.ClientAuth,
 	}

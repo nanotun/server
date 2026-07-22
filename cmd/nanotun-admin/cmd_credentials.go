@@ -102,6 +102,9 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 	if *pskPlain == "" && !*rotatePSK {
 		return errors.New(opts.T("credentials.pskOrRotate"))
 	}
+	if *pskPlain != "" {
+		opts.warnPSKOnArgv()
+	}
 	if !validFormat(*format) {
 		return errors.New(opts.T("credentials.formatInvalid", *format))
 	}

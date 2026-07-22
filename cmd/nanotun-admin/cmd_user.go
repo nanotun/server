@@ -233,6 +233,9 @@ func cmdUserCreate(ctx context.Context, st *store.Store, opts *globalOpts, args 
 		return err
 	}
 
+	if *psk != "" {
+		opts.warnPSKOnArgv()
+	}
 	plain := *psk
 	autogen := false
 	if plain == "" {
@@ -507,6 +510,9 @@ func cmdUserResetPSK(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	// 也避免运维误以为 reset-psk 同时会 enable 用户。先 enable 再 rotate。
 	if u.DisabledAt != 0 {
 		return errors.New(opts.T("user.resetDisabled", u.Username, u.Username))
+	}
+	if *psk != "" {
+		opts.warnPSKOnArgv()
 	}
 	plain := *psk
 	autogen := false

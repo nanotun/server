@@ -313,6 +313,7 @@ var catEN = map[string]string{
 	"credentials.rotateRaced":        "another admin reset %s's PSK first; refresh the user state and rerun credentials show",
 	"credentials.verifyPSK":          "verify PSK",
 	"credentials.pskMismatch":        "--psk does not match user %q's current PSK hash; if you truly forgot it, use --rotate-psk",
+	"psk.argvLeakWarning":            "warning: passing --psk on the command line exposes the secret via ps / /proc/<pid>/cmdline / shell history; prefer omitting --psk to auto-generate a random PSK and read it from the output",
 	"credentials.qrIgnoresOutput":    "[warn] --format qr ignores --output %q (the terminal QR always goes to stdout)",
 	"credentials.qrScanHint":         "(scan the QR code below with your phone to import the nanotun-cred:// credentials; **this is the PSK's only appearance as a QR, keep it safe**)",
 

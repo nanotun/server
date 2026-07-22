@@ -29,6 +29,16 @@ func TestConfigValidate(t *testing.T) {
 		{"负 per-platform rate", func(c *Config) {
 			c.Server.RateLimitByPlatform = map[string]LinkRateLimitPlatform{"linux": {UploadRate: -5}}
 		}},
+		{"smux version 非法", func(c *Config) { c.Smux = &SmuxConfig{Version: 3} }},
+		{"smux max_frame_size 超 65535", func(c *Config) { c.Smux = &SmuxConfig{MaxFrameSize: 70000} }},
+		{"smux max_frame_size 负", func(c *Config) { c.Smux = &SmuxConfig{MaxFrameSize: -1} }},
+		{"smux stream > receive buffer", func(c *Config) {
+			c.Smux = &SmuxConfig{MaxReceiveBuffer: 4096, MaxStreamBuffer: 8192}
+		}},
+		{"smux interval >= timeout", func(c *Config) {
+			c.Smux = &SmuxConfig{KeepAliveIntervalSec: 30, KeepAliveTimeoutSec: 30}
+		}},
+		{"smux 负 receive buffer", func(c *Config) { c.Smux = &SmuxConfig{MaxReceiveBuffer: -1} }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,5 +59,14 @@ func TestConfigValidate(t *testing.T) {
 	ms.Server.MaxSessionsPerUser = -1
 	if err := ms.Validate(); err != nil {
 		t.Fatalf("MaxSessionsPerUser=-1 是合法「不限」值,不应报错: %v", err)
+	}
+
+	// 合法 smux 配置(含全零值 = 用默认)应通过。
+	sm := Config{}
+	sm.Server.ListenAddr = ":8080"
+	sm.TUN.Subnets = []string{"10.201.0.0/16"}
+	sm.Smux = &SmuxConfig{Version: 2, MaxFrameSize: 32768, MaxReceiveBuffer: 4 << 20, MaxStreamBuffer: 1 << 20, KeepAliveIntervalSec: 10, KeepAliveTimeoutSec: 30}
+	if err := sm.Validate(); err != nil {
+		t.Fatalf("合法 smux 配置不应报错: %v", err)
 	}
 }

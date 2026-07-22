@@ -1269,9 +1269,9 @@ func main() {
 			util.FatalExit(util.ExitTLSCert, logrus.Fields{"cert": certPath, "key": keyPath, "err": errTLS.Error()}, "VPN TLS 加载证书 %s / %s: %v", certPath, keyPath, errTLS)
 		}
 		tlsSrv := util.NewServerTLSConfig(util.ServerTLSOptions{
-			Certificates:           []tls.Certificate{cert},
-			NextProtos:             []string{"http/1.1"},
-			SessionTicketsDisabled: true,
+			Certificates: []tls.Certificate{cert},
+			NextProtos:   []string{"http/1.1"},
+			// SessionTicketsEnabled 留零值 = 禁用 ticket(工厂安全默认);VPN 长连接无 resumption 需求。
 		})
 		vpnLn = tls.NewListener(vpnLn, tlsSrv)
 		logrus.Infof("VPN：已在 %s 启用 TLS（WSS），证书 %s，握手超时 %s", cfg.Server.ListenAddr, certPath, wssHandshakeTimeout)
