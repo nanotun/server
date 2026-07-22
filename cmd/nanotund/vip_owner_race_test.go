@@ -16,9 +16,9 @@ func TestVIPOwner_ConcurrentRace(t *testing.T) {
 	addrs := make([]netip.Addr, 5)
 	for i := range addrs {
 		addrs[i] = netip.MustParseAddr("10.200.1." + itoa(int64(i+1)))
-		registerVIPOwners([]netip.Addr{addrs[i]}, int64(100+i))
+		registerVIPOwners([]netip.Addr{addrs[i]}, int64(100+i), 1)
 	}
-	t.Cleanup(func() { unregisterVIPOwners(addrs) })
+	t.Cleanup(func() { unregisterVIPOwners(addrs, 1) })
 
 	var writers sync.WaitGroup
 	var readers sync.WaitGroup
@@ -35,8 +35,8 @@ func TestVIPOwner_ConcurrentRace(t *testing.T) {
 				default:
 				}
 				for i, a := range addrs {
-					registerVIPOwners([]netip.Addr{a}, int64(100+i))
-					registerVIPOwners([]netip.Addr{a}, int64(200+i))
+					registerVIPOwners([]netip.Addr{a}, int64(100+i), 1)
+					registerVIPOwners([]netip.Addr{a}, int64(200+i), 1)
 				}
 			}
 		}(w)
@@ -58,10 +58,30 @@ func TestVIPOwner_ConcurrentRace(t *testing.T) {
 	writers.Wait()
 }
 
+// TestVIPOwner_UnregisterOwnerGuard 验证 owner-guarded 注销:老连接(connID=1)释放 vIP 后、注销前,新连接
+// (connID=2)已 alloc 同 vIP 并登记;老连接的 unregister(connID=1)不得删掉新连接(connID=2)的映射。
+func TestVIPOwner_UnregisterOwnerGuard(t *testing.T) {
+	a := netip.MustParseAddr("10.201.7.7")
+	// 老连接登记(connID=1)。
+	registerVIPOwners([]netip.Addr{a}, 111, 1)
+	// 新连接抢到同 vIP 并登记(connID=2,不同 user)。
+	registerVIPOwners([]netip.Addr{a}, 222, 2)
+	// 老连接迟到的注销:connID 不符 → 不应删除。
+	unregisterVIPOwners([]netip.Addr{a}, 1)
+	if uid, ok := lookupVIPOwner(a); !ok || uid != 222 {
+		t.Fatalf("owner-guard 失效:got %d,%v want 222,true(新连接映射被老连接误删)", uid, ok)
+	}
+	// 新连接自己注销(connID=2)→ 删除。
+	unregisterVIPOwners([]netip.Addr{a}, 2)
+	if _, ok := lookupVIPOwner(a); ok {
+		t.Fatal("新连接注销后应清除")
+	}
+}
+
 func BenchmarkLookupVIPOwner(b *testing.B) {
 	a := netip.MustParseAddr("10.200.42.42")
-	registerVIPOwners([]netip.Addr{a}, 4242)
-	defer unregisterVIPOwners([]netip.Addr{a})
+	registerVIPOwners([]netip.Addr{a}, 4242, 1)
+	defer unregisterVIPOwners([]netip.Addr{a}, 1)
 
 	b.ReportAllocs()
 	b.ResetTimer()

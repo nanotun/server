@@ -137,8 +137,8 @@ func TestMagicNameDeniedByMeshOff(t *testing.T) {
 
 	// 查询方 = alice 的设备 vIP(与数据面同一张归属表)。
 	aliceVIP := netip.MustParseAddr("10.99.0.2")
-	registerVIPOwners([]netip.Addr{aliceVIP}, alice.ID)
-	t.Cleanup(func() { unregisterVIPOwners([]netip.Addr{aliceVIP}) })
+	registerVIPOwners([]netip.Addr{aliceVIP}, alice.ID, 1)
+	t.Cleanup(func() { unregisterVIPOwners([]netip.Addr{aliceVIP}, 1) })
 
 	// 快照替换为 mesh OFF;结束后恢复原快照,不污染其它测试。
 	oldSnap := aclCurrent.Load()

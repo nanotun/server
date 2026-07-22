@@ -144,8 +144,8 @@ func TestForwardPacketToExitNode_NoEgress(t *testing.T) {
 func TestForwardPacketToExitNode_MeshNotForwarded(t *testing.T) {
 	resetConnByDeviceForTest(t)
 	peerVIP := netip.MustParseAddr("10.7.7.7")
-	registerVIPOwners([]netip.Addr{peerVIP}, 999)
-	t.Cleanup(func() { unregisterVIPOwners([]netip.Addr{peerVIP}) })
+	registerVIPOwners([]netip.Addr{peerVIP}, 999, 1)
+	t.Cleanup(func() { unregisterVIPOwners([]netip.Addr{peerVIP}, 1) })
 
 	a := &Connection{userID: "u1", connIDStr: "a", exitAllowed: true}
 	a.egressDeviceID.Store(77)

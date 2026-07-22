@@ -146,6 +146,17 @@ func dispatchVPNIncoming(c net.Conn, gw *gatewayState, muxEnabled bool, smuxCfg 
 			return
 		}
 		if len(head) >= 4 && bytes.Equal(head[:4], loopbackSmuxMagic) {
+			// M1 安全边界:VPN1/smux 承载(其上每条 stream 带可覆盖源地址的 PROXY v2 头)只应来自本机
+			// 环回桥接(hy2/REALITY 恒 dial 127.0.0.1)。从**非环回**对端收到 VPN1 = 公网客户端在伪造
+			// smux + PROXY 头冒充任意源 IP、绕过按 IP 的反滥用归因(登录限流 / IP 失败锁定 / 嫁祸受害 IP)。
+			// 直接拒绝。直连 native 客户端不发 VPN1、走下方普通链路帧路径,其真实 IP 本就在 conn 上,不受影响。
+			if !isLoopbackConnPeer(c) {
+				loopbackSmuxForeignRejectCount.Add(1)
+				logrus.WithField("remote", c.RemoteAddr().String()).
+					Warn("拒绝非环回来源的 VPN1/smux 承载(疑似伪造 PROXY 源地址绕过按 IP 反滥用)")
+				_ = c.Close()
+				return
+			}
 			if _, err := br.Discard(4); err != nil {
 				_ = c.Close()
 				return

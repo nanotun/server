@@ -63,6 +63,8 @@ func writePrometheusMetrics(w io.Writer, gw *gatewayState) {
 	fmt.Fprintf(w, "nanotun_acl_drops_total{kind=\"mesh_off\"} %d\n", meshOffDropCount.Load())
 	// kind=src_spoof(M2 源地址反欺骗):普通会话以非本会话 vIP 作源发包被丢的总数(冒充他人 vIP / 注入伪造回包)。
 	fmt.Fprintf(w, "nanotun_acl_drops_total{kind=\"src_spoof\"} %d\n", srcSpoofDropCount.Load())
+	// kind=loopback_foreign(M1 加固):从非环回对端收到 VPN1/smux 承载被拒的总数(疑似伪造 PROXY 源地址绕过按 IP 反滥用)。
+	fmt.Fprintf(w, "nanotun_acl_drops_total{kind=\"loopback_foreign\"} %d\n", loopbackSmuxForeignRejectCount.Load())
 
 	// mesh 总开关状态:0 / 1,gauge,便于报警「mesh 是不是被人误关了」。
 	meshOn := 0
@@ -161,6 +163,12 @@ func writePrometheusMetrics(w io.Writer, gw *gatewayState) {
 	fmt.Fprintln(w, "# HELP nanotun_tun_write_drops_total Packets dropped because tunWriteChan was full (TUN writer backpressure)")
 	fmt.Fprintln(w, "# TYPE nanotun_tun_write_drops_total counter")
 	fmt.Fprintf(w, "nanotun_tun_write_drops_total %d\n", tunWriteDropCount.Load())
+
+	// 入向超大 IP 帧丢包:len(payload) > tunBufSize 被丢的总数(此前会被静默截断写入 TUN)。
+	// 平时应恒为 0;非 0 = 有客户端在发超 MTU 的畸形 / 恶意帧。
+	fmt.Fprintln(w, "# HELP nanotun_ippkt_oversize_drops_total Inbound IP frames dropped because they exceed the TUN buffer size")
+	fmt.Fprintln(w, "# TYPE nanotun_ippkt_oversize_drops_total counter")
+	fmt.Fprintf(w, "nanotun_ippkt_oversize_drops_total %d\n", tunOversizeDropCount.Load())
 
 	// =========================================================================
 	// PoW(P1-2 / P2#16 防 PSK 暴力破解)
