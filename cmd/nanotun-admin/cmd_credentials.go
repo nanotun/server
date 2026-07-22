@@ -82,6 +82,8 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 	rotatePSK := fs.Bool("rotate-psk", false, opts.T("credentials.flag.rotatePSK"))
 	format := fs.String("format", "json", opts.T("credentials.flag.format"))
 	output := fs.String("output", "", opts.T("credentials.flag.output"))
+	// --force:覆盖已存在的 --output 目标(默认拒绝,防误覆盖含明文 PSK 的产物 / 符号链接跟随写)。
+	forceOverwrite := fs.Bool("force", false, opts.T("profile.flag.force"))
 
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -169,7 +171,7 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 		Host:      advertisedHost,
 		ServerID:  serverID,
 	}
-	return emitCredentials(&cred, *format, *output, opts)
+	return emitCredentials(&cred, *format, *output, *forceOverwrite, opts)
 }
 
 // resolveCredentialsPSK 解析 PSK 来源 + 落实 credential 元数据。返回 (psk, credentialID, createdAt)。
@@ -230,10 +232,10 @@ func resolveCredentialsPSK(
 }
 
 // emitCredentials 按 --format 写出 credentials;qr / qr-png 编码 nanotun-cred:// URL(非裸 JSON)。
-func emitCredentials(c *credentialsSchema, format, outputPath string, opts *globalOpts) error {
+func emitCredentials(c *credentialsSchema, format, outputPath string, force bool, opts *globalOpts) error {
 	// 全局 --json 强制 compact JSON,与其它子命令脚本管线一致。
 	if opts.json {
-		out, closeOut, err := openProfileOutput(outputPath, opts.stdout)
+		out, closeOut, err := openProfileOutput(outputPath, opts.stdout, force)
 		if err != nil {
 			return err
 		}
@@ -251,7 +253,7 @@ func emitCredentials(c *credentialsSchema, format, outputPath string, opts *glob
 		if err != nil {
 			return err
 		}
-		return writeQRPNG(opts, outputPath, url)
+		return writeQRPNG(opts, outputPath, url, force)
 	case "qr":
 		if strings.TrimSpace(outputPath) != "" {
 			fmt.Fprintln(opts.stderr, opts.T("credentials.qrIgnoresOutput", outputPath))
@@ -263,7 +265,7 @@ func emitCredentials(c *credentialsSchema, format, outputPath string, opts *glob
 		fmt.Fprintln(opts.stdout, opts.T("credentials.qrScanHint"))
 		return writeQRTerminal(opts, opts.stdout, url)
 	default:
-		out, closeOut, err := openProfileOutput(outputPath, opts.stdout)
+		out, closeOut, err := openProfileOutput(outputPath, opts.stdout, force)
 		if err != nil {
 			return err
 		}

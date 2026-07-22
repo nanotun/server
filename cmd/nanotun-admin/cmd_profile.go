@@ -163,6 +163,9 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 	configPath := fs.String("config", defaultServerConfigPath, opts.T("profile.flag.config"))
 	format := fs.String("format", "json", opts.T("profile.flag.format"))
 	output := fs.String("output", "", opts.T("profile.flag.output"))
+	// --force:允许覆盖已存在的 --output 目标(含 qr-png)。默认不覆盖(openProfileOutput/writeFileTight
+	// 用 O_EXCL / Lstat 拒绝),避免误覆盖含明文 PSK/PEM 的既有产物,并防符号链接跟随写。
+	forceOverwrite := fs.Bool("force", false, opts.T("profile.flag.force"))
 	nameFlag := fs.String("name", "", opts.T("profile.flag.name"))
 	noteFlag := fs.String("note", "", opts.T("profile.flag.note"))
 	noReality := fs.Bool("no-reality", false, opts.T("profile.flag.noReality"))
@@ -327,13 +330,13 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 
 	_ = st // 留 st 引用,方便将来加 "profile_issuance" 审计表;当前 show 路径完全只读。
 
-	return emitProfile(prof, *format, *output, opts)
+	return emitProfile(prof, *format, *output, *forceOverwrite, opts)
 }
 
 // emitProfile 按 --format 写出 profile；qr / qr-png 编码 nanotun:// URL（非裸 JSON）。
-func emitProfile(p *profileSchema, format, outputPath string, opts *globalOpts) error {
+func emitProfile(p *profileSchema, format, outputPath string, force bool, opts *globalOpts) error {
 	if opts.json {
-		out, closeOut, err := openProfileOutput(outputPath, opts.stdout)
+		out, closeOut, err := openProfileOutput(outputPath, opts.stdout, force)
 		if err != nil {
 			return err
 		}
@@ -351,7 +354,7 @@ func emitProfile(p *profileSchema, format, outputPath string, opts *globalOpts) 
 		if err != nil {
 			return err
 		}
-		return writeQRPNG(opts, outputPath, url)
+		return writeQRPNG(opts, outputPath, url, force)
 	case "qr":
 		if strings.TrimSpace(outputPath) != "" {
 			fmt.Fprintln(opts.stderr, opts.T("profile.qrIgnoresOutput", outputPath))
@@ -363,7 +366,7 @@ func emitProfile(p *profileSchema, format, outputPath string, opts *globalOpts) 
 		fmt.Fprintln(opts.stdout, opts.T("profile.qrScanHint"))
 		return writeQRTerminal(opts, opts.stdout, url)
 	default:
-		out, closeOut, err := openProfileOutput(outputPath, opts.stdout)
+		out, closeOut, err := openProfileOutput(outputPath, opts.stdout, force)
 		if err != nil {
 			return err
 		}
@@ -814,11 +817,20 @@ func validFormat(s string) bool {
 	return false
 }
 
-func openProfileOutput(path string, fallback io.Writer) (io.Writer, func(), error) {
+func openProfileOutput(path string, fallback io.Writer, force bool) (io.Writer, func(), error) {
 	if strings.TrimSpace(path) == "" {
 		return fallback, func() {}, nil
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	// profile 输出含明文 PSK / mTLS PEM。默认(force=false)用 O_EXCL:目标已存在(含符号链接)即失败,
+	// 既防误覆盖既有产物,又防「path 是指向 /etc/... 或他人文件的符号链接时 O_CREATE|O_TRUNC 跟随并
+	// 截断 / 写密到链接目标」。运维确需覆盖时传 --force(退回 O_TRUNC 覆盖既有文件)。
+	flags := os.O_CREATE | os.O_WRONLY
+	if force {
+		flags |= os.O_TRUNC
+	} else {
+		flags |= os.O_EXCL
+	}
+	f, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", newLocErr("profile.openOutput", path).Error(), err)
 	}
