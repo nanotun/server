@@ -5,16 +5,47 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nanotun/server/store"
 )
+
+// TestStringToInt64_Overflow 验证 stringToInt64:合法数字正确解析,超 int64 上限的超长数字串报错(不环绕)。
+func TestStringToInt64_Overflow(t *testing.T) {
+	ok := []struct {
+		in   string
+		want int64
+	}{
+		{"0", 0},
+		{"42", 42},
+		{strconv.FormatInt(math.MaxInt64, 10), math.MaxInt64},
+	}
+	for _, tc := range ok {
+		got, err := stringToInt64(tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("stringToInt64(%q) = %d,%v want %d,nil", tc.in, got, err, tc.want)
+		}
+	}
+	bad := []string{
+		"9223372036854775808",           // MaxInt64 + 1
+		"99999999999999999999999999999", // 远超上限
+		"-1",                            // 负号非数字(本函数只收纯数字)
+		"12a",                           // 非数字
+	}
+	for _, in := range bad {
+		if _, err := stringToInt64(in); err == nil {
+			t.Errorf("stringToInt64(%q) 应报错(溢出 / 非法),却成功", in)
+		}
+	}
+}
 
 // 帮助:启动一个临时 control socket,返回 socket 路径 + 关闭 fn。
 // 注意 macOS / *BSD 的 sun_path ≤ ~104 字节,t.TempDir() 路径太长会让 bind 报
