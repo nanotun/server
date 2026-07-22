@@ -3,11 +3,43 @@ package main
 import (
 	"bufio"
 	"net"
+	"net/netip"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	proxyproto "github.com/pires/go-proxyproto"
 	"github.com/sirupsen/logrus"
 )
+
+// loopbackSmuxForeignRejectCount:因「VPN1/smux 承载来自非环回对端」被拒的次数(见 isLoopbackConnPeer)。
+// 持续增长 = 有公网客户端在尝试用伪造 smux + PROXY 头冒充任意源 IP、绕过按 IP 的反滥用归因。供 /metrics 消费。
+var loopbackSmuxForeignRejectCount atomic.Uint64
+
+// isLoopbackConnPeer 判断连接对端是否为环回地址(127.0.0.0/8 或 ::1)。
+//
+// M1 安全边界:VPN1/smux 承载 + 其上的 PROXY v2 头(可覆盖源地址用于 PoW/限流/失败计数归因)**只应**来自
+// 本机 hy2/REALITY 环回桥接(它们恒 dial 127.0.0.1)。数据面 [server].listen_addr 常绑公网,若不校验对端,
+// 任何公网客户端都能自己发 VPN1 魔法 + 伪造 PROXY 头冒充任意源 IP(绕过按 IP 的登录限流 / IP 失败锁定,或
+// 嫁祸某受害 IP)。故服务端仅在对端为环回时才接受该承载路径。直连 native 客户端不发 VPN1、不走此路径。
+func isLoopbackConnPeer(c net.Conn) bool {
+	if c == nil {
+		return false
+	}
+	addr := c.RemoteAddr()
+	if addr == nil {
+		return false
+	}
+	host := addr.String()
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
 
 // M1(真实客户端 IP 透传):hy2 / REALITY 握手完成后经**环回 smux**多路复用回本机 VPN 数据面。
 // 服务端此前只能看到环回对端 127.0.0.1,导致按 IP 的 PoW / 登录限流 / IP 失败计数 / 审计全部塌到

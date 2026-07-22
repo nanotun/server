@@ -265,6 +265,14 @@ type Connection struct {
 	// 布尔置真必同帧填集,故不触发该退路。atomic.Pointer:整体替换(copy-on-write),每包热路径只读 Load + 线性 Contains(条数极少)。
 	advertisedRoutes atomic.Pointer[[]netip.Prefix]
 
+	// M2 源地址反欺骗的**豁免闸**:普通会话只能以自己的 vIP 作源;出口 / 子网宣告方合法中继「外网/LAN 回程」
+	// (源是任意非 vIP 地址)才豁免。但豁免只应给**已被 admin 批准**的转发者——否则任何认证客户端只要发一帧
+	// RouteAdvertise 把 advertisedExit/advertisedSubnetRoutes 置真,就能自我豁免、以任意源 IP 注入伪造回包
+	// (绕过 M2)。这两个 atomic 缓存「本设备是否已批准为出口 / 子网路由器」,由 handleRouteAdvertiseFrame 在
+	// 已 fork 的 DB 查询里置位、随 takeover 继承;connSourceSpoofed 只在其为真时才放行非 vIP 源。
+	advertisedExitApproved   atomic.Bool
+	advertisedSubnetApproved atomic.Bool
+
 	// 0011(2026-05-23):per-device 限速快照,登录瞬时从 devices.rate_*_bps 读出。
 	// <=0 = 该方向不在 device 层强制;实际生效值由 effectiveLinkRates 多级取 min 算出,
 	// 并通过 rlConn 持有的 *rate.Limiter 落地。
@@ -531,6 +539,8 @@ var (
 	// 回程数据面上唯一的用户态静默丢包点,暴露成 metric 才能在「客户端说卡」时排除/坐实
 	// (2026-07 排查 CDN 回程黑洞时此处无计数,只能靠两端抓包对差集,代价极高)。
 	tunWriteDropCount  atomic.Uint64
+	// tunOversizeDropCount:入向 IP 帧长度超过 tunBufSize 被丢的总数(此前会被 copy 静默截断写入 TUN)。
+	tunOversizeDropCount atomic.Uint64
 	sharedTUN          tun.Device
 	sharedTUNGateway   string // IPv4 网关 CIDR，如 10.1.0.1/16
 	sharedTUNGatewayV6 string // IPv6 网关 CIDR，如 fd00:vpn:200::1/64；为空表示未启用 IPv6
@@ -1653,6 +1663,10 @@ type deadliner interface {
 	SetWriteDeadline(t time.Time) error
 }
 
+// linkPingPongMaxEcho 回 Pong 时回显 Ping 载荷的上限。keepalive 的 Ping 载荷是 seq(4B)+ 随机 nonce,
+// 远小于此;设上限只为不让恶意 Ping 用超大载荷放大服务端 Pong 写体积。
+const linkPingPongMaxEcho = 256
+
 func tunDemuxToLink(ch <-chan *util.TunPacket, w io.Writer, mu *sync.Mutex, ctx context.Context) {
 	// 一次性把 w 转成 deadliner;不能就退化为无截止时间。
 	dl, _ := w.(deadliner)
@@ -1788,6 +1802,13 @@ readLoop:
 			if !util.ValidIPPacket(payload) {
 				continue
 			}
+			// 入向 IP 帧长度必须 ≤ TUN buffer(tunBufSize=2048,已覆盖 MTU 1500 + 余量)。链路层单帧上限
+			// MaxLinkPayload=65534 远大于此,恶意/异常客户端可发超大帧——此前落到下方 copy(pkt, payload) 会**静默
+			// 截断**成半截包(校验和/长度全错)写进 server TUN 或投给 mesh 对端。超限直接丢并计数,不污染数据面。
+			if len(payload) > tunBufSize {
+				tunOversizeDropCount.Add(1)
+				continue
+			}
 			// exit-node DNS 地理修正(direction 1)回程截获:magic resolver 经出口转发的公网 DNS 查询,其响应
 			// (出口→server,src=:53,dst=server 网关:关联端口)在此截获、交回等待的 resolver goroutine,不写 TUN
 			// (避免内核 rp_filter/conntrack 吞掉这条无出向记录的回包)。零 in-flight 时仅一次 atomic load。见 magic_dns_exit.go。
@@ -1862,10 +1883,24 @@ readLoop:
 			return
 		case util.LinkTypePing:
 			// 数据面 keepalive 常态高频(每会话每隔数秒一次),Info 级会淹没日志——降到 Trace,
-			// 需要排障时再开 trace。回 Pong 的行为不变。
+			// 需要排障时再开 trace。
 			logrus.WithFields(logrus.Fields{"remote": remote, "payload_len": len(payload)}).Trace("收到链路 Ping，回复 Pong")
+			// 回 Pong 时**限体积 + 加写超时**:否则恶意/卡死客户端用 64KB Ping 或干脆停止读取,能让 Pong 写在
+			// 持有 linkWrMu 时永久阻塞——而 kick / supersede-evict / keepalive 判死都要先拿 linkWrMu 才能 Close,
+			// 于是该已认证会话的 vIP / 会话配额被永久占住,admin 也踢不动(锁被写操作顶死)。Ping 载荷本是小 seq+nonce,
+			// 截断回显无损语义;写超时借数据面 Ping 已落地的 deadliner 机制。
+			echo := payload
+			if len(echo) > linkPingPongMaxEcho {
+				echo = echo[:linkPingPongMaxEcho]
+			}
 			c.linkWrMu.Lock()
-			werr := util.WriteLinkFrame(rw, util.LinkTypePong, payload)
+			if dl, ok := rw.(deadliner); ok {
+				_ = dl.SetWriteDeadline(time.Now().Add(dataPlanePingWriteDeadline))
+			}
+			werr := util.WriteLinkFrame(rw, util.LinkTypePong, echo)
+			if dl, ok := rw.(deadliner); ok {
+				_ = dl.SetWriteDeadline(time.Time{})
+			}
 			c.linkWrMu.Unlock()
 			if werr != nil {
 				break readLoop
@@ -2369,7 +2404,7 @@ func cleanupConnection(c *Connection) {
 						}
 					}
 					clientIPUsedMu.Unlock()
-					unregisterVIPOwners(addrs)
+					unregisterVIPOwners(addrs, c.connID)
 				}
 				delete(connections, c.connID)
 			}
@@ -2971,7 +3006,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 				addrs = append(addrs, k)
 			}
 		}
-		registerVIPOwners(addrs, authResult.User.ID)
+		registerVIPOwners(addrs, authResult.User.ID, c.connID)
 	}
 
 	if convID == 0 || c == nil {
@@ -3347,6 +3382,10 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// **不重发** RouteAdvertise,若不继承则 newConn.advertisedSubnetRoutes 默认 false → 热切换后子网转发把它当「未装
 	// NAT」整段丢弃黑洞(明明客户端 TUN/NAT 未拆、仍在服务),与 advertisedExit 同理。
 	newConn.advertisedSubnetRoutes.Store(oldConn.advertisedSubnetRoutes.Load())
+	// M2 豁免闸随接管过户(hot-switch 不重发 RouteAdvertise,否则 newConn 默认 false → 已批准出口 / 子网路由器
+	// 热切换后被误当「未批准转发者」,其合法的非 vIP 源回程流量会被 connSourceSpoofed 误丢)。
+	newConn.advertisedExitApproved.Store(oldConn.advertisedExitApproved.Load())
+	newConn.advertisedSubnetApproved.Store(oldConn.advertisedSubnetApproved.Load())
 	// 同理:当前宣告 CIDR 集也随接管过户(热切换不重发 RouteAdvertise),否则 newConn 集为空 → 退回布尔放行,
 	// 丢失收窄语义(虽不黑洞,但 per-CIDR 门控失效)。与 advertisedSubnetRoutes 布尔成对继承,保持二者一致。
 	newConn.advertisedRoutes.Store(oldConn.advertisedRoutes.Load())
@@ -3499,6 +3538,20 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	connByDeviceDeleteLocked(oldConn)
 	connByDeviceAddLocked(newConn)
 	connIDMapMu.Unlock()
+
+	// vipOwner 过户:takeover 继承了 oldConn 的 vIP 到 newConn,但 vipOwner 表里这些 vIP 的 ownerConnID 仍是
+	// oldConn 的。重登记到 newConn.connID(userID 不变),否则将来 newConn cleanup 时 owner-guarded unregister 会
+	// 因 connID 不符而删不掉 → vipOwner 泄漏。oldConn 走 takenOver 分支不动 vipOwner,这里覆盖是安全的。
+	if uid := parseUserIDStr(newConn.userID); uid != 0 {
+		ips := newConn.safeClientIPs()
+		addrs := make([]netip.Addr, 0, len(ips))
+		for _, a := range ips {
+			if k := ipToKey(a.VirtualIP); k.IsValid() {
+				addrs = append(addrs, k)
+			}
+		}
+		registerVIPOwners(addrs, uid, newConn.connID)
+	}
 
 	// H2(B3): 接管转移已完成(newConn 进 connIDMap + oldConn.takenOver=true),
 	// 后续 close + tunnelDone 等待都是清理 oldConn 而非取消接管。从这里开始,

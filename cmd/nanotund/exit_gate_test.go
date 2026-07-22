@@ -33,8 +33,8 @@ func TestExitDeniedForPacket_DropsExitTraffic(t *testing.T) {
 
 func TestExitDeniedForPacket_AllowsVIPTraffic(t *testing.T) {
 	dstVIP := netip.MustParseAddr("10.0.0.50")
-	registerVIPOwners([]netip.Addr{dstVIP}, 50)
-	defer unregisterVIPOwners([]netip.Addr{dstVIP})
+	registerVIPOwners([]netip.Addr{dstVIP}, 50, 1)
+	defer unregisterVIPOwners([]netip.Addr{dstVIP}, 1)
 
 	c := &Connection{userID: "u9", exitAllowed: false}
 	pkt := udpPacketIPv4(t, [4]byte{10, 0, 0, 99}, [4]byte{10, 0, 0, 50}, 53)

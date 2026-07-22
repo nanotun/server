@@ -5,7 +5,64 @@ import (
 	"testing"
 
 	"github.com/nanotun/server/store"
+	"github.com/nanotun/server/util"
 )
+
+// TestConnSourceSpoofed 覆盖 M2 源地址反欺骗的新语义:①自身 vIP 放行 ②冒充他人 vIP 一律丢(含已批准出口)
+// ③已批准出口/子网转发者的非 vIP 源豁免 ④未批准的宣告方**不**豁免(防「发一帧 advertise 就自我豁免」绕过)。
+func TestConnSourceSpoofed(t *testing.T) {
+	victimVIP := netip.MustParseAddr("10.9.0.6")
+	registerVIPOwners([]netip.Addr{victimVIP}, 777, 9)
+	defer unregisterVIPOwners([]netip.Addr{victimVIP}, 9)
+
+	pkt := func(src, dst [4]byte) []byte {
+		return []byte{
+			0x45, 0x00, 0x00, 0x1c,
+			0x00, 0x00, 0x00, 0x00,
+			0x40, 0x11, 0x00, 0x00,
+			src[0], src[1], src[2], src[3],
+			dst[0], dst[1], dst[2], dst[3],
+			0x12, 0x34, 0x00, 0x35,
+			0x00, 0x08, 0x00, 0x00,
+		}
+	}
+	own := [4]byte{10, 9, 0, 5}
+	ext := [4]byte{203, 0, 113, 8}
+	victim := [4]byte{10, 9, 0, 6}
+	dst := [4]byte{8, 8, 8, 8}
+
+	mkConn := func(exit, exitApproved, subnet, subnetApproved bool) *Connection {
+		c := &Connection{}
+		ips := []util.VirtualIPAssignment{{VirtualIP: "10.9.0.5"}}
+		c.clientIPs.Store(&ips)
+		c.advertisedExit.Store(exit)
+		c.advertisedExitApproved.Store(exitApproved)
+		c.advertisedSubnetRoutes.Store(subnet)
+		c.advertisedSubnetApproved.Store(subnetApproved)
+		return c
+	}
+
+	cases := []struct {
+		name string
+		c    *Connection
+		p    []byte
+		want bool
+	}{
+		{"normal-own-vip", mkConn(false, false, false, false), pkt(own, dst), false},
+		{"normal-foreign-src", mkConn(false, false, false, false), pkt(ext, dst), true},
+		{"normal-impersonate-vip", mkConn(false, false, false, false), pkt(victim, dst), true},
+		{"approved-exit-foreign-ok", mkConn(true, true, false, false), pkt(ext, dst), false},
+		{"approved-exit-impersonate-blocked", mkConn(true, true, false, false), pkt(victim, dst), true},
+		{"unapproved-advertiser-not-exempt", mkConn(true, false, false, false), pkt(ext, dst), true},
+		{"approved-subnet-foreign-ok", mkConn(false, false, true, true), pkt(ext, dst), false},
+		{"approved-subnet-impersonate-blocked", mkConn(false, false, true, true), pkt(victim, dst), true},
+	}
+	for _, tc := range cases {
+		if got := connSourceSpoofed(tc.c, tc.p); got != tc.want {
+			t.Errorf("%s: connSourceSpoofed = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
 
 // 帮助:把一份测试规则装载为当前 snapshot,默认动作为 ACLAllow。
 func loadACLForTest(rules []*store.ACLPair, defaultAction string) {
@@ -168,27 +225,27 @@ func TestACLAllows_AllowAllWildcard(t *testing.T) {
 func TestVIPOwner_RoundTrip(t *testing.T) {
 	a := netip.MustParseAddr("10.200.0.5")
 	b := netip.MustParseAddr("10.200.0.6")
-	registerVIPOwners([]netip.Addr{a, b}, 42)
+	registerVIPOwners([]netip.Addr{a, b}, 42, 1)
 	if uid, ok := lookupVIPOwner(a); !ok || uid != 42 {
 		t.Fatalf("lookup a got %d,%v want 42,true", uid, ok)
 	}
 	if uid, ok := lookupVIPOwner(b); !ok || uid != 42 {
 		t.Fatalf("lookup b got %d,%v want 42,true", uid, ok)
 	}
-	unregisterVIPOwners([]netip.Addr{a})
+	unregisterVIPOwners([]netip.Addr{a}, 1)
 	if _, ok := lookupVIPOwner(a); ok {
 		t.Fatal("a should be gone after unregister")
 	}
 	if _, ok := lookupVIPOwner(b); !ok {
 		t.Fatal("b should still be present")
 	}
-	unregisterVIPOwners([]netip.Addr{b})
+	unregisterVIPOwners([]netip.Addr{b}, 1)
 }
 
 // userID=0 → 一律跳过 ACL(测试场景 / connIDStr parse 失败)。
 func TestVIPOwner_RegisterIgnoresZeroUserID(t *testing.T) {
 	a := netip.MustParseAddr("10.200.0.7")
-	registerVIPOwners([]netip.Addr{a}, 0)
+	registerVIPOwners([]netip.Addr{a}, 0, 1)
 	if _, ok := lookupVIPOwner(a); ok {
 		t.Fatal("userID=0 should be a no-op")
 	}
@@ -241,12 +298,12 @@ func TestParsePacketTuple(t *testing.T) {
 
 // 数据面 enforcement 端到端:user-kind 规则。
 func TestACLDropPacketDirected_UserKind(t *testing.T) {
-	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.1")}, 1)
-	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.2")}, 2)
+	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.1")}, 1, 1)
+	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.2")}, 2, 1)
 	defer unregisterVIPOwners([]netip.Addr{
 		netip.MustParseAddr("10.0.0.1"),
 		netip.MustParseAddr("10.0.0.2"),
-	})
+	}, 1)
 	loadACLForTest([]*store.ACLPair{
 		{SrcUserID: 1, DstUserID: 2, Action: store.ACLDeny, DstKind: store.ACLDstKindUser},
 	}, store.ACLAllow)
@@ -281,12 +338,12 @@ func TestACLDropPacketDirected_UserKind(t *testing.T) {
 
 // 端口 + 协议精细规则:deny TCP:22 但 allow 其它端口。
 func TestACLDropPacketDirected_PortProto(t *testing.T) {
-	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.10")}, 10)
-	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.11")}, 11)
+	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.10")}, 10, 1)
+	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.11")}, 11, 1)
 	defer unregisterVIPOwners([]netip.Addr{
 		netip.MustParseAddr("10.0.0.10"),
 		netip.MustParseAddr("10.0.0.11"),
-	})
+	}, 1)
 	loadACLForTest([]*store.ACLPair{
 		{SrcUserID: 10, DstUserID: 11, Action: store.ACLDeny, Proto: "tcp", DstPortLo: 22, DstPortHi: 22, DstKind: store.ACLDstKindUser},
 	}, store.ACLAllow)
@@ -328,8 +385,8 @@ func TestACLDropPacketDirected_PortProto(t *testing.T) {
 
 // 出口规则:disable_exit-by-rule。
 func TestACLDropPacketDirected_ExitKind(t *testing.T) {
-	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.20")}, 20)
-	defer unregisterVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.20")})
+	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.20")}, 20, 1)
+	defer unregisterVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.20")}, 1)
 
 	loadACLForTest([]*store.ACLPair{
 		{SrcUserID: 20, Action: store.ACLDeny, DstKind: store.ACLDstKindExit},
@@ -351,8 +408,8 @@ func TestACLDropPacketDirected_ExitKind(t *testing.T) {
 
 // 出口规则 + default=deny:除非显式 allow 否则全拒。
 func TestACLDropPacketDirected_ExitDefaultDeny(t *testing.T) {
-	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.21")}, 21)
-	defer unregisterVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.21")})
+	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.21")}, 21, 1)
+	defer unregisterVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.21")}, 1)
 
 	loadACLForTest(nil, store.ACLDeny)
 	pkt := []byte{
@@ -410,12 +467,12 @@ func TestACLAllows_MeshOffBypassesExplicitAllow(t *testing.T) {
 // 数据面 enforcement:mesh off → 跨用户包必丢,同用户包正常,出口包正常,
 // meshOffDropCount 计数器递增。
 func TestACLDropPacketDirected_MeshOff(t *testing.T) {
-	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.30")}, 30)
-	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.31")}, 31)
+	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.30")}, 30, 1)
+	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.31")}, 31, 1)
 	defer unregisterVIPOwners([]netip.Addr{
 		netip.MustParseAddr("10.0.0.30"),
 		netip.MustParseAddr("10.0.0.31"),
-	})
+	}, 1)
 
 	// mesh OFF + 显式 allow 规则,数据面必须忽略 allow 直接丢。
 	loadACLWithMesh([]*store.ACLPair{

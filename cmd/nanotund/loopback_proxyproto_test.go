@@ -158,3 +158,80 @@ func TestReadLoopbackClientAddrPreservesBufferedBytes(t *testing.T) {
 		t.Fatalf("body = %q, want %q", got, body)
 	}
 }
+
+// fakeAddrConn 是一个 RemoteAddr() 可控的最小 net.Conn 桩,用于 isLoopbackConnPeer / dispatch 测试。
+type fakeAddrConn struct {
+	net.Conn
+	remote net.Addr
+	closed bool
+}
+
+func (c *fakeAddrConn) RemoteAddr() net.Addr { return c.remote }
+func (c *fakeAddrConn) Close() error {
+	c.closed = true
+	if c.Conn != nil {
+		return c.Conn.Close()
+	}
+	return nil
+}
+
+func tcpAddr(s string) net.Addr {
+	a, _ := net.ResolveTCPAddr("tcp", s)
+	return a
+}
+
+func TestIsLoopbackConnPeer(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:5555", true},
+		{"127.0.0.9:80", true},
+		{"[::1]:5555", true},
+		{"10.0.0.2:5555", false},
+		{"203.0.113.7:443", false},
+		{"[2001:db8::1]:443", false},
+		{"0.0.0.0:80", false},
+	}
+	for _, tc := range cases {
+		got := isLoopbackConnPeer(&fakeAddrConn{remote: tcpAddr(tc.addr)})
+		if got != tc.want {
+			t.Errorf("isLoopbackConnPeer(%s) = %v, want %v", tc.addr, got, tc.want)
+		}
+	}
+	if isLoopbackConnPeer(&fakeAddrConn{remote: nil}) {
+		t.Error("nil RemoteAddr should not be loopback")
+	}
+}
+
+// TestDispatchRejectsForeignVPN1 验证:muxEnabled 下,非环回对端发来的 VPN1 承载被拒绝并关闭,
+// 不进入 smux/PROXY 解析路径(M1 加固,防伪造源地址绕过按 IP 反滥用)。
+func TestDispatchRejectsForeignVPN1(t *testing.T) {
+	before := loopbackSmuxForeignRejectCount.Load()
+
+	// server 侧 pipe 端预置 VPN1 魔法,RemoteAddr 伪装成公网地址。
+	srvPipe, cliPipe := net.Pipe()
+	fc := &fakeAddrConn{Conn: srvPipe, remote: tcpAddr("203.0.113.50:40000")}
+	go func() {
+		_, _ = cliPipe.Write(loopbackSmuxMagic)
+		_, _ = cliPipe.Write([]byte("would-be-smux-frames"))
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		dispatchVPNIncoming(fc, nil, true, smux.DefaultConfig())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("dispatchVPNIncoming 未在预期时间内返回(应立即拒绝)")
+	}
+	if !fc.closed {
+		t.Error("非环回 VPN1 连接应被 Close")
+	}
+	if loopbackSmuxForeignRejectCount.Load() != before+1 {
+		t.Errorf("loopbackSmuxForeignRejectCount 应 +1,got before=%d after=%d", before, loopbackSmuxForeignRejectCount.Load())
+	}
+	_ = cliPipe.Close()
+}

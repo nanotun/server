@@ -239,8 +239,8 @@ func TestForwardPacketToSubnetRoute_MeshVIPWins(t *testing.T) {
 	setSubnetRouteTableForTest(t, []subnetRouteEntry{mkEntry("10.7.0.0/16", 77)})
 	addAdvertiserConn(t, 77, "adv1", "10.0.0.9")
 	peerVIP := netip.MustParseAddr("10.7.7.7")
-	registerVIPOwners([]netip.Addr{peerVIP}, 999)
-	t.Cleanup(func() { unregisterVIPOwners([]netip.Addr{peerVIP}) })
+	registerVIPOwners([]netip.Addr{peerVIP}, 999, 1)
+	t.Cleanup(func() { unregisterVIPOwners([]netip.Addr{peerVIP}, 1) })
 
 	a := &Connection{userID: "u1", connIDStr: "a", deviceID: 11}
 	if forwardPacketToSubnetRoute(a, mkIPv4(peerVIP)) {

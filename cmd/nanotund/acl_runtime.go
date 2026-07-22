@@ -588,18 +588,18 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 // connSourceSpoofed 判断会话 c 送来的包源 IP 是否为「伪造」——即普通会话以非本会话 vIP 作源（冒充他人 vIP /
 // 注入伪造回包）。返回 true = 应丢弃。M2 源地址反欺骗，用于 readLoop 热路径。
 //
-// 语义（保守，避免误伤合法流量）：
-//   - 出口 / 子网宣告方会话（advertisedExit / advertisedSubnetRoutes）合法中继「外网/LAN 回程」流量，源是任意
-//     公网/内网地址，一律豁免（它们的回程另由 exit-DNS 截获或按 dst-vIP 投递处理）。
-//   - 未分配 vIP 的会话（登录竞速窗口等）不校验。
-//   - **仅在本会话已持有与包同族（v4/v6）的 vIP、却与源对不上**时才判伪造。若会话尚无该族 vIP（如只分到 v4、
-//     却收到 v6 包），无从判定，放行交由后续 ACL / 出口闸处理——不在此环节误杀。
+// 语义（保守，避免误伤合法流量；顺序即优先级）：
+//  1. 源恰为**本会话自己**的某 vIP → 合法(最常见,先判)。
+//  2. 源是**另一在线会话**的 vIP（lookupVIPOwner 命中且非本会话)→ 冒充他人 vIP,**任何会话**(含出口 / 子网
+//     宣告方)一律判伪造。合法的出口 / LAN 回程源是外网 / 内网地址,绝不会等于另一 VPN 客户端的 vIP。这条修掉了
+//     「宣告方豁免过宽 → 可冒充他人 vIP 注入伪造回包」。
+//  3. **已批准**的出口 / 子网转发者(advertisedExitApproved / advertisedSubnetApproved)合法中继外网 / LAN 回程
+//     (源是任意非 vIP 地址)→ 豁免。用的是**已批准**闸而非「发过 advertise 帧」——否则任何认证客户端发一帧
+//     RouteAdvertise 就能自我豁免、绕过 M2(见 Connection.advertisedExitApproved 注释)。
+//  4. 其余(普通会话 / 未批准宣告方):仅在本会话已持同族(v4/v6)vIP 却与源对不上时判伪造;尚无该族 vIP 则无从
+//     判定,放行交由后续 ACL / 出口闸处理——不在此环节误杀。
 func connSourceSpoofed(c *Connection, payload []byte) bool {
-	if c == nil || c.advertisedExit.Load() || c.advertisedSubnetRoutes.Load() {
-		return false
-	}
-	ips := c.safeClientIPs()
-	if len(ips) == 0 {
+	if c == nil {
 		return false
 	}
 	t, ok := parsePacketTuple(payload)
@@ -607,6 +607,8 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 		return false
 	}
 	src := t.src.Unmap()
+
+	ips := c.safeClientIPs()
 	sameFamily := false
 	for _, a := range ips {
 		pa, err := netip.ParseAddr(a.VirtualIP)
@@ -615,13 +617,25 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 		}
 		pa = pa.Unmap()
 		if pa == src {
-			return false // 源恰为本会话某 vIP → 合法
+			return false // (1) 源恰为本会话某 vIP → 合法
 		}
 		if pa.Is4() == src.Is4() {
 			sameFamily = true // 本会话持有同族 vIP，可作判定基准
 		}
 	}
-	return sameFamily // 有同族 vIP 却无一匹配 → 伪造
+
+	// (2) 源是另一在线会话的 vIP → 冒充他人,任何会话都不允许(含已批准出口 / 子网)。
+	if _, owned := lookupVIPOwner(src); owned {
+		return true
+	}
+
+	// (3) 已批准的出口 / 子网转发者:合法中继非 vIP 源的外网 / LAN 回程 → 豁免。
+	if c.advertisedExitApproved.Load() || c.advertisedSubnetApproved.Load() {
+		return false
+	}
+
+	// (4) 普通会话 / 未批准宣告方:有同族 vIP 却无一匹配 → 伪造。
+	return sameFamily
 }
 
 // vipOwner: vIP 文本 → 拥有者 userID(int64)。
@@ -639,30 +653,36 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 //     一次只几微秒~几十微秒,远低于 RWMutex 在高并发读时的争用开销。
 //   - 拷贝路径足够简单(浅拷贝 netip.Addr → int64),不需要 RCU 或更复杂的并发数据结构。
 //   - aclCurrent (ACL 快照) 已经用同样模式,保持一致风格。
+// vipOwnerEntry 是 vipOwner 表的值:userID 供 ACL 反查;ownerConnID 作**注销守卫**(见 unregisterVIPOwners)。
+type vipOwnerEntry struct {
+	userID      int64
+	ownerConnID uint32
+}
+
 var (
-	vipOwnerCur     atomic.Pointer[map[netip.Addr]int64]
+	vipOwnerCur     atomic.Pointer[map[netip.Addr]vipOwnerEntry]
 	vipOwnerWriteMu sync.Mutex // 串行化写者,保证 copy-update-store 原子序
 )
 
 func init() {
-	empty := map[netip.Addr]int64{}
+	empty := map[netip.Addr]vipOwnerEntry{}
 	vipOwnerCur.Store(&empty)
 }
 
 // vipOwnerCloneLocked 拷贝当前 map。调用方持 vipOwnerWriteMu。
 // 复杂度 O(N),N=当前活跃 vIP 数。
-func vipOwnerCloneLocked() map[netip.Addr]int64 {
+func vipOwnerCloneLocked() map[netip.Addr]vipOwnerEntry {
 	cur := vipOwnerCur.Load()
-	out := make(map[netip.Addr]int64, len(*cur)+4)
+	out := make(map[netip.Addr]vipOwnerEntry, len(*cur)+4)
 	for k, v := range *cur {
 		out[k] = v
 	}
 	return out
 }
 
-// registerVIPOwners 在登录成功后批量登记 user 的 vIP 集合。
-// userID == 0 表示「未知 user」(测试场景兜底),直接 no-op。
-func registerVIPOwners(addrs []netip.Addr, userID int64) {
+// registerVIPOwners 在登录成功(或 takeover 过户)后批量登记 user 的 vIP 集合。
+// userID == 0 表示「未知 user」(测试场景兜底),直接 no-op。ownerConnID 记录当前拥有连接,供注销守卫比对。
+func registerVIPOwners(addrs []netip.Addr, userID int64, ownerConnID uint32) {
 	if userID == 0 || len(addrs) == 0 {
 		return
 	}
@@ -671,35 +691,48 @@ func registerVIPOwners(addrs []netip.Addr, userID int64) {
 	next := vipOwnerCloneLocked()
 	for _, a := range addrs {
 		if a.IsValid() {
-			next[a] = userID
+			next[a] = vipOwnerEntry{userID: userID, ownerConnID: ownerConnID}
 		}
 	}
 	vipOwnerCur.Store(&next)
 }
 
-// unregisterVIPOwners 在 cleanupConnection 释放 vIP 时同步删除映射。
-// 不持有 userID 守卫:即使中间 takeover 把 vIP 过户给了 newConn,**也不会**
-// 调用 unregisterVIPOwners —— 因为 cleanupConnection 走 takenOver==true 分支
-// 时,clientIPs 释放、TunChan 释放、SessionRelease 全部跳过,本函数也应该跳过。
-// 调用方需保证仅在「真正释放 vIP」时才调用本函数。
-func unregisterVIPOwners(addrs []netip.Addr) {
+// unregisterVIPOwners 在 cleanupConnection 真正释放 vIP 时删除映射。**owner-guarded**:仅当该 vIP 当前 entry
+// 仍属于 ownerConnID 时才删。
+//
+// 为何要守卫(修 P0-1 之外的竞态):老连接 cleanup 里「delete(clientIPUsed, vip)」与「unregisterVIPOwners」不在同一
+// 临界区(前者持 clientIPUsedMu、后者不持)。老连接释放 clientIPUsed 后、调本函数前,**新连接**可能已 alloc 到同一
+// vIP 并 registerVIPOwners(自己的 connID)。若此时老连接无条件 delete,会误删新连接刚建立的映射 → 新连接流量在
+// aclDropPacketDirected 查不到 owner 被误判(exit/NAT 归类错乱 / 跨用户 ACL 漏查)。connID 唯一(含同 user 重连也
+// 不同),比 userID 守卫更严:同 user 拿到同 vIP 的重连场景也不会互删。takeover 已在过户时把 ownerConnID 改成
+// newConn(见 handleTakeoverLogin),故老连接 takenOver 分支即便调到这里也删不动(connID 不符),newConn 将来能正常注销。
+func unregisterVIPOwners(addrs []netip.Addr, ownerConnID uint32) {
 	if len(addrs) == 0 {
 		return
 	}
 	vipOwnerWriteMu.Lock()
 	defer vipOwnerWriteMu.Unlock()
 	next := vipOwnerCloneLocked()
+	changed := false
 	for _, a := range addrs {
-		delete(next, a)
+		if e, ok := next[a]; ok && e.ownerConnID == ownerConnID {
+			delete(next, a)
+			changed = true
+		}
 	}
-	vipOwnerCur.Store(&next)
+	if changed {
+		vipOwnerCur.Store(&next)
+	}
 }
 
 // lookupVIPOwner 查 vIP 的拥有者 userID。完全 lock-free。
 func lookupVIPOwner(a netip.Addr) (int64, bool) {
 	m := vipOwnerCur.Load()
-	uid, ok := (*m)[a]
-	return uid, ok
+	e, ok := (*m)[a]
+	if !ok {
+		return 0, false
+	}
+	return e.userID, true
 }
 
 // serverGatewayAddrsT 是 server 自身 TUN 网关地址（v4/v6）的快照。

@@ -141,6 +141,9 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 		c.advertisedSubnetRoutes.Store(false)
 		// 第 7 轮深扫:同步清当前宣告 CIDR 集(撤回即不再路由任何网段)。
 		c.advertisedRoutes.Store(nil)
+		// M2:撤回即不再是批准转发者 → 清豁免闸,本会话立即回到「只能以自身 vIP 作源」。
+		c.advertisedExitApproved.Store(false)
+		c.advertisedSubnetApproved.Store(false)
 		return
 	}
 
@@ -214,7 +217,14 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 		// 老出口客户端总宣告 ::/0 → 恒 true → 维持旧行为、无回归。
 		c.advertisedExitV6.Store(hasExitV6)
 		// 已批准 → 它现在是「在线在跑的出口」,广播让出口下拉实时增项。DB 查不动(q=false)时不广播(待下次)。
-		if approved, q := deviceHasApprovedExitRoute(dbCtx, c.deviceID); approved && q {
+		approved, q := deviceHasApprovedExitRoute(dbCtx, c.deviceID)
+		// M2 豁免闸:只有**已确切查到且已批准**才允许该出口会话以非 vIP 源发包(见 connSourceSpoofed)。
+		// q=false(DB 查不动)时保守置 false —— 宁可对一个可能合法的出口多做一次 vIP 源校验(它以自身 vIP
+		// 作源的正常流量本就放行),也不放开一个未确证的豁免。
+		if q {
+			c.advertisedExitApproved.Store(approved)
+		}
+		if approved && q {
 			go broadcastExitsList(context.Background())
 		}
 	}
@@ -236,7 +246,10 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 		// 宣告方(在生效表里)→ 广播一帧让所有请求方刷新 online 圆点(与出口上线 broadcastExitsList 对齐)。
 		// **仅刷新展示**:请求方装路由不看 online(accepted_cidrs_excluding_own 只按 own uuid / 拒 /0 过滤),故不抖数据面
 		// 路由(离线包本就 server 侧丢)。未批准(不在表)时不广播——待 admin 批准触发 rebuild + broadcastRoutesList。
-		if deviceInSubnetRouteTable(c.deviceID) {
+		inTable := deviceInSubnetRouteTable(c.deviceID)
+		// M2 豁免闸:仅当本设备确在**已批准**子网路由生效表里时,才允许它以非 vIP 源(LAN 回程)发包。
+		c.advertisedSubnetApproved.Store(inTable)
+		if inTable {
 			go broadcastRoutesList(context.Background())
 		}
 	}
@@ -288,6 +301,12 @@ func sendRouteApproveStatusForDevice(ctx context.Context, c *Connection, only []
 	}
 	c.linkWrMu.Lock()
 	defer c.linkWrMu.Unlock()
+	// 写超时:本函数从 readLoop 同步调用(handleRouteAdvertiseFrame)且持 linkWrMu,若客户端停止读取会让写
+	// 永久阻塞、顶死同样需要 linkWrMu 的 kick / evict / keepalive。借数据面 Ping 的 deadliner 机制加 5s 上限。
+	if dl, ok := c.linkConn.(deadliner); ok {
+		_ = dl.SetWriteDeadline(time.Now().Add(dataPlanePingWriteDeadline))
+		defer func() { _ = dl.SetWriteDeadline(time.Time{}) }()
+	}
 	return util.WriteLinkFrame(c.linkConn, util.LinkTypeRouteApproveStatus, body)
 }
 
@@ -311,5 +330,16 @@ func broadcastRouteApproveStatusToAdvertisers(ctx context.Context) {
 	connIDMapMu.RUnlock()
 	for _, c := range targets {
 		_ = sendRouteApproveStatusForDevice(ctx, c, nil)
+		// M2 豁免闸刷新:admin 在宣告方**在线时**批准/撤销出口 / 子网路由,须同步更新 connSourceSpoofed 用的
+		// 已批准缓存——否则「登录时未批准(闸=false)→ 在线期间被批准」的会话,其合法的非 vIP 源回程流量会一直
+		// 被误丢到下次重连(反之撤销后也应立即收紧)。仅在 DB 能确切判定(ok / deviceInSubnetRouteTable)时改写。
+		if c.advertisedExit.Load() {
+			if approved, ok := deviceHasApprovedExitRoute(ctx, c.deviceID); ok {
+				c.advertisedExitApproved.Store(approved)
+			}
+		}
+		if c.advertisedSubnetRoutes.Load() {
+			c.advertisedSubnetApproved.Store(deviceInSubnetRouteTable(c.deviceID))
+		}
 	}
 }
