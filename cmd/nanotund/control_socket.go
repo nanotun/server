@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -35,6 +36,9 @@ const (
 	// statusPageLimitMax(2026-05-24):/status?limit= 的硬上限。客户端拼错 limit=999999
 	// 一次拉穷 server 不被允许;1000 已足够覆盖单页 dashboard,N_conn 上万时分页拉。
 	statusPageLimitMax = 1000
+	// controlMaxBodyBytes:控制面 POST body 上限。请求体都是小 JSON(几个 id + reason),
+	// 1 MiB 远超任何合法请求;用 http.MaxBytesReader 兜住,防卡死 / bug 客户端发超大 body 撑爆内存。
+	controlMaxBodyBytes = 1 << 20
 )
 
 // startControlSocket 创建 unix socket 并起 HTTP server。
@@ -66,8 +70,29 @@ func startControlSocket(path string, gw *gatewayState) func() {
 		logrus.WithError(err).WithField("path", path).Warn("[control] 监听 unix socket 失败,管理面未启动")
 		return func() {}
 	}
+	// fail-closed:控制面**无鉴权**——kick / reload / rate-refresh 等特权操作全靠「只有能读这个
+	// socket 的本地用户才是管理员」这一文件权限前提。若无法把 socket 收紧到 0600,任何本地用户都能
+	// 连上执行特权操作(踢会话 / 改限速 / reload),等于本地提权。此前 chmod 失败只 Warn 后**继续**
+	// 提供服务,违背这个安全前提。改为:chmod 失败 → 关监听 + 删文件 + 不启动管理面。
 	if err := os.Chmod(path, controlSocketFileMode); err != nil {
-		logrus.WithError(err).WithField("path", path).Warn("[control] chmod socket 失败,继续 —— 但其它用户可能能访问")
+		logrus.WithError(err).WithField("path", path).
+			Error("[control] chmod socket 失败,管理面拒绝启动(fail-closed:无法保证 socket 仅 owner 可访问,不提供无鉴权特权面)")
+		_ = ln.Close()
+		_ = os.Remove(path)
+		return func() {}
+	}
+	// 复核实际权限:umask + chmod 之后再 Stat 确认 group/other 位确为 0。个别 FS / 容器 overlay 上
+	// chmod 可能"成功返回"却未真正落到 0600;控制面无鉴权,这里必须以实测权限为准 fail-closed。
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm()&0o077 != 0 {
+		perm := "unknown"
+		if info != nil {
+			perm = info.Mode().Perm().String()
+		}
+		logrus.WithField("path", path).WithField("perm", perm).WithError(err).
+			Error("[control] socket 权限复核未通过(group/other 仍可访问),管理面拒绝启动(fail-closed)")
+		_ = ln.Close()
+		_ = os.Remove(path)
+		return func() {}
 	}
 
 	mux := http.NewServeMux()
@@ -663,6 +688,7 @@ func controlHandleKick(gw *gatewayState) http.HandlerFunc {
 			return
 		}
 		var req controlKickReq
+		r.Body = http.MaxBytesReader(w, r.Body, controlMaxBodyBytes)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 			return
@@ -788,7 +814,14 @@ func stringToInt64(s string) (int64, error) {
 		if c < '0' || c > '9' {
 			return 0, fmt.Errorf("non-digit %q", c)
 		}
-		v = v*10 + int64(c-'0')
+		d := int64(c - '0')
+		// 溢出防御:此前 v=v*10+d 无上限检查,超长数字串(control socket 的 offset/limit/user_id/
+		// device_id query)会环绕成负值 / 任意值 —— 可能翻页越界或误匹配到别的 user/device。
+		// 到达 int64 上限即报错,由调用方回 400。
+		if v > (math.MaxInt64-d)/10 {
+			return 0, fmt.Errorf("value overflows int64")
+		}
+		v = v*10 + d
 	}
 	return v, nil
 }
@@ -882,6 +915,7 @@ func controlHandleRateRefresh(gw *gatewayState) http.HandlerFunc {
 		var req controlRateRefreshReq
 		// body 允许空(全量刷)。bad json 不阻塞 — 允许走 query 兜底。
 		if r.ContentLength > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, controlMaxBodyBytes)
 			_ = json.NewDecoder(r.Body).Decode(&req)
 		}
 		if req.DeviceID == 0 {
@@ -1002,6 +1036,7 @@ func controlHandleUserRateRefresh(gw *gatewayState) http.HandlerFunc {
 		}
 		var req controlUserRateRefreshReq
 		if r.ContentLength > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, controlMaxBodyBytes)
 			_ = json.NewDecoder(r.Body).Decode(&req)
 		}
 		if req.UserID == 0 {
