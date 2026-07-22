@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/mdp/qrterminal/v3"
 	qrcode "github.com/skip2/go-qrcode"
@@ -93,7 +94,7 @@ func writeQRTerminal(opts *globalOpts, w io.Writer, url string) error {
 //
 // 安全权衡:Low 纠错只能恢复 7% 损坏区域;但 server-profile / credentials QR
 // 都是 admin 在 web 后台显示 / 扫自己手机,环境受控,7% 完全够。
-func writeQRPNG(opts *globalOpts, path, url string) error {
+func writeQRPNG(opts *globalOpts, path, url string, force bool) error {
 	if len(url) > qrLowMaxURLBytes {
 		return newLocErr("profileqr.pngOverflow", path, len(url), qrLowMaxURLBytes)
 	}
@@ -117,26 +118,47 @@ func writeQRPNG(opts *globalOpts, path, url string) error {
 		// stderr 进 web logrus,事后审计可查「这次 QR 降级了 Low」。
 		fmt.Fprintln(opts.stderr, opts.T("profileqr.pngDowngrade", len(url)))
 	}
-	return writeFileTight(path, png, 0o600)
+	return writeFileTight(path, png, 0o600, force)
 }
 
-// writeFileTight 以 mode 从创建起就收紧的方式原子写文件:写 tmp(O_CREATE|O_TRUNC,mode)→
-// fsync → rename 覆盖目标 → chmod 兜底。避免「先建宽权限文件再 chmod 收紧」的 TOCTOU 窗口。
-func writeFileTight(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+// writeFileTight 以 mode 从创建起就收紧的方式原子写文件:CreateTemp(O_CREATE|O_EXCL + 随机名,0600)→
+// fchmod 到 mode → fsync → rename 覆盖目标。避免「先建宽权限文件再 chmod 收紧」的 TOCTOU 窗口。
+//
+// 安全加固(修 O_EXCL/symlink TOCTOU):
+//   - 此前临时文件用**固定可预测**名 path+".tmp" 且 O_CREATE|O_TRUNC **无 O_EXCL**。攻击者可预先把
+//     <path>.tmp 建成指向 /etc/... 或他人文件的符号链接,OpenFile 会**跟随**它,把 QR 里的明文
+//     PSK/mTLS PEM 写进链接目标(泄密)或截断受害文件。改用 os.CreateTemp:内部 O_CREATE|O_EXCL + 随机
+//     后缀,且以 0600 建文件,既防预置符号链接、又天然收紧权限。
+//   - force=false 时先 Lstat 目标,已存在(普通文件 / 符号链接 / 目录)即拒,避免误覆盖含密产物;
+//     force=true 才允许覆盖。最终 rename 不跟随目标符号链接(替换链接本身),不会经链接写到别处。
+func writeFileTight(path string, data []byte, mode os.FileMode, force bool) error {
+	if !force {
+		if _, err := os.Lstat(path); err == nil {
+			return fmt.Errorf("refusing to overwrite existing %s (use --force)", path)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+	}
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("open %s: %w", tmp, err)
+		return fmt.Errorf("create temp in %s: %w", dir, err)
+	}
+	tmp := f.Name()
+	fail := func(format string, e error) error {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf(format, tmp, e)
 	}
 	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("write %s: %w", tmp, err)
+		return fail("write %s: %w", err)
+	}
+	// CreateTemp 默认 0600;若调用方要求不同 mode 显式 fchmod(rename 前生效,无宽权限窗口)。
+	if err := f.Chmod(mode); err != nil {
+		return fail("chmod %s: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("fsync %s: %w", tmp, err)
+		return fail("fsync %s: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
@@ -146,6 +168,5 @@ func writeFileTight(path string, data []byte, mode os.FileMode) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename %s: %w", path, err)
 	}
-	_ = os.Chmod(path, mode)
 	return nil
 }

@@ -234,6 +234,7 @@ var catZH = map[string]string{
 	"profile.flag.config":             "nanotun server 的 config.toml 路径，用来读 reality / hy2 段",
 	"profile.flag.format":             "json | url | both | qr | qr-png（qr=终端二维码；qr-png=PNG 文件，须 --output）",
 	"profile.flag.output":             "输出文件路径；默认写到 stdout",
+	"profile.flag.force":              "覆盖已存在的输出文件；默认拒绝覆盖(防误覆盖含密产物 / 符号链接跟随写)",
 	"profile.flag.name":               "profile.name 字段，UI 上展示用",
 	"profile.flag.note":               "profile.note 字段",
 	"profile.flag.noReality":          "跳过 reality 段（仅 Hy2 + 网关）",

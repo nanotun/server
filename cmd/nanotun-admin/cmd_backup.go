@@ -59,14 +59,35 @@ func cmdBackup(ctx context.Context, st *store.Store, opts *globalOpts, args []st
 	if _, err := os.Stat(abs); err == nil {
 		return errors.New(opts.T("backup.targetExists", abs))
 	}
-	// 用 SQL 注入风险低(abs 来自命令行),但还是用单引号转义防呆。
-	escaped := strings.ReplaceAll(abs, "'", "''")
 	opCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+
+	// 权限窗口加固(修 backup VACUUM TOCTOU):备份库含全部密材(PSK 哈希 / TOTP secret / mTLS key)。
+	// SQLite `VACUUM INTO` 由引擎自己创建目标文件,受进程 umask 影响常落 0644 —— 到我们后续 os.Chmod(0600)
+	// 之间存在一个「世界可读」窗口,同机其它本地用户可趁机读走整库。且直接 VACUUM INTO 用户给的路径时,
+	// 若该路径落在他人可写目录还可能被符号链接/抢建做手脚。
+	//
+	// 做法:先在**目标同目录**下建一个 0700 私有临时目录(os.MkdirTemp 恒 0700,别人无法进入),把 VACUUM INTO
+	// 写进该目录内 —— 即便文件被创建成 0644,外部也因父目录 0700 无法访问;随后 chmod 0600 + rename 到最终
+	// 路径(同文件系统,原子)。全程备份内容对 group/other 不可见,消除窗口;临时目录用完即删。
+	tmpDir, err := os.MkdirTemp(filepath.Dir(abs), ".nanotun-backup-*")
+	if err != nil {
+		return fmt.Errorf("%s: %w", opts.T("backup.vacuumIntoFail"), err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpPath := filepath.Join(tmpDir, "backup.db")
+
+	// 用 SQL 注入风险低(路径由我们拼),但仍用单引号转义防呆。
+	escaped := strings.ReplaceAll(tmpPath, "'", "''")
 	if _, err := st.DB().ExecContext(opCtx, fmt.Sprintf("VACUUM INTO '%s'", escaped)); err != nil {
 		return fmt.Errorf("%s: %w", opts.T("backup.vacuumIntoFail"), err)
 	}
-	_ = os.Chmod(abs, backupFileMode)
+	if err := os.Chmod(tmpPath, backupFileMode); err != nil {
+		return fmt.Errorf("%s: %w", opts.T("backup.vacuumIntoFail"), err)
+	}
+	if err := os.Rename(tmpPath, abs); err != nil {
+		return fmt.Errorf("%s: %w", opts.T("backup.vacuumIntoFail"), err)
+	}
 	fmt.Fprintln(opts.stdout, opts.T("backup.written", abs))
 	return nil
 }

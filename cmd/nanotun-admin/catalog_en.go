@@ -237,6 +237,7 @@ var catEN = map[string]string{
 	"profile.flag.config":             "path to the nanotun server config.toml, used to read the reality / hy2 sections",
 	"profile.flag.format":             "json | url | both | qr | qr-png (qr = terminal QR; qr-png = PNG file, requires --output)",
 	"profile.flag.output":             "output file path; defaults to stdout",
+	"profile.flag.force":              "overwrite an existing output file; refused by default (guards against clobbering secret-bearing files / symlink-follow writes)",
 	"profile.flag.name":               "profile.name field, shown in the UI",
 	"profile.flag.note":               "profile.note field",
 	"profile.flag.noReality":          "skip the reality section (Hy2 + gateway only)",

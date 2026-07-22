@@ -26,7 +26,7 @@ func TestOpenProfileOutput_SyncsBeforeClose(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "p.json")
 
-	w, closer, err := openProfileOutput(path, nil)
+	w, closer, err := openProfileOutput(path, nil, false)
 	if err != nil {
 		t.Fatalf("openProfileOutput: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestOpenProfileOutput_SyncsBeforeClose(t *testing.T) {
 
 	// 也验证空路径走 fallback 分支不 panic。
 	var fallback strings.Builder
-	w2, closer2, err := openProfileOutput("", &fallback)
+	w2, closer2, err := openProfileOutput("", &fallback, false)
 	if err != nil {
 		t.Fatalf("fallback path: %v", err)
 	}
@@ -628,11 +628,64 @@ func qrTestOpts() *globalOpts {
 	return &globalOpts{lang: langEN, stdout: &strings.Builder{}, stderr: &strings.Builder{}}
 }
 
+// TestOpenProfileOutput_RefusesExistingUnlessForce 验证含密 profile 输出默认不覆盖既有文件(O_EXCL),
+// 仅 --force 时覆盖。
+func TestOpenProfileOutput_RefusesExistingUnlessForce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "existing.json")
+	if err := os.WriteFile(path, []byte("old-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 默认拒绝覆盖。
+	if _, _, err := openProfileOutput(path, nil, false); err == nil {
+		t.Fatal("openProfileOutput 应拒绝覆盖已存在文件(默认)")
+	}
+	// 原文件未被截断。
+	if b, _ := os.ReadFile(path); string(b) != "old-secret" {
+		t.Fatalf("拒绝覆盖后原文件应保持不变,got %q", b)
+	}
+	// force 允许覆盖。
+	w, closer, err := openProfileOutput(path, nil, true)
+	if err != nil {
+		t.Fatalf("force 应允许覆盖: %v", err)
+	}
+	_, _ = w.Write([]byte("new"))
+	closer()
+	if b, _ := os.ReadFile(path); string(b) != "new" {
+		t.Fatalf("force 覆盖后应为新内容,got %q", b)
+	}
+}
+
+// TestWriteFileTight_RefusesExistingUnlessForce 验证 QR-PNG 落盘的原子写默认不覆盖既有文件。
+func TestWriteFileTight_RefusesExistingUnlessForce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qr.png")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileTight(path, []byte("new"), 0o600, false); err == nil {
+		t.Fatal("writeFileTight 应拒绝覆盖已存在文件(默认)")
+	}
+	if b, _ := os.ReadFile(path); string(b) != "old" {
+		t.Fatalf("拒绝覆盖后原文件应不变,got %q", b)
+	}
+	if err := writeFileTight(path, []byte("new"), 0o600, true); err != nil {
+		t.Fatalf("force 应允许覆盖: %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "new" {
+		t.Fatalf("force 覆盖后应为新内容,got %q", b)
+	}
+	// 落盘权限仍为 0600。
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode=%o want 0600", st.Mode().Perm())
+	}
+}
+
 func TestWriteQRPNG_WritesValidPNG(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "profile.png")
 	const payload = "nanotun://v1?d=eyJ2ZXJzaW9uIjoxfQ"
-	if err := writeQRPNG(qrTestOpts(), path, payload); err != nil {
+	if err := writeQRPNG(qrTestOpts(), path, payload, false); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -664,7 +717,7 @@ func TestWriteQRPNG_LargePayloadFallbacksToLow(t *testing.T) {
 	if len(payload) <= 2331 || len(payload) > 2900 {
 		t.Fatalf("test payload size = %d, want (2331, 2900]", len(payload))
 	}
-	if err := writeQRPNG(qrTestOpts(), path, payload); err != nil {
+	if err := writeQRPNG(qrTestOpts(), path, payload, false); err != nil {
 		t.Fatalf("writeQRPNG large payload failed: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -683,7 +736,7 @@ func TestWriteQRPNG_OverflowReturnsClearError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "overflow.png")
 	payload := "nanotun://v2?d=" + strings.Repeat("A", 3000) // > 2900
-	err := writeQRPNG(qrTestOpts(), path, payload)
+	err := writeQRPNG(qrTestOpts(), path, payload, false)
 	if err == nil {
 		t.Fatalf("expected error for oversized payload")
 	}
