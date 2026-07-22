@@ -558,6 +558,11 @@ func (s *Server) handleUserCreatedFlash(w http.ResponseWriter, r *http.Request, 
 	if payload.UserID != u.ID {
 		// token 与 URL user 不匹配 — 可能 admin 把别人的 created token 拼到本 URL,
 		// 或浏览器 history 错位。直接当过期处理。
+		//
+		// 注意顺序(第四轮 P2-b,保留):Pop 已在上面消费掉 token,故此处不泄漏 PSK,且一个 token 只能
+		// 被「试」一次 —— 持有 token 但不知归属 {id} 的攻击者无法反复枚举 URL 上的 {id}。这是刻意的
+		// 安全不变式(有回归测试 TestHandleUserCreatedFlash_UserIDMismatch 锁定),不要改成「先校验后
+		// Pop」:那样 mismatch 不消费 token,反而打开枚举面。
 		s.renderError(w, r, http.StatusGone,
 			tr(r, "users.credExpiredCreate"))
 		return
@@ -576,6 +581,7 @@ func (s *Server) handleUserResetPSKResultFlash(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if payload.UserID != u.ID {
+		// 见 handleUserCreatedFlash:Pop 先于 UserID 校验是刻意的安全不变式(消费即防枚举),勿改序。
 		s.renderError(w, r, http.StatusGone,
 			tr(r, "users.credExpiredShort"))
 		return

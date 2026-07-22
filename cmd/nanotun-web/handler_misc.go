@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -694,7 +696,37 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, "ok\n")
 }
 
+// metricsAccessAllowed 门禁 /metrics:此前完全无鉴权,任意访客可读 admin 账号数 / 请求 / 错误计数。
+//   - 配了 MetricsToken:要求 `Authorization: Bearer <token>`(常量时间比较),供远程 Prometheus 抓取;
+//   - 未配:仅放行**环回**对端(127.0.0.1 / ::1),远程一律拒。用 TCP 直连对端(RemoteAddr),
+//     刻意不走 clientIP/XFF —— 门禁必须看真实对端,不能被伪造的 X-Forwarded-For 绕过。
+func (s *Server) metricsAccessAllowed(r *http.Request) bool {
+	if tok := strings.TrimSpace(s.cfg.MetricsToken); tok != "" {
+		const pfx = "Bearer "
+		h := r.Header.Get("Authorization")
+		if !strings.HasPrefix(h, pfx) {
+			return false
+		}
+		got := strings.TrimSpace(strings.TrimPrefix(h, pfx))
+		return subtle.ConstantTimeCompare([]byte(got), []byte(tok)) == 1
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	addr, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return false
+	}
+	return addr.IsLoopback()
+}
+
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if !s.metricsAccessAllowed(r) {
+		// 404(而非 403):不向未授权来源暴露该 endpoint 的存在。
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	uptime := time.Since(s.startedAt).Seconds()
 	fmt.Fprintln(w, "# HELP nanotun-web_uptime_seconds Web admin process uptime")

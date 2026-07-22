@@ -186,6 +186,16 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, status int,
 	s.renderErrorWithCTA(w, r, status, msg, "", "")
 }
 
+// renderInternalError 把内部错误详情记到**服务端日志**,只向用户回一条通用 500 文案。
+//
+// 用于 setup / login / TOTP 等 pre-auth 路径:此前这些路径直接把 err.Error()(可能含 DB 约束、文件
+// 路径、内部状态)拼进错误页回显给(未认证的)访客,构成信息泄漏。改为详情只进日志、页面只显示通用
+// 提示,既方便运维排查、又不向外暴露实现细节。logCtx 是简短定位串(如 "setup:count_admins")。
+func (s *Server) renderInternalError(w http.ResponseWriter, r *http.Request, logCtx string, err error) {
+	logrus.WithError(err).WithField("ctx", logCtx).WithField("ip", clientIP(r)).Error("[web] internal error")
+	s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.internalGeneric"))
+}
+
 // renderStoreWriteErr 统一处理「先 Get 校验存在、再 store 写」路径上写操作的报错渲染。
 //
 // 深扫第八轮 LOW:这些 action handler(user/admin/device 的 disable/enable/delete/

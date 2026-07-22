@@ -86,6 +86,54 @@ func (s *Store) CreateWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, 
 	return s.GetWebAdmin(ctx, id)
 }
 
+// CreateFirstWebAdmin 原子创建**首位** web 管理员:仅当 web_admins 表当前为空时才插入。
+//
+// 修 setup TOCTOU:handleSetup 此前「先 CountWebAdmins()==0、后 CreateWebAdmin()」两步分离,两个并发
+// POST /setup 可能都过了 count==0 判定,各自建出一个管理员(攻击者借此在 TOFU 窗口抢占/多建 admin)。
+// 这里用单条 `INSERT ... SELECT ... WHERE NOT EXISTS` —— SQLite 对写是串行化的,该语句是原子的:只有
+// 一个请求真正插入(RowsAffected=1),其余拿到 RowsAffected=0 → 返回 ErrSetupClosed,由 handler 302 /login。
+func (s *Store) CreateFirstWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, error) {
+	if strings.TrimSpace(in.Username) == "" {
+		return nil, errors.New("store: empty web admin username")
+	}
+	if strings.TrimSpace(in.PasswordHash) == "" {
+		return nil, errors.New("store: empty web admin password_hash")
+	}
+	role := strings.TrimSpace(in.Role)
+	if role == "" {
+		role = "admin"
+	}
+	if role != "admin" && role != "viewer" {
+		return nil, fmt.Errorf("store: invalid web admin role %q", in.Role)
+	}
+	createdBy := nullableInt(in.CreatedBy)
+
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO web_admins(username, password_hash, role, enabled, created_at, created_by)
+		 SELECT ?,?,?,1,?,?
+		 WHERE NOT EXISTS (SELECT 1 FROM web_admins)`,
+		in.Username, in.PasswordHash, role, nowUnix(), createdBy,
+	)
+	if err != nil {
+		if isUniqueConstraintErr(err) {
+			return nil, fmt.Errorf("store: create first web admin username=%q: %w", in.Username, ErrDuplicate)
+		}
+		return nil, fmt.Errorf("store: create first web admin: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("store: first web admin rows affected: %w", err)
+	}
+	if n == 0 {
+		return nil, ErrSetupClosed
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("store: first web admin last insert id: %w", err)
+	}
+	return s.GetWebAdmin(ctx, id)
+}
+
 // GetWebAdmin 按主键取。
 func (s *Store) GetWebAdmin(ctx context.Context, id int64) (*WebAdmin, error) {
 	return s.scanWebAdminRow(s.db.QueryRowContext(ctx, webAdminSelectSQL+` WHERE id=?`, id))

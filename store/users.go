@@ -188,6 +188,10 @@ var ErrInvalid = errors.New("store: invalid argument")
 // 调用方用 errors.Is(err, store.ErrDuplicate) 即可分支处理。
 var ErrDuplicate = errors.New("store: unique constraint violation")
 
+// ErrSetupClosed:首位 web 管理员创建失败,因为 web_admins 表已非空(setup 已完成或被并发请求抢占)。
+// CreateFirstWebAdmin 用它把「原子首建的竞争失败」与真正的 DB 错误区分开;handleSetup 收到即 302 /login。
+var ErrSetupClosed = errors.New("store: web admin setup already completed")
+
 // CreateUser 创建一个新用户并返回其完整记录（含自增 ID）。
 func (s *Store) CreateUser(ctx context.Context, in NewUser) (*User, error) {
 	if strings.TrimSpace(in.Username) == "" {
