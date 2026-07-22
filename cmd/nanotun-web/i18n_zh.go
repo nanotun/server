@@ -865,6 +865,7 @@ var catZH = map[string]string{
 	"err.disableFailed":         "禁用失败: ",
 	"err.closeFailed":           "关闭失败: ",
 	"err.pwChangeFailed":        "改密失败: ",
+	"err.internalGeneric":       "服务器内部错误,请稍后重试;若持续出现请联系管理员。",
 	"err.hashFailed":            "哈希失败: ",
 	"err.setFailed":             "设置失败: ",
 	"err.genPskFailed":          "生成 PSK 失败: ",

@@ -158,7 +158,11 @@ func generateSelfSignedCert(certPath, keyPath string, sans []string) error {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 
 		BasicConstraintsValid: true,
-		IsCA:                  true, // 让管理员能选择把它当 root CA 装进客户端信任库
+		// IsCA=false:这是一张**叶子/终端实体**服务器证书,绝不能当 CA。此前设 true 是为了"让管理员把它
+		// 当 root CA 装进信任库",但那样一来,落在本机(0600)的这把私钥就能为**任意**域名签出被该信任库
+		// 接受的证书 —— web 主机一旦被攻陷,攻击者即可用它 MITM 任何站点。需要信任时,现代浏览器 / 系统可
+		// 直接把这张叶子证书作为例外 / 终端实体导入,无需赋予其 CA 签发能力。
+		IsCA: false,
 	}
 	for _, s := range sans {
 		if ip := net.ParseIP(s); ip != nil {

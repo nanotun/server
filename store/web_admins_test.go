@@ -7,6 +7,32 @@ import (
 
 const dummyPwdHash = "argon2id$v=19$m=65536,t=2,p=4$YWFhYWFhYWFhYWFhYWFhYQ$YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYg"
 
+// TestCreateFirstWebAdmin 覆盖原子首建:空表可建,建成后再建拿 ErrSetupClosed(而非再插一行)。
+func TestCreateFirstWebAdmin(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	a, err := s.CreateFirstWebAdmin(ctx, NewWebAdmin{Username: "first", PasswordHash: dummyPwdHash})
+	if err != nil {
+		t.Fatalf("CreateFirstWebAdmin(empty table): %v", err)
+	}
+	if a == nil || a.Username != "first" || a.Role != "admin" {
+		t.Fatalf("unexpected first admin: %+v", a)
+	}
+
+	// 表已非空:必须拒(ErrSetupClosed),且不新增行。
+	if _, err := s.CreateFirstWebAdmin(ctx, NewWebAdmin{Username: "second", PasswordHash: dummyPwdHash}); !errors.Is(err, ErrSetupClosed) {
+		t.Fatalf("expected ErrSetupClosed on non-empty table, got %v", err)
+	}
+	n, err := s.CountWebAdmins(ctx)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("web_admins 应只有 1 行(原子首建拒了第二次),got %d", n)
+	}
+}
+
 // TestWebAdminCRUD 覆盖创建 / 重名 / 查询 / 改密 / 角色 / 启停 / 删除全链路。
 func TestWebAdminCRUD(t *testing.T) {
 	s := newTestStore(t)

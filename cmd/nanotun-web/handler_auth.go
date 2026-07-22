@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/nanotun/server/store"
 )
 
@@ -27,7 +29,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := s.store.CountWebAdmins(ctx)
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.countAccountsFailed")+err.Error())
+		s.renderInternalError(w, r, "setup:count_admins", err)
 		return
 	}
 	if n > 0 {
@@ -41,12 +43,12 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		// 这里手动签发/复用一个 token 嵌入页面(K4 同 handleLogin)。
 		tok, err := s.sess.EnsureCSRFToken(r, w)
 		if err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.csrfIssueFailed")+err.Error())
+			s.renderInternalError(w, r, "setup:csrf_issue", err)
 			return
 		}
 		cap, err := s.sess.IssueCaptcha(w)
 		if err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.captchaGenFailed")+err.Error())
+			s.renderInternalError(w, r, "setup:captcha_gen", err)
 			return
 		}
 		s.renderPage(w, r, "setup.html", PageData{
@@ -89,22 +91,31 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		}
 		hash, err := HashWebPassword(password)
 		if err != nil {
-			s.setupRetry(w, r, tr(r, "err.hashFailed")+err.Error())
+			logrus.WithError(err).WithField("ctx", "setup:hash_password").Error("[web] internal error")
+			s.setupRetry(w, r, tr(r, "err.internalGeneric"))
 			return
 		}
-		admin, err := s.store.CreateWebAdmin(ctx, store.NewWebAdmin{
+		// 原子首建:仅当 web_admins 仍为空时插入。防「count==0 检查」与「创建」之间的 TOCTOU —— 两个
+		// 并发 POST /setup 都过了上面的 CountWebAdmins==0 判定却各建一个管理员。竞争落败者拿到
+		// ErrSetupClosed(表已被抢先建成),按「已初始化」处理:302 /login。
+		admin, err := s.store.CreateFirstWebAdmin(ctx, store.NewWebAdmin{
 			Username:     username,
 			PasswordHash: hash,
 			Role:         "admin",
 		})
+		if errors.Is(err, store.ErrSetupClosed) {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
 		if err != nil {
-			s.setupRetry(w, r, tr(r, "err.createAccountFailed")+err.Error())
+			logrus.WithError(err).WithField("ctx", "setup:create_first_admin").Error("[web] internal error")
+			s.setupRetry(w, r, tr(r, "err.internalGeneric"))
 			return
 		}
 		// 直接颁发 session,登入。
 		ip := clientIP(r)
 		if err := s.sess.IssueSession(ctx, w, admin.ID, ip, r.UserAgent()); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.issueSessionFailed")+err.Error())
+			s.renderInternalError(w, r, "setup:issue_session", err)
 			return
 		}
 		_ = s.store.RecordWebAdminLoginSuccess(ctx, admin.ID, ip)
@@ -152,12 +163,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		tok, err := s.sess.EnsureCSRFToken(r, w)
 		if err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, "csrf: "+err.Error())
+			s.renderInternalError(w, r, "login:csrf_issue", err)
 			return
 		}
 		cap, err := s.sess.IssueCaptcha(w)
 		if err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, "captcha: "+err.Error())
+			s.renderInternalError(w, r, "login:captcha_gen", err)
 			return
 		}
 		// 自适应 PoW:平时(失败 <3 次)difficulty=0 不下发题目,
@@ -167,7 +178,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		powDiff := ComputeDifficulty(s.sess.ipFailures.Recent(ip))
 		powCh, err := s.sess.IssueChallenge(powDiff)
 		if err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, "pow: "+err.Error())
+			s.renderInternalError(w, r, "login:pow_issue", err)
 			return
 		}
 		next := r.URL.Query().Get("next")
@@ -250,8 +261,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		//   * 密码泄露但没拿到 TOTP 的 attacker 进不了主界面;
 		//   * 用户体验上类似一个二次输入页面,正常 60 秒内完成。
 		if res.Admin.TOTPEnabled {
-			if err := s.sess.IssueTOTPPending(w, res.Admin.ID); err != nil {
-				s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.issue2faFailed")+err.Error())
+			if err := s.sess.IssueTOTPPending(w, res.Admin.ID, ip); err != nil {
+				s.renderInternalError(w, r, "login:issue_totp_pending", err)
 				return
 			}
 			s.audit.Write(ctx, res.Admin, "web.login.password_ok_await_totp",
@@ -269,7 +280,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.sess.IssueSession(ctx, w, res.Admin.ID, ip, r.UserAgent()); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.issueSessionFailed")+err.Error())
+			s.renderInternalError(w, r, "login:issue_session", err)
 			return
 		}
 		// 成功登录 → 清零 IP 失败计数,下次同 IP 来登录直接无 PoW 体验。
@@ -384,7 +395,7 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		tok, err := s.sess.EnsureCSRFToken(r, w)
 		if err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, "csrf: "+err.Error())
+			s.renderInternalError(w, r, "login_totp:csrf_issue", err)
 			return
 		}
 		s.renderPage(w, r, "login_totp.html", PageData{
@@ -447,7 +458,7 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 				FormatDetail("ip", ip, "recovery_id", recoveryID))
 		}
 		if err := s.sess.IssueSession(ctx, w, admin.ID, ip, r.UserAgent()); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.issueSessionFailed")+err.Error())
+			s.renderInternalError(w, r, "login_totp:issue_session", err)
 			return
 		}
 		s.sess.ClearTOTPPending(w)

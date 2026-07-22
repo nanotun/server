@@ -860,6 +860,7 @@ var catEN = map[string]string{
 	"err.disableFailed":         "Disable failed: ",
 	"err.closeFailed":           "Close failed: ",
 	"err.pwChangeFailed":        "Password change failed: ",
+	"err.internalGeneric":       "An internal error occurred. Please retry, or contact your administrator if it persists.",
 	"err.hashFailed":            "Hashing failed: ",
 	"err.setFailed":             "Set failed: ",
 	"err.genPskFailed":          "Failed to generate PSK: ",

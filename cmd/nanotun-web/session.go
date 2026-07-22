@@ -229,8 +229,19 @@ func (s *SessionService) DestroySession(ctx context.Context, w http.ResponseWrit
 // pendingPayloadLen = adminID(8) + exp(8) + nonce(16) = 32, HMAC = 32, 总 64。
 const pendingPayloadLen = 32
 
-// IssueTOTPPending 写 pending cookie。每次密码验证通过、需要 TOTP 时调用。
-func (s *SessionService) IssueTOTPPending(w http.ResponseWriter, adminID int64) error {
+// pendingMAC 计算 pending-2FA cookie 的 HMAC:签 payload,并把**客户端 IP** 作为附加认证数据(AAD)
+// 绑进签名。这样 pending cookie 即便被窃取,从**另一个 IP** 重放时算出的 MAC 与 cookie 内的不符 → 拒,
+// 使「拿到密码 + 偷到 pending cookie」的攻击者无法在自己的机器上完成 TOTP 步。payload 定长(32B),其后
+// 直接拼 ip 无边界歧义。IP 在 5 分钟窗口内切换(移动网络等)会导致该步失败并回退重新登录,可接受。
+func (s *SessionService) pendingMAC(payload []byte, ip string) []byte {
+	mac := hmac.New(sha256.New, s.pendingHMACKey)
+	mac.Write(payload)
+	mac.Write([]byte(ip))
+	return mac.Sum(nil)
+}
+
+// IssueTOTPPending 写 pending cookie。每次密码验证通过、需要 TOTP 时调用。ip 绑进签名(见 pendingMAC)。
+func (s *SessionService) IssueTOTPPending(w http.ResponseWriter, adminID int64, ip string) error {
 	if adminID <= 0 {
 		return errors.New("pending2fa: bad admin id")
 	}
@@ -244,9 +255,7 @@ func (s *SessionService) IssueTOTPPending(w http.ResponseWriter, adminID int64) 
 	binary.BigEndian.PutUint64(payload[8:16], uint64(exp))
 	copy(payload[16:32], nonce)
 
-	mac := hmac.New(sha256.New, s.pendingHMACKey)
-	mac.Write(payload[:])
-	sig := mac.Sum(nil)
+	sig := s.pendingMAC(payload[:], ip)
 
 	full := append(payload[:], sig...) // 32 + 32 = 64 字节
 	value := base64.RawURLEncoding.EncodeToString(full)
@@ -282,9 +291,8 @@ func (s *SessionService) LookupTOTPPending(r *http.Request) (int64, error) {
 	payload := raw[:pendingPayloadLen]
 	sig := raw[pendingPayloadLen:]
 
-	mac := hmac.New(sha256.New, s.pendingHMACKey)
-	mac.Write(payload)
-	want := mac.Sum(nil)
+	// 用与签发时相同的客户端 IP 复算 MAC:cookie 被窃后从别的 IP 重放会因 IP 不符而验签失败。
+	want := s.pendingMAC(payload, clientIP(r))
 	if subtle.ConstantTimeCompare(sig, want) != 1 {
 		return 0, ErrNoPending2FA
 	}

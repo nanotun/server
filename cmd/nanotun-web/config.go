@@ -94,6 +94,13 @@ type Config struct {
 
 	// trustedProxyNets 是 TrustedProxies 在 Validate 阶段解析后的前缀集合(内部用)。
 	trustedProxyNets []netip.Prefix
+
+	// MetricsToken 门禁 /metrics 的可选 bearer token。
+	//   - 空(默认):/metrics 仅对**环回**对端(127.0.0.1 / ::1)开放,其余来源一律 404
+	//     —— 关闭「任意公网访客可读 admin 账号数 / 请求计数」的信息泄漏(此前 /metrics 完全无鉴权)。
+	//   - 非空:要求 `Authorization: Bearer <token>`(常量时间比较);匹配即放行(供远程 Prometheus 抓取)。
+	// 来源:env NANOTUN_WEB_METRICS_TOKEN。
+	MetricsToken string
 }
 
 // defaultConfig 返回填好默认值的 Config。
@@ -155,6 +162,9 @@ func (c *Config) applyEnvOverrides() {
 	if v, ok := os.LookupEnv("NANOTUN_WEB_TRUSTED_PROXIES"); ok {
 		// env 覆盖(而非追加):显式给了就以 env 为准。支持 none/off 哨兵显式清空。
 		c.TrustedProxies = splitTrustedProxies(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("NANOTUN_WEB_METRICS_TOKEN")); v != "" {
+		c.MetricsToken = v
 	}
 }
 
@@ -273,8 +283,11 @@ func (c *Config) Validate() error {
 	if c.SessionTTLSec < 60 {
 		return fmt.Errorf("session_ttl_sec=%d is too short (<60s); logins would expire immediately", c.SessionTTLSec)
 	}
-	if c.MaxLoginFailures < 0 {
-		return fmt.Errorf("max_login_failures=%d cannot be < 0", c.MaxLoginFailures)
+	// 必须 >= 1。RecordWebAdminLoginFailure 的锁定条件是 `maxFailures > 0 && failed >= maxFailures`,
+	// 因此 0 会**彻底关闭**账号级暴力破解锁定(运维若误以为「0=不限次数放行」而设 0,等于放开对
+	// 密码 / 6 位 TOTP 的无限枚举)。启动期直接拒,逼运维给一个真实阈值。
+	if c.MaxLoginFailures < 1 {
+		return fmt.Errorf("max_login_failures=%d must be >= 1; 0 would disable brute-force lockout entirely", c.MaxLoginFailures)
 	}
 	if c.LockoutSeconds < 0 {
 		return fmt.Errorf("lockout_seconds=%d cannot be < 0", c.LockoutSeconds)
