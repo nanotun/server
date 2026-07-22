@@ -16,6 +16,10 @@ import (
 	"time"
 )
 
+// maxClientCertValidDays 客户端 mTLS 证书有效期上限(天)。10 年:覆盖任何合理自托管用法,
+// 又远离 time.Duration(int64 ns ≈ 292 年)的溢出边界(见 IssueClientCert 的 NotAfter 计算)。
+const maxClientCertValidDays = 3650
+
 // IssuedClientCert 为 PEM 编码的客户端证书与私钥（供 profile.hy2 下发）。
 type IssuedClientCert struct {
 	CertPEM string
@@ -45,6 +49,13 @@ func IssueClientCert(caCertPEM, caKeyPEM, commonName string, validDays int) (*Is
 	}
 	if validDays <= 0 {
 		return nil, fmt.Errorf("validDays 须 > 0，得到 %d", validDays)
+	}
+	// 上限防溢出:NotAfter 用 time.Duration(validDays)*24h,而 time.Duration 是 int64 纳秒
+	// (上限 ~106751 天 ≈ 292 年)。--hy2-client-cert-days 是无符号 flag,运维误传超大值会让
+	// 乘法溢出成负 / 小 duration → NotAfter 落到过去,签出「刚签发即过期」的废证。10 年上限既覆盖
+	// 一切合理用法,又远离溢出边界。
+	if validDays > maxClientCertValidDays {
+		return nil, fmt.Errorf("validDays 过大(%d)，上限 %d 天", validDays, maxClientCertValidDays)
 	}
 
 	caCert, err := parseCertificatePEM(caCertPEM)
@@ -117,7 +128,6 @@ func IssueClientCertFromFiles(caCertPath, caKeyPath, commonName string, validDay
 }
 
 func parseCertificatePEM(pemData string) (*x509.Certificate, error) {
-	var cert *x509.Certificate
 	rest := []byte(pemData)
 	for {
 		var block *pem.Block
@@ -128,16 +138,12 @@ func parseCertificatePEM(pemData string) (*x509.Certificate, error) {
 		if block.Type != "CERTIFICATE" {
 			continue
 		}
-		c, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return nil, err
-		}
-		cert = c
+		// 用**第一个** CERTIFICATE 块作签发者。CA bundle 约定首证 = 与 key 文件配对的签发 CA;
+		// 此前循环到最后一块并覆盖,若 bundle 排成 [签发CA, 根CA],会误取根 CA 当 parent,签出的
+		// 客户端证书 Issuer 与实际签名密钥(key 文件对应的证书)不符 → 客户端建链 / 校验失败。
+		return x509.ParseCertificate(block.Bytes)
 	}
-	if cert == nil {
-		return nil, errors.New("PEM 中无 CERTIFICATE 块")
-	}
-	return cert, nil
+	return nil, errors.New("PEM 中无 CERTIFICATE 块")
 }
 
 // GenerateTestCA 写入自签测试用客户端 CA（仅单测 / profile 测试 fixture）。

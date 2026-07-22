@@ -55,6 +55,13 @@ func buildSmuxConfigFrom(c *config.SmuxConfig) *smux.Config {
 	if c.MaxStreamBuffer > 0 {
 		out.MaxStreamBuffer = c.MaxStreamBuffer
 	}
+	// 纵深防御:config.Validate 已在启动期校验用户显式值,但「用户值 + 默认值」的混合组合仍可能触发
+	// smux 的跨字段约束(如用户只设 max_stream_buffer 且 > 默认 max_receive_buffer)。若最终 config 非法,
+	// 回退全默认并告警 —— 远好过让每条连接静默 VerifyConfig 失败、数据面整体不可用。
+	if err := smux.VerifyConfig(out); err != nil {
+		logrus.WithError(err).Warn("[smux] 合成配置未通过 VerifyConfig,回退 smux 默认配置")
+		return smux.DefaultConfig()
+	}
 	return out
 }
 

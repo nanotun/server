@@ -632,10 +632,52 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if c.Smux != nil {
+		validateSmux(c.Smux, &errs)
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("配置校验失败:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
+}
+
+// validateSmux 校验 [smux] 用户显式设置的字段(与 xtaci/smux VerifyConfig 的约束对齐)。
+//
+// buildSmuxConfigFrom 只在字段 > 0 时采用用户值、否则回退默认;但采用时**不校验上界**。越界值(如
+// max_frame_size > 65535、max_stream_buffer > max_receive_buffer、interval ≥ timeout)会让运行期
+// smux.Server/Client 对**每条**连接 VerifyConfig 失败 → 数据面静默不可用、且只在连接时才暴露。这里在
+// 启动即拦截,给出清晰报错。零值字段一律跳过(表示"用默认")。
+func validateSmux(s *SmuxConfig, errs *[]string) {
+	if s.Version != 0 && s.Version != 1 && s.Version != 2 {
+		*errs = append(*errs, fmt.Sprintf("[smux].version=%d 非法(仅 1 或 2;0=用默认)", s.Version))
+	}
+	if s.KeepAliveIntervalSec < 0 {
+		*errs = append(*errs, fmt.Sprintf("[smux].keepalive_interval_s=%d 不能为负", s.KeepAliveIntervalSec))
+	}
+	if s.KeepAliveTimeoutSec < 0 {
+		*errs = append(*errs, fmt.Sprintf("[smux].keepalive_timeout_s=%d 不能为负", s.KeepAliveTimeoutSec))
+	}
+	// 两者都显式设置时,interval 必须 < timeout(smux 硬约束;否则 keepalive 判死逻辑失效)。
+	if s.KeepAliveIntervalSec > 0 && s.KeepAliveTimeoutSec > 0 && s.KeepAliveIntervalSec >= s.KeepAliveTimeoutSec {
+		*errs = append(*errs, fmt.Sprintf("[smux].keepalive_interval_s(%d) 必须 < keepalive_timeout_s(%d)",
+			s.KeepAliveIntervalSec, s.KeepAliveTimeoutSec))
+	}
+	// max_frame_size 上限 65535(smux 帧长字段为 16bit);0=用默认。
+	if s.MaxFrameSize < 0 || s.MaxFrameSize > 65535 {
+		*errs = append(*errs, fmt.Sprintf("[smux].max_frame_size=%d 非法(须 1..65535;0=用默认)", s.MaxFrameSize))
+	}
+	if s.MaxReceiveBuffer < 0 {
+		*errs = append(*errs, fmt.Sprintf("[smux].max_receive_buffer=%d 不能为负", s.MaxReceiveBuffer))
+	}
+	if s.MaxStreamBuffer < 0 {
+		*errs = append(*errs, fmt.Sprintf("[smux].max_stream_buffer=%d 不能为负", s.MaxStreamBuffer))
+	}
+	// 两者都显式设置时,stream buffer 不得超过 receive buffer(smux VerifyConfig 硬约束)。
+	if s.MaxStreamBuffer > 0 && s.MaxReceiveBuffer > 0 && s.MaxStreamBuffer > s.MaxReceiveBuffer {
+		*errs = append(*errs, fmt.Sprintf("[smux].max_stream_buffer(%d) 不能大于 max_receive_buffer(%d)",
+			s.MaxStreamBuffer, s.MaxReceiveBuffer))
+	}
 }
 
 // validateListenAddrFormat 校验监听地址是否为 "host:port" 或 ":port"，且端口在 1..65535。

@@ -310,6 +310,7 @@ var catZH = map[string]string{
 	"credentials.rotateRaced":        "另一管理员已先一步为 %s 重置 PSK;请刷新 user 状态后再 credentials show",
 	"credentials.verifyPSK":          "校验 PSK",
 	"credentials.pskMismatch":        "--psk 与用户 %q 当前的 PSK hash 不匹配;如确实忘了请用 --rotate-psk",
+	"psk.argvLeakWarning":            "警告:在命令行用 --psk 传明文 PSK 会经 ps / /proc/<pid>/cmdline / shell 历史泄漏;更安全的做法是省略 --psk 让系统随机生成,再从命令输出读取",
 	"credentials.qrIgnoresOutput":    "[warn] --format qr 忽略 --output %q(终端二维码始终输出到 stdout)",
 	"credentials.qrScanHint":         "（手机扫描下方二维码导入 nanotun-cred:// 凭据;**这是 PSK 唯一一次以 QR 形式出现,请妥善保管**）",
 

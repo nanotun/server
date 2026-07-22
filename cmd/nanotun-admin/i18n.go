@@ -85,6 +85,14 @@ func (o *globalOpts) T(key string, args ...any) string {
 	return translate(o.lang, key, args...)
 }
 
+// warnPSKOnArgv 在运维通过 --psk 在命令行明文传 PSK 时打一条 stderr 提示:命令行参数会进入 ps /
+// /proc/<pid>/cmdline / shell history,含密 PSK 因而可能被同机其它本地用户或历史文件读到。这是提示而
+// **非阻断**(脚本化 / 自动化仍需要 --psk);更安全的做法是省略 --psk 让系统随机生成、再从命令输出读取。
+// 仅在 flag 值非空时调用。
+func (o *globalOpts) warnPSKOnArgv() {
+	fmt.Fprintln(o.stderr, o.T("psk.argvLeakWarning"))
+}
+
 // usage 拼装子命令的 usage 提示:前缀("usage: " / "用法: ")按语言切换,后面的
 // 命令语法(子命令名 / flag / 占位符)是用户实际敲的字面量,不翻译。
 func (o *globalOpts) usage(syntax string) string {

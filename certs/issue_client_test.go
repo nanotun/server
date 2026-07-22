@@ -12,6 +12,41 @@ import (
 
 var osReadFile = os.ReadFile
 
+// TestIssueClientCert_ValidDaysBounds 验证 validDays 上下界:≤0 拒;超上限(防 time.Duration 溢出)拒;
+// 上限值本身与典型 90 天放行。
+func TestIssueClientCert_ValidDaysBounds(t *testing.T) {
+	dir := t.TempDir()
+	caCertPath := filepath.Join(dir, "ca.pem")
+	caKeyPath := filepath.Join(dir, "ca-key.pem")
+	if err := GenerateTestCA(caCertPath, caKeyPath); err != nil {
+		t.Fatal(err)
+	}
+	caCertPEM, _ := os.ReadFile(caCertPath)
+	caKeyPEM, _ := os.ReadFile(caKeyPath)
+
+	bad := []int{0, -1, maxClientCertValidDays + 1, 1 << 30}
+	for _, d := range bad {
+		if _, err := IssueClientCert(string(caCertPEM), string(caKeyPEM), "cn", d); err == nil {
+			t.Errorf("validDays=%d 应被拒绝", d)
+		}
+	}
+	for _, d := range []int{1, 90, maxClientCertValidDays} {
+		issued, err := IssueClientCert(string(caCertPEM), string(caKeyPEM), "cn", d)
+		if err != nil || issued == nil {
+			t.Errorf("validDays=%d 应放行,got err=%v", d, err)
+			continue
+		}
+		// NotAfter 必须落在未来(未因溢出跑到过去)。
+		cert, err := parseCertificatePEM(issued.CertPEM)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cert.NotAfter.After(cert.NotBefore) {
+			t.Errorf("validDays=%d: NotAfter(%v) 不晚于 NotBefore(%v)", d, cert.NotAfter, cert.NotBefore)
+		}
+	}
+}
+
 func TestIssueClientCert_DevCA(t *testing.T) {
 	dir := t.TempDir()
 	caCertPath := filepath.Join(dir, "ca.pem")
