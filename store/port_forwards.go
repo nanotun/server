@@ -61,7 +61,12 @@ func (s *Store) CreatePortForward(ctx context.Context, pf PortForward) (*PortFor
 		}
 		return nil, fmt.Errorf("store: create port_forward: %w", err)
 	}
-	id, _ := res.LastInsertId()
+	// 显式检查 LastInsertId 错误:此前忽略 err,若驱动返回 (0, err) 会用 id=0 去 GetPortForward,
+	// 撞出 ErrNotFound —— 把「插入其实成功了但拿不到 rowid」误报成「没找到」,调用方无从区分。
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("store: port_forward last insert id: %w", err)
+	}
 	return s.GetPortForward(ctx, id)
 }
 

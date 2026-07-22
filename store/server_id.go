@@ -63,8 +63,15 @@ func (s *Store) GetOrInitServerID(ctx context.Context) (string, error) {
 		return "", errors.New("store: GetOrInitServerID on nil store")
 	}
 
-	// 快路径
-	if v, ok, err := s.SettingsGet(ctx, ServerIDKey); err == nil && ok {
+	// 快路径。SettingsGet 返回的 err 是**真·读故障**(DB 损坏 / IO 错),不是「key 不存在」(那是 ok=false)。
+	// 此前 `err == nil && ok` 把读故障与 not-found 一并吞掉、落到慢路径软降级返回 ("", nil),等于把一个真实的
+	// DB 故障伪装成「本次 QR 没 server_id」—— 掩盖问题、误导排查。读故障直接上抛;软降级只保留给写故障
+	// (只读连接 / 磁盘满,见慢路径 ensureServerID 分支)。
+	v, ok, err := s.SettingsGet(ctx, ServerIDKey)
+	if err != nil {
+		return "", fmt.Errorf("store: read server_id: %w", err)
+	}
+	if ok {
 		if trimmed := strings.TrimSpace(v); trimmed != "" {
 			return trimmed, nil
 		}
@@ -80,7 +87,7 @@ func (s *Store) GetOrInitServerID(ctx context.Context) (string, error) {
 	}
 
 	// 二次 SELECT:取实际生效值。前面 ensureServerID 保证此时一定有 valid UUID。
-	v, ok, err := s.SettingsGet(ctx, ServerIDKey)
+	v, ok, err = s.SettingsGet(ctx, ServerIDKey)
 	if err != nil {
 		return "", fmt.Errorf("store: re-read server_id: %w", err)
 	}

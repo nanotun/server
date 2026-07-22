@@ -184,7 +184,23 @@ func (s *Store) SettingsGet(ctx context.Context, key string) (string, bool, erro
 	return v, true, nil
 }
 
+// reservedSettingKeys 是**系统托管**、禁止走通用 SettingsSet 写入的 app_settings key:
+//   - server_id     由 ensureServerID / migration hook 用 INSERT OR IGNORE 专管(first-writer-wins),
+//     覆盖它会破坏客户端按 server_id 的去重语义;
+//   - schema_version 由 migrations runner 维护,手改会让 schema 状态机错乱、重复 / 跳过迁移。
+//
+// CLI `setting set` 入口已用 systemManagedSettingKeys 挡住这两个 key,这里在 DAL 再兜一层纵深防御,
+// 防未来其它调用方(web handler / 新代码)绕过 CLI 直接调 SettingsSet 覆盖它们。二者各自的专用写路径
+// (ensureServerID / migrations runner)都不经过本函数,加此守卫不影响正常初始化。
+var reservedSettingKeys = map[string]bool{
+	ServerIDKey:      true, // "server_id"
+	"schema_version": true,
+}
+
 func (s *Store) SettingsSet(ctx context.Context, key, value string) error {
+	if reservedSettingKeys[key] {
+		return fmt.Errorf("store: setting %q is system-managed and must not be set via SettingsSet: %w", key, ErrInvalid)
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO app_settings(key,value) VALUES(?,?)
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
