@@ -98,6 +98,38 @@ func preferredLeasedVIPs(gw *gatewayState, res *loginAuthResult) (v4, v6 string)
 	return v4, v6
 }
 
+// preferredVIPUsable 判断一个「偏好 vIP」(device.fixed_vip 或历史 lease)能否直接采用:非空、内存 used 集
+// 未占用、在网段内、且**既不是网关地址也不是网络地址**。
+//
+// 此前登录 fast-path 只判 `!clientIPUsed[vip] && sameSubnet(...)`,漏了网关 / 网络地址:自动分配路径
+// (AllocClientIP)从 i=2 起扫且显式 `continue` 掉网关,天然避开网关 / 网络 / 广播;但 fast-path 直接采用
+// 偏好 vIP 没有这层过滤——若 admin 把 fixed_vip 手钉成网关(如 10.0.0.1),sameSubnet 通过、used 里也没有,
+// 客户端就被分到网关地址,与 server 网关冲突、该客户端路由全断。这里补齐同等过滤。
+func preferredVIPUsable(gatewayCIDR, vip string, used map[string]bool) bool {
+	if vip == "" || used[vip] {
+		return false
+	}
+	prefix, err := netip.ParsePrefix(gatewayCIDR)
+	if err != nil {
+		return false
+	}
+	addr, err := netip.ParseAddr(vip)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	if !prefix.Contains(addr) {
+		return false
+	}
+	if addr == prefix.Addr().Unmap() {
+		return false // 网关地址
+	}
+	if addr == prefix.Masked().Addr().Unmap() {
+		return false // 网络地址(全 0 主机位)
+	}
+	return true
+}
+
 // persistDeviceLease 把本次分配到的 v4 / v6 写回 leases 表。
 //
 // 仅在 PSK + 设备已注册时生效；其它情况是无害 noop(返回 nil)。

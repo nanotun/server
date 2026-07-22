@@ -2676,15 +2676,17 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		if authErr.code != util.CodeServerError && authErr.code != util.CodePlatformNotAllowed {
 			powSvc.failures.MarkFailure(ipHost)
 		}
-		_ = writeLinkLoginResp(raw, authErr.code, clientLoginMessageForCode(authErr.code), "")
+		// 反枚举:对客户端只发收敛后的 code + 文案(user_not_found 与 bad_psk 在 wire 上一致)。
+		// 内部 authErr.code 已用于上面的 audit / user_not_found 速率告警,不受影响。
+		clientCode := clientFacingLoginCode(authErr.code)
+		_ = writeLinkLoginResp(raw, clientCode, clientLoginMessageForCode(clientCode), "")
 		return
 	}
-	// G4: 登录成功 audit
-	if gw != nil && gw.store != nil {
-		_ = gw.store.Audit(context.Background(), remote, "login.success", authResult.UserID, "")
-	}
-	// P2#16:登录成功 → 清零该 IP 失败计数,让下次登录回到 base_difficulty。
-	powSvc.failures.MarkSuccess(ipHost)
+	// 深扫:login.success audit 与 MarkSuccess(清 IP 失败计数)**推迟**到 VIP 分配 + lease 持久化都成功、
+	// 即将下发登录成功帧时再做(见下方成功帧处)。此前在此(PSK 通过、VIP 尚未分配)就提前执行,会造成:
+	//   ① 若随后 VIP 池耗尽 / lease 撞 UNIQUE 导致登录实际失败,IP 失败计数已被清零 → 这次失败不计入 PoW ramp;
+	//   ② audit 里留下一条「login.success」但会话其实没建成,排查时误导。
+	// 与「成功帧推迟到全部成功后再发」保持同一提交点。
 	userID := authResult.UserID
 	takeoverSecret := generateTakeoverSecret()
 	// P0-4(2026-05-22):把 user-level enforcement 字段固化到 Connection。
@@ -2902,7 +2904,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 					for i := range ipv4LocalIPs {
 						var netCfg ClientNetConfig
 						var errAlloc error
-						if i == 0 && leasedV4 != "" && !clientIPUsed[leasedV4] && sameSubnet(sharedTUNGateway, leasedV4) {
+						if i == 0 && preferredVIPUsable(sharedTUNGateway, leasedV4, clientIPUsed) {
 							netCfg = ClientNetConfig{ClientIP: leasedV4, Mask: maskStr, Gateway: gatewayAddrFromCIDR(sharedTUNGateway)}
 						} else {
 							netCfg, errAlloc = AllocClientIP(sharedTUNGateway, mergeUsedVIPs(clientIPUsed, dbResvV4), nil)
@@ -2942,7 +2944,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 					maskStrV6 := maskFromGatewayCIDR(sharedTUNGatewayV6)
 					var netCfgV6 ClientNetConfig
 					var errAllocV6 error
-					if leasedV6 != "" && !clientIPUsed[leasedV6] && sameSubnet(sharedTUNGatewayV6, leasedV6) {
+					if preferredVIPUsable(sharedTUNGatewayV6, leasedV6, clientIPUsed) {
 						netCfgV6 = ClientNetConfig{ClientIP: leasedV6, Mask: maskStrV6, Gateway: gatewayAddrFromCIDR(sharedTUNGatewayV6)}
 					} else {
 						netCfgV6, errAllocV6 = AllocClientIP(sharedTUNGatewayV6, mergeUsedVIPs(clientIPUsed, dbResvV6), nil)
@@ -3013,6 +3015,13 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		logrus.WithField("remote", remote).Error("无法分配 convID")
 		return
 	}
+
+	// VIP 分配 + lease 持久化 + vIP→user 映射都成功后,才认定「登录真正成功」:写 audit + 清 IP 失败计数
+	// (回到 base_difficulty)。此提交点与下方成功帧一致,避免「PSK 过但 VIP 分配失败」被误记成功 / 误清计数。
+	if gw != nil && gw.store != nil {
+		_ = gw.store.Audit(context.Background(), remote, "login.success", authResult.UserID, "")
+	}
+	powSvc.failures.MarkSuccess(ipHost)
 
 	// 深扫第十二轮 MED:到这里 VIP 分配 + lease 持久化 + vIP→user 映射都已成功,此刻才发
 	// 登录成功帧(code=0)。仍在 c.linkConn 被赋值(下方)之前,无并发写者,直接写 raw;
@@ -3256,8 +3265,8 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		if authErr.code != util.CodeServerError && authErr.code != util.CodePlatformNotAllowed {
 			markTakeoverAsIPFailure()
 		}
-		// 与 primary login 一致:对外只暴露 code,不透传内部 message(避免 SQL/路径泄漏)。
-		_ = writeLinkLoginResp(raw, authErr.code, "takeover failed: auth", "")
+		// 与 primary login 一致:对外只暴露收敛后的 code(user_not_found→token_invalid),不透传内部 message。
+		_ = writeLinkLoginResp(raw, clientFacingLoginCode(authErr.code), "takeover failed: auth", "")
 		return
 	}
 	if authResult.UserID != oldConn.userID {

@@ -64,6 +64,13 @@ const (
 	minHashBytes = 16
 	minSaltBytes = 8
 
+	// 上限(防 DoS):VerifyPSK 用 argon2.IDKey(..., keyLen=uint32(len(hash))) 申请**等于 hash 长度**的输出
+	// 缓冲。若某条 PHC 的 base64 hash 段是几 MB 的巨串(管理员手抖 / 老迁移脚本 / 恶意导入 / DB 被写坏),
+	// keyLen 就变成几 MB,单次 verify 即分配巨额内存 → OOM / 放大攻击。真实 argon2 hash 是 16~64B、salt 16B,
+	// 给到 1KiB 已远超任何合法值;超长即判畸形,DecodePSK 直接拒掉,verify 走 error 路径(上层映射 ErrBadPSK)。
+	maxHashBytes = 1024
+	maxSaltBytes = 1024
+
 	// DecodePSK 接受 argon2id 参数的上限：防止管理员 / 迁移脚本写入超大 m=
 	// 让验证路径 OOM。m=1GB 比 OWASP 推荐高 16 倍，是「显然不正常」的兜底门槛。
 	maxArgonMemoryKiB uint32 = 1 * 1024 * 1024 // 1 GiB in KiB
@@ -114,6 +121,11 @@ func VerifyPSK(plaintext, encoded string) (bool, error) {
 	if len(hash) < minHashBytes || len(salt) < minSaltBytes {
 		return false, fmt.Errorf("auth: psk encoding too short (hash=%d salt=%d)", len(hash), len(salt))
 	}
+	// 冗余上限防御(DecodePSK 已拒;此处再兜一次防未来重构绕过 DecodePSK 直接调 VerifyPSK):超长 hash 会让
+	// 下面 argon2.IDKey 的 keyLen 变巨大 → OOM。
+	if len(hash) > maxHashBytes || len(salt) > maxSaltBytes {
+		return false, fmt.Errorf("auth: psk encoding too long (hash=%d salt=%d)", len(hash), len(salt))
+	}
 	cand := argon2.IDKey([]byte(plaintext), salt, t, mem, p, uint32(len(hash)))
 	return subtle.ConstantTimeCompare(cand, hash) == 1, nil
 }
@@ -157,8 +169,14 @@ func DecodePSK(encoded string) (salt, hash []byte, memory, time uint32, threads 
 	if len(hash) < minHashBytes {
 		return nil, nil, 0, 0, 0, fmt.Errorf("auth: hash too short: %d (min %d)", len(hash), minHashBytes)
 	}
+	if len(hash) > maxHashBytes {
+		return nil, nil, 0, 0, 0, fmt.Errorf("auth: hash too long: %d (max %d)", len(hash), maxHashBytes)
+	}
 	if len(salt) < minSaltBytes {
 		return nil, nil, 0, 0, 0, fmt.Errorf("auth: salt too short: %d (min %d)", len(salt), minSaltBytes)
+	}
+	if len(salt) > maxSaltBytes {
+		return nil, nil, 0, 0, 0, fmt.Errorf("auth: salt too long: %d (max %d)", len(salt), maxSaltBytes)
 	}
 	if memory > maxArgonMemoryKiB {
 		return nil, nil, 0, 0, 0, fmt.Errorf("auth: argon m=%d KiB exceeds cap %d", memory, maxArgonMemoryKiB)
@@ -271,16 +289,22 @@ func (v *Verifier) VerifyLogin(ctx context.Context, username, plaintext string) 
 		}
 		return nil, err
 	}
-	if u.DisabledAt != 0 {
+	// **先验 PSK,再判 disabled**(反枚举):此前 disabled 在 PSK 之前短路返回 ErrUserDisabled,于是不知道 PSK 的
+	// 攻击者只要用户名对上就能得知「该账号存在且被禁用」。改成:只有**证明了知道 PSK** 的调用方才可能收到
+	// ErrUserDisabled;错 PSK / 禁用+错 PSK / 不存在 一律 ErrBadPSK / ErrUnknownUser,无法据此区分账号是否存在/禁用。
+	ok, verr := VerifyPSK(plaintext, u.PSKHash)
+	if verr != nil {
+		// 存储 PSKHash 畸形(手改 / 老迁移 / DB 损坏):VerifyPSK 在 DecodePSK 阶段**不跑 argon2** 立即返错,
+		// 时序快于正常「密码错」路径,且原先经上层 default 分支回 CodeServerError(500),等于泄漏「此账号 hash 异常」。
+		// 补跑一次 decoy 对齐耗时,并统一按 ErrBadPSK 处理 —— 对客户端与「密码错」完全不可区分。
 		runDecoyVerify(plaintext)
-		return nil, ErrUserDisabled
-	}
-	ok, err := VerifyPSK(plaintext, u.PSKHash)
-	if err != nil {
-		return nil, err
+		return nil, ErrBadPSK
 	}
 	if !ok {
 		return nil, ErrBadPSK
+	}
+	if u.DisabledAt != 0 {
+		return nil, ErrUserDisabled
 	}
 	return u, nil
 }
