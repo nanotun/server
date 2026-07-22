@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -102,6 +103,21 @@ func TestVerifyPSK_RejectsOversizedArgonParams(t *testing.T) {
 		if _, err := VerifyPSK("any-pass", enc); err == nil {
 			t.Fatalf("case %d: expected error for oversized argon params", i)
 		}
+	}
+}
+
+// 防御「超长 hash/salt 让 argon2 keyLen 巨大 → OOM」：DecodePSK / VerifyPSK 拒绝畸长的 hash/salt 段。
+func TestVerifyPSK_RejectsOversizedHashSalt(t *testing.T) {
+	bigB64 := base64.RawStdEncoding.EncodeToString(make([]byte, 4096)) // 远超 maxHashBytes/maxSaltBytes(1024)
+	// 超长 hash 段(salt 合法)。
+	encLongHash := "argon2id$v=19$m=65536,t=2,p=4$AAAAAAAAAAAAAAAAAAAAAA$" + bigB64
+	if _, err := VerifyPSK("x", encLongHash); err == nil {
+		t.Fatal("expected error for oversized hash")
+	}
+	// 超长 salt 段(hash 合法 32B)。
+	encLongSalt := "argon2id$v=19$m=65536,t=2,p=4$" + bigB64 + "$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	if _, err := VerifyPSK("x", encLongSalt); err == nil {
+		t.Fatal("expected error for oversized salt")
 	}
 }
 

@@ -5,6 +5,34 @@ import (
 	"testing"
 )
 
+func TestPreferredVIPUsable(t *testing.T) {
+	const gw4 = "10.0.0.1/24"
+	const gw6 = "fd00::1/64"
+	cases := []struct {
+		name string
+		cidr string
+		vip  string
+		used map[string]bool
+		want bool
+	}{
+		{"ok-v4", gw4, "10.0.0.7", nil, true},
+		{"empty", gw4, "", nil, false},
+		{"used", gw4, "10.0.0.7", map[string]bool{"10.0.0.7": true}, false},
+		{"out-of-subnet", gw4, "10.0.1.7", nil, false},
+		{"is-gateway", gw4, "10.0.0.1", nil, false},
+		{"is-network", gw4, "10.0.0.0", nil, false},
+		{"garbage", gw4, "not-an-ip", nil, false},
+		{"ok-v6", gw6, "fd00::7", nil, true},
+		{"is-gateway-v6", gw6, "fd00::1", nil, false},
+		{"is-network-v6", gw6, "fd00::", nil, false},
+	}
+	for _, tc := range cases {
+		if got := preferredVIPUsable(tc.cidr, tc.vip, tc.used); got != tc.want {
+			t.Errorf("%s: preferredVIPUsable(%q,%q) = %v, want %v", tc.name, tc.cidr, tc.vip, got, tc.want)
+		}
+	}
+}
+
 func TestAllocClientIP_FirstInSubnet(t *testing.T) {
 	used := map[string]bool{}
 	cfg, err := AllocClientIP("10.0.0.1/24", used, nil)

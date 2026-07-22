@@ -156,15 +156,24 @@ func waitConnsCleanup(victims []*Connection) {
 	if len(victims) == 0 {
 		return
 	}
+	// 共享截止时间(而非每条 victim 各自 5s):victim 的 link 已在调用前**并发** close,cleanup 亦并发跑,
+	// 故正常整体 ≈ 最慢一条。用单一 deadline 把**总**等待硬顶在 supersedeWaitTimeout 内——否则一旦有多条
+	// victim 同时卡住(如都阻塞在 takeoverMu),原「逐条各等 5s」会退化成 5s×N,把新 conn 的握手响应拖到
+	// 客户端超时。到点未清完就继续登录(退化为「无 supersede」语义,新 conn 可能拿到不同 vIP)。
+	deadline := time.Now().Add(supersedeWaitTimeout)
 	for _, v := range victims {
 		if v == nil || v.cleanupDone == nil {
 			continue
 		}
+		// 每条用「到共享 deadline 的剩余时长」新建一次性 timer(不能共用一个 time.After 通道——它只触发一次,
+		// 之后的 victim 会永远等不到超时而卡在 cleanupDone)。剩余 ≤0 时 NewTimer 立即触发,直接走超时分支。
+		timer := time.NewTimer(time.Until(deadline))
 		select {
 		case <-v.cleanupDone:
 			// 老 conn 的 cleanupConnection 已彻底跑完,clientIPUsed[vIP] 已释放,
 			// 新 conn 后续 preferredLeasedVIPs + AllocClientIP 就能拿回相同 vIP。
-		case <-time.After(supersedeWaitTimeout):
+			timer.Stop()
+		case <-timer.C:
 			logrus.WithFields(logrus.Fields{
 				"victim_conn_id_str": v.connIDStr,
 				"victim_device_uuid": v.deviceUUID,

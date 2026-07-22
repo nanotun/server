@@ -204,6 +204,22 @@ func parseUserIDStr(s string) int64 {
 	return n
 }
 
+// clientFacingLoginCode 把「会泄漏账号是否存在」的内部失败码收敛成统一对外码,防用户名枚举。
+//
+// 内部码(authErr.code)**仍**用于 audit 子类与告警(auditActionForLoginCode / noteLoginUserNotFound),
+// 只有**发给客户端**的 code + message 收敛:
+//   - CodeUserNotFound(403 用户不存在)→ CodeTokenInvalid(401 用户名或密钥错误),与「PSK 错」在 wire 上不可区分。
+//
+// 其余码保持原样:CodeUserBlacklisted 仅在 auth.VerifyLogin **已验过正确 PSK** 后才可能返回(见其重排),不构成
+// 枚举面,保留它给合法用户「账号被禁用」的明确提示;CodeVPNExpired / CodePlatformNotAllowed / CodeServerError
+// 等也都不是「账号是否存在」的枚举面,不收敛。
+func clientFacingLoginCode(code int) int {
+	if code == util.CodeUserNotFound {
+		return util.CodeTokenInvalid
+	}
+	return code
+}
+
 // clientLoginMessageForCode 把内部 (code, raw message) 映射成**安全可外发**的中文文案。
 //
 // 为什么需要:authErr.message 可能来自 DB 错误链(`UNIQUE constraint failed: ...`)
