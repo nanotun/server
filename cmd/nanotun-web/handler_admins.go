@@ -208,13 +208,20 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		flashRedirect(w, r, "/admins", tr(r, "flash.adminPwdReset"), "")
 
 	case "disable":
+		// 原子 floor 守卫(第四轮深扫 HIGH):ensureNotLastAdmin 只是友好的快速预检(常见单请求场景给清晰文案),
+		// 真正**防并发 TOCTOU** 的是 SetWebAdminEnabledEnsuringAdmin —— 它在事务内「先写后验 floor」,两个并发禁用
+		// 不同 admin 时后者会拿到 ErrLastAdmin 并回滚,绝不会把系统推入零可登录管理员。
 		if target.Role == "admin" {
 			if err := s.ensureNotLastAdmin(r); err != nil {
 				s.renderError(w, r, http.StatusBadRequest, err.Error())
 				return
 			}
 		}
-		if err := s.store.SetWebAdminEnabled(r.Context(), id, false); err != nil {
+		if err := s.store.SetWebAdminEnabledEnsuringAdmin(r.Context(), id); err != nil {
+			if errors.Is(err, store.ErrLastAdmin) {
+				s.renderError(w, r, http.StatusBadRequest, tr(r, "admins.lastAdmin"))
+				return
+			}
 			s.renderStoreWriteErr(w, r, err, "err.adminNotFound", "err.disableFailed")
 			return
 		}
@@ -239,7 +246,11 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if err := s.store.DeleteWebAdmin(r.Context(), id); err != nil {
+		if err := s.store.DeleteWebAdminEnsuringAdmin(r.Context(), id); err != nil {
+			if errors.Is(err, store.ErrLastAdmin) {
+				s.renderError(w, r, http.StatusBadRequest, tr(r, "admins.lastAdmin"))
+				return
+			}
 			s.renderStoreWriteErr(w, r, err, "err.adminNotFound", "err.deleteFailed")
 			return
 		}
@@ -255,7 +266,11 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if err := s.store.SetWebAdminRole(r.Context(), id, newRole); err != nil {
+		if err := s.store.SetWebAdminRoleEnsuringAdmin(r.Context(), id, newRole); err != nil {
+			if errors.Is(err, store.ErrLastAdmin) {
+				s.renderError(w, r, http.StatusBadRequest, tr(r, "admins.lastAdmin"))
+				return
+			}
 			s.renderError(w, r, http.StatusBadRequest, err.Error())
 			return
 		}

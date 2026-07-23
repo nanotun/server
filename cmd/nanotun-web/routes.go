@@ -54,7 +54,25 @@ func (s *Server) routes() http.Handler {
 
 	// withLang 放在最内层(紧贴 mux),让语言判定结果在所有 handler(含 renderPage)
 	// 里都可用;它可能对带 ?lang= 的 GET 请求做 302 剥参重定向。
-	return withRecover(withCommonHeaders(withRequestLog(withLang(mux))))
+	// withBodyLimit 放最外层:在任何 handler 读 body(ParseForm / json.Decode)前就封顶请求体大小。
+	return withBodyLimit(withRecover(withCommonHeaders(withRequestLog(withLang(mux)))))
+}
+
+// maxRequestBodyBytes 是所有入站请求体的统一上限(第四轮深扫 MED)。此前 nanotun-web 只靠 http.Server 的
+// ReadHeaderTimeout / WriteTimeout 限**时长**,不限**大小**:公开的 /login、/setup 及所有带表单的已登录路由
+// 走 r.FormValue → ParseForm 会把整个 body 读进内存,恶意大 body(尤其未鉴权的登录页)可做内存 DoS。1 MiB
+// 对本控制台的纯表单请求绰绰有余(无文件上传;server profile QR 由服务端生成)。GET / 静态资源无 body,包裹后无副作用。
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
+// withBodyLimit 用 http.MaxBytesReader 给每个请求体套上 maxRequestBodyBytes 上限;超限时后续 ParseForm /
+// Decode 会返回错误(handler 既有的错误处理路径接住),而不会无界读进内存。
+func withBodyLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // routeAuthed:已登录路径的二级 dispatcher。把 path 拆成段后路由到具体 handler。

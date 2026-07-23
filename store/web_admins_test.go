@@ -33,6 +33,58 @@ func TestCreateFirstWebAdmin(t *testing.T) {
 	}
 }
 
+// TestWebAdminAdminFloorGuard 覆盖第四轮深扫 HIGH(last-admin TOCTOU):禁用 / 删除 / 降级最后一个
+// enabled admin 必须返回 ErrLastAdmin 且**不改变**数据(事务回滚);有备用 admin 时正常放行。
+func TestWebAdminAdminFloorGuard(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	a1, err := s.CreateWebAdmin(ctx, NewWebAdmin{Username: "admin1", PasswordHash: dummyPwdHash, Role: "admin"})
+	if err != nil {
+		t.Fatalf("create admin1: %v", err)
+	}
+
+	// 只有一个 enabled admin:禁用 / 删除 / 降级都应被拒(ErrLastAdmin)。
+	if err := s.SetWebAdminEnabledEnsuringAdmin(ctx, a1.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("disable last admin: want ErrLastAdmin, got %v", err)
+	}
+	if err := s.SetWebAdminRoleEnsuringAdmin(ctx, a1.ID, "viewer"); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("demote last admin: want ErrLastAdmin, got %v", err)
+	}
+	if err := s.DeleteWebAdminEnsuringAdmin(ctx, a1.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("delete last admin: want ErrLastAdmin, got %v", err)
+	}
+	// 被拒后必须仍是 enabled admin(回滚生效)。
+	got, err := s.GetWebAdmin(ctx, a1.ID)
+	if err != nil {
+		t.Fatalf("reload admin1: %v", err)
+	}
+	if !got.Enabled || got.Role != "admin" {
+		t.Fatalf("被拒操作不应改数据,got enabled=%v role=%q", got.Enabled, got.Role)
+	}
+
+	// 加第二个 admin 后,禁用第一个应成功(仍剩一个 enabled admin)。
+	if _, err := s.CreateWebAdmin(ctx, NewWebAdmin{Username: "admin2", PasswordHash: dummyPwdHash, Role: "admin"}); err != nil {
+		t.Fatalf("create admin2: %v", err)
+	}
+	if err := s.SetWebAdminEnabledEnsuringAdmin(ctx, a1.ID); err != nil {
+		t.Fatalf("disable admin1 with a spare admin present: %v", err)
+	}
+	// 现在又只剩 admin2 一个 enabled admin:再删它应被拒。
+	n, err := s.CountEnabledWebAdminsByRole(ctx, "admin")
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("应只剩 1 个 enabled admin,got %d", n)
+	}
+
+	// 不存在的 id → ErrNotFound(区别于 ErrLastAdmin)。
+	if err := s.SetWebAdminEnabledEnsuringAdmin(ctx, 999999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("disable missing admin: want ErrNotFound, got %v", err)
+	}
+}
+
 // TestRecordWebAdminLoginFailure_SlidingWindowDecay 覆盖第三轮深扫 M1:
 //   - 窗口内连续失败会累积并在阈值处锁定;
 //   - 距上次失败超过窗口(lockSeconds)后,单次失败被衰减为 1,**不**触发重锁(修永久 DoS);

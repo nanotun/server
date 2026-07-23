@@ -355,6 +355,15 @@ func aclDropPacketDirected(srcUserID int64, packet []byte) bool {
 		return false
 	}
 
+	// server 本地 / 网关地址(如 MagicDNS gateway:53、server 本机服务)不是「公网出口」流量,不应被 exit ACL
+	// 约束(第四轮深扫 HIGH)。此前 exitDeniedForPacket / forwardPacketToExitNode / forwardPacketToSubnetRoute
+	// 都已用 isLocalMeshDst 放行网关,唯独这里漏了:default=deny(或含 exit deny 规则)下,发往网关的 MagicDNS
+	// 查询会被误判成 exit_acl 丢弃 → 整网 DNS 解析中断。注意 dst 若是某 vIP 已在上面的 isVIP 分支处理并返回,
+	// 故这里 isLocalMeshDst 实际只会命中「server 自身网关地址」,不影响跨用户 vIP 的 exit 语义。
+	if isLocalMeshDst(t.dst) {
+		return false
+	}
+
 	// dst 不是任何 vIP → 出口流量(走 NAT 上公网)。
 	if !snap.hasExitRules {
 		if snap.defaultAction == store.ACLDeny {

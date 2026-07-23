@@ -426,6 +426,54 @@ func TestACLDropPacketDirected_ExitDefaultDeny(t *testing.T) {
 	}
 }
 
+// TestACLDropPacketDirected_GatewayExempt 覆盖第四轮深扫 HIGH:default=deny 下,发往 **server 自身网关地址**
+// (如 MagicDNS gateway:53)不应被 exit ACL 丢弃 —— 与 exitDeniedForPacket / egress / subnet_route 的
+// isLocalMeshDst 豁免对齐。同一 default=deny 下发往公网 IP 仍应被丢,以证明豁免只针对网关。
+func TestACLDropPacketDirected_GatewayExempt(t *testing.T) {
+	registerVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.30")}, 30, 1)
+	defer unregisterVIPOwners([]netip.Addr{netip.MustParseAddr("10.0.0.30")}, 1)
+
+	// 记录 server 网关地址;测试后清掉,避免影响其它用例。
+	prevSnap := aclCurrent.Load()
+	setServerGatewayAddrs("10.201.0.1/16", "")
+	t.Cleanup(func() {
+		setServerGatewayAddrs("", "")
+		if prevSnap != nil {
+			aclCurrent.Store(prevSnap)
+		}
+	})
+
+	loadACLForTest(nil, store.ACLDeny)
+
+	// user 30(vIP 10.0.0.30)→ 网关 10.201.0.1:53(UDP)。
+	gwPkt := []byte{
+		0x45, 0x00, 0x00, 0x1c,
+		0x00, 0x00, 0x00, 0x00,
+		0x40, 0x11, 0x00, 0x00,
+		10, 0, 0, 30,
+		10, 201, 0, 1,
+		0x12, 0x34, 0x00, 0x35,
+		0x00, 0x08, 0x00, 0x00,
+	}
+	if aclDropPacketDirected(30, gwPkt) {
+		t.Fatal("default=deny 下发往网关:53(MagicDNS)不应被 exit ACL 丢弃(第四轮深扫 HIGH 回归)")
+	}
+
+	// 同 default=deny,发往公网 1.1.1.1:53 仍应被丢(证明豁免只对网关)。
+	pubPkt := []byte{
+		0x45, 0x00, 0x00, 0x1c,
+		0x00, 0x00, 0x00, 0x00,
+		0x40, 0x11, 0x00, 0x00,
+		10, 0, 0, 30,
+		1, 1, 1, 1,
+		0x12, 0x34, 0x00, 0x35,
+		0x00, 0x08, 0x00, 0x00,
+	}
+	if !aclDropPacketDirected(30, pubPkt) {
+		t.Fatal("default=deny 下发往公网仍应被丢(豁免不应泄漏到真正的出口流量)")
+	}
+}
+
 // ----------------------------------------------------------------
 // mesh 总开关(2026-05-23 引入)— 关闭组网模式后跨用户流量必须被截下来,
 // 不论 ACL 规则怎么配,且同用户内部与出口流量不受影响。

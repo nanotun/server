@@ -905,11 +905,15 @@ func main() {
 		// 已是 127.0.0.1:8080,这里让「配置项缺失」也落到同一安全默认,避免误公开。
 		cfg.Server.ListenAddr = "127.0.0.1:8080"
 	}
-	if *addrOverride != "" {
-		cfg.Server.ListenAddr = *addrOverride
-	}
+	// 监听地址优先级:`-addr` 标志 > LISTEN_ADDR 环境变量 > 配置文件 > 安全默认(与 nanotun-web 的
+	// flag>env>default 对齐)。第四轮深扫 MED:此前顺序反了(env 在 flag **之后**应用),显式
+	// `-addr=127.0.0.1:8080`(运维意在只绑回环)会被 systemd 单元里遗留的 LISTEN_ADDR=0.0.0.0:...
+	// **静默覆盖成公网监听**,是典型的误公开脚枪。改为 env 先应用、显式 flag 最后覆盖。
 	if v := os.Getenv("LISTEN_ADDR"); v != "" {
 		cfg.Server.ListenAddr = v
+	}
+	if *addrOverride != "" {
+		cfg.Server.ListenAddr = *addrOverride
 	}
 	// 深扫第九轮 LOW:localhost 归一到 127.0.0.1(否则解析器可能优先 ::1,只绑 IPv6
 	// 回环,环回桥接的 IPv4 127.0.0.1 拨号打不进来)。归一后既恢复 localhost 可用性,
@@ -3215,6 +3219,19 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		auditTakeoverFail(gw, remote, "already_taken_over", oldConn.userID)
 		// 多发竞态:不算攻击。
 		_ = writeLinkLoginResp(raw, 1, "takeover failed: already taken over", "")
+		return
+	}
+	// 同样拒绝**已被 supersede**(同 device 新 primary 登录已把这条标记为 victim、正异步 close+cleanup)的 oldConn
+	// (第四轮深扫 HIGH)。supersede 把 v.superseded=true 后**异步**关链、由 cleanupConnection 才从 connIDMap 摘除;
+	// 在那之前的窗口里,上面的 connIDMap 复验仍 cur==oldConn、takenOver 仍 false,若不拦,takeover 会继承一条正在
+	// 被回收的会话(其 vIP 即将回到空闲池 / TunChan 即将 close)→ 新会话僵尸化 + vIP 可能被另一设备二次分配。
+	// 与数据面 cleanupConnection 判定(`takenOver || superseded`)对齐,统一按「session 已消失」良性拒绝,客户端
+	// 退回全新 primary login,不计 PoW 惩罚。
+	if oldConn.superseded.Load() {
+		unlockTakeover()
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn 已被 supersede(同设备新登录抢先),拒绝接管")
+		auditTakeoverFail(gw, remote, "session_superseded", oldConn.userID)
+		_ = writeLinkLoginResp(raw, 1, "takeover failed: session gone", "")
 		return
 	}
 	// 防御「空 secret 全等」bypass:如果 oldConn 在登录时 crypto/rand 失败,takeoverSecret

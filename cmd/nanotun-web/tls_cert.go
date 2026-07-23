@@ -193,16 +193,30 @@ func generateSelfSignedCert(certPath, keyPath string, sans []string) error {
 	return nil
 }
 
+// writePEMFile 把 der 以 PEM 落盘到 path,经「随机名临时文件 → fchmod → fsync → 原子 rename」写入。
+//
+// 第四轮深扫 HIGH 加固:此前用**可预测**临时名 path+".tmp" 且 O_CREATE|O_TRUNC(无 O_EXCL)。writePEMFile 落的是
+// **EC 私钥**(key.pem)与自签证书。若 CertDir 他人可写、或攻击者预置 <path>.tmp 为符号链接,OpenFile 会**跟随**它
+// 把私钥写到链接目标(泄密 / 覆写受害文件);且既有 <path>.tmp 为 0644 时会**保留**该松权限(mode 只在创建时生效),
+// rename 后再 Chmod 仍留一个世界可读窗口。改用 os.CreateTemp(内部 O_CREATE|O_EXCL + 随机后缀,0600)+ 显式 fchmod +
+// fsync + 原子 rename —— 与 nanotun-admin 的 writeFileTight / copyFileAtomic 同姿态,消除符号链接跟随与权限保留窗口。
 func writePEMFile(path, blockType string, der []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("open %s: %w", tmp, err)
+		return fmt.Errorf("create temp in %s: %w", dir, err)
 	}
+	tmp := f.Name()
 	if err := pem.Encode(f, &pem.Block{Type: blockType, Bytes: der}); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return fmt.Errorf("encode pem %s: %w", path, err)
+	}
+	// CreateTemp 已是 0600;显式 fchmod 到目标 mode,确保 rename 前即为既定权限(密钥无宽权限窗口)。
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod %s: %w", tmp, err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
@@ -217,6 +231,5 @@ func writePEMFile(path, blockType string, der []byte, mode os.FileMode) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename %s: %w", path, err)
 	}
-	_ = os.Chmod(path, mode)
 	return nil
 }
