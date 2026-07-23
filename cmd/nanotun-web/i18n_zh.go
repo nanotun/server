@@ -587,7 +587,9 @@ var catZH = map[string]string{
 	"qrPwd.currentAdmin":    "当前管理员",
 	"qrPwd.locked":          "失败次数过多,本 IP 已锁定 5 分钟。请稍后再试,或在另一台设备 / 网络下重试。",
 	"qrPwd.passwordLabel":   "当前账号密码",
-	"qrPwd.passwordHint":    "即你登录 web 后台用的密码;TOTP 不在此步骤要求。失败 5 次锁 IP 5 分钟。",
+	"qrPwd.passwordHint":    "即你登录 web 后台用的密码。失败 5 次锁 IP 5 分钟。",
+	"qrPwd.totpLabel":       "两步验证码 (TOTP)",
+	"qrPwd.totpHint":        "输入验证器 App 上当前的 6 位动态码。此处不接受恢复码;若已丢失设备,请先在「我的账号」重建 2FA。",
 	"qrPwd.showQr":          "显示服务器 QR",
 
 	// ===== server qr: revealed =====
@@ -843,6 +845,9 @@ var catZH = map[string]string{
 	"serverQr.passwordRequired":      "请输入当前密码。",
 	"serverQr.passwordWrong":         "密码错误。",
 	"serverQr.passwordWrongLocked":   "密码错误。已连续失败 5 次,IP 锁定 5 分钟。",
+	"serverQr.totpRequired":          "请输入两步验证 (TOTP) 码。",
+	"serverQr.totpWrong":             "两步验证码错误。",
+	"serverQr.totpWrongLocked":       "两步验证码错误。已连续失败 5 次,IP 锁定 5 分钟。",
 	"serverQr.cliFailed":             "CLI 调用失败: %s",
 	"serverQr.cliEmptyURL":           "CLI 返回空 URL",
 	"serverQr.pngRenderFailed":       "渲染 QR PNG 失败:Medium=%s;Low=%s(URL 长度 %d 字节,可能超 v40-L 上限 2953)",

@@ -116,12 +116,90 @@ tls_cert_file = "/tmp/c.pem"
 tls_key_file = "/tmp/k.pem"
 mtu = 100
 `,
+		// 第七轮深扫 MED:以下四条都是启动期 Fatal(ExitConfigSemantic)但 lint 从前漏查的。
+		// PoW 难度越界(30 > 上限 22)。
+		"pow_difficulty_out_of_range": `
+[server]
+listen_addr = "0.0.0.0:443"
+[server.pow]
+base_difficulty = 30
+`,
+		// PoW 顺序倒置:ramp(8) < base(10),自适应升级失效。
+		"pow_order_inverted": `
+[server]
+listen_addr = "0.0.0.0:443"
+[server.pow]
+base_difficulty = 10
+ramp_difficulty = 8
+`,
+		// [server] TLS 半配:只填 cert 不填 key,HTTPS/WSS 监听起不来。
+		"server_tls_half_set": `
+[server]
+listen_addr = "0.0.0.0:443"
+tls_cert_file = "/tmp/c.pem"
+`,
+		// jump_host_firewall 开启却空名单 = 全网开放陷阱。
+		"jump_host_no_allowed_ips": `
+[server]
+listen_addr = "0.0.0.0:443"
+jump_host_firewall = true
+`,
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
 			code, _, errMsg := runConfigLint(t, writeTOML(t, cfg))
 			if code != 3 {
 				t.Fatalf("语义非法配置应 exit 3, got %d, stderr=%q", code, errMsg)
+			}
+		})
+	}
+}
+
+// 第七轮深扫 MED:补齐的三处校验对**合法**配置必须放行(避免误伤把开箱即用的配置卡死)。
+// 覆盖:PoW 全配齐且顺序正确 / [server] TLS 成对配 / jump_host_firewall 开启且有名单。
+func TestConfigLint_StartupSemantics_ValidPasses(t *testing.T) {
+	cases := map[string]string{
+		// PoW 显式配齐、区间与顺序都合法。
+		"pow_valid_explicit": `
+[server]
+listen_addr = "0.0.0.0:443"
+[server.pow]
+failures_enable = 3
+base_difficulty = 8
+ramp_difficulty = 14
+step_per_failure = 2
+adaptive_ceiling = 22
+ttl_sec = 300
+`,
+		// PoW 段完全缺省(零值 → 默认),必须通过。
+		"pow_all_defaults": `
+[server]
+listen_addr = "0.0.0.0:443"
+[server.pow]
+`,
+		// [server] TLS 成对配齐。
+		"server_tls_pair_set": `
+[server]
+listen_addr = "0.0.0.0:443"
+tls_cert_file = "/tmp/c.pem"
+tls_key_file = "/tmp/k.pem"
+`,
+		// jump_host_firewall 开启且提供名单。
+		"jump_host_with_ips": `
+[server]
+listen_addr = "0.0.0.0:443"
+jump_host_firewall = true
+jump_host_allowed_ips = ["10.0.0.1", "10.0.0.2"]
+`,
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			code, out, errMsg := runConfigLint(t, writeTOML(t, cfg))
+			if code != 0 {
+				t.Fatalf("合法配置应 exit 0, got %d, stderr=%q", code, errMsg)
+			}
+			if !strings.Contains(out, "OK") {
+				t.Errorf("stdout 应含 OK, got %q", out)
 			}
 		})
 	}
