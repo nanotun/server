@@ -7,6 +7,20 @@ import (
 
 const dummyPwdHash = "argon2id$v=19$m=65536,t=2,p=4$YWFhYWFhYWFhYWFhYWFhYQ$YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYg"
 
+// TestCreateFirstWebAdmin_ForcesAdminRole:首位管理员即便显式传 viewer 也应强制 admin(第五轮深扫 MED),
+// 否则首管只读、无人能提权 → 控制台永久锁死。
+func TestCreateFirstWebAdmin_ForcesAdminRole(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	a, err := s.CreateFirstWebAdmin(ctx, NewWebAdmin{Username: "first", PasswordHash: dummyPwdHash, Role: "viewer"})
+	if err != nil {
+		t.Fatalf("CreateFirstWebAdmin: %v", err)
+	}
+	if a.Role != "admin" {
+		t.Fatalf("first admin role = %q, want admin (viewer must be overridden)", a.Role)
+	}
+}
+
 // TestCreateFirstWebAdmin 覆盖原子首建:空表可建,建成后再建拿 ErrSetupClosed(而非再插一行)。
 func TestCreateFirstWebAdmin(t *testing.T) {
 	s := newTestStore(t)

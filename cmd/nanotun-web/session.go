@@ -254,8 +254,27 @@ func (s *SessionService) DestroySession(ctx context.Context, w http.ResponseWrit
 //   - HMAC 用常量时间比对,避免 timing 泄露;
 //   - 不与 session cookie 复用 name,避免和登录态混淆。
 
-// pendingPayloadLen = adminID(8) + exp(8) + nonce(16) = 32, HMAC = 32, 总 64。
-const pendingPayloadLen = 32
+// pending 载荷布局:adminID(8) | exp(8) | pwFp(8) | nonce(16) = 40;其后拼 HMAC-SHA256(32),总 72,
+// base64url ≈ 96 字符。pwFp 是签发时密码指纹(第五轮深扫 HIGH),用于让密码轮换作废在途 pending。
+const (
+	pendingPwFpLen    = 8
+	pendingPayloadLen = 8 + 8 + pendingPwFpLen + 16 // = 40
+)
+
+// passwordFingerprint 取 password_hash 的 8 字节指纹,签进 pending 载荷。
+//
+// 第五轮深扫 HIGH:pending-2FA cookie 原先只绑 adminID|exp|nonce + IP,**不绑密码**。于是「攻击者拿到
+// 密码、已过密码步、持有 pending」时,管理员即便应急改密(UpdateWebAdminPasswordHash 会撤销 web_session,
+// 但撤不掉在途 pending),攻击者仍能在 5 分钟窗口内用同 IP 提交 TOTP/恢复码,IssueSession 成功 —— 等于
+// **不需要新密码**就完成登录,改密作为事件响应手段失效。把签发时的密码指纹绑进(被 HMAC 覆盖的)载荷,
+// /login/totp 用**当前**密码指纹比对,不符即作废旧 pending、强制回密码步。SHA256 前 8 字节:单向不可还原
+// 出 hash;对本用途只需「密码一变指纹就变」,碰撞无意义。
+func passwordFingerprint(hash string) [pendingPwFpLen]byte {
+	sum := sha256.Sum256([]byte(hash))
+	var fp [pendingPwFpLen]byte
+	copy(fp[:], sum[:pendingPwFpLen])
+	return fp
+}
 
 // pendingMAC 计算 pending-2FA cookie 的 HMAC:签 payload,并把**客户端 IP** 作为附加认证数据(AAD)
 // 绑进签名。这样 pending cookie 即便被窃取,从**另一个 IP** 重放时算出的 MAC 与 cookie 内的不符 → 拒,
@@ -268,8 +287,9 @@ func (s *SessionService) pendingMAC(payload []byte, ip string) []byte {
 	return mac.Sum(nil)
 }
 
-// IssueTOTPPending 写 pending cookie。每次密码验证通过、需要 TOTP 时调用。ip 绑进签名(见 pendingMAC)。
-func (s *SessionService) IssueTOTPPending(w http.ResponseWriter, adminID int64, ip string) error {
+// IssueTOTPPending 写 pending cookie。每次密码验证通过、需要 TOTP 时调用。ip 绑进签名(见 pendingMAC),
+// passwordHash 的指纹绑进载荷(见 passwordFingerprint):密码轮换后旧 pending 立即失效。
+func (s *SessionService) IssueTOTPPending(w http.ResponseWriter, adminID int64, ip, passwordHash string) error {
 	if adminID <= 0 {
 		return errors.New("pending2fa: bad admin id")
 	}
@@ -281,11 +301,13 @@ func (s *SessionService) IssueTOTPPending(w http.ResponseWriter, adminID int64, 
 	var payload [pendingPayloadLen]byte
 	binary.BigEndian.PutUint64(payload[0:8], uint64(adminID))
 	binary.BigEndian.PutUint64(payload[8:16], uint64(exp))
-	copy(payload[16:32], nonce)
+	fp := passwordFingerprint(passwordHash)
+	copy(payload[16:24], fp[:])
+	copy(payload[24:40], nonce)
 
 	sig := s.pendingMAC(payload[:], ip)
 
-	full := append(payload[:], sig...) // 32 + 32 = 64 字节
+	full := append(payload[:], sig...) // 40 + 32 = 72 字节
 	value := base64.RawURLEncoding.EncodeToString(full)
 
 	http.SetCookie(w, &http.Cookie{
@@ -307,14 +329,15 @@ func (s *SessionService) IssueTOTPPending(w http.ResponseWriter, adminID int64, 
 // 通过错误码区分 cookie 内容篡改成功了多少。
 var ErrNoPending2FA = errors.New("no valid pending 2fa")
 
-func (s *SessionService) LookupTOTPPending(r *http.Request) (int64, error) {
+func (s *SessionService) LookupTOTPPending(r *http.Request) (int64, [pendingPwFpLen]byte, error) {
+	var zeroFp [pendingPwFpLen]byte
 	ck, err := r.Cookie(pending2FACookieName)
 	if err != nil || ck.Value == "" {
-		return 0, ErrNoPending2FA
+		return 0, zeroFp, ErrNoPending2FA
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(ck.Value)
 	if err != nil || len(raw) != pendingPayloadLen+sha256.Size {
-		return 0, ErrNoPending2FA
+		return 0, zeroFp, ErrNoPending2FA
 	}
 	payload := raw[:pendingPayloadLen]
 	sig := raw[pendingPayloadLen:]
@@ -322,14 +345,17 @@ func (s *SessionService) LookupTOTPPending(r *http.Request) (int64, error) {
 	// 用与签发时相同的客户端 IP 复算 MAC:cookie 被窃后从别的 IP 重放会因 IP 不符而验签失败。
 	want := s.pendingMAC(payload, clientIP(r))
 	if subtle.ConstantTimeCompare(sig, want) != 1 {
-		return 0, ErrNoPending2FA
+		return 0, zeroFp, ErrNoPending2FA
 	}
 	adminID := int64(binary.BigEndian.Uint64(payload[0:8]))
 	exp := int64(binary.BigEndian.Uint64(payload[8:16]))
 	if adminID <= 0 || exp <= nowUnix() {
-		return 0, ErrNoPending2FA
+		return 0, zeroFp, ErrNoPending2FA
 	}
-	return adminID, nil
+	// 返回签发时的密码指纹;调用方在拿到 admin 后与当前密码指纹比对,不符即作废(密码已轮换)。
+	var fp [pendingPwFpLen]byte
+	copy(fp[:], payload[16:24])
+	return adminID, fp, nil
 }
 
 // ClearTOTPPending 清 pending cookie。在 TOTP 校验通过后(IssueSession 前后)调用,

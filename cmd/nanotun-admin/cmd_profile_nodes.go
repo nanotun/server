@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -88,7 +89,10 @@ func attachEntryAddresses(entryHost string, r *profileSchemaReality, h *profileS
 		if port == 0 {
 			port = defaultRealityTCPPort
 		}
-		r.Address = fmt.Sprintf("%s:%d", entryHost, port)
+		// 第五轮深扫 HIGH:用 net.JoinHostPort 而非 fmt.Sprintf("%s:%d")。IPv6 入口(如 2001:db8::1)
+		// 直接拼冒号会得到 `2001:db8::1:8443` —— 歧义且非法的 dial 目标,客户端连不上。JoinHostPort 会
+		// 对含冒号的 host 自动加方括号 → `[2001:db8::1]:8443`;IPv4 / 域名不受影响。
+		r.Address = net.JoinHostPort(entryHost, fmt.Sprintf("%d", port))
 		r.Port = 0
 	}
 	if h != nil {
@@ -99,14 +103,16 @@ func attachEntryAddresses(entryHost string, r *profileSchemaReality, h *profileS
 }
 
 func hy2DialAddress(entryHost string, h *profileSchemaHy2) string {
+	// 同 attachEntryAddresses:IPv6 入口必须加方括号。net.JoinHostPort 不校验 port 段,
+	// 故端口跳跃的逗号列表(如 "443,8443")也能安全拼成 `[2001:db8::1]:443,8443` / `1.2.3.4:443,8443`。
 	if ports := strings.TrimSpace(h.UDPPorts); ports != "" {
-		return entryHost + ":" + ports
+		return net.JoinHostPort(entryHost, ports)
 	}
 	port := h.UDPPort
 	if port == 0 {
 		port = defaultHy2UDPPort
 	}
-	return fmt.Sprintf("%s:%d", entryHost, port)
+	return net.JoinHostPort(entryHost, fmt.Sprintf("%d", port))
 }
 
 // buildProfileV2 组装 version=2 profile：`host` 为唯一出口，`nodes` 为入口列表。

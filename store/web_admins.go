@@ -123,13 +123,10 @@ func (s *Store) CreateFirstWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAd
 	if strings.TrimSpace(in.PasswordHash) == "" {
 		return nil, errors.New("store: empty web admin password_hash")
 	}
-	role := strings.TrimSpace(in.Role)
-	if role == "" {
-		role = "admin"
-	}
-	if role != "admin" && role != "viewer" {
-		return nil, fmt.Errorf("store: invalid web admin role %q", in.Role)
-	}
+	// 第五轮深扫 MED:首位管理员**强制** admin 角色,忽略入参里显式传的 "viewer"。setup 表空后就永久关闭
+	// (NOT EXISTS 守门),若首位是 viewer 则无人能提权 / 建 admin —— 整个控制台被永久锁成只读。web setup
+	// handler 本就硬编码 "admin",这里在 DAL 兜底,堵住任何绕过 handler 直接调本函数造出 viewer 首管的路径。
+	const role = "admin"
 	createdBy := nullableInt(in.CreatedBy)
 
 	res, err := s.db.ExecContext(ctx,

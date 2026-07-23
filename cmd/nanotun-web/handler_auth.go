@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"net/http"
 	"net/url"
@@ -298,7 +299,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		//   * 密码泄露但没拿到 TOTP 的 attacker 进不了主界面;
 		//   * 用户体验上类似一个二次输入页面,正常 60 秒内完成。
 		if res.Admin.TOTPEnabled {
-			if err := s.sess.IssueTOTPPending(w, res.Admin.ID, ip); err != nil {
+			if err := s.sess.IssueTOTPPending(w, res.Admin.ID, ip, res.Admin.PasswordHash); err != nil {
 				s.renderInternalError(w, r, "login:issue_totp_pending", err)
 				return
 			}
@@ -397,7 +398,7 @@ func (s *Server) loginRetry(w http.ResponseWriter, r *http.Request,
 // pending cookie 只是 short-lived 转场态,登录的"真凭证"仍是密码 + TOTP。
 func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	adminID, err := s.sess.LookupTOTPPending(r)
+	adminID, pendingPwFp, err := s.sess.LookupTOTPPending(r)
 	if err != nil {
 		// 没 pending(或已过期 / 篡改)→ 回登录页;不暴露 admin 是否存在等细节。
 		// 第十轮 P2:next 走 sanitizeReturnTo 统一防御。
@@ -413,6 +414,17 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil || admin == nil || !admin.Enabled || !admin.TOTPEnabled {
 		// pending 签的是合法 adminID,但 admin 被禁 / 被删 / 关了 TOTP → 也回登录。
 		s.sess.ClearTOTPPending(w)
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	// 第五轮深扫 HIGH:pending 绑定签发时的密码指纹。若期间密码被轮换(UpdateWebAdminPasswordHash),
+	// 当前指纹与 pending 里签的不符 → 作废旧 pending、强制回密码步用新密码重来。这样管理员应急改密能
+	// 立即斩断「已过密码步、仅差 TOTP」的在途登录,而不必等 5 分钟窗口自然过期。
+	if want := passwordFingerprint(admin.PasswordHash); subtle.ConstantTimeCompare(pendingPwFp[:], want[:]) != 1 {
+		s.sess.ClearTOTPPending(w)
+		s.audit.Write(ctx, admin, "web.totp.pending_stale",
+			FormatTarget("web_admin", admin.ID),
+			FormatDetail("ip", clientIP(r), "reason", "password_changed"))
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
@@ -586,13 +598,23 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	ctx := r.Context()
+	// 第五轮深扫 HIGH:/logout 是**公开路由**(routes.go 直接挂 mux,不过 requireCSRFAndAuth),故
+	// ctxKeySessionID 从不会被中间件注入 → csrfBoundID(r) 恒为空串。但退出按钮的 csrf_token 是在**已登录页**
+	// 里签发的(绑定当前 session id),用空 boundID 校验必然 mismatch → 恒 403 → DestroySession 永不执行,
+	// **登出按钮实际失效**(自第三轮 CSRF 会话绑定起的回归)。修法:校验前先查 session,把其 id 注入 ctx,
+	// 让 CSRF 绑定主体与签发时一致;顺带复用这次查询做 audit(去掉原本第二次 LookupSession)。
+	// 无 session(已登出 / 无 cookie / 已失效)时保持空绑定,行为不变(此时也无需真正登出)。
+	admin, ws, lookupErr := s.sess.LookupSession(ctx, r)
+	if lookupErr == nil && ws != nil {
+		ctx = context.WithValue(ctx, ctxKeySessionID, ws.ID)
+		r = r.WithContext(ctx)
+	}
 	if err := s.sess.VerifyCSRFToken(r); err != nil {
 		http.Error(w, trErr(r, err), http.StatusForbidden)
 		return
 	}
-	ctx := r.Context()
-	// 取一次 admin 信息用于 audit(没登录就跳过)。
-	if admin, _, err := s.sess.LookupSession(ctx, r); err == nil && admin != nil {
+	if lookupErr == nil && admin != nil {
 		s.audit.Write(ctx, admin, "web.logout", FormatTarget("web_admin", admin.ID),
 			FormatDetail("ip", clientIP(r)))
 	}

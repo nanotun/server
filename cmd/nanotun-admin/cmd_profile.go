@@ -220,6 +220,21 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 	if !validFormat(*format) {
 		return errors.New(opts.T("profile.formatInvalid", *format))
 	}
+	// 第五轮深扫 MED:端口 flag 用 flag.Uint 解析后再 uint16() 强转会**静默截断** ——
+	// --gateway-port 70000 → 4464;65536 → 0 被当「未设」悄悄回退默认。脚本可能因此发出错误端口
+	// 且毫无提示。显式越界即报错(0 = 未设,用 config / 默认,保留)。
+	for _, pf := range []struct {
+		flag string
+		val  uint
+	}{
+		{"--gateway-port", *gatewayPort},
+		{"--reality-port", *realityPort},
+		{"--hy2-udp-port", *hy2UDPPort},
+	} {
+		if pf.val > 65535 {
+			return errors.New(opts.T("profile.portOutOfRange", pf.flag, pf.val))
+		}
+	}
 
 	// usernameForCertCN 仅供 Hy2 mTLS 客户端证书 CN 占位(`vpnport-<cn>-<8hex>`);
 	// Hy2 mTLS 鉴权只验签证书 CA 链,**不**校验 CN — 所以这个值的语义意义只有「让
