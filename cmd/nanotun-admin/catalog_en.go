@@ -306,6 +306,7 @@ var catEN = map[string]string{
 	"credentials.pskRotateMutex":     "--psk and --rotate-psk are mutually exclusive; pick one",
 	"credentials.pskOrRotate":        "a PSK cannot be recovered from its hash; pick one: --psk <plain> or --rotate-psk",
 	"credentials.formatInvalid":      "--format must be json | url | both | qr | qr-png, got %q",
+	"credentials.refuseOverwrite":    "refusing to overwrite existing %q before rotating PSK (use --force or a different --output); PSK NOT rotated",
 	"credentials.rotateDisabled":     "user %q is disabled — run `nanotun-admin user enable %s` first, then --rotate-psk",
 	"credentials.readAdvertisedHost": "read advertised_host",
 	"credentials.readServerID":       "read server_id",

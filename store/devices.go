@@ -218,18 +218,37 @@ func (s *Store) GetDeviceByUUID(ctx context.Context, userID int64, uuid string) 
 //
 // 与 GetDeviceByUUID 的区别：后者按 (user_id, uuid) 精确取；本方法给「只握有 UUID、
 // 不知 user」的调用方用（如 FRP 端口转发按 target_device_uuid 运行时解析 vIP）。
-// (user_id, device_uuid) 是复合 UNIQUE，同一 UUID 理论上可分属不同 user（设备 UUID 全局
-// 唯一是客户端惯例、非 schema 强制）。排序 `last_seen_at DESC, id DESC`：取「最近活跃」的一条，
-// last_seen_at 是秒级、并列常见，故用 id DESC（最近创建者）做确定性 tiebreak，避免行序不确定。
+// (user_id, device_uuid) 是复合 UNIQUE，同一 UUID 可分属不同 user（设备 UUID 全局唯一是客户端惯例、
+// 非 schema 强制，且 UUID 由客户端自报）。
+//
+// 第六轮深扫 HIGH:此前命中多行时「取 last_seen_at 最近一条」——攻击者(低权 VPN 用户)注册一个与受害
+// 设备同名的 UUID 并保持更近活跃,即可把本该投给受害设备的 FRP 入站转发静默改投到自己 vIP(跨租户劫持)。
+// 现在**命中多行即 fail-closed** 返回 ErrAmbiguousDevice —— 调用方(port_forward.resolveDeviceID /
+// vIP 解析)按 err 直接放弃建立该转发。碰撞由「劫持」降级为「拒绝服务」(且需主动制造碰撞,可审计)。
+// 用 LIMIT 2 判歧义:0 行→ErrNotFound;1 行→正常返回;≥2 行→ErrAmbiguousDevice。
 func (s *Store) GetDeviceByUUIDAny(ctx context.Context, uuid string) (*Device, error) {
 	uuid = strings.ToLower(strings.TrimSpace(uuid))
-	row := s.db.QueryRowContext(ctx,
-		deviceSelectSQL+` WHERE device_uuid=? ORDER BY last_seen_at DESC, id DESC LIMIT 1`, uuid)
-	d, err := s.scanDeviceCols(row)
-	if errors.Is(err, sql.ErrNoRows) {
+	rows, err := s.db.QueryContext(ctx,
+		deviceSelectSQL+` WHERE device_uuid=? ORDER BY last_seen_at DESC, id DESC LIMIT 2`, uuid)
+	if err != nil {
+		return nil, fmt.Errorf("store: get device by uuid any: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("store: get device by uuid any: %w", err)
+		}
 		return nil, ErrNotFound
 	}
-	return d, err
+	d, err := s.scanDeviceCols(rows)
+	if err != nil {
+		return nil, err
+	}
+	if rows.Next() {
+		// 同一 UUID 命中第二行 = 跨 user 碰撞 → 拒绝解析(fail-closed)。
+		return nil, ErrAmbiguousDevice
+	}
+	return d, rows.Err()
 }
 
 // ListDevicesByUser 返回指定用户名下的全部设备，按 last_seen_at 倒序。

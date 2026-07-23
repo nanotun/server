@@ -177,6 +177,15 @@ var ErrNotFound = errors.New("store: not found")
 // 调用方:`errors.Is(err, store.ErrInvalid)` 区分「400 Bad Request」与「500」。
 var ErrInvalid = errors.New("store: invalid argument")
 
+// ErrAmbiguousDevice:仅按 device_uuid(跨 user)解析设备时命中**多行**(同一 UUID 分属不同 user)。
+//
+// 第六轮深扫 HIGH:device_uuid 只在 (user_id, device_uuid) 上复合 UNIQUE,不是全局唯一,且 UUID 由客户端
+// 自报。FRP 端口转发运行时按 target_device_uuid 解析 vIP,若某低权用户注册一个与他人设备**同名**的 UUID
+// 并保持更近活跃,旧的「取 last_seen_at 最近一条」会把本该投给受害设备的入站转发**静默改投**到攻击者 vIP
+// (跨租户劫持)。改为命中多行即返回本错误 → 调用方 fail-closed(该转发不建立),把「劫持」降级为「拒绝服务」
+// (需攻击者主动制造 UUID 碰撞,留有可审计痕迹)。彻底根治应把转发规则绑定到设备主键 / user(需迁移)。
+var ErrAmbiguousDevice = errors.New("store: device uuid resolves to multiple users")
+
 // ErrDuplicate 用于把 SQLite UNIQUE 约束冲突归一化为可用 errors.Is 判别的 sentinel。
 // 之前所有 DAL 都用 `fmt.Errorf("...: %w", err)` 透传 modernc.org/sqlite 的 ErrConstraintUnique,
 // 调用方只能字符串匹配 / 类型断言去识别,实际上没人做。结果是:

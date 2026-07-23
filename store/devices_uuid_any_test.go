@@ -8,7 +8,7 @@ import (
 // TestGetDeviceByUUIDAny 覆盖 FRP 端口转发运行时按 UUID 解析设备的路径：
 //   - 找得到（大小写归一）；
 //   - 找不到 → ErrNotFound；
-//   - 同一 UUID 分属两个 user 时，按 last_seen_at 倒序取最近活跃的一条（行为确定）。
+//   - 同一 UUID 分属两个 user 时 → ErrAmbiguousDevice(第六轮深扫 HIGH:fail-closed,防跨租户劫持)。
 func TestGetDeviceByUUIDAny(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()
@@ -37,7 +37,8 @@ func TestGetDeviceByUUIDAny(t *testing.T) {
 		t.Fatalf("未注册应 ErrNotFound, 得 %v", err)
 	}
 
-	// 同一 UUID 分属两个 user：取 last_seen_at 更大的（此处 u2 后写，last_seen 更新）→ 确定性。
+	// 同一 UUID 分属两个 user:跨租户碰撞 → fail-closed 返回 ErrAmbiguousDevice(而非静默取一条)。
+	// 这样 FRP 转发对歧义 UUID 直接不建立,攻击者无法用「注册同名 UUID + 保持更近活跃」劫持他人转发。
 	u2, err := s.CreateUser(ctx, NewUser{Username: "bob", PSKHash: "h"})
 	if err != nil {
 		t.Fatalf("CreateUser bob: %v", err)
@@ -49,11 +50,8 @@ func TestGetDeviceByUUIDAny(t *testing.T) {
 	if err := s.TouchDevice(ctx, d2.ID); err != nil {
 		t.Fatalf("TouchDevice: %v", err)
 	}
-	got2, err := s.GetDeviceByUUIDAny(ctx, uuid)
-	if err != nil {
-		t.Fatalf("GetDeviceByUUIDAny(dup): %v", err)
+	if _, err := s.GetDeviceByUUIDAny(ctx, uuid); !errors.Is(err, ErrAmbiguousDevice) {
+		t.Fatalf("同 UUID 多 user 应 fail-closed ErrAmbiguousDevice, 得 %v", err)
 	}
-	if got2.ID != d2.ID {
-		t.Fatalf("同 UUID 多 user 应取最近活跃(d2=%d), 得 %d", d2.ID, got2.ID)
-	}
+	_ = d2
 }

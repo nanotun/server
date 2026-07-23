@@ -126,6 +126,22 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 	// 带上 "backfilled credential_id=..." 便于运维事后追溯,无需另开一条 audit。
 	priorCredID := u.CredentialID
 
+	// 第六轮深扫 HIGH:rotate 会在 resolveCredentialsPSK 里**先把新 PSK 写库**(旧 hash 即刻失效),之后才
+	// emitCredentials 输出明文。若输出注定失败(最常见、README 里就有的路径:--output 目标已存在且无 --force),
+	// 新 PSK 已入库却从未交付 → 用户现有客户端立即断连、运维手里也没有新密钥,得再 rotate 一次才能恢复。
+	// 这里在**落库前**先探测输出目标:注定 no-clobber 失败的提前报错、绝不 rotate。真正落盘仍走 os.Link 原子
+	// no-clobber(本探测与落盘间的 TOCTOU 只影响"是否提前报错",最终把关仍在落盘那道)。qr(纯 stdout)不涉及。
+	if *rotatePSK && !*forceOverwrite && strings.TrimSpace(*output) != "" {
+		writesToFile := opts.json || strings.ToLower(strings.TrimSpace(*format)) != "qr"
+		if writesToFile {
+			if _, statErr := os.Lstat(*output); statErr == nil {
+				return errors.New(opts.T("credentials.refuseOverwrite", *output))
+			} else if !os.IsNotExist(statErr) {
+				return fmt.Errorf("stat --output %s: %w", *output, statErr)
+			}
+		}
+	}
+
 	pskOut, credID, createdAt, err := resolveCredentialsPSK(ctx, st, u, *pskPlain, *rotatePSK)
 	if err != nil {
 		return err

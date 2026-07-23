@@ -178,7 +178,18 @@ func withLang(next http.Handler) http.Handler {
 				q2 := r.URL.Query()
 				q2.Del(langCookieName)
 				r.URL.RawQuery = q2.Encode()
-				http.Redirect(w, r, r.URL.RequestURI(), http.StatusFound)
+				// 第六轮深扫 HIGH:此 302 此前直接用 r.URL.RequestURI() 作 Location,**未过任何净化**。
+				// withLang 包在 mux 最外层(routes.go)、在鉴权之前对所有请求生效,于是
+				// `GET //evil.example/x?lang=en`(合法请求行,r.URL.Path=="//evil.example/x")会被
+				// 原样 302 到 `//evil.example/x` —— 浏览器按协议相对 URL 解析成 https://evil.example/x,
+				// 形成**未鉴权的开放重定向**(钓鱼:地址栏看着像本控制台)。登录 next / mesh return_to 早已
+				// 走 sanitizeReturnTo,唯独这条剥 lang 的重定向漏了。改为同款净化:非站内安全 path(// / \\ /
+				// 带 host/scheme / 控制字节)一律回落到 "/"。合法深路径(/users/123?x=1)照常保留。
+				target := r.URL.EscapedPath()
+				if r.URL.RawQuery != "" {
+					target += "?" + r.URL.RawQuery
+				}
+				http.Redirect(w, r, sanitizeReturnTo(target, ""), http.StatusFound)
 				return
 			}
 		}

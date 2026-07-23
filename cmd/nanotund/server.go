@@ -1674,7 +1674,11 @@ type deadliner interface {
 // 远小于此;设上限只为不让恶意 Ping 用超大载荷放大服务端 Pong 写体积。
 const linkPingPongMaxEcho = 256
 
-func tunDemuxToLink(ch <-chan *util.TunPacket, w io.Writer, mu *sync.Mutex, ctx context.Context) {
+// tunDemuxToLink 把某 vIP 的 TunChan 帧写到链路。返回值语义(第六轮深扫 HIGH):
+//   - nil:因 ctx 取消 / channel 关闭而正常退出(shutdown / kick / takeover 主动逼停,上层已在拆隧道);
+//   - 非 nil:**真·写失败或 5s 写超时**(ctx 未取消)—— 上层据此拖垮整条隧道,避免只这一个 vIP 下行
+//     静默变黑洞(上行 + keepalive 仍活 → 会话看着"在线"却收不到 server→client 包,直到重连才恢复)。
+func tunDemuxToLink(ch <-chan *util.TunPacket, w io.Writer, mu *sync.Mutex, ctx context.Context) error {
 	// 一次性把 w 转成 deadliner;不能就退化为无截止时间。
 	dl, _ := w.(deadliner)
 
@@ -1702,10 +1706,10 @@ func tunDemuxToLink(ch <-chan *util.TunPacket, w io.Writer, mu *sync.Mutex, ctx 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case pkt, ok := <-ch:
 			if !ok {
-				return
+				return nil
 			}
 			if pkt == nil {
 				continue
@@ -1725,7 +1729,13 @@ func tunDemuxToLink(ch <-chan *util.TunPacket, w io.Writer, mu *sync.Mutex, ctx 
 			tunReadBufPool.Put(pkt.Buf)
 			tunPacketPool.Put(pkt)
 			if err != nil {
-				return
+				// ctx 已取消:这次写失败其实是 watchdog 为响应 shutdown/kick/takeover 把 deadline 设成过去
+				// 触发的,上层正常在拆隧道 → 返回 nil,不额外逼停。ctx 未取消:真·写失败/慢客户端 5s 写超时,
+				// 返回 err 让 runLinkTunnel 拖垮整条隧道(否则本 vIP 下行黑洞)。
+				if ctx.Err() != nil {
+					return nil
+				}
+				return err
 			}
 		}
 	}
@@ -1765,7 +1775,14 @@ func runLinkTunnel(ctx context.Context, rw io.ReadWriteCloser, c *Connection, re
 			// per-vIP demux:panic 不应该拖垮整进程,只 log + 让本连接挂掉。
 			// `cleanupConnection` 仍会跑(由 handleVPNLink 的 defer 兜底),释放 vIP / TunChan。
 			safeGoroutine("tunDemuxToLink/"+remote, func() {
-				tunDemuxToLink(ch, rw, &c.linkWrMu, tunCtx)
+				if werr := tunDemuxToLink(ch, rw, &c.linkWrMu, tunCtx); werr != nil {
+					// 第六轮深扫 HIGH:demux 真·写失败(含 5s 写超时)必须拖垮整条隧道,而不是只让本 vIP 下行
+					// 静默变黑洞。与 readLoop 退出 / LinkTypeClose 同款收尾:cancel(tunCtx) 让兄弟 demux 与
+					// keepalive 退出,rw.Close() 逼停阻塞在 ReadLinkFrame 的 readLoop → 上层 cleanupConnection
+					// 回收 vIP/TunChan,客户端重连用新链路重协商。cancel/Close 幂等,与其它收尾路径并发调用安全。
+					cancel()
+					_ = rw.Close()
+				}
 			})
 		}()
 	}
