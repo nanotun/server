@@ -48,7 +48,7 @@ func TestHandleLogout_SessionBoundCSRF_Succeeds(t *testing.T) {
 	if err := sess.IssueSession(ctx, wIssue, a.ID, "10.0.0.1", "ua"); err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
-	sessCookie := recorderCookie(t, wIssue, sessionCookieName)
+	sessCookie := recorderCookie(t, wIssue, sess.cookieName(sessionCookieName))
 	if sessCookie == nil {
 		t.Fatal("missing session cookie")
 	}
@@ -110,7 +110,7 @@ func TestHandleLogout_MissingCSRF_Forbidden(t *testing.T) {
 	if err := sess.IssueSession(ctx, wIssue, a.ID, "10.0.0.1", "ua"); err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
-	sessCookie := recorderCookie(t, wIssue, sessionCookieName)
+	sessCookie := recorderCookie(t, wIssue, sess.cookieName(sessionCookieName))
 
 	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	req.AddCookie(sessCookie)

@@ -24,7 +24,7 @@ func TestTOTPPending_BindsPasswordFingerprint(t *testing.T) {
 	if err := sess.IssueTOTPPending(w, 42, ip, hashOld); err != nil {
 		t.Fatalf("issue pending: %v", err)
 	}
-	ck := recorderCookie(t, w, pending2FACookieName)
+	ck := recorderCookie(t, w, sess.cookieName(pending2FACookieName))
 	if ck == nil {
 		t.Fatal("missing pending cookie")
 	}
@@ -62,7 +62,7 @@ func TestTOTPPending_RejectsForeignIP(t *testing.T) {
 	if err := sess.IssueTOTPPending(w, 7, "198.51.100.1", "somehash"); err != nil {
 		t.Fatalf("issue pending: %v", err)
 	}
-	ck := recorderCookie(t, w, pending2FACookieName)
+	ck := recorderCookie(t, w, sess.cookieName(pending2FACookieName))
 
 	r := httptest.NewRequest(http.MethodPost, "/login/totp", nil)
 	r.RemoteAddr = "10.10.10.10:9999" // 不同 IP
@@ -84,7 +84,7 @@ func TestTOTPPending_ServerSideSingleUse(t *testing.T) {
 	if err := sess.IssueTOTPPending(w, 11, ip, "somehash"); err != nil {
 		t.Fatalf("issue pending: %v", err)
 	}
-	ck := recorderCookie(t, w, pending2FACookieName)
+	ck := recorderCookie(t, w, sess.cookieName(pending2FACookieName))
 
 	r := httptest.NewRequest(http.MethodPost, "/login/totp", nil)
 	r.RemoteAddr = ip + ":5555"

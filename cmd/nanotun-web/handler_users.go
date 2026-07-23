@@ -136,12 +136,13 @@ func (s *Server) handleUserNew(w http.ResponseWriter, r *http.Request) {
 		// 自动生成 PSK,创建成功后一次性展示给管理员(不入审计 detail)。
 		psk, err := util.GeneratePSK()
 		if err != nil {
-			s.renderUserNew(w, r, nil, tr(r, "err.genPskFailed")+err.Error())
+			// 第八轮深扫 LOW:内部错误详情进服务端日志,页面只回通用文案(不外泄 err 原文)。
+			s.renderInternalError(w, r, "user_new:gen_psk", err)
 			return
 		}
 		hash, err := HashPSKForUser(psk)
 		if err != nil {
-			s.renderUserNew(w, r, nil, tr(r, "err.pskHashFailed")+err.Error())
+			s.renderInternalError(w, r, "user_new:hash_psk", err)
 			return
 		}
 		// 0013(2026-05-25):新建 user 同步分配 credential_id(UUID v4)+ credential_created_at,
@@ -159,7 +160,12 @@ func (s *Server) handleUserNew(w http.ResponseWriter, r *http.Request) {
 			CredentialCreatedAt: credNow,
 		})
 		if err != nil {
-			s.renderUserNew(w, r, nil, tr(r, "err.createFailed")+err.Error())
+			// 第八轮深扫 LOW:重名是可操作的用户级反馈 → 友好提示 + 保留表单;其余为内部错误 → 详情进日志、页面通用文案。
+			if errors.Is(err, store.ErrDuplicate) {
+				s.renderUserNew(w, r, nil, tr(r, "err.usernameTaken", username))
+				return
+			}
+			s.renderInternalError(w, r, "user_new:create", err)
 			return
 		}
 		// P2#3(2026-05-26):audit action 改成 underscore 风格,与 CLI `user_*` 对齐。
@@ -202,8 +208,9 @@ func (s *Server) handleUserNew(w http.ResponseWriter, r *http.Request) {
 			_ = credURL
 			_ = credQR
 			idStr := strconv.FormatInt(u.ID, 10)
+			// 第八轮深扫 LOW:err 详情已于上方 logrus + audit 记录;页面不再回显原始错误串。
 			s.renderError(w, r, http.StatusInternalServerError,
-				tr(r, "users.createStashFailed", idStr, idStr, err.Error()))
+				tr(r, "users.createStashFailed", idStr, idStr))
 			return
 		}
 		http.Redirect(w, r,
@@ -479,8 +486,9 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 			_ = psk
 			_ = credURL
 			_ = credQR
+			// 第八轮深扫 LOW:err 详情已于上方 logrus + audit 记录;页面不再回显原始错误串。
 			s.renderError(w, r, http.StatusInternalServerError,
-				tr(r, "users.resetStashFailed", err.Error()))
+				tr(r, "users.resetStashFailed"))
 			return
 		}
 		http.Redirect(w, r,

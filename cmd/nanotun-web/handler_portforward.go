@@ -143,7 +143,13 @@ func (s *Server) handlePortForwardNew(w http.ResponseWriter, r *http.Request) {
 		Comment:          comment,
 	})
 	if err != nil {
-		s.renderError(w, r, http.StatusBadRequest, tr(r, "pf.createFailed")+trErr(r, err))
+		// 第八轮深扫 LOW:public_port 冲突是本地化的可操作反馈(ErrDuplicate 携 LocaleKey)→ 409 + trErr;
+		// 其余(端口越界 / 空目标已在上方前置校验拦掉)为意外内部错误 → 详情进日志、页面通用文案。
+		if errors.Is(err, store.ErrDuplicate) {
+			s.renderError(w, r, http.StatusConflict, trErr(r, err))
+			return
+		}
+		s.renderInternalError(w, r, "port_forward:create", err)
 		return
 	}
 	s.audit.WriteFromRequest(r, "port_forward_create",
@@ -231,7 +237,10 @@ func (s *Server) validatePortForwardInput(r *http.Request, publicPort, targetPor
 	}
 	devs, err := s.store.ListAllDevices(r.Context())
 	if err != nil {
-		return tr(r, "pf.queryDevicesFailed", err.Error())
+		// 第八轮深扫 LOW:内部错误详情进日志,页面回通用文案(不外泄 err 原文)。
+		logrus.WithError(err).WithField("ctx", "port_forward:list_devices").
+			WithField("ip", clientIP(r)).Error("[web] list devices failed")
+		return tr(r, "pf.queryDevicesFailed")
 	}
 	var dev *store.Device
 	for _, d := range devs {

@@ -180,7 +180,11 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 	gatewayTLSInsecureFlag := fs.String("gateway-tls-insecure", "auto", opts.T("profile.flag.gatewayTLSInsecure"))
 	realityPort := fs.Uint("reality-port", 0, opts.T("profile.flag.realityPort"))
 	hy2UDPPort := fs.Uint("hy2-udp-port", 0, opts.T("profile.flag.hy2UDPPort"))
-	hy2InsecureFlag := fs.String("hy2-tls-insecure", "true", opts.T("profile.flag.hy2Insecure"))
+	// 第八轮深扫 LOW:默认由硬编码 "true"(永远提示客户端跳过 Hy2 TLS 校验)改为 "auto" —— 与
+	// --gateway-tls-insecure 一致,从 server config 的 [hysteria].report_tls_insecure_hint 派生:
+	// dev 自签 → true(insecure),生产 LE → false(严格校验)。此前默认 true 会让**已上正规证书**的部署
+	// 也签发「跳过校验」的 profile,弱化 MITM 防护;dev 若配置读不到,"auto" 退到 false(fail-closed,可显式 --hy2-tls-insecure true)。
+	hy2InsecureFlag := fs.String("hy2-tls-insecure", "auto", opts.T("profile.flag.hy2Insecure"))
 	noIssueHy2Cert := fs.Bool("no-issue-hy2-client-cert", false, opts.T("profile.flag.noIssueHy2Cert"))
 	hy2CertDays := fs.Uint("hy2-client-cert-days", 90, opts.T("profile.flag.hy2CertDays"))
 	var nodeFlags stringList

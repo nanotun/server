@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/nanotun/server/auth"
@@ -262,11 +263,20 @@ func preflightCredentialsOutput(format, output string, force bool, opts *globalO
 	}
 	// 是否会写文件:output 非空,且不是「纯终端 qr」(qr 在非 --json 下忽略 output 走 stdout)。
 	writesToFile := out != "" && !(!opts.json && f == "qr")
-	if writesToFile && !force {
-		if _, statErr := os.Lstat(out); statErr == nil {
-			return errors.New(opts.T("credentials.refuseOverwrite", out))
-		} else if !os.IsNotExist(statErr) {
-			return fmt.Errorf("stat --output %s: %w", out, statErr)
+	if writesToFile {
+		// 第八轮深扫 HIGH:父目录必须**存在且是目录**,否则 writeFileTight 的 os.CreateTemp(dir,…) 会在
+		// **落库之后**才失败 —— 新 PSK 已生效、旧 hash 已废、明文却从未交付。此前 preflight 只 Lstat 目标
+		// 文件本身(下方 no-clobber),漏了「--output /不存在的目录/x.png」这一整类确定性失败。这里前移到落库前。
+		dir := filepath.Dir(out)
+		if fi, dErr := os.Stat(dir); dErr != nil || !fi.IsDir() {
+			return errors.New(opts.T("credentials.badOutputDir", out))
+		}
+		if !force {
+			if _, statErr := os.Lstat(out); statErr == nil {
+				return errors.New(opts.T("credentials.refuseOverwrite", out))
+			} else if !os.IsNotExist(statErr) {
+				return fmt.Errorf("stat --output %s: %w", out, statErr)
+			}
 		}
 	}
 	return nil

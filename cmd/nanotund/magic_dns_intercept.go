@@ -85,7 +85,9 @@ func interceptExitBoundDNSQuery(c *Connection, exitConn *Connection, egress int6
 	query := make([]byte, len(udp))
 	copy(query, udp)
 	qid := hdr.ID
-	go func() {
+	// 第八轮深扫 LOW:经出口 DNS 截获的 per-query goroutine 同样必须走 safeGoroutine,任何 panic 只 recover 不掀进程
+	// (与 magic_dns.go 网关路径一致)。release 内层 defer,panic 时先归还在途配额再被 recover。
+	go safeGoroutine("magic_dns_intercept", func() {
 		defer release()
 		var e exitDNSCacheEntry
 		var rok bool
@@ -110,7 +112,7 @@ func interceptExitBoundDNSQuery(c *Connection, exitConn *Connection, egress int6
 		if resp := buildInterceptDNSResponse(qid, q, query, e); resp != nil {
 			injectDNSReplyToClient(c, dstIP, srcIP, srcPort, resp)
 		}
-	}()
+	})
 	return true
 }
 

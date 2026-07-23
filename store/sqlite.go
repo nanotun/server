@@ -103,9 +103,10 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	// 这里放的全是 connection-level pragma:
 	//   - busy_timeout:每条 conn 各自的 SQLITE_BUSY 等待窗口;
 	//   - foreign_keys:cascade 删除依赖,每条 conn 必须 ON;
+	//   - synchronous:见下方注释,per-connection,必须每条 conn 都设;
 	//   - query_only(ReadOnly):admin 只读模式守门,误写直接 SQLITE_READONLY。
-	// db-wide pragma(journal_mode / synchronous / wal_autocheckpoint)仍在
-	// Open 后 ExecContext 跑,因为 db-wide 设置一次即对所有 conn 生效。
+	// 真正 db-wide(写进库文件、一次即对所有 conn 生效)的只有 journal_mode=WAL,
+	// 仍在 Open 后 ExecContext 跑;wal_autocheckpoint 显式声明默认值(1000),同样 Exec。
 	dsn := path
 	if path == ":memory:" {
 		// 共享内存，便于测试中跨连接复用（modernc 需要这种 cache=shared 形式）。
@@ -114,6 +115,12 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	connPragmas := []string{
 		fmt.Sprintf("busy_timeout(%d)", busy.Milliseconds()),
 		"foreign_keys(1)",
+		// 第八轮深扫 MED:synchronous 是 **per-connection** pragma(不像 journal_mode=WAL 会持久化进库文件)。
+		// 此前用 ExecContext 跑 `PRAGMA synchronous=NORMAL` 只作用于池里那**一条** conn,其余(MaxOpenConns 默认 4)
+		// 新建时回落 SQLite 默认 FULL —— 热写路径(audit / lease)白白多一次 fsync,悄悄抵消 WAL 调优。挪进 DSN
+		// `_pragma=` 列表,让**每条**新建连接都是 NORMAL(1)。WAL 下 NORMAL 仍是崩溃安全的(仅极端断电可能丢
+		// 最后若干已提交事务,不损坏库),对本网关的持久化要求足够。
+		"synchronous(1)",
 	}
 	if opts.ReadOnly {
 		connPragmas = append(connPragmas, "query_only(1)")
@@ -151,7 +158,7 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	// 升级后的状态。connection-level pragma 已经在 DSN 里注入,见上方 dsn 拼装。
 	pragmas := []string{
 		"PRAGMA journal_mode = WAL",
-		"PRAGMA synchronous = NORMAL",
+		// synchronous 已移至 DSN `_pragma=synchronous(1)`(per-connection,见上方 connPragmas 注释)。
 		// 默认 1000 pages (~4MB);PSK 网关写入少,这里保持默认但显式声明,
 		// 防止以后改 page_size 后人忘了同步。长跑下若 -wal 仍膨胀,可调到 256~512。
 		"PRAGMA wal_autocheckpoint = 1000",

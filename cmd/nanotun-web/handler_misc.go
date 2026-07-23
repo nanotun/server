@@ -286,6 +286,12 @@ func (s *Server) handleSettingsList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// 第八轮深扫 MED:/settings 会 dump 整张 app_settings(开放式 KV)+ server_id / dial_host / 限速默认值等
+	// 运维元数据。此前只判「已登录」,viewer 也能看;且写表单本就 admin-only,读端却不设防 —— 与 /audit、
+	// dashboard 审计卡同类「只读≠看全部」收敛,统一到 admin 角色(未来任何自定义 setting 也不会漏给只读账号)。
+	if !s.requireAdminRole(w, r) {
+		return
+	}
 	rows, err := s.store.DB().QueryContext(r.Context(),
 		`SELECT key, value FROM app_settings ORDER BY key ASC`)
 	if err != nil {

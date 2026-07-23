@@ -300,10 +300,13 @@ func runMagicDNSLoop(ctx context.Context, gw *gatewayState, conn *net.UDPConn, r
 		if !ok {
 			continue
 		}
-		go func() {
+		// 第八轮深扫 LOW:分离的 per-query goroutine 必须走 safeGoroutine —— 否则 handleMagicDNSPacket 里任何
+		// panic(未来 store/parser 的边缘情形)会掀翻整个进程,违背本仓「数据面/后台 goroutine 全经 safego 兜 recover」
+		// 的不变量。release 放在内层 defer,panic 时也先归还在途配额再被 safeGoroutine recover。
+		go safeGoroutine("magic_dns_handle", func() {
 			defer release()
 			handleMagicDNSPacket(ctx, gw, conn, peer, query, r)
-		}()
+		})
 	}
 }
 

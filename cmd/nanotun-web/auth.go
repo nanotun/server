@@ -128,6 +128,8 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			_, _ = VerifyWebPassword(ctx, password, decoyWebHash())
+			// 第八轮深扫 LOW:与「密码错」分支一样跑一次等价写事务,抹平「不存在→零 DB」的时序差(枚举旁路)。
+			st.DecoyWebAdminLoginFailure(ctx)
 			return AuthResult{Err: ErrAuthBadCredentials}
 		}
 		// 深扫第八轮 LOW:此前返回内联中文 fmt.Errorf,trErr 既非哨兵也无 LocaleKey,
@@ -136,10 +138,13 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 	}
 	if !a.Enabled {
 		_, _ = VerifyWebPassword(ctx, password, decoyWebHash())
+		// 禁用账号故意不累加失败计数(见下),但跑 decoy 写事务对齐时序,避免「存在且禁用」被时序识别。
+		st.DecoyWebAdminLoginFailure(ctx)
 		return AuthResult{Admin: a, Err: ErrAuthDisabled}
 	}
 	if a.LockedUntil > 0 && a.LockedUntil > nowUnix() {
 		_, _ = VerifyWebPassword(ctx, password, decoyWebHash())
+		st.DecoyWebAdminLoginFailure(ctx)
 		return AuthResult{Admin: a, Err: ErrAuthLocked, LockedUntil: a.LockedUntil}
 	}
 

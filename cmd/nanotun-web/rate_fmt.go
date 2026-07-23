@@ -14,8 +14,14 @@ import (
 //   - 内部存字节/秒(byte/s, int64);
 //   - 0 / 空 = 「该方向不在该层强制」(回退上一层)。
 
+// maxRateMiBsInput(第八轮深扫 LOW):限速输入上界 ≈ 1 TiB/s(8.8 Tbps),远超任何真实链路。
+// 作用是**防 int64 转换溢出**:此前 parseRateMiBs 对 int64(f*1024*1024) 不设上限,一个超大浮点(admin
+// 输入)会溢出成负/垃圾值并被 audit 原样记录(与 parseBurstKiB 的 maxBurstKiBInput 不对称)。server 下游
+// 虽会 clamp,但先在入口拒掉越界值,UI 立即反馈、audit 不留垃圾。
+const maxRateMiBsInput = 1024 * 1024 // MiB/s
+
 // parseRateMiBs 把表单字段 "1.5" 解析成 byte/s。空 / 0 / 0.0 都视为 0。
-// 错误情况:负数 / 非数字。
+// 错误情况:负数 / 非数字 / 超过 maxRateMiBsInput。
 func parseRateMiBs(raw string) (int64, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -27,6 +33,9 @@ func parseRateMiBs(raw string) (int64, error) {
 	}
 	if f < 0 {
 		return 0, newLocErr("rate.negative")
+	}
+	if f > maxRateMiBsInput {
+		return 0, newLocErr("rate.tooLarge", int64(maxRateMiBsInput))
 	}
 	return int64(f * 1024 * 1024), nil
 }

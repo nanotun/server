@@ -42,6 +42,10 @@ const maxConcurrentWebSessionsPerAdmin = 10
 //   - SQLite 写入轻,touch 一次只有几十微秒。
 
 const (
+	// sessionCookieName / pending2FACookieName / csrfCookieName / captchaCookieName 都是**逻辑名**;
+	// 实际下发/读取时统一经 SessionService.cookieName() 在 cookieSecure(HTTPS)下加 __Host- 前缀
+	// (第八轮深扫 LOW:把该前缀从 CSRF/captcha 扩展到 session 与 pending-2FA 这两个更高价值的 cookie,
+	// 关掉同注册域兄弟主机对它们的 cookie-tossing;三者 Path 均为 "/"、无 Domain,满足 __Host- 约束)。
 	sessionCookieName = "nanotun-web_session"
 
 	// CSRF token cookie。double-submit cookie 模式:
@@ -169,7 +173,7 @@ func (s *SessionService) IssueSession(ctx context.Context, w http.ResponseWriter
 		logrus.WithError(perr).WithField("admin_id", adminID).Warn("[web] 登录后封顶并发 session 失败(忽略)")
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     s.cookieName(sessionCookieName),
 		Value:    sid,
 		Path:     "/",
 		HttpOnly: true,
@@ -192,7 +196,7 @@ var ErrNoSession = errors.New("no valid session")
 func (s *SessionService) LookupSession(ctx context.Context, r *http.Request) (
 	*store.WebAdmin, *store.WebSession, error) {
 
-	ck, err := r.Cookie(sessionCookieName)
+	ck, err := r.Cookie(s.cookieName(sessionCookieName))
 	if err != nil || ck.Value == "" {
 		return nil, nil, ErrNoSession
 	}
@@ -216,11 +220,11 @@ func (s *SessionService) LookupSession(ctx context.Context, r *http.Request) (
 
 // DestroySession 登出。清 cookie + 删库。
 func (s *SessionService) DestroySession(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	if ck, err := r.Cookie(sessionCookieName); err == nil && ck.Value != "" {
+	if ck, err := r.Cookie(s.cookieName(sessionCookieName)); err == nil && ck.Value != "" {
 		_ = s.store.DeleteWebSession(ctx, ck.Value)
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     s.cookieName(sessionCookieName),
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
@@ -318,7 +322,7 @@ func (s *SessionService) IssueTOTPPending(w http.ResponseWriter, adminID int64, 
 	value := base64.RawURLEncoding.EncodeToString(full)
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     pending2FACookieName,
+		Name:     s.cookieName(pending2FACookieName),
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
@@ -340,7 +344,7 @@ var ErrNoPending2FA = errors.New("no valid pending 2fa")
 // (MarkPendingConsumed)。nonce 是 pending 载荷里的 16B 随机数,per-cookie 唯一。
 func (s *SessionService) LookupTOTPPending(r *http.Request) (int64, [pendingPwFpLen]byte, string, error) {
 	var zeroFp [pendingPwFpLen]byte
-	ck, err := r.Cookie(pending2FACookieName)
+	ck, err := r.Cookie(s.cookieName(pending2FACookieName))
 	if err != nil || ck.Value == "" {
 		return 0, zeroFp, "", ErrNoPending2FA
 	}
@@ -389,7 +393,7 @@ func (s *SessionService) MarkPendingConsumed(nonce string) bool {
 // 或者 admin 明显放弃流程(/logout) 时调用。
 func (s *SessionService) ClearTOTPPending(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     pending2FACookieName,
+		Name:     s.cookieName(pending2FACookieName),
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,

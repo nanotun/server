@@ -20,7 +20,13 @@ import (
 //     转发,不按 vIP**,故固定 vIP 是基础设施卫生/未来留量,不是出网必要条件;UUID 稳定才是必需。
 //
 // 本命令把原先分散的 `route approve <id> 0/0` + `route approve <id> ::/0` + `device set-fixed-vip` 合成
-// 一条**原子流程**,避免漏步。
+// **一条命令**,避免漏步。
+//
+// 第八轮深扫 LOW(措辞纠偏):这几步是**顺序执行**的多次独立写事务,**并非单个 DB 事务的原子提交** ——
+// 底层 UpsertAdvertisedRoute / SetRouteStatus / SetDeviceFixedVIP 各自开 tx。中途失败(如批完 v4 路由后
+// SetDeviceFixedVIP 报冲突)可能留下部分生效的状态。好在**每一步都幂等**(upsert / approve / set-fixed-vip
+// 重复执行结果一致),重跑同一条 `exit designate` 即可收敛到目标态;因此不引入贯穿三个 DAL 的跨 tx 改造
+// (那需要给每个方法加 tx 变体,收益不抵风险)。之前注释写成「原子流程」属过度声明,这里更正。
 //
 // 用法:
 //

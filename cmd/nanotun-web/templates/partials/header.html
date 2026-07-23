@@ -36,12 +36,15 @@
             <a href="/routes"  class="{{if eq .Nav.Active "routes"}}active{{end}}"><span class="ico">&#8620;</span>{{T "nav.routes"}}</a>
             <a href="/port-forwards" class="{{if eq .Nav.Active "portforward"}}active{{end}}" title="{{T "nav.portForwardTitle"}}"><span class="ico">&#8644;</span>{{T "nav.portForward"}}</a>
             <div class="group">{{T "nav.groupSystem"}}</div>
+            {{/* 第八轮深扫 MED/LOW:/audit、/sysmon、/settings 的 handler 均已收敛到 admin(requireAdminRole 兜底);
+                 与 /admins 一致,viewer 不显示这些入口,避免点了吃 403。/me 对所有角色开放。 */}}
+            {{if eq .Admin.Role "admin"}}
             <a href="/audit"   class="{{if eq .Nav.Active "audit"}}active{{end}}"><span class="ico">&#9998;</span>{{T "nav.audit"}}</a>
             <a href="/sysmon"  class="{{if eq .Nav.Active "sysmon"}}active{{end}}" title="{{T "nav.sysmonTitle"}}"><span class="ico">&#9636;</span>{{T "nav.sysmon"}}</a>
-            {{/* d_viewer_admins:管理员台账仅 admin 可见(handler 亦 requireAdminRole 兜底);viewer 不显示入口,避免点了吃 403。 */}}
-            {{if eq .Admin.Role "admin"}}<a href="/admins"  class="{{if eq .Nav.Active "admins"}}active{{end}}"><span class="ico">&#9819;</span>{{T "nav.admins"}}</a>{{end}}
+            <a href="/admins"  class="{{if eq .Nav.Active "admins"}}active{{end}}"><span class="ico">&#9819;</span>{{T "nav.admins"}}</a>
+            {{end}}
             <a href="/me"      class="{{if eq .Nav.Active "me"}}active{{end}}" title="{{T "nav.meTitle"}}"><span class="ico">&#9787;</span>{{T "nav.me"}}</a>
-            <a href="/settings"class="{{if eq .Nav.Active "settings"}}active{{end}}"><span class="ico">&#9881;</span>{{T "nav.settings"}}</a>
+            {{if eq .Admin.Role "admin"}}<a href="/settings"class="{{if eq .Nav.Active "settings"}}active{{end}}"><span class="ico">&#9881;</span>{{T "nav.settings"}}</a>{{end}}
         </nav>
         <div class="side-foot">
             {{/* 组网模式快捷开关:任何页面一键切换。viewer 角色只读(handler 有 requireAdminRole 兜底)。 */}}
