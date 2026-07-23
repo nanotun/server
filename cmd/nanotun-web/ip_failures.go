@@ -145,7 +145,10 @@ func (t *IPFailureTracker) bump(rec *ipFailureRecord) int {
 	return rec.count
 }
 
-// Reset 清零某 IP 的失败计数 — 登录成功时调用。
+// Reset 清零某 IP 的失败计数。
+//
+// 注意(第七轮深扫 MED):登录成功路径**不再**用 Reset,改用 Decay(减半),避免 NAT/CGNAT 下一个合法
+// 用户的成功把整段共享 IP 的失败信号清零、让同 IP 攻击者免 PoW。Reset 保留给「确需彻底清零」的场景。
 func (t *IPFailureTracker) Reset(ip string) {
 	if ip == "" {
 		return
@@ -155,6 +158,28 @@ func (t *IPFailureTracker) Reset(ip string) {
 		rec.mu.Lock()
 		rec.count = 0
 		rec.lastFail = 0
+		rec.mu.Unlock()
+	}
+}
+
+// Decay 在**登录成功**时把某 IP 的失败计数**减半**(向下取整),而非清零 —— 第七轮深扫 MED。
+//
+// 背景:此前成功即 Reset 归零。NAT/CGNAT 下多用户共享一个出口 IP,任一合法用户登录成功都会把整段 IP 的
+// 失败信号清空,与之同 IP 的攻击者随即免 PoW(自适应难度掉回 0)。减半保留了「该 IP 近期大量失败」的信号:
+// 持续爆破会被新失败迅速重新累积、维持较高难度;而合法用户偶发几次手误(count 很小)成功后减半即落到
+// powFailuresEnable 阈值以下,自身几乎无感。lastFail 保持不变,让滑动窗口仍能惰性过期整段计数。
+func (t *IPFailureTracker) Decay(ip string) {
+	if ip == "" {
+		return
+	}
+	if v, ok := t.m.Load(ip); ok {
+		rec := v.(*ipFailureRecord)
+		rec.mu.Lock()
+		if t.shouldReset(rec) {
+			rec.count = 0
+		} else {
+			rec.count /= 2
+		}
 		rec.mu.Unlock()
 	}
 }

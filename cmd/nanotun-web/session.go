@@ -102,6 +102,13 @@ type SessionService struct {
 	// ipFailures 跟踪每个 IP 的滑动窗口失败次数,驱动自适应 PoW 难度。
 	// 见 ip_failures.go。
 	ipFailures *IPFailureTracker
+
+	// pendingUsed 记录已成功完成 2FA 的 pending nonce → expireUnix,做 pending-2FA cookie 的**服务端**
+	// 一次性消费(第七轮深扫 MED)。此前 pending 是纯无状态 HMAC cookie:即便已绑 IP + 密码指纹 + 5min TTL,
+	// 在窗口内仍能被**同一** cookie 反复用来完成 2FA(截获重放 / 完成后二次提交建立第二个 session)。这里在
+	// TOTP/恢复码校验通过、颁 session 前原子 LoadOrStore nonce;二次出现即拒。与 powUsed / captchaUsed 同套
+	// (sync.Map + runPoWGC 每 60s prune 过期项;重启随 hmac key 一并失效)。
+	pendingUsed sync.Map
 }
 
 // NewSessionService 构造。listenAddr 上若开启 HTTPS,cookie 加上 Secure 属性。
@@ -222,7 +229,7 @@ func (s *SessionService) DestroySession(ctx context.Context, w http.ResponseWrit
 		MaxAge:   -1,
 	})
 	http.SetCookie(w, &http.Cookie{
-		Name:     csrfCookieName,
+		Name:     s.cookieName(csrfCookieName),
 		Value:    "",
 		Path:     "/",
 		HttpOnly: false,
@@ -329,15 +336,17 @@ func (s *SessionService) IssueTOTPPending(w http.ResponseWriter, adminID int64, 
 // 通过错误码区分 cookie 内容篡改成功了多少。
 var ErrNoPending2FA = errors.New("no valid pending 2fa")
 
-func (s *SessionService) LookupTOTPPending(r *http.Request) (int64, [pendingPwFpLen]byte, error) {
+// 返回值新增 nonce(第七轮深扫 MED):调用方在成功完成 2FA、颁 session 前用它做服务端一次性消费
+// (MarkPendingConsumed)。nonce 是 pending 载荷里的 16B 随机数,per-cookie 唯一。
+func (s *SessionService) LookupTOTPPending(r *http.Request) (int64, [pendingPwFpLen]byte, string, error) {
 	var zeroFp [pendingPwFpLen]byte
 	ck, err := r.Cookie(pending2FACookieName)
 	if err != nil || ck.Value == "" {
-		return 0, zeroFp, ErrNoPending2FA
+		return 0, zeroFp, "", ErrNoPending2FA
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(ck.Value)
 	if err != nil || len(raw) != pendingPayloadLen+sha256.Size {
-		return 0, zeroFp, ErrNoPending2FA
+		return 0, zeroFp, "", ErrNoPending2FA
 	}
 	payload := raw[:pendingPayloadLen]
 	sig := raw[pendingPayloadLen:]
@@ -345,17 +354,35 @@ func (s *SessionService) LookupTOTPPending(r *http.Request) (int64, [pendingPwFp
 	// 用与签发时相同的客户端 IP 复算 MAC:cookie 被窃后从别的 IP 重放会因 IP 不符而验签失败。
 	want := s.pendingMAC(payload, clientIP(r))
 	if subtle.ConstantTimeCompare(sig, want) != 1 {
-		return 0, zeroFp, ErrNoPending2FA
+		return 0, zeroFp, "", ErrNoPending2FA
 	}
 	adminID := int64(binary.BigEndian.Uint64(payload[0:8]))
 	exp := int64(binary.BigEndian.Uint64(payload[8:16]))
 	if adminID <= 0 || exp <= nowUnix() {
-		return 0, zeroFp, ErrNoPending2FA
+		return 0, zeroFp, "", ErrNoPending2FA
+	}
+	// nonce 载于 payload[24:40](见 IssueTOTPPending 布局)。已被服务端消费过的 pending 直接拒:
+	// 即便 HMAC/IP/exp 全对,也不能第二次完成 2FA(截获重放 / 完成后二次提交)。
+	nonce := string(payload[24:40])
+	if _, used := s.pendingUsed.Load(nonce); used {
+		return 0, zeroFp, "", ErrNoPending2FA
 	}
 	// 返回签发时的密码指纹;调用方在拿到 admin 后与当前密码指纹比对,不符即作废(密码已轮换)。
 	var fp [pendingPwFpLen]byte
 	copy(fp[:], payload[16:24])
-	return adminID, fp, nil
+	return adminID, fp, nonce, nil
+}
+
+// MarkPendingConsumed 原子标记一个 pending nonce 为已消费(服务端一次性)。返回 true 表示本次为首次消费
+// (可继续颁 session),false 表示该 nonce 已被消费过(重放 / 并发重复完成,应拒)。exp 用 pending TTL,
+// 供 runPoWGC 过期回收。
+func (s *SessionService) MarkPendingConsumed(nonce string) bool {
+	if nonce == "" {
+		return false
+	}
+	exp := nowUnix() + pending2FATTLSec
+	_, loaded := s.pendingUsed.LoadOrStore(nonce, exp)
+	return !loaded
 }
 
 // ClearTOTPPending 清 pending cookie。在 TOTP 校验通过后(IssueSession 前后)调用,
@@ -375,6 +402,23 @@ func (s *SessionService) ClearTOTPPending(w http.ResponseWriter) {
 // =========================================================================
 // CSRF token: double-submit cookie
 // =========================================================================
+
+// cookieName 给敏感 cookie 名按需加 __Host- 前缀:仅当 cookieSecure(HTTPS)时。
+//
+// 第七轮深扫 MED(pre-auth CSRF 加固):CSRF token 已用 HMAC 绑定 boundID 关掉了**已登录**请求的
+// cookie-tossing(boundID=session id,攻击者无法为受害者 session 产生合法签名)。但 pre-auth 页
+// (/setup、/login、/login/totp)boundID="" —— 所有空绑 token 可互换,攻击者只要在**同注册域**下控制一个
+// 兄弟主机(evil.sub.example 写 Domain=example.com 的 cookie),即可把自己用 ""绑的合法 CSRF/captcha
+// cookie **塞进**受害者对目标主机的请求,凑成自洽的 cookie==form 绕过 CSRF,进而在 AllowSetup 窗口里
+// 抢注首个 admin(TOFU)。__Host- 前缀让浏览器强制 (Secure + Path=/ + **禁止 Domain 属性**),兄弟主机
+// 便无法覆盖/注入这些 host-only cookie,cookie-tossing 被根除。dev(明文 HTTP,cookieSecure=false)下
+// 退回裸名(浏览器会拒绝非 Secure 的 __Host- cookie)。
+func (s *SessionService) cookieName(base string) string {
+	if s.cookieSecure {
+		return "__Host-" + base
+	}
+	return base
+}
 
 // csrfBoundID 取「CSRF 绑定主体」:已登录请求(requireAuth 已注入 ctxKeySessionID)绑到 web session id;
 // 未登录的 setup / login / TOTP 前置页无 session,绑到空串。两处(签发 & 校验)必须用同一来源,
@@ -432,7 +476,7 @@ func (s *SessionService) IssueCSRFToken(r *http.Request, w http.ResponseWriter) 
 // 这里会**自动重签**绑到新的 session id,无缝完成绑定切换。
 func (s *SessionService) EnsureCSRFToken(r *http.Request, w http.ResponseWriter) (string, error) {
 	boundID := csrfBoundID(r)
-	if ck, err := r.Cookie(csrfCookieName); err == nil &&
+	if ck, err := r.Cookie(s.cookieName(csrfCookieName)); err == nil &&
 		len(ck.Value) >= 32 && len(ck.Value) <= 256 && s.csrfValidFor(ck.Value, boundID) {
 		// 刷新 cookie 的 MaxAge 让有效期顺延,但 value 不变。
 		s.writeCSRFCookie(w, ck.Value)
@@ -443,7 +487,7 @@ func (s *SessionService) EnsureCSRFToken(r *http.Request, w http.ResponseWriter)
 
 func (s *SessionService) writeCSRFCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     csrfCookieName,
+		Name:     s.cookieName(csrfCookieName),
 		Value:    token,
 		Path:     "/",
 		HttpOnly: false,
@@ -462,7 +506,7 @@ func (s *SessionService) VerifyCSRFToken(r *http.Request) error {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 		return nil
 	}
-	ck, err := r.Cookie(csrfCookieName)
+	ck, err := r.Cookie(s.cookieName(csrfCookieName))
 	if err != nil || ck.Value == "" {
 		return newLocErr("csrf.missingCookie")
 	}

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/nanotun/server/store"
 )
 
 // handleDashboard 渲染管理后台首页:
@@ -50,7 +52,14 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		sessions = sessions[:5]
 	}
 
-	recentAudit, _ := s.store.QueryAudit(ctx, 0, time.Now().Unix()+1, 10)
+	// 第七轮深扫 MED:最近审计(含用户名 / IP / 管理操作明细)属敏感,仅 admin 角色看得到;viewer 的
+	// dashboard 不再泄露审计条目(与 /audit 页收敛到 admin 一致)。非 admin 时 recentAudit 留空,模板据此隐藏该卡片。
+	var recentAudit []store.AuditLog
+	isAdminRole := false
+	if a := adminFromCtx(ctx); a != nil && a.Role == "admin" {
+		isAdminRole = true
+		recentAudit, _ = s.store.QueryAudit(ctx, 0, time.Now().Unix()+1, 10)
+	}
 
 	// 两个 host 字段同时取(2026-05-26 第六轮拆字段:server_dial_host=dial,
 	// advertised_host=label),失败按空兜底 — dashboard 主体功能不应该因为读
@@ -90,6 +99,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			"Sessions":                 sessions,
 			"SessionsTotal":            totalSessions,
 			"Audit":                    recentAudit,
+			"IsAdminRole":              isAdminRole,
 			"AdvertisedHost":           advertisedHost,
 			"ServerDialHost":           serverDialHost,
 			"ServerDialHostSuggestion": serverDialHostSuggestion,

@@ -138,10 +138,17 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 			s.renderInternalError(w, r, "admins:get_reset_pwd", err)
 			return
 		}
+		// 第七轮深扫 MED:改**自己**的密码需 step-up(当前密码 +(若开)TOTP),表单据此多渲两个字段。
+		meGet := adminFromCtx(r.Context())
+		isSelfGet := meGet != nil && meGet.ID == target.ID
 		s.renderPage(w, r, "admin_reset_pwd.html", PageData{
 			Title: tr(r, "page.adminPwd.title", target.Username),
-			Data:  map[string]any{"Target": target},
-			Nav:   NavContext{Active: "admins"},
+			Data: map[string]any{
+				"Target":   target,
+				"IsSelf":   isSelfGet,
+				"SelfTOTP": isSelfGet && target.TOTPEnabled,
+			},
+			Nav: NavContext{Active: "admins"},
 		})
 		return
 	}
@@ -178,15 +185,62 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 
 	switch verb {
 	case "reset-pwd":
+		isSelf := me != nil && me.ID == target.ID
 		// 2026-07-19 易用性:校验失败回渲染表单页 + 错误横幅(而不是甩到错误页
 		// 让 admin 按后退键找回输入),与表单页 GET 同模板。
 		retryForm := func(msg string) {
 			s.renderPage(w, r, "admin_reset_pwd.html", PageData{
 				Title: tr(r, "page.adminPwd.title", target.Username),
 				Flash: &Flash{Kind: "err", Text: msg},
-				Data:  map[string]any{"Target": target},
-				Nav:   NavContext{Active: "admins"},
+				Data: map[string]any{
+					"Target":   target,
+					"IsSelf":   isSelf,
+					"SelfTOTP": isSelf && target.TOTPEnabled,
+				},
+				Nav: NavContext{Active: "admins"},
 			})
+		}
+		// 第七轮深扫 MED:改**自己**的密码要求 step-up —— 先验当前密码,(若已开 TOTP)再验一枚当前 6 位码。
+		// 背景:此前只要 requireAdminRole + CSRF,会话被劫持(cookie 失窃 / 未锁屏离开)即可静默改掉自己的
+		// 密码 → 持久接管 / 反锁真正的管理员。改**他人**密码属管理操作,已由 requireAdminRole 把关,不在此加。
+		// 复用 stepUpFailures(与 QR-reveal / TOTP disable 同套 IP 冷却),防止对当前密码/TOTP 暴破。
+		if isSelf {
+			ip := clientIP(r)
+			if s.stepUpFailures.Recent(ip) >= stepUpMaxFailures {
+				s.audit.WriteFromRequest(r, "webadmin_reset_pwd_locked",
+					FormatTarget("web_admin", id), FormatDetail("ip", ip, "reason", "ip_cooldown"))
+				s.renderError(w, r, http.StatusTooManyRequests, tr(r, "me.totpTooManyAttempts"))
+				return
+			}
+			curPwd := r.FormValue("current_password")
+			if curPwd == "" {
+				retryForm(tr(r, "adminPwd.currentRequired"))
+				return
+			}
+			okCur, verr := VerifyWebPassword(r.Context(), curPwd, me.PasswordHash)
+			if verr != nil || !okCur {
+				s.stepUpFailures.Inc(ip)
+				s.audit.WriteFromRequest(r, "webadmin_reset_pwd_stepup_fail",
+					FormatTarget("web_admin", id), FormatDetail("ip", ip, "reason", "wrong_current_password"))
+				retryForm(tr(r, "adminPwd.currentWrong"))
+				return
+			}
+			if me.TOTPEnabled {
+				code := strings.TrimSpace(r.FormValue("totp_code"))
+				if code == "" {
+					retryForm(tr(r, "adminPwd.totpRequired"))
+					return
+				}
+				if terr := s.verifyAndConsumeStepUpTOTP(r.Context(), me.ID, me.TOTPSecret, code); terr != nil {
+					s.stepUpFailures.Inc(ip)
+					s.audit.WriteFromRequest(r, "webadmin_reset_pwd_stepup_fail",
+						FormatTarget("web_admin", id), FormatDetail("ip", ip, "reason", "wrong_totp"))
+					retryForm(tr(r, "adminPwd.totpWrong"))
+					return
+				}
+			}
+			// step-up 全过 → 清 IP 冷却计数(与 QR-reveal / login 成功即 Reset 对齐)。
+			s.stepUpFailures.Reset(ip)
 		}
 		pwd := r.FormValue("password")
 		confirm := r.FormValue("password_confirm")

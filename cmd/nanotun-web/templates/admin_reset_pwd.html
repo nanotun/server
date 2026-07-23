@@ -8,6 +8,21 @@
 <div class="card" style="max-width:480px">
 <form method="post" action="/admins/{{.Data.Target.ID}}/reset-pwd">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    {{/* 第七轮深扫 MED:改自己的密码要求 step-up —— 先证明当前身份(当前密码 +(若开)TOTP)。*/}}
+    {{if .Data.IsSelf}}
+    <div class="field">
+        <label for="current_password">{{T "adminPwd.currentPwd"}}</label>
+        <input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
+        <div class="hint">{{T "adminPwd.currentHint"}}</div>
+    </div>
+    {{if .Data.SelfTOTP}}
+    <div class="field">
+        <label for="totp_code">{{T "adminPwd.totpLabel"}}</label>
+        <input id="totp_code" name="totp_code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="6" required>
+        <div class="hint">{{T "adminPwd.totpHint"}}</div>
+    </div>
+    {{end}}
+    {{end}}
     <div class="field">
         <label for="password">{{T "adminPwd.newPwd"}}</label>
         <input id="password" name="password" type="password" autocomplete="new-password" required minlength="12">

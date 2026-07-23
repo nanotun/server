@@ -69,7 +69,9 @@ func TestHandleLogout_SessionBoundCSRF_Succeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue csrf: %v", err)
 	}
-	csrfCookie := recorderCookie(t, wCSRF, csrfCookieName)
+	// 第七轮深扫 MED:CSRF cookie 现按 cookieSecure 加 __Host- 前缀(见 SessionService.cookieName),
+	// 故这里按**有效名**取回,而不是裸常量。
+	csrfCookie := recorderCookie(t, wCSRF, sess.cookieName(csrfCookieName))
 	if csrfCookie == nil {
 		t.Fatal("missing csrf cookie")
 	}

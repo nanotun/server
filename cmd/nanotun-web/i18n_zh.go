@@ -928,6 +928,7 @@ var catZH = map[string]string{
 	// TOTP / 账号自助:
 	"me.totpAlreadyEnabled":     "当前账号已启用 TOTP。要更换绑定的 Authenticator,请先在「我的账号」点「关闭 TOTP」,再重新启用。",
 	"me.secretNotGenerated":     "尚未生成 secret,请重新点击「启用 TOTP」",
+	"me.totpSetupChanged":       "启用过程中 TOTP setup 状态已变化(secret 在另一标签页被重新生成)。请到「我的账号」重新开始 setup 并扫新二维码。",
 	"me.totpCodeWrongCloseFail": "验证码错误,无法关闭 TOTP",
 	"me.totpNotEnabledRegen":    "TOTP 未启用,无法生成恢复码",
 	"me.recoveryCodesExpired":   "恢复码展示已过期或已被查看过。每次只展示一次,如需重新获取请在「我的账号」重新生成恢复码。",
@@ -1057,6 +1058,15 @@ var catZH = map[string]string{
 	"adminPwd.policyHint":  "至少 12 字节;字母 / 数字 / 符号至少含两类。",
 	"adminPwd.sessionNote": "保存后该账号的所有登录会话将立即失效,需用新密码重新登录。",
 	"adminPwd.submit":      "保存新密码",
+	// 改自己密码的 step-up(第七轮深扫 MED):
+	"adminPwd.currentPwd":      "当前密码",
+	"adminPwd.currentHint":     "修改自己的密码需重新输入当前密码(若已开启 2FA,还需输入验证码)。",
+	"adminPwd.currentRequired": "请输入当前密码。",
+	"adminPwd.currentWrong":    "当前密码错误。",
+	"adminPwd.totpLabel":       "两步验证码(TOTP)",
+	"adminPwd.totpHint":        "输入 Authenticator 应用当前显示的 6 位码。",
+	"adminPwd.totpRequired":    "请输入两步验证码(TOTP)。",
+	"adminPwd.totpWrong":       "两步验证码错误。",
 	// 管理员列表:
 	"admins.thLastIP": "最近登录 IP",
 	// 设置页 app_settings 原始表:

@@ -287,12 +287,15 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 
 		// 合法 IP + 地址族校验(空串例外 = 清除)。ParseAddr 两族都收,
 		// 不查族的话 IPv6 字面量能存进 fixed_vip_v4(反之亦然),分配时静默失效。
+		// 第七轮深扫 HIGH:校验通过后规范化为 netip.Addr.String(),与 CLI / store 同源,
+		// 让下面的冲突预检字符串比较与最终落库一致(store 会再规范化一次作纵深)。
 		if v4 != "" {
 			addr, perr := netip.ParseAddr(v4)
 			if perr != nil || !addr.Unmap().Is4() {
 				s.renderError(w, r, http.StatusBadRequest, tr(r, "devices.fixedVip4Invalid", v4))
 				return
 			}
+			v4 = addr.String()
 		}
 		if v6 != "" {
 			addr, perr := netip.ParseAddr(v6)
@@ -300,6 +303,7 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 				s.renderError(w, r, http.StatusBadRequest, tr(r, "devices.fixedVip6Invalid", v6))
 				return
 			}
+			v6 = addr.String()
 		}
 
 		// 冲突预检:跨 device 扫 fixed_vip + lease 已占用。允许「钉自己 device 已有 lease」。

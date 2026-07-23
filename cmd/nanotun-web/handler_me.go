@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"html/template"
 	"net/http"
 	"strings"
@@ -184,7 +185,9 @@ func (s *Server) handleMeTOTPEnable(w http.ResponseWriter, r *http.Request) {
 		flashRedirect(w, r, "/me", tr(r, "flash.totpEnabled"), "")
 		return
 	}
-	if err := VerifyTOTP(cur.TOTPSecret, code); err != nil {
+	// 第七轮深扫 MED:enable 也消费该时间步(与登录共享计数),防止这枚确认码被重放到登录。
+	// enable 前 SetWebAdminTOTPSecret 已把 last_used_step 归零,故此处消费不会与旧 secret 的登录抢占。
+	if err := s.verifyAndConsumeStepUpTOTP(r.Context(), admin.ID, cur.TOTPSecret, code); err != nil {
 		// 不清 secret,让用户能重输一次(Authenticator 显示的码 30s 滚)。
 		s.renderError(w, r, http.StatusBadRequest,
 			tr(r, "me.totpCodeWrongCheckTime", trErr(r, err)))
@@ -195,8 +198,14 @@ func (s *Server) handleMeTOTPEnable(w http.ResponseWriter, r *http.Request) {
 		s.renderInternalError(w, r, "me:totp_gen_recovery", err)
 		return
 	}
-	n, err := s.store.EnableWebAdminTOTP(r.Context(), admin.ID, hashes, time.Now().Unix())
+	// 第七轮深扫 MED:把「刚验过码的那个 secret」传给 store 做 CAS —— 若 setup 竞态把 secret
+	// 换掉了,enable 命中 0 行返回 ErrNotFound,引导用户重开 setup,而非把错误的 secret 启用锁死账号。
+	n, err := s.store.EnableWebAdminTOTP(r.Context(), admin.ID, cur.TOTPSecret, hashes, time.Now().Unix())
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.renderError(w, r, http.StatusConflict, tr(r, "me.totpSetupChanged"))
+			return
+		}
 		s.renderInternalError(w, r, "me:totp_enable", err)
 		return
 	}
@@ -374,7 +383,8 @@ func (s *Server) handleMeTOTPRegen(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpCodeRequired"))
 		return
 	}
-	if err := VerifyTOTP(cur.TOTPSecret, code); err != nil {
+	// 第七轮深扫 MED:regen 消费该时间步(与登录共享计数),防止该码被重放到登录 / 其它 step-up。
+	if err := s.verifyAndConsumeStepUpTOTP(r.Context(), admin.ID, cur.TOTPSecret, code); err != nil {
 		s.stepUpFailures.Inc(ip)
 		s.audit.WriteFromRequest(r, "totp_regen_fail",
 			FormatTarget("web_admin", admin.ID),

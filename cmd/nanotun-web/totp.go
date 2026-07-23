@@ -123,9 +123,13 @@ func RenderTOTPQRCodePNG(otpauthURI string) ([]byte, error) {
 //   - code 长度 ≠ totpDigits → ErrTOTPBadFormat
 //   - 不匹配 → ErrTOTPMismatch
 //
-// VerifyTOTP 本身不做 replay 防护(无状态);登录路径通过 VerifyTOTPStep 拿到匹配的时间步后,
-// 交给 store.ConsumeTOTPStep 原子「消费」该步来实现重放保护(0022)。非登录的 step-up 校验
-// (handler_me 的 enable/disable/regen)仍走本函数、不消费步,避免与同窗口内的正常登录相互抢占。
+// VerifyTOTP 本身不做 replay 防护(无状态);需要重放保护的路径通过 VerifyTOTPStep 拿到匹配的时间步后,
+// 交给 store.ConsumeTOTPStep 原子「消费」该步(0022)。
+//
+// 第七轮深扫 MED:登录与 step-up(enable/regen/server-qr reveal)现已统一走消费式校验
+// (handler_auth.verifyAndConsumeStepUpTOTP / verifyTOTPOrRecovery),共享同一 totp_last_used_step —— 一码
+// 一用,关闭「step-up 里输过的码被重放到登录」的窗口。因此本无状态 VerifyTOTP 目前仅剩测试与极少数
+// 不涉及重放语义的场景引用;生产的所有 6 位码校验都应经过消费式封装。
 func VerifyTOTP(secretBase32, code string) error {
 	_, err := VerifyTOTPStep(secretBase32, code)
 	return err

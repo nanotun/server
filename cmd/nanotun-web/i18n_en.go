@@ -923,6 +923,7 @@ var catEN = map[string]string{
 	// TOTP / account self-service:
 	"me.totpAlreadyEnabled":     "TOTP is already enabled on this account. To rebind your Authenticator, first click \"Disable TOTP\" on \"My Account\", then enable it again.",
 	"me.secretNotGenerated":     "Secret not generated yet, please click \"Enable TOTP\" again",
+	"me.totpSetupChanged":       "TOTP setup state changed during enable (the secret was re-generated in another tab). Please restart setup on \"My Account\" and scan the new QR again.",
 	"me.totpCodeWrongCloseFail": "Wrong code, cannot disable TOTP",
 	"me.totpNotEnabledRegen":    "TOTP is not enabled, cannot generate recovery codes",
 	"me.recoveryCodesExpired":   "The recovery-code display has expired or has already been viewed. It is shown only once; to obtain them again, regenerate recovery codes from \"My Account\".",
@@ -1052,6 +1053,15 @@ var catEN = map[string]string{
 	"adminPwd.policyHint":  "At least 12 bytes; must contain at least two of: letters / digits / symbols.",
 	"adminPwd.sessionNote": "After saving, all login sessions of this account are invalidated immediately; the new password is required to log in again.",
 	"adminPwd.submit":      "Save new password",
+	// Self password change step-up (第七轮深扫 MED):
+	"adminPwd.currentPwd":     "Current password",
+	"adminPwd.currentHint":    "Changing your own password requires re-entering your current password (and your 2FA code if enabled).",
+	"adminPwd.currentRequired": "Please enter your current password.",
+	"adminPwd.currentWrong":   "Wrong current password.",
+	"adminPwd.totpLabel":      "Two-factor code (TOTP)",
+	"adminPwd.totpHint":       "Enter the current 6-digit code from your authenticator app.",
+	"adminPwd.totpRequired":   "Please enter your two-factor (TOTP) code.",
+	"adminPwd.totpWrong":      "Wrong two-factor code.",
 	// Admins list:
 	"admins.thLastIP": "Last login IP",
 	// Settings raw app_settings table:

@@ -333,15 +333,22 @@ func cmdDeviceSetFixedVIP(ctx context.Context, st *store.Store, opts *globalOpts
 	// 地址族校验(空串 = 清除,豁免):--v4 必须是 IPv4,--v6 必须是 IPv6。
 	// ParseAddr 两族都收,不查族会把 IPv6 字面量写进 fixed_vip_v4(反之亦然),
 	// 分配时静默失效。与 web 端 set-fixed-vip 同口径。
+	// 第七轮深扫 HIGH:校验通过后立即规范化为 netip.Addr.String()(小写 / 压缩),让下面的冲突预检、
+	// audit 记录与 store 落库处在同一文本域。store.SetDeviceFixedVIP 也会再规范化一次(纵深),但这里
+	// 先做能让 findFixedVIPConflict 的字符串比较与最终存储一致,避免「预检说无冲突、落库才 ErrDuplicate」。
 	if newV4 != "" {
-		if a, aerr := netip.ParseAddr(newV4); aerr != nil || !a.Unmap().Is4() {
+		a, aerr := netip.ParseAddr(newV4)
+		if aerr != nil || !a.Unmap().Is4() {
 			return errors.New(opts.T("device.badFixedV4", newV4))
 		}
+		newV4 = a.String()
 	}
 	if newV6 != "" {
-		if a, aerr := netip.ParseAddr(newV6); aerr != nil || !a.Is6() || a.Is4In6() {
+		a, aerr := netip.ParseAddr(newV6)
+		if aerr != nil || !a.Is6() || a.Is4In6() {
 			return errors.New(opts.T("device.badFixedV6", newV6))
 		}
+		newV6 = a.String()
 	}
 	// 仅在「真的变了」时才查冲突,避免 noop 触发全表扫描。
 	if newV4 != d.FixedVIPv4 {

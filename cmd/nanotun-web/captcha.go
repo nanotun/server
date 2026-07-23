@@ -119,7 +119,7 @@ func (s *SessionService) IssueCaptcha(w http.ResponseWriter) (CaptchaChallenge, 
 
 	cookieVal := encodeCaptchaCookie(s.captchaHMACKey, answer, nonce, exp)
 	http.SetCookie(w, &http.Cookie{
-		Name:     captchaCookieName,
+		Name:     s.cookieName(captchaCookieName), // 第七轮深扫 MED:__Host- 前缀防同注册域 cookie-tossing 预置验证码
 		Value:    cookieVal,
 		Path:     "/",
 		HttpOnly: true,
@@ -152,7 +152,7 @@ var (
 )
 
 func (s *SessionService) VerifyCaptcha(r *http.Request, userAnswer string) error {
-	ck, err := r.Cookie(captchaCookieName)
+	ck, err := r.Cookie(s.cookieName(captchaCookieName))
 	if err != nil || ck.Value == "" {
 		return ErrCaptchaInvalid
 	}
@@ -190,7 +190,7 @@ func (s *SessionService) VerifyCaptcha(r *http.Request, userAnswer string) error
 // ClearCaptcha 让 cookie 立刻失效。验通 / 验失 都该调一次,保证一次性。
 func (s *SessionService) ClearCaptcha(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     captchaCookieName,
+		Name:     s.cookieName(captchaCookieName),
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,

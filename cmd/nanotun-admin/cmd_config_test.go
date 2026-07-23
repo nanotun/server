@@ -144,6 +144,14 @@ tls_cert_file = "/tmp/c.pem"
 listen_addr = "0.0.0.0:443"
 jump_host_firewall = true
 `,
+		// 第七轮:jump_host_protected_ports 拼错(proto 写成 "tc")→ runtime 会静默跳过 → 漏保护。
+		"jump_host_protected_ports_typo": `
+[server]
+listen_addr = "0.0.0.0:443"
+jump_host_firewall = true
+jump_host_allowed_ips = ["10.0.0.1"]
+jump_host_protected_ports = ["tc/8443", "udp/443"]
+`,
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -190,6 +198,20 @@ tls_key_file = "/tmp/k.pem"
 listen_addr = "0.0.0.0:443"
 jump_host_firewall = true
 jump_host_allowed_ips = ["10.0.0.1", "10.0.0.2"]
+`,
+		// 第七轮:合法的 protected_ports(单端口 + 范围两种写法)应放行。
+		"jump_host_protected_ports_valid": `
+[server]
+listen_addr = "0.0.0.0:443"
+jump_host_firewall = true
+jump_host_allowed_ips = ["10.0.0.1"]
+jump_host_protected_ports = ["tcp/8443", "udp/443", "tcp/2000-2100"]
+`,
+		// 第七轮:firewall 关闭时 protected_ports 被忽略,即使写错也不该拦(死配置不报错)。
+		"jump_host_protected_ports_ignored_when_off": `
+[server]
+listen_addr = "0.0.0.0:443"
+jump_host_protected_ports = ["garbage"]
 `,
 	}
 	for name, cfg := range cases {

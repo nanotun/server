@@ -162,6 +162,8 @@
     </div>
 </div>
 
+{{/* 第七轮深扫 MED:最近审计仅 admin 角色可见(含用户名 / IP / 管理操作明细);viewer 隐藏整卡片。 */}}
+{{if .Data.IsAdminRole}}
 <div class="card">
     <div class="card-header"><h2>{{T "dashboard.recentAudit"}}</h2>
         <a href="/audit" class="btn small secondary">{{T "dashboard.viewAll"}}</a>
@@ -183,5 +185,6 @@
         </tbody>
     </table>
 </div>
+{{end}}
 
 {{template "footer" .}}

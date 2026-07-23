@@ -173,7 +173,22 @@ func cmdLeaseSet(ctx context.Context, st *store.Store, opts *globalOpts, args []
 			return errors.New(opts.T("lease.badV6", *v6))
 		}
 	}
-	l, err := st.UpsertLease(ctx, deviceID, *v4, *v6, *manual)
+	// 第七轮深扫 MED:读改写,命令行未指定的族保留 lease 现值。
+	// 背景:UpsertLease 的 ON CONFLICT 无条件覆盖 vip_v4 与 vip_v6,只传 --v4 时 vip_v6 被写成 NULL,
+	// 静默抹掉设备已有的 sticky v6(反之亦然)——下次登录才重分配,期间 MagicDNS / 端口转发目标可能失效。
+	// UpsertLease 本身语义不变(登录分配路径需要「空族=清该族」);只在 CLI 这层做保留。整条释放用 `lease release`。
+	newV4, newV6 := *v4, *v6
+	if cur, gerr := st.GetLeaseByDevice(ctx, deviceID); gerr == nil {
+		if *v4 == "" {
+			newV4 = cur.VIPv4
+		}
+		if *v6 == "" {
+			newV6 = cur.VIPv6
+		}
+	} else if !errors.Is(gerr, store.ErrNotFound) {
+		return gerr
+	}
+	l, err := st.UpsertLease(ctx, deviceID, newV4, newV6, *manual)
 	if err != nil {
 		return err
 	}

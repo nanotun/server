@@ -315,6 +315,14 @@ func (s *SessionService) pruneExpiredPoW() {
 		}
 		return true
 	})
+	// pendingUsed(第七轮深扫 MED)同套:清掉已过期的 pending-2FA 一次性 nonce。
+	s.pendingUsed.Range(func(k, v any) bool {
+		exp, ok := v.(int64)
+		if !ok || exp <= now {
+			s.pendingUsed.Delete(k)
+		}
+		return true
+	})
 }
 
 // powUsedSnapshot 仅测试 / 调试用:返回当前 in-flight challenge 数量。

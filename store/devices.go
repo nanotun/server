@@ -402,6 +402,10 @@ func (s *Store) SetDeviceAlias(ctx context.Context, id int64, alias string) erro
 // CLI `--force` / exit designate `--force` 走 true,web(无 force,冲突时 409 前置拦截)与其它
 // 内部调用走 false。
 func (s *Store) SetDeviceFixedVIP(ctx context.Context, id int64, fixedV4, fixedV6 string, force bool) error {
+	// 第七轮深扫 HIGH:与 UpsertLease 同源规范化 —— fixed_vip 也走 netip 标准文本,才能让 UNIQUE 索引、
+	// 跨表守卫、AllUsedVIPs 已用集与登录分配路径处在同一文本域,杜绝 "FD00::2" vs "fd00::2" 双占。
+	fixedV4 = canonicalVIP(fixedV4)
+	fixedV6 = canonicalVIP(fixedV6)
 	// **事务包住两条 UPDATE**:devices.fixed_vip_* 与 leases.manual 必须同生同死。此前是两条独立
 	// ExecContext——若 devices 更新成功、leases 同步失败(锁 / IO),会留下「fixed_vip 已设但 leases.manual=0」
 	// 的错位:GC 会把这个手钉 vIP 的 lease 当空闲回收,下次登录该设备可能拿不回固定地址(前一句注释说的
