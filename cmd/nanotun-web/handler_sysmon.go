@@ -39,6 +39,10 @@ func (s *Server) handleSysmon(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// 第八轮深扫 LOW:宿主机 CPU/内存/网卡 + uptime 属基础设施遥测,超出「只读业务视图」范畴,收敛到 admin。
+	if !s.requireAdminRole(w, r) {
+		return
+	}
 	s.renderPage(w, r, "sysmon.html", PageData{
 		Title: tr(r, "page.sysmon.title"),
 		Nav:   NavContext{Active: "sysmon"},
@@ -90,6 +94,11 @@ type sysmonDataResp struct {
 func (s *Server) handleSysmonData(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// 第八轮深扫 LOW:与 /sysmon 页面一致,遥测数据端点也收敛到 admin;非 admin 走标准 403(前端 fetch 非 200
+	// 即显错误横幅,不再吐宿主机指标)。
+	if !s.requireAdminRole(w, r) {
 		return
 	}
 	resp := sysmonDataResp{

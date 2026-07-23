@@ -42,7 +42,11 @@ func AllocClientIP(gatewayCIDR string, used map[string]bool, exclude map[string]
 		maskStr = fmt.Sprintf("%d", prefix.Bits())
 	}
 
-	// 扫描范围根据前缀长度计算：IPv4 /24→254, /16→65534; IPv6 统一 65534
+	// 扫描范围根据前缀长度计算：IPv4 /24→254, /16→65534; IPv6 只变动最后两字节(≤16 host bits)。
+	// 第八轮深扫 LOW:IPv6 分支此前硬编码 maxIter=65534,对**长于 /112** 的前缀(如 /120,host bits<16)
+	// 会让 i 溢出到 byte14 —— 而 byte14 在这些前缀里属**网络位**,被覆写后生成的候选落到配置前缀**之外**。
+	// 与 IPv4 分支对齐:按 host bits 夹取迭代上界(仍只动 byte14/15,故封顶 16 bit);再叠加下方 prefix.Contains
+	// 兜底,双保险确保候选一定在前缀内。常见 /64 行为不变(host bits 远超 16 → 封顶 65534)。
 	var maxIter int
 	if gatewayAddr.Is4() {
 		hostBits := 32 - prefix.Bits()
@@ -54,7 +58,14 @@ func AllocClientIP(gatewayCIDR string, used map[string]bool, exclude map[string]
 			maxIter = 1
 		}
 	} else {
-		maxIter = 65534
+		hostBits := 128 - prefix.Bits()
+		if hostBits > 16 {
+			hostBits = 16
+		}
+		maxIter = (1 << hostBits) - 2
+		if maxIter < 1 {
+			maxIter = 1
+		}
 	}
 
 	networkAddr := prefix.Masked().Addr()
@@ -75,6 +86,10 @@ func AllocClientIP(gatewayCIDR string, used map[string]bool, exclude map[string]
 			raw[14] = byte(i >> 8)
 			raw[15] = byte(i & 0xFF)
 			cand = netip.AddrFrom16(raw)
+		}
+		// 第八轮深扫 LOW:兜底——候选必须落在配置前缀内(挡住任何把网络位写脏 / 进位越界的算术)。
+		if !prefix.Contains(cand) {
+			continue
 		}
 		candStr := cand.String()
 		if candStr == gatewayStr {

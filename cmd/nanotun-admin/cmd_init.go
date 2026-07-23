@@ -113,6 +113,12 @@ func cmdInit(ctx context.Context, st *store.Store, opts *globalOpts, args []stri
 		u = existing
 		fmt.Fprintln(opts.stdout, opts.T("init.resetOnly", username))
 	} else {
+		// 第八轮深扫 MED:--reset-psk 语义是「重置**已存在**用户的 PSK」。用户名打错(查不到)时,此前会静默
+		// 落到这条新建分支、凭空造出一个新 admin —— 违背 25 行契约,且线上多出个未预期的管理员账号。这里显式
+		// 报错并引导走 `user create`。不带 --reset-psk 的首次向导仍走本分支创建首位 admin,不受影响。
+		if *resetPSK {
+			return errors.New(opts.T("init.resetNoUser", username, username))
+		}
 		// 0013(2026-05-25):新建 user 时同步分配 UUID v4 + now 作为 credential_id /
 		// credential_created_at,免去后续首次 `credentials show` 的 lazy backfill,
 		// admin 一开始就能直接出完整 credentials QR。

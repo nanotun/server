@@ -75,7 +75,8 @@ func (s *Server) handleAdminNew(w http.ResponseWriter, r *http.Request) {
 		}
 		hash, err := HashWebPassword(password)
 		if err != nil {
-			s.adminNewRetry(w, r, tr(r, "err.hashFailed")+err.Error())
+			// 第八轮深扫 LOW:哈希失败是内部错误,详情进日志、页面回通用文案(不外泄 err 原文)。
+			s.renderInternalError(w, r, "admin_new:hash_pwd", err)
 			return
 		}
 		me := adminFromCtx(r.Context())
@@ -90,7 +91,12 @@ func (s *Server) handleAdminNew(w http.ResponseWriter, r *http.Request) {
 			CreatedBy:    createdBy,
 		})
 		if err != nil {
-			s.adminNewRetry(w, r, tr(r, "err.createFailed")+err.Error())
+			// 第八轮深扫 LOW:重名 → 友好提示 + 保留表单;其余内部错误 → 详情进日志、页面通用文案。
+			if errors.Is(err, store.ErrDuplicate) {
+				s.adminNewRetry(w, r, tr(r, "err.usernameTaken", username))
+				return
+			}
+			s.renderInternalError(w, r, "admin_new:create", err)
 			return
 		}
 		s.audit.WriteFromRequest(r, "webadmin_create",

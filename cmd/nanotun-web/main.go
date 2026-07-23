@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -66,6 +67,14 @@ type Server struct {
 	// 用同款 IPFailureTracker(滑窗 5min,5 次锁定);专门给 /server-qr/reveal
 	// 这类敏感视图操作做爆破防护。
 	stepUpFailures *IPFailureTracker
+
+	// totpVerifyLocks(第八轮深扫 HIGH)按 adminID 串行化 /login/totp 的「重读锁定 + verify + 记账」临界区。
+	// 修复:此前 handleLoginTOTP 用请求开始时读到的 admin.LockedUntil **快照**判锁,失败计数却在 verify **之后**
+	// 才落库;/login/totp 又无 PoW/captcha —— 持密码 + 有效 pending cookie 的攻击者并发多发即可全部越过陈旧闸门,
+	// 把每个锁定窗口内的尝试数从 MaxLoginFailures 放大到并发度,暴破 6 位 TOTP。web 是单进程,进程内按账号互斥
+	// 即可把同一账号的尝试序列化,使账号级锁定在并发下也即时生效(第 N+1 次一定读到已写入的 locked_until 并拒)。
+	// 键空间 = web_admins 行数(有界),*sync.Mutex 只增不删可接受,无需 GC。
+	totpVerifyLocks sync.Map // adminID(int64) -> *sync.Mutex
 
 	// startedAt 用于 /metrics uptime。
 	startedAt time.Time

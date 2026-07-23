@@ -373,7 +373,8 @@ func TestProfileShow_BasicJSON(t *testing.T) {
 		t.Fatalf("hy2.tls_sni=%q", p.Hy2.TLSSNI)
 	}
 	if p.Hy2.TLSInsecureHint == nil || *p.Hy2.TLSInsecureHint != true {
-		t.Fatalf("hy2.tls_insecure_hint should default true")
+		// 默认 --hy2-tls-insecure=auto,由 fixture 的 [hysteria].report_tls_insecure_hint=true 派生出 true。
+		t.Fatalf("hy2.tls_insecure_hint should be true (auto derived from report_tls_insecure_hint=true)")
 	}
 	if p.Hy2.ObfsType != "salamander" {
 		t.Fatalf("hy2.obfs_type=%q", p.Hy2.ObfsType)

@@ -158,7 +158,10 @@ func cmdVacuum(ctx context.Context, st *store.Store, opts *globalOpts, _ []strin
 	if !opts.yes {
 		ok, _ := confirm(opts, opts.T("backup.confirmVacuum"))
 		if !ok {
-			return errors.New(opts.T("common.canceled"))
+			// 第八轮深扫 LOW:用户主动取消不是错误 → 打印「已取消」并 exit 0,与 restore 取消路径一致
+			// (此前返回 error → exit 1,脚本会误判为失败)。
+			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
+			return nil
 		}
 	}
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)

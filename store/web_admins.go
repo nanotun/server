@@ -433,6 +433,37 @@ func (s *Store) RecordWebAdminLoginFailure(ctx context.Context, id int64,
 	return failed, lockUntil, nil
 }
 
+// DecoyWebAdminLoginFailure 是 [RecordWebAdminLoginFailure] 的**等时空跑**(timing decoy)。
+//
+// 第八轮深扫 LOW(用户名枚举旁路):登录失败里只有「账号存在且密码错」这一支会跑 RecordWebAdminLoginFailure
+// (一次写事务),而「用户不存在 / 已禁用 / 已锁定」三支在 decoy argon2 之后直接返回、**完全不碰 DB**。argon2
+// (~几十 ms)虽是主耗时且已对齐,但那一次写事务的 tx begin/commit + 语句编译开销仍构成可测的分支差 →
+// 攻击者据此区分「用户名是否存在」。这里让早退分支也跑一遍同形状的写事务,抹平该差。
+//
+// 绑到 id=0(web_admins 主键自增恒为正,永不命中真实行)→ UPDATE 影响 0 行、SELECT 落空,**无任何副作用**,
+// 但仍走完整 BeginTx + 同款 UPDATE/SELECT + Commit,对齐提交路径开销。最贵且已对齐的仍是 argon2 decoy;
+// 此处进一步抹平 DB 侧残余。best-effort:任何错误静默忽略(它不承载业务语义,只为吃掉等价耗时)。
+func (s *Store) DecoyWebAdminLoginFailure(ctx context.Context) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	defer func() { _ = tx.Commit() }()
+	now := nowUnix()
+	_, _ = tx.ExecContext(ctx,
+		`UPDATE web_admins
+		    SET failed_logins = CASE
+		            WHEN last_failure_at > 0 AND (? - last_failure_at) > ? THEN 1
+		            ELSE failed_logins + 1
+		        END,
+		        last_failure_at = ?
+		  WHERE id=?`,
+		now, int64(0), now, int64(0))
+	var failed int64
+	_ = tx.QueryRowContext(ctx,
+		`SELECT failed_logins FROM web_admins WHERE id=?`, int64(0)).Scan(&failed)
+}
+
 // ResetWebAdminLockout admin 手动解锁。
 func (s *Store) ResetWebAdminLockout(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx,

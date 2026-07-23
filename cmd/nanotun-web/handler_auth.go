@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -397,6 +398,15 @@ func (s *Server) loginRetry(w http.ResponseWriter, r *http.Request,
 //
 // 不携带 pending cookie / cookie 过期 → 302 /login(让用户重新输密码)。
 // pending cookie 只是 short-lived 转场态,登录的"真凭证"仍是密码 + TOTP。
+// lockTOTPVerify 取(必要时创建)本 adminID 的进程内互斥锁并加锁,返回解锁函数。
+// 用于把 /login/totp 的 verify+记账临界区按账号串行化(第八轮深扫 HIGH,见 Server.totpVerifyLocks)。
+func (s *Server) lockTOTPVerify(adminID int64) func() {
+	m, _ := s.totpVerifyLocks.LoadOrStore(adminID, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	adminID, pendingPwFp, pendingNonce, err := s.sess.LookupTOTPPending(r)
@@ -472,6 +482,23 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 		// MaxLoginFailures 次会触发**账号级锁定**(比 step-up IP 冷却更重)。
 		if code == "" && recoveryCode == "" {
 			s.loginTOTPRetry(w, r, tr(r, "me.totpCodeRequired"), admin.Username, next)
+			return
+		}
+
+		// 第八轮深扫 HIGH:把「重读锁定 + verify + 记账」整段按账号串行化,关闭并发绕过账号锁定的窗口。
+		// 拿到锁后**重新读账号**,让本次判锁看到并发失败已写入的最新 locked_until / failed_logins —— 上面
+		// (行 435)基于请求开始时的快照判锁,并发下会被多请求同时越过。web 单进程,进程内互斥即足够。
+		unlock := s.lockTOTPVerify(admin.ID)
+		defer unlock()
+		if fresh, ferr := s.store.GetWebAdmin(ctx, admin.ID); ferr == nil && fresh != nil {
+			admin = fresh
+		}
+		if admin.LockedUntil > 0 && admin.LockedUntil > nowUnix() {
+			s.sess.ClearTOTPPending(w)
+			s.audit.Write(ctx, admin, "web.totp.locked",
+				FormatTarget("web_admin", admin.ID),
+				FormatDetail("ip", ip, "locked_until", admin.LockedUntil))
+			s.loginTOTPRetry(w, r, tr(r, "auth.accountLocked", fmtTime(admin.LockedUntil)), admin.Username, next)
 			return
 		}
 

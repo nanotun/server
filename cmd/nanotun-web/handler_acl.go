@@ -128,7 +128,8 @@ func (s *Server) handleACLNew(w http.ResponseWriter, r *http.Request) {
 				retry(tr(r, "acl.duplicate"))
 				return
 			}
-			retry(tr(r, "acl.createFailed") + err.Error())
+			// 第八轮深扫 LOW:非重复类为内部错误,详情进日志、页面回通用文案(不外泄 err 原文)。
+			s.renderInternalError(w, r, "acl_create", err)
 			return
 		}
 		s.audit.WriteFromRequest(r, "acl_create", FormatTarget("acl", pair.ID),
