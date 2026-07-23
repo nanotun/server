@@ -38,7 +38,7 @@ func TestWebAdminTOTP_EnableDisableRoundTrip(t *testing.T) {
 	// 第 2 步:enable + 10 个恢复码
 	hashes := []string{"h1", "h2", "h3", "h4", "h5", "h6", "h7", "h8", "h9", "h10"}
 	now := int64(1779513195)
-	n, err := s.EnableWebAdminTOTP(ctx, a.ID, hashes, now)
+	n, err := s.EnableWebAdminTOTP(ctx, a.ID, "JBSWY3DPEHPK3PXP", hashes, now)
 	if err != nil {
 		t.Fatalf("EnableWebAdminTOTP: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestWebAdminTOTP_Regenerate(t *testing.T) {
 		Username: "regen_admin", PasswordHash: "argon2id$dummy$$$$dummy", Role: "admin",
 	})
 	_ = s.SetWebAdminTOTPSecret(ctx, a.ID, "JBSWY3DPEHPK3PXP")
-	_, _ = s.EnableWebAdminTOTP(ctx, a.ID,
+	_, _ = s.EnableWebAdminTOTP(ctx, a.ID, "JBSWY3DPEHPK3PXP",
 		[]string{"a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10"}, 100)
 
 	// 用掉两条
@@ -132,9 +132,40 @@ func TestWebAdminTOTP_EnableRejectsWithoutSecret(t *testing.T) {
 	a, _ := s.CreateWebAdmin(ctx, NewWebAdmin{
 		Username: "no_secret", PasswordHash: "argon2id$dummy$$$$dummy", Role: "admin",
 	})
-	// 不调 SetWebAdminTOTPSecret,直接 Enable → 应当 ErrNotFound
-	if _, err := s.EnableWebAdminTOTP(ctx, a.ID,
+	// 不调 SetWebAdminTOTPSecret,直接 Enable → CAS(WHERE totp_secret=?)命中 0 行 → ErrNotFound。
+	if _, err := s.EnableWebAdminTOTP(ctx, a.ID, "JBSWY3DPEHPK3PXP",
 		[]string{"h"}, 100); err != ErrNotFound {
 		t.Fatalf("无 secret 时 EnableWebAdminTOTP err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestWebAdminTOTP_EnableCASRejectsChangedSecret 第七轮深扫 MED:setup 竞态 —— enable 传入的
+// expectedSecret 与库里当前 secret 不一致(被并发 SetWebAdminTOTPSecret 换掉)时,CAS 命中 0 行
+// → ErrNotFound,且 totp_enabled 不被翻起(不会把错误的 secret 启用锁死账号)。
+func TestWebAdminTOTP_EnableCASRejectsChangedSecret(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	a, _ := s.CreateWebAdmin(ctx, NewWebAdmin{
+		Username: "cas_admin", PasswordHash: "argon2id$dummy$$$$dummy", Role: "admin",
+	})
+	// setup 生成 S1,用户验过 S1;随后另一标签页把 secret 换成 S2。
+	_ = s.SetWebAdminTOTPSecret(ctx, a.ID, "JBSWY3DPEHPK3PXP") // S1
+	_ = s.SetWebAdminTOTPSecret(ctx, a.ID, "KRSXG5BAORSXG5DJ") // S2(并发重开 setup)
+	// 用旧 S1 去 enable → 必须失败(CAS 不匹配),账号保持未启用。
+	if _, err := s.EnableWebAdminTOTP(ctx, a.ID, "JBSWY3DPEHPK3PXP",
+		[]string{"h1", "h2"}, 100); err != ErrNotFound {
+		t.Fatalf("secret 被换后用旧 secret enable 应 ErrNotFound, got %v", err)
+	}
+	a2, _ := s.GetWebAdmin(ctx, a.ID)
+	if a2.TOTPEnabled {
+		t.Fatal("CAS 失败后 totp_enabled 不应被翻起")
+	}
+	if a2.TOTPSecret != "KRSXG5BAORSXG5DJ" {
+		t.Fatalf("secret 应仍是 S2, got %q", a2.TOTPSecret)
+	}
+	// 用正确的 S2 enable → 成功。
+	if _, err := s.EnableWebAdminTOTP(ctx, a.ID, "KRSXG5BAORSXG5DJ",
+		[]string{"h1", "h2"}, 100); err != nil {
+		t.Fatalf("用当前 secret S2 enable 应成功, got %v", err)
 	}
 }

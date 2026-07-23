@@ -69,10 +69,15 @@ func (s *Store) SetWebAdminTOTPSecret(ctx context.Context, id int64, secretBase3
 //
 // 返回插入的恢复码条数(应当等于 len(codeHashes))。
 func (s *Store) EnableWebAdminTOTP(ctx context.Context, id int64,
-	codeHashes []string, now int64) (int, error) {
+	expectedSecret string, codeHashes []string, now int64) (int, error) {
 
 	if len(codeHashes) == 0 {
 		return 0, errors.New("store: empty recovery code hashes")
+	}
+	if expectedSecret == "" {
+		// 调用方必须传入「刚刚验过码的那个 secret」;空 secret 不可能通过 VerifyTOTP,
+		// 也就不该走到 enable。显式拒绝,避免退化成 `totp_secret <> ''` 的宽松匹配。
+		return 0, errors.New("store: empty expected totp secret")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -80,15 +85,23 @@ func (s *Store) EnableWebAdminTOTP(ctx context.Context, id int64,
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 第七轮深扫 MED:CAS 在**具体 secret** 上,而非旧的 `totp_secret <> ''`。
+	// 背景:handler 先 GetWebAdmin 读出 secret S1、VerifyTOTP(S1, code) 通过,再调本方法 enable。
+	// 若此刻另一标签页 / 并发请求 SetWebAdminTOTPSecret 把 secret 换成 S2(setup 重开),旧逻辑
+	// 只要 `totp_secret <> ''` 就把 **S2** 启用 —— 用户手机绑的是 S1 → 启用后立刻 TOTP 锁死;
+	// 同会话攻击者亦可在受害者验过自己二维码后,抢先把 secret 换成攻击者可控值再 enable。
+    // CAS `AND totp_secret=?` 保证:只有当库里仍是被验过的那个 secret 时才翻 enabled,否则 0 行
+    // → ErrNotFound(handler 引导重走 setup)。
 	res, err := tx.ExecContext(ctx,
 		`UPDATE web_admins
 		    SET totp_enabled=1, totp_enabled_at=?
-		  WHERE id=? AND totp_secret <> ''`, now, id)
+		  WHERE id=? AND totp_secret=?`, now, id, expectedSecret)
 	if err != nil {
 		return 0, fmt.Errorf("store: enable totp: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		// 要么 id 不存在,要么没设置过 totp_secret(setup 没走完)。
+		// id 不存在 / 没设过 secret / secret 在校验后被并发改写(setup 竞态)——都归一为 ErrNotFound,
+		// 语义上都是「当前状态无法据此启用,请重新开始 setup」。
 		return 0, ErrNotFound
 	}
 

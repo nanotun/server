@@ -321,9 +321,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			s.renderInternalError(w, r, "login:issue_session", err)
 			return
 		}
-		// 成功登录 → 清零 IP 失败计数,下次同 IP 来登录直接无 PoW 体验。
-		// TOTP 分支下不在这里清,放到 handleLoginTOTP 成功才算"真登录"。
-		s.sess.ipFailures.Reset(ip)
+		// 成功登录 → 把 IP 失败计数减半(非清零,见 Decay):合法用户自身手误的少量计数会落到阈值下、
+		// 几乎无感,而 NAT 共享 IP 下同段攻击者的失败信号不会被一次成功清空。TOTP 分支不在这里衰减,
+		// 放到 handleLoginTOTP 成功才算"真登录"。
+		s.sess.ipFailures.Decay(ip)
 		s.audit.Write(ctx, res.Admin, "web.login.ok",
 			FormatTarget("web_admin", res.Admin.ID),
 			FormatDetail("ip", ip))
@@ -398,7 +399,7 @@ func (s *Server) loginRetry(w http.ResponseWriter, r *http.Request,
 // pending cookie 只是 short-lived 转场态,登录的"真凭证"仍是密码 + TOTP。
 func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	adminID, pendingPwFp, err := s.sess.LookupTOTPPending(r)
+	adminID, pendingPwFp, pendingNonce, err := s.sess.LookupTOTPPending(r)
 	if err != nil {
 		// 没 pending(或已过期 / 篡改)→ 回登录页;不暴露 admin 是否存在等细节。
 		// 第十轮 P2:next 走 sanitizeReturnTo 统一防御。
@@ -494,6 +495,17 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 			s.loginTOTPRetry(w, r, tr(r, "auth.totpCodeInvalid"), admin.Username, next)
 			return
 		}
+		// 第七轮深扫 MED:pending 服务端一次性消费 —— 校验通过、颁 session 前原子标记本 pending nonce。
+		// 若该 nonce 已被消费(截获重放 / 完成后二次提交 / 并发双提交),拒绝本次,作废 pending 回登录页。
+		// 放在恢复码 mark-used 之前:避免「第二次重放」把一枚恢复码也白白烧掉。
+		if !s.sess.MarkPendingConsumed(pendingNonce) {
+			s.sess.ClearTOTPPending(w)
+			s.audit.Write(ctx, admin, "web.totp.pending_replay",
+				FormatTarget("web_admin", admin.ID),
+				FormatDetail("ip", ip))
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
 		// 通过 → 把恢复码标记 used(如有);颁正式 session;清 pending。
 		if usedRecovery && recoveryID > 0 {
 			if err := s.store.MarkRecoveryCodeUsed(ctx, recoveryID, ip, time.Now().Unix()); err != nil {
@@ -511,7 +523,8 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.sess.ClearTOTPPending(w)
-		s.sess.ipFailures.Reset(ip)
+		// 第七轮深扫 MED:成功登录减半 IP 失败计数(非清零),NAT 共享 IP 下不清空同段攻击者的失败信号。
+		s.sess.ipFailures.Decay(ip)
 		_ = s.store.RecordWebAdminLoginSuccess(ctx, admin.ID, ip)
 		s.audit.Write(ctx, admin, "web.login.ok",
 			FormatTarget("web_admin", admin.ID),
@@ -569,6 +582,34 @@ func (s *Server) verifyTOTPOrRecovery(ctx context.Context, admin *store.WebAdmin
 		errReason = "empty_code"
 	}
 	return false, false, 0, errReason
+}
+
+// verifyAndConsumeStepUpTOTP 校验一枚 6 位 TOTP 码,并在成功时**原子消费**其时间步(与 /login/totp 的
+// ConsumeTOTPStep 共用同一 totp_last_used_step 计数器),使该码在其 ~90s skew 窗口内无法被重放到登录或
+// 其它 step-up。用于 enable / regen / server-qr reveal 等已登录后的高危二次确认。
+//
+// 第七轮深扫 MED:此前这些 step-up 走无状态的 VerifyTOTP、不消费步,「刚在 enable / regen / QR-reveal
+// 里被输入过的那枚码」在窗口内仍可被拿去 /login/totp(攻击者已握有密码 + 肩窥到码时)。改为与登录共享
+// 消费计数即根治:一枚码全局单次可用。
+//
+// 代价(明确接受):同一 30s 窗口内「登录 + 一次 step-up」若用同一枚码,后者会撞到已消费步而需等下一枚
+// 码——这是「一码一用」语义的固有结果,也是多数 2FA 系统的行为。step-up 均为已登录后的低频操作,权衡可接受。
+//
+// 返回 nil = 校验且消费成功;ErrTOTPMismatch 统一覆盖「码错」与「步已被消费(重放/撞登录)」(不区分,
+// 避免侧信道);其它 error 为底层故障。
+func (s *Server) verifyAndConsumeStepUpTOTP(ctx context.Context, adminID int64, secret, code string) error {
+	step, err := VerifyTOTPStep(secret, code)
+	if err != nil {
+		return err
+	}
+	consumed, cerr := s.store.ConsumeTOTPStep(ctx, adminID, step)
+	if cerr != nil {
+		return cerr
+	}
+	if !consumed {
+		return ErrTOTPMismatch
+	}
+	return nil
 }
 
 func (s *Server) loginTOTPRetry(w http.ResponseWriter, r *http.Request,

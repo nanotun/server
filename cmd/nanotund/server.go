@@ -1327,6 +1327,13 @@ func main() {
 
 	// C6_full(2026-05-22):若运维显式列出 jump_host_protected_ports,按多端口/多 proto
 	// 部署 iptables 规则;否则退化为单 listen_addr TCP 端口(历史行为)。
+	// 第七轮深扫 MED:启用 firewall 时严格校验 protected_ports 语法,拒绝「静默跳过非法条目 → 端口漏保护」
+	// 的 fail-open。非启用时该字段被忽略,不校验(与 ValidateJumpHostProtectedPorts 一致)。
+	if cfg.Server.JumpHostFirewall {
+		if verr := cfg.Server.ValidateJumpHostProtectedPorts(); verr != nil {
+			util.FatalExit(util.ExitConfigSemantic, nil, "%s", verr.Error())
+		}
+	}
 	jumpSpecs := parseJumpHostProtectedPorts(cfg.Server.JumpHostProtectedPorts)
 	if len(jumpSpecs) == 0 {
 		jumpSpecs = []jumpHostPortSpec{{Proto: "tcp", Port: vpnTCPPort}}

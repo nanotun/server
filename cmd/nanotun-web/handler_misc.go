@@ -93,6 +93,12 @@ func (s *Server) handleAuditList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// 第七轮深扫 MED:审计日志含用户名 / IP / 管理操作明细,属敏感内容,仅 admin 可读。此前只要「已登录」
+	// 即可拉取,viewer 也能看到全量审计(含改密 / 重置 PSK / 会话 IP 等)。与其它管理页(users/admins 动作、
+	// runtime ops)一致收敛到 admin 角色。
+	if !s.requireAdminRole(w, r) {
+		return
+	}
 	now := time.Now().Unix()
 	q := r.URL.Query()
 	since := parseAuditTimeParam(q.Get("since"))

@@ -16,6 +16,7 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -112,4 +113,67 @@ func (s ServerConfig) ValidateJumpHostFirewall() error {
 		return fmt.Errorf("[server] 启用 jump_host_firewall 必须在 [server].jump_host_allowed_ips 提供跳板机 IPv4 名单(留空等于全网开放,这通常不是你想要的)。要么填名单,要么把 jump_host_firewall 设为 false。")
 	}
 	return nil
+}
+
+// ValidateJumpHostProtectedPorts 严格校验 [server].jump_host_protected_ports 语法(仅在
+// jump_host_firewall 启用时有意义 —— 关闭时该字段被完全忽略,不校验)。
+//
+// 第七轮深扫 MED:runtime parseJumpHostProtectedPorts 对非法条目「Warn 后跳过」;若条目**全**非法
+// 会退化为只保护 listen_addr TCP,hy2 UDP / REALITY 端口裸奔而运维以为已被跳板机围栏覆盖;**部分**
+// 非法则只有部分端口被保护。这是与已修的 exit_dns_redirect 拼错同类的静默 fail-open。这里改成:启用
+// firewall 且列表非空时,任一条目语法非法即报错 —— 启动路径 FatalExit(ExitConfigSemantic)、lint 退非零,
+// 逼运维改对或清空(清空 = 沿用历史默认:只保护 listen_addr TCP)。语法与 parseJumpHostProtectedPorts
+// 对齐:proto/port 或 proto/start-end 或 proto/start:end,proto ∈ {tcp,udp},端口 1..65535。空白项容忍
+// (与 runtime skip 空串一致,不算错)。
+func (s ServerConfig) ValidateJumpHostProtectedPorts() error {
+	if !s.JumpHostFirewall {
+		return nil
+	}
+	var errs []string
+	for _, raw := range s.JumpHostProtectedPorts {
+		e := strings.TrimSpace(strings.ToLower(raw))
+		if e == "" {
+			continue
+		}
+		if msg := jumpHostPortSpecError(e); msg != "" {
+			errs = append(errs, fmt.Sprintf("%q: %s", raw, msg))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("[server].jump_host_protected_ports 存在非法条目(启用 jump_host_firewall 时不允许静默跳过,否则 hy2/REALITY 端口会被漏保护;要么改对、要么清空沿用默认只保护 listen_addr TCP):\n  - %s",
+			strings.Join(errs, "\n  - "))
+	}
+	return nil
+}
+
+// jumpHostPortSpecError 返回单条 protected-port 规格的语法错误描述(合法则空串)。语法与
+// cmd/nanotund parseJumpHostProtectedPorts 的接受集精确对齐:非法条目正是 runtime 会静默跳过的那些。
+func jumpHostPortSpecError(s string) string {
+	idx := strings.Index(s, "/")
+	if idx <= 0 || idx == len(s)-1 {
+		return "格式应为 proto/port 或 proto/start-end"
+	}
+	proto := s[:idx]
+	portPart := s[idx+1:]
+	if proto != "tcp" && proto != "udp" {
+		return "proto 必须是 tcp 或 udp"
+	}
+	startStr, endStr := portPart, ""
+	if strings.ContainsAny(portPart, "-:") {
+		sep := "-"
+		if strings.Contains(portPart, ":") {
+			sep = ":"
+		}
+		parts := strings.SplitN(portPart, sep, 2)
+		startStr, endStr = parts[0], parts[1]
+	}
+	if n, err := strconv.Atoi(startStr); err != nil || n < 1 || n > 65535 {
+		return "起始端口非法(须 1..65535)"
+	}
+	if endStr != "" {
+		if n, err := strconv.Atoi(endStr); err != nil || n < 1 || n > 65535 {
+			return "结束端口非法(须 1..65535)"
+		}
+	}
+	return ""
 }

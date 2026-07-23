@@ -88,7 +88,11 @@ func (s *Server) handleServerQR(w http.ResponseWriter, r *http.Request) {
 			"AdvertisedHost":    advertisedHost,
 			"HasAdvertisedHost": advertisedHost != "",
 			"Locked":            locked,
-			"ErrorMsg":          r.URL.Query().Get("err"),
+			// 第七轮深扫 MED:此前 GET 直接把 ?err= 原样反射进受信任后台页面(html/template 会转义 →
+			// 不构成 XSS,但攻击者可借可信 UI 显示任意「错误」文案,做钓鱼 / 社工诱导,如「会话过期请重输密码」)。
+			// 且该反射是无签名旁路,与页面本就有的**签名** flash(flashFromQuery)重复。移除之:失败信息只经
+			// 服务端受控的 renderServerQRPasswordPage(errMsg=tr(...))或签名 flash 呈现,不再接受 URL 注入的文案。
+			"ErrorMsg": "",
 		},
 		Nav: NavContext{Active: "dashboard"},
 	})
@@ -216,6 +220,10 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 	// 校验(与 regen 一致),避免烧掉登录用的 TOTP step 形成自锁式 UX;失败与错误密码同权
 	// 计入 IP 冷却配额。admin.TOTPEnabled / TOTPSecret 取自 middleware 请求初的快照(经
 	// GetWebAdmin 全列 scan 填充),对这条一次性 step-up 足够新。
+	//
+	// 第七轮深扫 MED(补充):改用消费式校验(与登录共享 totp_last_used_step),关闭「reveal 里输过的码
+	// 被重放到登录」的窗口 —— 一码一用。代价是「登录后 30s 内立即 reveal 用同一枚码」需等下一枚码;reveal
+	// 属低频运维动作,权衡可接受。仍不接受恢复码(reveal 是可重复只读操作,不该烧一次性恢复码)。
 	if admin.TOTPEnabled {
 		code := strings.TrimSpace(r.FormValue("code"))
 		if code == "" {
@@ -223,7 +231,7 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 			s.renderServerQRPasswordPage(w, r, tr(r, "serverQr.totpRequired"), http.StatusBadRequest)
 			return
 		}
-		if terr := VerifyTOTP(admin.TOTPSecret, code); terr != nil {
+		if terr := s.verifyAndConsumeStepUpTOTP(r.Context(), admin.ID, admin.TOTPSecret, code); terr != nil {
 			newCount := s.stepUpFailures.Inc(ip)
 			s.audit.WriteFromRequest(r, "server_profile_qr_totp_fail",
 				FormatTarget("web_admin", admin.ID),

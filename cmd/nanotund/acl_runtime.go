@@ -448,6 +448,12 @@ func evaluateUser(snap *aclSnapshot, srcUserID, dstUserID int64, t pktTuple) str
 
 	check := func(entries []ruleEntry) {
 		for _, e := range entries {
+			// 第七轮深扫 MED:端口 deny 遇「非首片 / 截断头」这类不可判定端口的 tcp/udp 报文 → fail-closed 判 deny,
+			// 堵住分片绕过端口封锁(仅对 deny;端口 allow 不受影响,详见 rulePortIndeterminate)。
+			if rulePortIndeterminate(e, t) {
+				denyHit = true
+				return
+			}
 			if !ruleMatchesPacket(e, t) {
 				continue
 			}
@@ -481,6 +487,10 @@ func evaluateUser(snap *aclSnapshot, srcUserID, dstUserID int64, t pktTuple) str
 func evaluateExit(snap *aclSnapshot, srcUserID int64, t pktTuple) string {
 	var allowHit, denyHit bool
 	for _, e := range snap.exitBySrc[srcUserID] {
+		// 第七轮深扫 MED:端口 deny 的分片/截断绕过 → fail-closed(见 rulePortIndeterminate)。
+		if rulePortIndeterminate(e, t) {
+			return store.ACLDeny
+		}
 		if !ruleMatchesPacket(e, t) {
 			continue
 		}
@@ -491,6 +501,9 @@ func evaluateExit(snap *aclSnapshot, srcUserID int64, t pktTuple) string {
 	}
 	if !denyHit {
 		for _, e := range snap.exitWild {
+			if rulePortIndeterminate(e, t) {
+				return store.ACLDeny
+			}
 			if !ruleMatchesPacket(e, t) {
 				continue
 			}
@@ -532,6 +545,29 @@ func ruleMatchesPacket(r ruleEntry, t pktTuple) bool {
 		}
 	}
 	return true
+}
+
+// rulePortIndeterminate 判断一条**端口 deny** 规则是否因报文缺可信 L4 端口(非首片 / 截断头)而「端口维度不可判定」。
+//
+// 第七轮深扫 MED(端口 ACL 分片绕过):报文是 tcp/udp、proto 与规则兼容,但 hasL4Ports=false 时,ruleMatchesPacket
+// 会把带端口的规则判为「不命中」→ 该规则被跳过。对**端口 deny** 而言,这在 default=allow 下形成绕过:攻击者把发往
+// 被封端口的流量分片,非首片(不含端口)绕过 deny 落到 default allow。这里把这类**不可判定的端口 deny** 显式识别出来,
+// 让 evaluate* 走 fail-closed(判 deny)。
+//
+// 仅对 deny 生效:端口 allow 规则仍按「缺端口=不命中」处理。于是「没有配置任何端口 deny」的部署(纯 allow 白名单 /
+// 无端口规则)行为**零变化**,合法分片流量不受影响;只有显式配了端口 deny 的运维,才会对无法归类的 tcp/udp 分片
+// 采取更严格的丢弃姿态(可接受:这正是他们想封的方向)。
+func rulePortIndeterminate(r ruleEntry, t pktTuple) bool {
+	if r.action != store.ACLDeny || !r.hasPorts {
+		return false
+	}
+	if r.proto != "" && r.proto != t.proto {
+		return false
+	}
+	if t.proto != "tcp" && t.proto != "udp" {
+		return false // 只有 tcp/udp 才谈端口;icmp/未知 proto 不受端口 deny 约束
+	}
+	return !t.hasL4Ports
 }
 
 // parsePacketTuple 从 IP 报文解析出 dst / proto / dstPort,失败时 ok=false。
@@ -672,18 +708,16 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 	src := t.src.Unmap()
 
 	ips := c.safeClientIPs()
-	sameFamily := false
+	hasAnyVIP := false
 	for _, a := range ips {
 		pa, err := netip.ParseAddr(a.VirtualIP)
 		if err != nil {
 			continue
 		}
 		pa = pa.Unmap()
+		hasAnyVIP = true
 		if pa == src {
 			return false // (1) 源恰为本会话某 vIP → 合法
-		}
-		if pa.Is4() == src.Is4() {
-			sameFamily = true // 本会话持有同族 vIP，可作判定基准
 		}
 	}
 
@@ -697,8 +731,13 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 		return false
 	}
 
-	// (4) 普通会话 / 未批准宣告方:有同族 vIP 却无一匹配 → 伪造。
-	return sameFamily
+	// (4) 普通会话 / 未批准宣告方:源不是本会话任何 vIP。
+	//   - 本会话已分到**至少一个** vIP(任意族):其唯一合法源就是自己的 vIP(已在 (1) 命中),故此处必为伪造 → drop。
+	//     第七轮深扫 MED:此前只在「持有**同族** vIP 却不匹配」时判伪造,若本会话无该族 vIP 则放行 —— 于是仅有 v4
+	//     vIP 的客户端可随意注入任意 v6 源(反之亦然),跨族反欺骗形同虚设。改为:只要已持有任一 vIP,非自身 vIP 的
+	//     源一律判伪造(不再按族豁免),关掉跨族注入。
+	//   - 本会话**尚无任何** vIP(分配前的瞬态):无从判定,保守放行,交由后续 ACL / 出口闸处理,避免 setup 竞态误杀。
+	return hasAnyVIP
 }
 
 // vipOwner: vIP 文本 → 拥有者 userID(int64)。

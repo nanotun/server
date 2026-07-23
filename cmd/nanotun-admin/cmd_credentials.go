@@ -126,19 +126,15 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 	// 带上 "backfilled credential_id=..." 便于运维事后追溯,无需另开一条 audit。
 	priorCredID := u.CredentialID
 
-	// 第六轮深扫 HIGH:rotate 会在 resolveCredentialsPSK 里**先把新 PSK 写库**(旧 hash 即刻失效),之后才
-	// emitCredentials 输出明文。若输出注定失败(最常见、README 里就有的路径:--output 目标已存在且无 --force),
-	// 新 PSK 已入库却从未交付 → 用户现有客户端立即断连、运维手里也没有新密钥,得再 rotate 一次才能恢复。
-	// 这里在**落库前**先探测输出目标:注定 no-clobber 失败的提前报错、绝不 rotate。真正落盘仍走 os.Link 原子
-	// no-clobber(本探测与落盘间的 TOCTOU 只影响"是否提前报错",最终把关仍在落盘那道)。qr(纯 stdout)不涉及。
-	if *rotatePSK && !*forceOverwrite && strings.TrimSpace(*output) != "" {
-		writesToFile := opts.json || strings.ToLower(strings.TrimSpace(*format)) != "qr"
-		if writesToFile {
-			if _, statErr := os.Lstat(*output); statErr == nil {
-				return errors.New(opts.T("credentials.refuseOverwrite", *output))
-			} else if !os.IsNotExist(statErr) {
-				return fmt.Errorf("stat --output %s: %w", *output, statErr)
-			}
+	// 第六/七轮深扫 HIGH:rotate 会在 resolveCredentialsPSK 里**先把新 PSK 写库**(旧 hash 即刻失效),之后才
+	// emitCredentials 输出明文。任何**确定性**的输出前置失败若拖到 emit 才报,就会「PSK 已轮换、明文从未
+	// 交付」→ 用户现有客户端立即断连、运维手里也没有新密钥,得再 rotate 一次才能恢复。第六轮只堵了「--output
+	// 已存在且无 --force」这一种;本轮把所有能在落库前判定的输出前置条件统一前移(见 preflightCredentialsOutput),
+	// 尤其 `--format qr-png` 缺 --output 这种最易复现的确定性失败。真正落盘仍走 os.Link 原子 no-clobber,本探测
+	// 与落盘间的 TOCTOU 只影响「是否提前报错」,最终把关仍在落盘那道。
+	if *rotatePSK {
+		if err := preflightCredentialsOutput(*format, *output, *forceOverwrite, opts); err != nil {
+			return err
 		}
 	}
 
@@ -248,6 +244,32 @@ func resolveCredentialsPSK(
 		return "", "", 0, fmt.Errorf("ensure credential id: %w", err)
 	}
 	return supplied, credID, ts, nil
+}
+
+// preflightCredentialsOutput 在 rotate **落库前**校验所有**确定性**的输出前置条件,避免「PSK 已轮换却因
+// 输出注定失败而从未交付」。逻辑必须与 emitCredentials 的实际写盘分支保持同步:
+//   - opts.json:无论 format 一律 openProfileOutput 写 JSON(output 空则落 stdout,非空则写文件);
+//   - qr-png:必须写文件,--output 必填(缺失 → 落库后才报,正是要前移的坑);
+//   - qr(非 --json):纯终端 stdout,忽略 output;
+//   - json/url/both(默认):output 非空才写文件,否则 stdout。
+// 只做能在落库前确定的判定;真正的原子 no-clobber 仍由落盘那道(os.Link)最终把关。
+func preflightCredentialsOutput(format, output string, force bool, opts *globalOpts) error {
+	f := strings.ToLower(strings.TrimSpace(format))
+	out := strings.TrimSpace(output)
+	// qr-png 缺 --output:emitCredentials 会在落库后才 error,这里前移。opts.json 时 format 被忽略(走 JSON),不适用。
+	if !opts.json && f == "qr-png" && out == "" {
+		return errors.New(opts.T("profile.qrPngNeedsOutput"))
+	}
+	// 是否会写文件:output 非空,且不是「纯终端 qr」(qr 在非 --json 下忽略 output 走 stdout)。
+	writesToFile := out != "" && !(!opts.json && f == "qr")
+	if writesToFile && !force {
+		if _, statErr := os.Lstat(out); statErr == nil {
+			return errors.New(opts.T("credentials.refuseOverwrite", out))
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("stat --output %s: %w", out, statErr)
+		}
+	}
+	return nil
 }
 
 // emitCredentials 按 --format 写出 credentials;qr / qr-png 编码 nanotun-cred:// URL(非裸 JSON)。

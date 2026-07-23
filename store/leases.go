@@ -5,7 +5,30 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/netip"
 )
+
+// canonicalVIP 把一个 vIP 字符串规范化为 netip.Addr 的标准文本形式(IPv4 点分十进制;
+// IPv6 小写 + 压缩 + 去前导零),使「同一地址的不同书写形式」在 UNIQUE 索引 / 跨表守卫 /
+// AllUsedVIPs 已用集里判为同一个地址。空串原样返回(表示该族无 vIP);无法解析的串(理论上
+// 已被上层 netip.ParseAddr 校验挡掉)原样返回,避免规范化过程本身吞数据。
+//
+// 第七轮深扫 HIGH:此前 fixed_vip / lease 落库存的是调用方原始串(CLI 仅 ParseAddr 校验、
+// 不改写),而登录分配路径 (AllocClientIP) 用的是 netip.Addr.String() 规范式。管理员钉
+// "FD00::2"(或非压缩 "2001:db8:0:0:0:0:0:2")后,池子后续把规范式 "fd00::2" 分给别的
+// 设备 —— 字符串不相等 → devices/leases 的 UNIQUE 索引、跨表 fixed↔lease 守卫、AllUsedVIPs
+// 已用集全部认成两个不同地址 → 两台设备拿到同一 vIP → 数据面路由黑洞。在持久化的唯一入口
+// (UpsertLease / SetDeviceFixedVIP)统一规范化即根治:所有新写入与比较都在同一文本域内。
+func canonicalVIP(s string) string {
+	if s == "" {
+		return ""
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return s
+	}
+	return a.String()
+}
 
 // Lease 表示一台设备的 vIP 持久化分配。
 //
@@ -35,6 +58,9 @@ func (s *Store) GetLeaseByDevice(ctx context.Context, deviceID int64) (*Lease, e
 // 调用方传入空字符串视为「该协议下无 vIP」，并在数据库里存为 NULL（受唯一索引约束）。
 func (s *Store) UpsertLease(ctx context.Context, deviceID int64, vipV4, vipV6 string, manual bool) (*Lease, error) {
 	now := nowUnix()
+	// 第七轮深扫 HIGH:规范化后再落库 / 比较,消除同一地址不同书写形式绕过 UNIQUE / 跨表守卫的双占黑洞。
+	vipV4 = canonicalVIP(vipV4)
+	vipV6 = canonicalVIP(vipV6)
 
 	// 事务 + **写优先**(第四轮深扫 HIGH):INSERT..ON CONFLICT 先取写锁(规避 DEFERRED 事务「读后升级写」撞
 	// BUSY_SNAPSHOT),leases 自身的 vip UNIQUE(lease↔lease)冲突在此即触发。随后再做**跨表**守卫。

@@ -157,7 +157,7 @@ func TestAttemptLogin_TOTPAccount_PasswordDoesNotResetCounter(t *testing.T) {
 	if err := st.SetWebAdminTOTPSecret(ctx, a.ID, "JBSWY3DPEHPK3PXP"); err != nil {
 		t.Fatalf("set secret: %v", err)
 	}
-	if _, err := st.EnableWebAdminTOTP(ctx, a.ID, []string{"h1", "h2"}, nowUnix()); err != nil {
+	if _, err := st.EnableWebAdminTOTP(ctx, a.ID, "JBSWY3DPEHPK3PXP", []string{"h1", "h2"}, nowUnix()); err != nil {
 		t.Fatalf("enable totp: %v", err)
 	}
 

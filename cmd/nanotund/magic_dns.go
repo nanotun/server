@@ -69,6 +69,10 @@ var (
 	// magicDNSMeshOffNXCount（2026-07-19）：组网总开关 OFF 时被就地 NXDOMAIN 的**跨用户** magic 名查询数。
 	// 与数据面 meshOffDropCount 对齐口径——解析层不再给出「连不上的地址」。
 	magicDNSMeshOffNXCount atomic.Uint64
+	// magicDNSACLNXCount(第七轮深扫 MED):mesh ON 但**用户 ACL** 判定 查询方→名字目标 不可达时,被就地
+	// NXDOMAIN 的跨用户 magic 名查询数。与数据面 user-ACL drop 对齐——不解析「解析出来也连不上」的对方地址,
+	// 同时堵住「用 MagicDNS 探测 ACL 隔离对象的 vIP / 存在性」的信息泄漏。
+	magicDNSACLNXCount atomic.Uint64
 )
 
 // 会话早期「竞速窗口」TTL 钳制（2026-07-17）。
@@ -148,6 +152,8 @@ type MagicDNSStats struct {
 	InterceptDNS uint64 `json:"intercept_dns"`
 	// MeshOffNX：组网总开关 OFF 时被就地 NXDOMAIN 的跨用户 magic 名查询数（与数据面 mesh_off drop 同口径）。
 	MeshOffNX uint64 `json:"mesh_off_nxdomain"`
+	// ACLNX(第七轮深扫 MED):mesh ON 但用户 ACL 判定查询方→目标不可达而被就地 NXDOMAIN 的跨用户 magic 名查询数。
+	ACLNX uint64 `json:"acl_nxdomain"`
 }
 
 func snapshotMagicDNSStats() MagicDNSStats {
@@ -169,6 +175,7 @@ func snapshotMagicDNSStats() MagicDNSStats {
 		EarlyTTLClamp:   magicDNSEarlyClampCount.Load(),
 		InterceptDNS:    magicDNSInterceptCount.Load(),
 		MeshOffNX:       magicDNSMeshOffNXCount.Load(),
+		ACLNX:           magicDNSACLNXCount.Load(),
 	}
 }
 
@@ -384,6 +391,12 @@ func handleMagicDNSPacket(ctx context.Context, gw *gatewayState, conn *net.UDPCo
 				_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeNameError, nil, q)
 				return
 			}
+			// 第七轮深扫 MED:mesh ON 但用户 ACL 判定不可达 → 同口径 NXDOMAIN(非 A/AAAA 探测路径也一并对齐)。
+			if magicNameDeniedByACL(ctx, gw, peer, name, r.suffix) {
+				magicDNSACLNXCount.Add(1)
+				_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeNameError, nil, q)
+				return
+			}
 			if magicHostExists(ctx, gw, name, r.suffix) {
 				_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeSuccess, nil, q)
 			} else {
@@ -423,6 +436,13 @@ func handleMagicDNSPacket(ctx context.Context, gw *gatewayState, conn *net.UDPCo
 		// 跨用户查不到名字、秒得 NXDOMAIN,故障面清晰。开关恢复 ON 后立即恢复解析(读的是 ACL 快照)。
 		if magicNameDeniedByMeshOff(ctx, gw, peer, name, r.suffix) {
 			magicDNSMeshOffNXCount.Add(1)
+			_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeNameError, nil, q)
+			return
+		}
+		// 第七轮深扫 MED:mesh ON 但用户 ACL 判定 查询方→目标 不可达 → NXDOMAIN,不解析出「连不上」的对方地址,
+		// 同时堵住用 MagicDNS 探测 ACL 隔离对象 vIP / 存在性的信息泄漏(4via6 与普通 host.user 两条子路径都覆盖)。
+		if magicNameDeniedByACL(ctx, gw, peer, name, r.suffix) {
+			magicDNSACLNXCount.Add(1)
 			_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeNameError, nil, q)
 			return
 		}
@@ -622,6 +642,37 @@ func magicNameDeniedByMeshOff(ctx context.Context, gw *gatewayState, peer *net.U
 		return false
 	}
 	return dstUser != srcUser
+}
+
+// magicNameDeniedByACL(第七轮深扫 MED):mesh ON 时,若**用户 ACL** 判定 查询方→名字目标 完全不可达,
+// 就地把该跨用户 magic 名判为 NXDOMAIN——与数据面一致(能不能解析出对方地址 == 能不能连对方)。
+//
+// 动机:此前 MagicDNS 只随 mesh 总开关(magicNameDeniedByMeshOff),**不看**每用户 ACL。于是 default=deny
+// 或存在 `A→B deny` 时,A 仍能用 MagicDNS 把 B 的设备名解析成 vIP —— 探出对方 vIP / 存在性(信息泄漏),尽管
+// 数据面随后会丢包。这里把解析口径对齐到 ACL。
+//
+// 与 magicNameDeniedByMeshOff 同样的 fail-open 三兜底(拿不准不拦,绝不误伤):查询方 vIP 不在归属表 / 名字
+// 解析不出目标归属 / 快照未初始化 → 放行。判定用粗粒度 aclAllows(src,dst)(仅看 src→dst 维度,忽略 proto/port):
+// 只有当 src→dst **完全没有**放行路径(default=deny 且无 allow 例外、或显式 `A→B deny`)才拒解析;存在任何
+// allow 例外(哪怕仅某端口)则照常解析,避免把「端口级放行」误判成不可达。
+func magicNameDeniedByACL(ctx context.Context, gw *gatewayState, peer *net.UDPAddr, name, suffix string) bool {
+	snap := aclCurrent.Load()
+	if snap == nil {
+		return false
+	}
+	vip, ok := netipAddrFromUDP(peer)
+	if !ok {
+		return false
+	}
+	srcUser, ok := lookupVIPOwner(vip)
+	if !ok || srcUser == 0 {
+		return false
+	}
+	dstUser, ok := magicNameOwnerUserID(ctx, gw.store, name, suffix)
+	if !ok || dstUser == 0 || dstUser == srcUser {
+		return false
+	}
+	return !aclAllows(srcUser, dstUser)
 }
 
 // magicNameOwnerUserID 解析 magic 名的「目标归属 user」:

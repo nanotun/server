@@ -108,5 +108,8 @@ func lintSemantic(cfg *config.Config) error {
 	if err := cfg.Server.ValidateJumpHostFirewall(); err != nil {
 		return err
 	}
+	if err := cfg.Server.ValidateJumpHostProtectedPorts(); err != nil {
+		return err
+	}
 	return nil
 }

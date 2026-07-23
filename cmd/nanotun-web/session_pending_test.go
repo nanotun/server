@@ -33,9 +33,12 @@ func TestTOTPPending_BindsPasswordFingerprint(t *testing.T) {
 	r.RemoteAddr = ip + ":12345"
 	r.AddCookie(ck)
 
-	gotID, gotFp, err := sess.LookupTOTPPending(r)
+	gotID, gotFp, gotNonce, err := sess.LookupTOTPPending(r)
 	if err != nil {
 		t.Fatalf("lookup pending: %v", err)
+	}
+	if gotNonce == "" {
+		t.Fatal("pending nonce should be non-empty")
 	}
 	if gotID != 42 {
 		t.Fatalf("adminID = %d, want 42", gotID)
@@ -65,7 +68,44 @@ func TestTOTPPending_RejectsForeignIP(t *testing.T) {
 	r.RemoteAddr = "10.10.10.10:9999" // 不同 IP
 	r.AddCookie(ck)
 
-	if _, _, err := sess.LookupTOTPPending(r); err == nil {
+	if _, _, _, err := sess.LookupTOTPPending(r); err == nil {
 		t.Fatal("pending replay from a different IP should fail verification")
+	}
+}
+
+// TestTOTPPending_ServerSideSingleUse(第七轮深扫 MED):同一 pending nonce 一旦被
+// MarkPendingConsumed 标记,再次 LookupTOTPPending 即便 HMAC / IP / exp 全对也必须失败 —— 服务端一次性。
+func TestTOTPPending_ServerSideSingleUse(t *testing.T) {
+	st := newTestStore(t)
+	sess := NewSessionService(st, defaultConfig())
+
+	const ip = "203.0.113.9"
+	w := httptest.NewRecorder()
+	if err := sess.IssueTOTPPending(w, 11, ip, "somehash"); err != nil {
+		t.Fatalf("issue pending: %v", err)
+	}
+	ck := recorderCookie(t, w, pending2FACookieName)
+
+	r := httptest.NewRequest(http.MethodPost, "/login/totp", nil)
+	r.RemoteAddr = ip + ":5555"
+	r.AddCookie(ck)
+
+	_, _, nonce, err := sess.LookupTOTPPending(r)
+	if err != nil {
+		t.Fatalf("first lookup: %v", err)
+	}
+	// 首次消费应成功,二次消费应失败(并发/重放语义)。
+	if !sess.MarkPendingConsumed(nonce) {
+		t.Fatal("first MarkPendingConsumed should succeed")
+	}
+	if sess.MarkPendingConsumed(nonce) {
+		t.Fatal("second MarkPendingConsumed must fail (already consumed)")
+	}
+	// 消费后同一 cookie 再 lookup 必须被拒。
+	r2 := httptest.NewRequest(http.MethodPost, "/login/totp", nil)
+	r2.RemoteAddr = ip + ":5556"
+	r2.AddCookie(ck)
+	if _, _, _, err := sess.LookupTOTPPending(r2); err == nil {
+		t.Fatal("lookup after consume must fail (server-side single-use)")
 	}
 }

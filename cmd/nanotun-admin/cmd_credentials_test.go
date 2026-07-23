@@ -191,6 +191,29 @@ func TestCredentialsShow_RotatePreflightNoClobber(t *testing.T) {
 	}
 }
 
+// TestCredentialsShow_RotatePreflightQRPNGNeedsOutput(第七轮深扫 HIGH):rotate + --format qr-png
+// 但缺 --output —— 这是最易复现的「确定性输出失败」。必须在**落库前**报错、PSK 不被轮换,否则旧 hash
+// 已失效、新明文 QR 从未产出,用户被下线且无新密钥。第六轮的预检只覆盖「output 已存在」,不覆盖本例。
+func TestCredentialsShow_RotatePreflightQRPNGNeedsOutput(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "p.db")
+	if c, _, e := runCLI(t, db, "", "user", "create", "alice", "--psk", "init-psk"); c != 0 {
+		t.Fatalf("create alice: %s", e)
+	}
+	// rotate + qr-png + 无 --output → 应在落库前失败。
+	c, _, _ := runCLI(t, db, "",
+		"credentials", "show", "alice",
+		"--rotate-psk", "--format", "qr-png",
+	)
+	if c == 0 {
+		t.Fatal("rotate + qr-png 缺 --output 应失败")
+	}
+	// 关键:老 PSK 仍可 verify(未轮换,落库前就 fail)。
+	if c2, _, e := runCLI(t, db, "", "credentials", "show", "alice", "--psk", "init-psk", "--format", "json"); c2 != 0 {
+		t.Fatalf("qr-png 预检失败后老 PSK 应仍有效(未轮换),但 verify 失败: %s", e)
+	}
+}
+
 func TestCredentialsShow_PSKMismatch(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "p.db")
