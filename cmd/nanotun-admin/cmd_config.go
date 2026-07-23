@@ -96,5 +96,17 @@ func lintSemantic(cfg *config.Config) error {
 	if err := cfg.TUN.ValidateExitDNSRedirect(); err != nil {
 		return err
 	}
+	// 第七轮深扫 MED:补齐三处「启动期 Fatal(ExitConfigSemantic)但 lint 从前不查」的语义。
+	// 这些方法是对应 invariant 的单一事实来源(见 config/validate_startup.go),cmd/nanotund
+	// 启动路径按同一语义 fail-fast。任一非法都会让 server 拒绝启动,理应在重启前被 lint 拦下。
+	if err := cfg.Server.Pow.Validate(); err != nil {
+		return err
+	}
+	if err := cfg.Server.ValidateTLSPair(); err != nil {
+		return err
+	}
+	if err := cfg.Server.ValidateJumpHostFirewall(); err != nil {
+		return err
+	}
 	return nil
 }

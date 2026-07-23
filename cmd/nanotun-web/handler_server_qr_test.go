@@ -23,6 +23,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
@@ -894,5 +895,134 @@ func TestSettingsServerDialHostSet_ICMPSoftFail(t *testing.T) {
 	}
 	if n := countAudit(t, s, "settings_server_dial_host_set"); n != 0 {
 		t.Errorf("ICMP softfail 不应写成功 audit, got %d", n)
+	}
+}
+
+// =============================================================================
+// 10. TOTP step-up(第七轮深扫 HIGH)—— admin 已开 2FA 时,reveal 密码通过后
+//     必须再验一次当前 6 位 TOTP 码,否则密码泄露 + 会话劫持即可绕过 2FA 拿到
+//     server profile QR(含 REALITY / hy2 凭据)。见 handleServerQRReveal (5b)。
+// =============================================================================
+
+// enableTestTOTP 给内存态 admin 打开 TOTP 并返回 secret。
+// reveal handler 直接读 ctx admin 的 TOTPEnabled / TOTPSecret(不回查 store),
+// 因此测试只需在注入 ctx 前把这两个字段填上即可,无需落库。
+func enableTestTOTP(t *testing.T, a *store.WebAdmin) string {
+	t.Helper()
+	secret, err := GenerateTOTPSecret()
+	if err != nil {
+		t.Fatalf("GenerateTOTPSecret: %v", err)
+	}
+	a.TOTPSecret = secret
+	a.TOTPEnabled = true
+	return secret
+}
+
+// currentTOTPCode 用 secret 算出「当前时间步」的合法 6 位码(复用包内 helper)。
+func currentTOTPCode(t *testing.T, secret string) string {
+	t.Helper()
+	key, err := decodeTOTPSecret(secret)
+	if err != nil {
+		t.Fatalf("decodeTOTPSecret: %v", err)
+	}
+	step := uint64(time.Now().Unix() / int64(totpPeriodSec))
+	return fmt.Sprintf("%0*d", totpDigits, truncatedHOTP(key, step))
+}
+
+// 10a. 密码对 + TOTP 已开 + 未填码 → 400,不计冷却配额,绝不 reveal。
+func TestServerQRReveal_TOTPRequiredWhenEnabled(t *testing.T) {
+	s := newServerQRTestServer(t)
+	admin := createTestAdmin(t, s, "root", "GoodStrong1!Pass")
+	enableTestTOTP(t, admin)
+	_ = s.store.SetServerDialHost(t.Context(), "vpn.example.com")
+	_ = s.store.SetAdvertisedHost(t.Context(), "vpn.example.com")
+
+	// 只提交正确密码,不带 code。
+	req := httptest.NewRequest(http.MethodPost, "/server-qr/reveal",
+		strings.NewReader("password=GoodStrong1!Pass"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "10.6.0.1:1"
+	req = withAdminCtx(req, admin)
+	w := httptest.NewRecorder()
+	s.handleServerQRReveal(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("2FA 已开但未填 code,status = %d,want 400", w.Code)
+	}
+	// 空码不计入冷却(与空密码一致),避免误提交自锁。
+	if n := s.stepUpFailures.Recent("10.6.0.1"); n != 0 {
+		t.Errorf("未填 code 不应计入冷却,Recent = %d", n)
+	}
+	// 关键:密码虽对,但 2FA 未过,绝不能 reveal。
+	if n := countAudit(t, s, "server_profile_qr_show"); n != 0 {
+		t.Errorf("2FA 未通过绝不能写 _show audit, got %d", n)
+	}
+}
+
+// 10b. 密码对 + TOTP 码错 → 401 + audit `_totp_fail` + 冷却 +1。
+func TestServerQRReveal_TOTPWrongCounts(t *testing.T) {
+	s := newServerQRTestServer(t)
+	admin := createTestAdmin(t, s, "root", "GoodStrong1!Pass")
+	enableTestTOTP(t, admin)
+	_ = s.store.SetServerDialHost(t.Context(), "vpn.example.com")
+	_ = s.store.SetAdvertisedHost(t.Context(), "vpn.example.com")
+
+	req := httptest.NewRequest(http.MethodPost, "/server-qr/reveal",
+		strings.NewReader("password=GoodStrong1!Pass&code=000000"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "10.7.0.1:1"
+	req = withAdminCtx(req, admin)
+	w := httptest.NewRecorder()
+	s.handleServerQRReveal(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("TOTP 码错 status = %d,want 401", w.Code)
+	}
+	if n := countAudit(t, s, "server_profile_qr_totp_fail"); n != 1 {
+		t.Errorf("expected 1 _totp_fail audit, got %d", n)
+	}
+	if n := s.stepUpFailures.Recent("10.7.0.1"); n != 1 {
+		t.Errorf("TOTP 错应计冷却 1,实际 %d", n)
+	}
+	if n := countAudit(t, s, "server_profile_qr_show"); n != 0 {
+		t.Errorf("TOTP 错绝不能写 _show audit, got %d", n)
+	}
+}
+
+// 10c. 密码对 + TOTP 码对 → 越过 2FA 门,走到 CLI(此处 CLI 缺失 → 500 `_failed`)。
+//
+//	关键断言:走到了 build 阶段(说明 2FA 门放行),既没 _totp_fail 也没计冷却。
+func TestServerQRReveal_TOTPCorrectProceeds(t *testing.T) {
+	s := newServerQRTestServer(t)
+	s.cfg.VPNPortAdminPath = "/nonexistent/path/to/nanotun-admin"
+	s.cfg.ServerConfigPath = "/nonexistent/path/to/config.toml"
+	admin := createTestAdmin(t, s, "root", "GoodStrong1!Pass")
+	secret := enableTestTOTP(t, admin)
+	_ = s.store.SetServerDialHost(t.Context(), "vpn.example.com")
+	_ = s.store.SetAdvertisedHost(t.Context(), "vpn.example.com")
+
+	form := url.Values{}
+	form.Set("password", "GoodStrong1!Pass")
+	form.Set("code", currentTOTPCode(t, secret))
+	req := httptest.NewRequest(http.MethodPost, "/server-qr/reveal",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "10.8.0.1:1"
+	req = withAdminCtx(req, admin)
+	w := httptest.NewRecorder()
+	s.handleServerQRReveal(w, req)
+
+	// CLI 缺失 → 500 `_failed`,证明 2FA 门已放行、进入 build 阶段。
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("密码+TOTP 均对但 CLI 缺失,status = %d,want 500", w.Code)
+	}
+	if n := countAudit(t, s, "server_profile_qr_failed"); n != 1 {
+		t.Errorf("expected 1 _failed audit, got %d", n)
+	}
+	if n := countAudit(t, s, "server_profile_qr_totp_fail"); n != 0 {
+		t.Errorf("TOTP 正确不应写 _totp_fail audit, got %d", n)
+	}
+	if n := s.stepUpFailures.Recent("10.8.0.1"); n != 0 {
+		t.Errorf("密码+TOTP 均对,冷却不应递增,实际 %d", n)
 	}
 }

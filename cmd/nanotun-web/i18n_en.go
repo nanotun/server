@@ -584,7 +584,9 @@ var catEN = map[string]string{
 	"qrPwd.currentAdmin":    "Current admin",
 	"qrPwd.locked":          "Too many failures; this IP is locked for 5 minutes. Try again later, or from another device / network.",
 	"qrPwd.passwordLabel":   "Current account password",
-	"qrPwd.passwordHint":    "The same password you use to sign in to the web console; TOTP isn't required at this step. 5 failures lock the IP for 5 minutes.",
+	"qrPwd.passwordHint":    "The same password you use to sign in to the web console. 5 failures lock the IP for 5 minutes.",
+	"qrPwd.totpLabel":       "Two-factor code (TOTP)",
+	"qrPwd.totpHint":        "Enter the current 6-digit code from your authenticator app. Recovery codes are not accepted here; if you lost your device, rebuild 2FA from \"My account\" first.",
 	"qrPwd.showQr":          "Show server QR",
 
 	// ===== server qr: revealed =====
@@ -841,6 +843,9 @@ var catEN = map[string]string{
 	"serverQr.passwordRequired":      "Please enter your current password.",
 	"serverQr.passwordWrong":         "Wrong password.",
 	"serverQr.passwordWrongLocked":   "Wrong password. 5 consecutive failures, IP locked for 5 minutes.",
+	"serverQr.totpRequired":          "Please enter your two-factor (TOTP) code.",
+	"serverQr.totpWrong":             "Wrong two-factor code.",
+	"serverQr.totpWrongLocked":       "Wrong two-factor code. 5 consecutive failures, IP locked for 5 minutes.",
 	"serverQr.cliFailed":             "CLI call failed: %s",
 	"serverQr.cliEmptyURL":           "CLI returned an empty URL",
 	"serverQr.pngRenderFailed":       "Failed to render QR PNG: Medium=%s; Low=%s (URL length %d bytes, may exceed the v40-L limit of 2953)",

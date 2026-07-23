@@ -204,9 +204,45 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 		s.renderServerQRPasswordPage(w, r, msg, status)
 		return
 	}
-	// step-up 密码验证成功 → 清零本 IP 的失败计数,与登录 / handler_me(disable/regen TOTP)成功即 Reset
-	// 一致。否则「几次手误 + 一次成功」的失败计数会一直累加,穿插几次误操作即可把自己推到 stepUpMaxFailures
-	// 冷却阈值(且连累同样用 step-up 的 TOTP disable/regen),形成管理员自锁。
+
+	// (5b) 第七轮深扫 HIGH:密码通过后,若该 admin 已开启 TOTP,则强制第二因子。
+	//
+	// 背景:server profile QR 含 REALITY public_key / hy2 auth / hy2 mTLS 客户端证书,
+	// 泄露后第一层网关就被绕过。此前 step-up 只验密码 —— 一旦会话 cookie 被劫持 + 密码
+	// 泄露(钓鱼 / 复用),攻击者无需持有 TOTP 设备即可 reveal,使 admin 已开的 2FA 在
+	// 这条敏感路径上形同虚设。对齐 handler_me 的 disable/regen step-up:密码正确后再验一次
+	// **当前 6 位 TOTP 码**。刻意不接受恢复码 —— reveal 是可重复的只读操作,不该消耗珍贵的
+	// 一次性恢复码;丢了 TOTP 设备的 admin 应先去 /me 重建 2FA 再来。用 VerifyTOTP 非消费式
+	// 校验(与 regen 一致),避免烧掉登录用的 TOTP step 形成自锁式 UX;失败与错误密码同权
+	// 计入 IP 冷却配额。admin.TOTPEnabled / TOTPSecret 取自 middleware 请求初的快照(经
+	// GetWebAdmin 全列 scan 填充),对这条一次性 step-up 足够新。
+	if admin.TOTPEnabled {
+		code := strings.TrimSpace(r.FormValue("code"))
+		if code == "" {
+			// 空码不计失败配额(与空密码一致,避免误提交自锁),回渲提示补填。
+			s.renderServerQRPasswordPage(w, r, tr(r, "serverQr.totpRequired"), http.StatusBadRequest)
+			return
+		}
+		if terr := VerifyTOTP(admin.TOTPSecret, code); terr != nil {
+			newCount := s.stepUpFailures.Inc(ip)
+			s.audit.WriteFromRequest(r, "server_profile_qr_totp_fail",
+				FormatTarget("web_admin", admin.ID),
+				FormatDetail("username", admin.Username, "reason", "wrong_totp", "fail_count", newCount))
+			msg := tr(r, "serverQr.totpWrong")
+			status := http.StatusUnauthorized
+			if newCount >= stepUpMaxFailures {
+				msg = tr(r, "serverQr.totpWrongLocked")
+				status = http.StatusTooManyRequests
+			}
+			s.renderServerQRPasswordPage(w, r, msg, status)
+			return
+		}
+	}
+
+	// step-up 全部因子(密码 + 若启用则 TOTP)验证成功 → 清零本 IP 的失败计数,与登录 /
+	// handler_me(disable/regen TOTP)成功即 Reset 一致。否则「几次手误 + 一次成功」的失败
+	// 计数会一直累加,穿插几次误操作即可把自己推到 stepUpMaxFailures 冷却阈值(且连累同样用
+	// step-up 的 TOTP disable/regen),形成管理员自锁。
 	s.stepUpFailures.Reset(ip)
 
 	// (6) fork nanotun-admin profile show

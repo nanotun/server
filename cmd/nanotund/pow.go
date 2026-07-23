@@ -44,6 +44,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+
+	"github.com/nanotun/server/config"
 )
 
 // =============================================================================
@@ -51,8 +53,12 @@ import (
 // =============================================================================
 
 const (
-	powMinDifficulty = 4  // 与 旧集中式后端 / rust_vpn_client_lib_common 一致下界
-	powMaxDifficulty = 22 // 22-bit 在 M1 ~10s / iPhone ~15s / 低端 Android ~30s,封顶
+	// 难度边界别名到 config 包的单一事实来源(config.PoWMinDifficulty/PoWMaxDifficulty)。
+	// 语义不变:4=与旧集中式后端 / rust_vpn_client_lib_common 一致下界;22-bit 在 M1 ~10s /
+	// iPhone ~15s / 低端 Android ~30s 封顶。`nanotun-admin config lint` 的 PoWConfig.Validate
+	// 也据此边界预演本文件 NewPoWService 的 fail-fast,三处永不漂移。
+	powMinDifficulty = config.PoWMinDifficulty
+	powMaxDifficulty = config.PoWMaxDifficulty
 	powSaltBytes     = 16
 
 	// 签名格式版本号。明文 = "v1|cid|salt_b64|difficulty|exp"。
