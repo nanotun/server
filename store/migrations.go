@@ -201,6 +201,20 @@ func (s *Store) SettingsSet(ctx context.Context, key, value string) error {
 	if reservedSettingKeys[key] {
 		return fmt.Errorf("store: setting %q is system-managed and must not be set via SettingsSet: %w", key, ErrInvalid)
 	}
+	// 第四轮深扫 MED(store #11):对**已知**的 rate 键在通用 setter 里也套上与 CLI raw 写路径同款的校验
+	// (纵深防御)。此前只有 CLI 入口调 ValidateNonNegativeInt64Setting / ValidateRateBurstSetting,任何绕过
+	// 它直接 SettingsSet(未来的 web / SDK / 脚本)可写入负值 / 非数 / 越界 burst,读路径 settingsGetInt64
+	// 再把它静默当 0(= 不限速)或运行期把 burst 夹住 —— 「写得进却与本意不符」。此处按键分发到对应校验器。
+	switch key {
+	case settingRateDefaultUploadBPS, settingRateDefaultDownloadBPS:
+		if err := ValidateNonNegativeInt64Setting(value); err != nil {
+			return fmt.Errorf("store: set %s: %s: %w", key, err.Error(), ErrInvalid)
+		}
+	case settingRateBurstBytes:
+		if err := ValidateRateBurstSetting(value); err != nil {
+			return fmt.Errorf("store: set %s: %s: %w", key, err.Error(), ErrInvalid)
+		}
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO app_settings(key,value) VALUES(?,?)
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,

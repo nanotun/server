@@ -39,8 +39,8 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SettingsGet: %v", err)
 	}
-	if !ok || v != "27" {
-		t.Fatalf("schema_version = %q ok=%v, want \"27\" true", v, ok)
+	if !ok || v != "28" {
+		t.Fatalf("schema_version = %q ok=%v, want \"28\" true", v, ok)
 	}
 
 	// P2#7(2026-05-26):0014 把 dead table revoked_profiles 删了。这里直接走
@@ -117,7 +117,7 @@ func TestUserCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertDevice: %v", err)
 	}
-	if err := s.SetDeviceFixedVIP(ctx, dev.ID, "100.64.0.10", ""); err != nil {
+	if err := s.SetDeviceFixedVIP(ctx, dev.ID, "100.64.0.10", "", false); err != nil {
 		t.Fatalf("SetDeviceFixedVIP: %v", err)
 	}
 	gotDev, err := s.GetDevice(ctx, dev.ID)
@@ -340,7 +340,7 @@ func TestDeviceUpsertAndLease(t *testing.T) {
 
 	// 0008:fixed_vip 改 device 维度,AllUsedVIPs 也要把 devices.fixed_vip 算入。
 	// 这里测「设了 fixed_vip 但还没产生 lease 的 device,它的 fixed IP 也被视为占用」。
-	if err := s.SetDeviceFixedVIP(ctx, d2.ID, "100.64.0.99", ""); err != nil {
+	if err := s.SetDeviceFixedVIP(ctx, d2.ID, "100.64.0.99", "", false); err != nil {
 		t.Fatalf("SetDeviceFixedVIP: %v", err)
 	}
 	v4, _, err = s.AllUsedVIPs(ctx)

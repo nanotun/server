@@ -263,7 +263,7 @@ func (s *Server) handleExitAction(w http.ResponseWriter, r *http.Request) {
 			s.renderError(w, r, http.StatusNotFound, tr(r, "err.deviceNotFound"))
 			return
 		}
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+err.Error())
+		s.renderInternalError(w, r, "routes:exit_get_device", err)
 		return
 	}
 
@@ -283,7 +283,7 @@ func (s *Server) handleExitAction(w http.ResponseWriter, r *http.Request) {
 		// 禁用用户的设备连不上 server,批了就是死出口挂进所有客户端下拉(buildExitsList
 		// 连离线出口一起推)。先解禁再指定。
 		if owner, oerr := s.store.GetUser(r.Context(), d.UserID); oerr != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+oerr.Error())
+			s.renderInternalError(w, r, "routes:designate_get_owner", oerr)
 			return
 		} else if owner.DisabledAt != 0 {
 			s.renderError(w, r, http.StatusBadRequest,
@@ -293,11 +293,11 @@ func (s *Server) handleExitAction(w http.ResponseWriter, r *http.Request) {
 		// 1) 批准 0/0 + ::/0(幂等:已存在只刷 advertised_at,再置 approved)。
 		for _, cidr := range []string{util.ExitDefaultRouteV4, util.ExitDefaultRouteV6} {
 			if _, err := s.store.UpsertAdvertisedRoute(r.Context(), deviceID, cidr); err != nil {
-				s.renderError(w, r, http.StatusInternalServerError, "upsert route "+cidr+": "+err.Error())
+				s.renderInternalError(w, r, "routes:designate_upsert:"+cidr, err)
 				return
 			}
 			if err := s.store.SetRouteStatus(r.Context(), deviceID, cidr, store.RouteStatusApproved, ""); err != nil {
-				s.renderError(w, r, http.StatusInternalServerError, "approve route "+cidr+": "+err.Error())
+				s.renderInternalError(w, r, "routes:designate_approve:"+cidr, err)
 				return
 			}
 		}
@@ -328,8 +328,8 @@ func (s *Server) handleExitAction(w http.ResponseWriter, r *http.Request) {
 			}
 			if conflict != "" {
 				vipNote = tr(r, "flash.exitDesignatedVipConflict")
-			} else if err := s.store.SetDeviceFixedVIP(r.Context(), deviceID, newV4, newV6); err != nil {
-				// UNIQUE 兜底等罕见失败:同样降级,不回滚已批准的出口路由。
+			} else if err := s.store.SetDeviceFixedVIP(r.Context(), deviceID, newV4, newV6, false); err != nil {
+				// UNIQUE 兜底等罕见失败:同样降级,不回滚已批准的出口路由。force=false:冲突已在上面预检。
 				vipNote = tr(r, "flash.exitDesignatedVipFailed")
 			}
 		}
@@ -353,7 +353,7 @@ func (s *Server) handleExitAction(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(err, store.ErrNotFound):
 				// 本就没有该族出口路由,跳过。
 			default:
-				s.renderError(w, r, http.StatusInternalServerError, "delete route "+cidr+": "+err.Error())
+				s.renderInternalError(w, r, "routes:revoke_delete:"+cidr, err)
 				return
 			}
 		}
@@ -381,14 +381,14 @@ func (s *Server) handleExitAction(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(gerr, store.ErrNotFound):
 				continue // 该族没有记录,跳过
 			case gerr != nil:
-				s.renderError(w, r, http.StatusInternalServerError, "reject exit "+cidr+": "+gerr.Error())
+				s.renderInternalError(w, r, "routes:reject_get:"+cidr, gerr)
 				return
 			}
 			if cur.Status != store.RouteStatusPending {
 				continue
 			}
 			if err := s.store.SetRouteStatus(r.Context(), deviceID, cidr, store.RouteStatusRejected, reason); err != nil {
-				s.renderError(w, r, http.StatusInternalServerError, "reject exit "+cidr+": "+err.Error())
+				s.renderInternalError(w, r, "routes:reject_set:"+cidr, err)
 				return
 			}
 			rejectedN++
@@ -455,7 +455,7 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 				s.renderError(w, r, http.StatusNotFound, tr(r, "err.deviceNotFound"))
 				return
 			case gerr != nil:
-				s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+gerr.Error())
+				s.renderInternalError(w, r, "routes:approve_get_device", gerr)
 				return
 			}
 			if !store.IsExitCapablePlatform(d.Platform) {
@@ -468,7 +468,7 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 			// 路径挡了这一情形,通用 approve 端点漏掉 → 直接 POST 仍能造出死出口。
 			owner, oerr := s.store.GetUser(r.Context(), d.UserID)
 			if oerr != nil {
-				s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+oerr.Error())
+				s.renderInternalError(w, r, "routes:approve_get_owner", oerr)
 				return
 			}
 			if owner.DisabledAt != 0 {
@@ -483,7 +483,7 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 				s.renderError(w, r, http.StatusNotFound, tr(r, "err.routeNotFound"))
 				return
 			}
-			s.renderError(w, r, http.StatusInternalServerError, "approve: "+err.Error())
+			s.renderInternalError(w, r, "routes:approve_set", err)
 			return
 		}
 		s.audit.WriteFromRequest(r, "route_approve",
@@ -505,7 +505,7 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 			s.renderError(w, r, http.StatusNotFound, tr(r, "err.routeNotFound"))
 			return
 		case gerr != nil:
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+gerr.Error())
+			s.renderInternalError(w, r, "routes:reject_get_route", gerr)
 			return
 		}
 		if cur.Status != store.RouteStatusPending {
@@ -518,7 +518,7 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 				s.renderError(w, r, http.StatusNotFound, tr(r, "err.routeNotFound"))
 				return
 			}
-			s.renderError(w, r, http.StatusInternalServerError, "reject: "+err.Error())
+			s.renderInternalError(w, r, "routes:reject_set", err)
 			return
 		}
 		s.audit.WriteFromRequest(r, "route_reject",
@@ -532,7 +532,7 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 				s.renderError(w, r, http.StatusNotFound, tr(r, "err.routeNotFound"))
 				return
 			}
-			s.renderError(w, r, http.StatusInternalServerError, "delete: "+err.Error())
+			s.renderInternalError(w, r, "routes:delete", err)
 			return
 		}
 		s.audit.WriteFromRequest(r, "route_delete",

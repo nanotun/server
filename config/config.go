@@ -282,9 +282,16 @@ type MagicDNSConfig struct {
 	// 非该 suffix 域名走 Upstream 转发(若未配置 upstream → SERVFAIL)。
 	DomainSuffix string `toml:"domain_suffix,omitempty"`
 
-	// ListenPort 是 DNS UDP 端口。默认 5353(避开系统 53 / cap_net_bind 限制)。
-	// 客户端登录时收到的 DNSServersV4 会包含「TUN gateway IP:<此端口>」 —— 客户端解析栈
-	// 必须支持非 53 端口;不支持时请改回 53(需 root / setcap cap_net_bind)。
+	// ListenPort 是 DNS UDP 端口。**默认 53**(留空 / 0 时运行期取 53,见 resolveMagicDNSConfig)。
+	//
+	// 第四轮深扫 LOW(e_magicdns_doc):此注释原写"默认 5353",与运行期实际默认(53)相悖 ——
+	// P_a1_fix 早已把默认改成 53,因为客户端从 LoginResp 只拿到 DNS server 的**IP 字符串(无端口)**,
+	// OS stub resolver 永远打 :53;默认 5353 会让 server 在一个客户端根本打不到的端口上空跑 listener,
+	// 运维误以为 magic_dns 生效。server 进程已 root(TUN 需要),绑 :53 无额外成本。
+	//
+	// 想改非 53(如 5353)需显式设本字段,且自行解决"客户端 stub resolver 如何打非 53 端口"
+	// (典型:不 prepend gateway,用 dnsmasq / systemd-resolved 当转发器);此时 server 会在
+	// prepend 路径上跳过并打 Warn,避免误报"生效"。
 	ListenPort uint16 `toml:"listen_port,omitempty"`
 
 	// UpstreamV4 / UpstreamV6 是非 magic 域名的上游解析器。

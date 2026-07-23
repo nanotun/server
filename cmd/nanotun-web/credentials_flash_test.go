@@ -35,7 +35,7 @@ func TestCredFlash_StashPop_Roundtrip(t *testing.T) {
 		CredURL:     "nanotun-cred://v1?d=stub",
 		CredQRImage: "data:image/png;base64,stub",
 	}
-	tok, err := s.Stash(in)
+	tok, err := s.Stash(in, 100)
 	if err != nil {
 		t.Fatalf("Stash: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestCredFlash_StashPop_Roundtrip(t *testing.T) {
 	if s.Len() != 1 {
 		t.Fatalf("Len=%d want 1", s.Len())
 	}
-	out, err := s.Pop(tok, credentialsFlashKindUserCreated)
+	out, err := s.Pop(tok, credentialsFlashKindUserCreated, 100)
 	if err != nil {
 		t.Fatalf("Pop: %v", err)
 	}
@@ -62,48 +62,68 @@ func TestCredFlash_OneShot(t *testing.T) {
 	tok, err := s.Stash(credentialsFlashPayload{
 		Kind:   credentialsFlashKindUserResetPSK,
 		UserID: 7,
-	})
+	}, 100)
 	if err != nil {
 		t.Fatalf("Stash: %v", err)
 	}
-	if _, err := s.Pop(tok, credentialsFlashKindUserResetPSK); err != nil {
+	if _, err := s.Pop(tok, credentialsFlashKindUserResetPSK, 100); err != nil {
 		t.Fatalf("first Pop: %v", err)
 	}
 	// 第二次 Pop 必须 missing(一次性消费)。这是「刷新页面就再也看不到 PSK」
 	// 承诺的关键 — 凭证不能在 admin 浏览器后退 / 刷新时反复出现。
-	if _, err := s.Pop(tok, credentialsFlashKindUserResetPSK); err != errCredentialsFlashMissing {
+	if _, err := s.Pop(tok, credentialsFlashKindUserResetPSK, 100); err != errCredentialsFlashMissing {
 		t.Fatalf("第二次 Pop 应 missing,got %v", err)
+	}
+}
+
+// TestCredFlash_AdminBinding 锁定 d_flash_bind:token 只能被创建它的 admin 取出。
+func TestCredFlash_AdminBinding(t *testing.T) {
+	s, _ := newTestCredFlash(t)
+	tok, err := s.Stash(credentialsFlashPayload{Kind: credentialsFlashKindUserCreated, UserID: 3}, 100)
+	if err != nil {
+		t.Fatalf("Stash: %v", err)
+	}
+	// 另一个 admin(id=200)拿同一 token → missing,且 entry 被消费(阻断继续试探)。
+	if _, err := s.Pop(tok, credentialsFlashKindUserCreated, 200); err != errCredentialsFlashMissing {
+		t.Fatalf("跨 admin Pop 应 missing,got %v", err)
+	}
+	if s.Len() != 0 {
+		t.Fatalf("跨 admin Pop 应立即消费 entry,Len=%d", s.Len())
+	}
+	// 原始 admin 再取也拿不到(已被上一步删除)——符合「试一次即废」。
+	if _, err := s.Pop(tok, credentialsFlashKindUserCreated, 100); err != errCredentialsFlashMissing {
+		t.Fatalf("被跨 admin 触碰后原 admin 再取也应 missing,got %v", err)
 	}
 }
 
 func TestCredFlash_KindMismatchRejected(t *testing.T) {
 	s, _ := newTestCredFlash(t)
-	tok, _ := s.Stash(credentialsFlashPayload{Kind: credentialsFlashKindUserCreated, UserID: 1})
+	tok, _ := s.Stash(credentialsFlashPayload{Kind: credentialsFlashKindUserCreated, UserID: 1}, 100)
 	// 用错 kind 取 token —— 譬如把 user_created 的 token 拼到 reset-psk-result
 	// URL 上。**第三轮深扫 P2 收紧**:每个 POST handler 写入时 kind 固定,
 	// redirect URL 与 GET path 一对一,kind 不匹配 = referrer 泄漏后的枚举攻击,
 	// store 必须 reject **且立刻删 entry**,后续合法 kind 也再取不到(等同已消费)。
-	if _, err := s.Pop(tok, credentialsFlashKindUserResetPSK); err != errCredentialsFlashMissing {
+	if _, err := s.Pop(tok, credentialsFlashKindUserResetPSK, 100); err != errCredentialsFlashMissing {
 		t.Fatalf("kind 错配应 missing,got %v", err)
 	}
 	if s.Len() != 0 {
 		t.Fatalf("kind 错配应立即消费 entry(安全收紧),Len=%d", s.Len())
 	}
-	if _, err := s.Pop(tok, credentialsFlashKindUserCreated); err != errCredentialsFlashMissing {
+	if _, err := s.Pop(tok, credentialsFlashKindUserCreated, 100); err != errCredentialsFlashMissing {
 		t.Fatalf("kind 错配后正确 kind 再取也应 missing,got %v", err)
 	}
 }
 
 func TestCredFlash_EmptyTokenMissing(t *testing.T) {
 	s, _ := newTestCredFlash(t)
-	if _, err := s.Pop("", credentialsFlashKindUserCreated); err != errCredentialsFlashMissing {
+	if _, err := s.Pop("", credentialsFlashKindUserCreated, 100); err != errCredentialsFlashMissing {
 		t.Fatalf("空 token 应 missing,got %v", err)
 	}
 }
 
 func TestCredFlash_ExpiredEntryPruned(t *testing.T) {
 	s, _ := newTestCredFlash(t)
-	tok, err := s.Stash(credentialsFlashPayload{Kind: credentialsFlashKindUserCreated, UserID: 5})
+	tok, err := s.Stash(credentialsFlashPayload{Kind: credentialsFlashKindUserCreated, UserID: 5}, 100)
 	if err != nil {
 		t.Fatalf("Stash: %v", err)
 	}
@@ -114,7 +134,7 @@ func TestCredFlash_ExpiredEntryPruned(t *testing.T) {
 	s.entries[tok] = entry
 	s.mu.Unlock()
 
-	if _, err := s.Pop(tok, credentialsFlashKindUserCreated); err != errCredentialsFlashMissing {
+	if _, err := s.Pop(tok, credentialsFlashKindUserCreated, 100); err != errCredentialsFlashMissing {
 		t.Fatalf("过期 token 应 missing,got %v", err)
 	}
 	if s.Len() != 0 {
@@ -124,7 +144,7 @@ func TestCredFlash_ExpiredEntryPruned(t *testing.T) {
 
 func TestCredFlash_GCPrunesExpired(t *testing.T) {
 	s, _ := newTestCredFlash(t)
-	tok, _ := s.Stash(credentialsFlashPayload{Kind: credentialsFlashKindUserCreated, UserID: 9})
+	tok, _ := s.Stash(credentialsFlashPayload{Kind: credentialsFlashKindUserCreated, UserID: 9}, 100)
 	s.mu.Lock()
 	entry := s.entries[tok]
 	entry.expires = time.Now().Add(-2 * time.Minute)

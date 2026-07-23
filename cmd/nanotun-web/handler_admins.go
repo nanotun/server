@@ -31,6 +31,12 @@ func (s *Server) handleAdminList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// 第四轮深扫 MED(d_viewer_admins):列表页也要 admin 角色。此前只有 /admins/new 与各写操作 gate 了角色,
+	// GET /admins 裸奔 —— viewer 能枚举全部管理员账号(用户名、角色、启用/锁定状态、上次登录 IP/时间),
+	// 是不必要的信息暴露(viewer 定位是「只读业务视图」,不该看到管理员账户台账)。与其它 /admins 端点对齐。
+	if !s.requireAdminRole(w, r) {
+		return
+	}
 	admins, err := s.store.ListWebAdmins(r.Context())
 	if err != nil {
 		s.renderInternalError(w, r, "admins:list", err)
@@ -129,7 +135,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 				s.renderError(w, r, http.StatusNotFound, tr(r, "err.adminNotFound"))
 				return
 			}
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+err.Error())
+			s.renderInternalError(w, r, "admins:get_reset_pwd", err)
 			return
 		}
 		s.renderPage(w, r, "admin_reset_pwd.html", PageData{
@@ -154,7 +160,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 			s.renderError(w, r, http.StatusNotFound, tr(r, "err.adminNotFound"))
 			return
 		}
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+err.Error())
+		s.renderInternalError(w, r, "admins:get_action", err)
 		return
 	}
 	me := adminFromCtx(r.Context())
@@ -194,7 +200,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		}
 		hash, err := HashWebPassword(pwd)
 		if err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.hashFailed")+err.Error())
+			s.renderInternalError(w, r, "admins:hash_pwd", err)
 			return
 		}
 		if err := s.store.UpdateWebAdminPasswordHash(r.Context(), id, hash); err != nil {
@@ -281,7 +287,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 
 	case "unlock":
 		if err := s.store.ResetWebAdminLockout(r.Context(), id); err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, err.Error())
+			s.renderInternalError(w, r, "admins:unlock", err)
 			return
 		}
 		s.audit.WriteFromRequest(r, "webadmin_unlock",

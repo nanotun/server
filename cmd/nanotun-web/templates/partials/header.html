@@ -38,7 +38,8 @@
             <div class="group">{{T "nav.groupSystem"}}</div>
             <a href="/audit"   class="{{if eq .Nav.Active "audit"}}active{{end}}"><span class="ico">&#9998;</span>{{T "nav.audit"}}</a>
             <a href="/sysmon"  class="{{if eq .Nav.Active "sysmon"}}active{{end}}" title="{{T "nav.sysmonTitle"}}"><span class="ico">&#9636;</span>{{T "nav.sysmon"}}</a>
-            <a href="/admins"  class="{{if eq .Nav.Active "admins"}}active{{end}}"><span class="ico">&#9819;</span>{{T "nav.admins"}}</a>
+            {{/* d_viewer_admins:管理员台账仅 admin 可见(handler 亦 requireAdminRole 兜底);viewer 不显示入口,避免点了吃 403。 */}}
+            {{if eq .Admin.Role "admin"}}<a href="/admins"  class="{{if eq .Nav.Active "admins"}}active{{end}}"><span class="ico">&#9819;</span>{{T "nav.admins"}}</a>{{end}}
             <a href="/me"      class="{{if eq .Nav.Active "me"}}active{{end}}" title="{{T "nav.meTitle"}}"><span class="ico">&#9787;</span>{{T "nav.me"}}</a>
             <a href="/settings"class="{{if eq .Nav.Active "settings"}}active{{end}}"><span class="ico">&#9881;</span>{{T "nav.settings"}}</a>
         </nav>

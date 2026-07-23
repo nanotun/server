@@ -127,7 +127,31 @@ func preferredVIPUsable(gatewayCIDR, vip string, used map[string]bool) bool {
 	if addr == prefix.Masked().Addr().Unmap() {
 		return false // 网络地址(全 0 主机位)
 	}
+	// IPv4 定向广播地址(全 1 主机位,如 10.0.0.255/24)也必须排除(第四轮深扫 MED):AllocClientIP 从 i=2 起
+	// 扫描不会碰到广播位,但 fast-path 直接采用偏好 vIP 没这层过滤——admin 把 fixed_vip 手钉成广播地址会让该
+	// 客户端拿到广播 IP,内核对广播源地址的报文处理异常(部分栈直接丢弃),该客户端数据面不可用。
+	if bcast, ok := ipv4DirectedBroadcast(prefix); ok && addr == bcast {
+		return false
+	}
 	return true
+}
+
+// ipv4DirectedBroadcast 返回 IPv4 前缀的定向广播地址(网络地址 | 全 1 主机位)。仅对 IPv4 且掩码 < /31 有效
+// (/31、/32 无广播概念,RFC 3021)。非 IPv4 / 无广播时 ok=false。
+func ipv4DirectedBroadcast(prefix netip.Prefix) (netip.Addr, bool) {
+	network := prefix.Masked().Addr().Unmap()
+	if !network.Is4() {
+		return netip.Addr{}, false
+	}
+	bits := prefix.Bits()
+	if bits < 0 || bits >= 31 {
+		return netip.Addr{}, false
+	}
+	b := network.As4()
+	netU := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+	hostMask := uint32(0xffffffff) >> uint(bits) // 低 (32-bits) 位全 1
+	bU := netU | hostMask
+	return netip.AddrFrom4([4]byte{byte(bU >> 24), byte(bU >> 16), byte(bU >> 8), byte(bU)}), true
 }
 
 // persistDeviceLease 把本次分配到的 v4 / v6 写回 leases 表。

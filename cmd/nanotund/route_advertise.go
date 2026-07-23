@@ -248,7 +248,10 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 		// 路由(离线包本就 server 侧丢)。未批准(不在表)时不广播——待 admin 批准触发 rebuild + broadcastRoutesList。
 		inTable := deviceInSubnetRouteTable(c.deviceID)
 		// M2 豁免闸:仅当本设备确在**已批准**子网路由生效表里时,才允许它以非 vIP 源(LAN 回程)发包。
-		c.advertisedSubnetApproved.Store(inTable)
+		// c_exit_approve 子网对称项:表未加载(ptr==nil)时不改写豁免闸,保留上次已知值,避免瞬时误清。
+		if subnetRouteTableLoaded() {
+			c.advertisedSubnetApproved.Store(inTable)
+		}
 		if inTable {
 			go broadcastRoutesList(context.Background())
 		}
@@ -338,7 +341,8 @@ func broadcastRouteApproveStatusToAdvertisers(ctx context.Context) {
 				c.advertisedExitApproved.Store(approved)
 			}
 		}
-		if c.advertisedSubnetRoutes.Load() {
+		if c.advertisedSubnetRoutes.Load() && subnetRouteTableLoaded() {
+			// c_exit_approve 子网对称项:表未加载时不改写豁免闸(保留上次已知值)。
 			c.advertisedSubnetApproved.Store(deviceInSubnetRouteTable(c.deviceID))
 		}
 	}

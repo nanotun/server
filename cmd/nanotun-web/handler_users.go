@@ -188,7 +188,7 @@ func (s *Server) handleUserNew(w http.ResponseWriter, r *http.Request) {
 			CredQRImage: credQR,
 			Host:        advertisedHost,
 			ServerID:    serverID,
-		})
+		}, currentAdminID(r))
 		if err != nil {
 			// 第六轮深扫 P1#3:对称 reset-psk 的修法 — 不再 inline 渲染。
 			// create 路径有 username unique 兜底(刷新二次 POST 必然失败),但用户已经
@@ -285,7 +285,8 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 			s.renderError(w, r, http.StatusNotFound, tr(r, "err.userNotFound"))
 			return
 		}
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+err.Error())
+		// d_err_mask:内部查询错误详情进日志,页面回通用文案。
+		s.renderInternalError(w, r, "users:get_user", err)
 		return
 	}
 
@@ -390,12 +391,12 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 		}
 		psk, err := util.GeneratePSK()
 		if err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.genPskFailed")+err.Error())
+			s.renderInternalError(w, r, "users:reset_gen_psk", err)
 			return
 		}
 		hash, err := HashPSKForUser(psk)
 		if err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.pskHashFailed")+err.Error())
+			s.renderInternalError(w, r, "users:reset_hash_psk", err)
 			return
 		}
 		// P1#3(2026-05-26):走 store 共享 helper,与 CLI 完全一致 —— 内部刷
@@ -425,7 +426,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 			s.audit.WriteFromRequest(r, "user_reset_psk_failed",
 				FormatTarget("user", id),
 				FormatDetail("username", u.Username, "err", err.Error()))
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.pwChangeFailed")+err.Error())
+			s.renderInternalError(w, r, "users:rotate_psk", err)
 			return
 		}
 		_ = newCredID
@@ -435,7 +436,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 		// 拿到旧 UUID(老 user 首次 rotate 时)。
 		freshU, err := s.store.GetUser(r.Context(), id)
 		if err != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.rereadUserFailed")+err.Error())
+			s.renderInternalError(w, r, "users:reread_after_rotate", err)
 			return
 		}
 		// audit:不带明文 PSK / URL;detail = username + credential_id,与 admin CLI
@@ -462,7 +463,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 			CredQRImage: credQR,
 			Host:        advertisedHost,
 			ServerID:    serverID,
-		})
+		}, currentAdminID(r))
 		if err != nil {
 			// 第六轮深扫 P1#3:此前在 Stash 失败时直接 `s.renderUserResetPSK(...)`
 			// 把 PSK 渲染在当前 POST 响应里 —— 浏览器刷新会**重复 POST 同一表单**,
@@ -541,7 +542,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 // admin 知道这是预期行为(每次刷新都看到 PSK 反而是 bug)。
 func (s *Server) handleUserCreatedFlash(w http.ResponseWriter, r *http.Request, u *store.User) {
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	payload, err := s.credFlash.Pop(token, credentialsFlashKindUserCreated)
+	payload, err := s.credFlash.Pop(token, credentialsFlashKindUserCreated, currentAdminID(r))
 	if err != nil {
 		s.renderError(w, r, http.StatusGone,
 			tr(r, "users.credExpiredCreate"))
@@ -566,7 +567,7 @@ func (s *Server) handleUserCreatedFlash(w http.ResponseWriter, r *http.Request, 
 // 与 created 类似,但 kind = credentialsFlashKindUserResetPSK,模板用 user_psk_reset.html。
 func (s *Server) handleUserResetPSKResultFlash(w http.ResponseWriter, r *http.Request, u *store.User) {
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	payload, err := s.credFlash.Pop(token, credentialsFlashKindUserResetPSK)
+	payload, err := s.credFlash.Pop(token, credentialsFlashKindUserResetPSK, currentAdminID(r))
 	if err != nil {
 		s.renderError(w, r, http.StatusGone,
 			tr(r, "users.credExpiredReset"))

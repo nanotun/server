@@ -51,9 +51,26 @@ type NewWebAdmin struct {
 	CreatedBy    int64  // 0 → NULL
 }
 
+// webAdminUsernameExistsCI 判断是否已存在大小写不敏感同名的 web admin(排除 excludeID;create 传 0)。
+func (s *Store) webAdminUsernameExistsCI(ctx context.Context, username string, excludeID int64) (bool, error) {
+	var dummy int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM web_admins WHERE username = ? COLLATE NOCASE AND id != ? LIMIT 1`,
+		username, excludeID).Scan(&dummy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: web admin username ci check: %w", err)
+	}
+	return true, nil
+}
+
 // CreateWebAdmin 写入一行 web_admins。Username UNIQUE 冲突归一化为 ErrDuplicate。
 func (s *Store) CreateWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, error) {
-	if strings.TrimSpace(in.Username) == "" {
+	// 第四轮深扫 MED(store #4/#15):裁剪首尾空白 + 大小写不敏感去重(见 users.CreateUser 同款说明)。
+	in.Username = strings.TrimSpace(in.Username)
+	if in.Username == "" {
 		return nil, errors.New("store: empty web admin username")
 	}
 	if strings.TrimSpace(in.PasswordHash) == "" {
@@ -65,6 +82,11 @@ func (s *Store) CreateWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, 
 	}
 	if role != "admin" && role != "viewer" {
 		return nil, fmt.Errorf("store: invalid web admin role %q", in.Role)
+	}
+	if exists, err := s.webAdminUsernameExistsCI(ctx, in.Username, 0); err != nil {
+		return nil, err
+	} else if exists {
+		return nil, fmt.Errorf("store: create web admin username=%q (case-insensitive match): %w", in.Username, ErrDuplicate)
 	}
 	createdBy := nullableInt(in.CreatedBy)
 
@@ -93,7 +115,9 @@ func (s *Store) CreateWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, 
 // 这里用单条 `INSERT ... SELECT ... WHERE NOT EXISTS` —— SQLite 对写是串行化的,该语句是原子的:只有
 // 一个请求真正插入(RowsAffected=1),其余拿到 RowsAffected=0 → 返回 ErrSetupClosed,由 handler 302 /login。
 func (s *Store) CreateFirstWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, error) {
-	if strings.TrimSpace(in.Username) == "" {
+	// 首位管理员:表为空(NOT EXISTS 守门),无需 CI 去重,只裁剪首尾空白。
+	in.Username = strings.TrimSpace(in.Username)
+	if in.Username == "" {
 		return nil, errors.New("store: empty web admin username")
 	}
 	if strings.TrimSpace(in.PasswordHash) == "" {
@@ -183,12 +207,22 @@ func (s *Store) CountEnabledWebAdminsByRole(ctx context.Context, role string) (i
 	return n, nil
 }
 
-// UpdateWebAdminPasswordHash 改密(或 reset)。
+// UpdateWebAdminPasswordHash 改密(或 reset)。**原子撤销**该 admin 的全部现存 web_session。
+//
+// 第四轮深扫 MED(store #7):此前改密与「撤销旧 session」是两步分离(handler 改密后再单独调
+// DeleteWebSessionsByAdmin)。两步之间若进程崩溃 / 出错,旧密码时代签发的 cookie 仍然有效 —— 改密无法
+// 真正把攻击者踢下线。现在把 UPDATE + DELETE web_sessions 收进同一事务,改密即刻、原子地失效所有旧会话。
 func (s *Store) UpdateWebAdminPasswordHash(ctx context.Context, id int64, pwdHash string) error {
 	if strings.TrimSpace(pwdHash) == "" {
 		return errors.New("store: empty password_hash")
 	}
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin tx update web admin password: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
 		`UPDATE web_admins SET password_hash=?, failed_logins=0, locked_until=0 WHERE id=?`,
 		pwdHash, id)
 	if err != nil {
@@ -196,6 +230,12 @@ func (s *Store) UpdateWebAdminPasswordHash(ctx context.Context, id int64, pwdHas
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM web_sessions WHERE admin_id=?`, id); err != nil {
+		return fmt.Errorf("store: revoke sessions on password change: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit update web admin password: %w", err)
 	}
 	return nil
 }
@@ -281,11 +321,21 @@ func (s *Store) mutateWebAdminEnsuringAdmin(ctx context.Context, what string, mu
 	return nil
 }
 
-// SetWebAdminEnabledEnsuringAdmin 禁用(enabled=false)一个账号,但保证不会禁掉最后一个 enabled admin。
-// 仅用于 disable 语义;enable(不减少 admin 计数)继续用 SetWebAdminEnabled。
+// SetWebAdminEnabledEnsuringAdmin 禁用(enabled=false)一个账号,但保证不会禁掉最后一个 enabled admin,
+// 并在**同一事务**里撤销该 admin 的全部 web_session(第四轮深扫 MED,store #7:禁用与踢线原子化,
+// 消除「已禁用但旧 cookie 仍可用」的窗口)。仅用于 disable 语义;enable 继续用 SetWebAdminEnabled。
 func (s *Store) SetWebAdminEnabledEnsuringAdmin(ctx context.Context, id int64) error {
 	return s.mutateWebAdminEnsuringAdmin(ctx, "disable web admin", func(tx *sql.Tx) (sql.Result, error) {
-		return tx.ExecContext(ctx, `UPDATE web_admins SET enabled=0 WHERE id=?`, id)
+		res, err := tx.ExecContext(ctx, `UPDATE web_admins SET enabled=0 WHERE id=?`, id)
+		if err != nil {
+			return res, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			if _, derr := tx.ExecContext(ctx, `DELETE FROM web_sessions WHERE admin_id=?`, id); derr != nil {
+				return res, derr
+			}
+		}
+		return res, nil
 	})
 }
 
@@ -310,13 +360,18 @@ func (s *Store) SetWebAdminRoleEnsuringAdmin(ctx context.Context, id int64, role
 
 // RecordWebAdminLoginSuccess 登录成功后调用:更新 last_login + 清失败计数(含衰减用的 last_failure_at)。
 func (s *Store) RecordWebAdminLoginSuccess(ctx context.Context, id int64, ip string) error {
-	_, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE web_admins
 		    SET last_login_at=?, last_login_ip=?, failed_logins=0, locked_until=0, last_failure_at=0
 		  WHERE id=?`,
 		nowUnix(), ip, id)
 	if err != nil {
 		return fmt.Errorf("store: record web admin login success: %w", err)
+	}
+	// 第四轮深扫 LOW:未知 id → 0 行,此前静默返回 nil(看似「成功记录了成功」)。归一化为 ErrNotFound,
+	// 与其余 DAL 一致;调用方(AttemptLogin 成功路径)本就把此错吞进日志、不拦登录,行为不变但更诚实。
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -544,6 +599,10 @@ func (s *Store) TouchWebSession(ctx context.Context, id string, extendBy int64) 
 }
 
 // DeleteWebSession 主动 revoke 一条(logout)。
+//
+// 第四轮深扫 LOW:**有意**幂等——不校验 RowsAffected。logout 一个已过期 / 已被 GC / 不存在的 session
+// 应当照常成功(用户点了「退出」,目标就是「这个 cookie 不再有效」,已经不在了即达成),报 ErrNotFound
+// 只会让 handler 对着已登出的用户弹错误页,是更差的体验。故此处刻意不改为 ErrNotFound。
 func (s *Store) DeleteWebSession(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM web_sessions WHERE id=?`, id)
 	if err != nil {
@@ -558,6 +617,42 @@ func (s *Store) DeleteWebSessionsByAdmin(ctx context.Context, adminID int64) (in
 	res, err := s.db.ExecContext(ctx, `DELETE FROM web_sessions WHERE admin_id=?`, adminID)
 	if err != nil {
 		return 0, fmt.Errorf("store: delete web sessions by admin: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// PruneWebSessionsKeepingRecent 把某 admin 的活跃 session 数**封顶**到 keep 条,删掉较旧的多余项,
+// 返回删除条数(第四轮深扫 MED,d_relogin_revoke)。
+//
+// 动机:此前每次成功登录都无条件新增一条 session,从不回收旧的 —— 一个 admin 反复登录会**无界累积**
+// 有效 session。任何一条被窃 / 遗留在旧设备的 cookie 只要还在滑动窗口内就一直有效,徒增失窃面且无从
+// 收敛。登录成功后调用本函数,只保留最近 keep 条(按 created_at 新→旧,并列时用 id 兜底稳定排序),
+// 把并发会话数钉在上限内,给旧 token 一个确定的淘汰路径。keep<=0 视为 1(至少留住刚建的这条)。
+//
+// 选择「封顶」而非「登录即踢掉其它所有会话」:后者会把 admin 在其它设备的正常登录一并踢下线,体验差;
+// 封顶在限制累积的同时保留合理的多设备并发。真正要「一键踢所有」的场景走 DeleteWebSessionsByAdmin。
+func (s *Store) PruneWebSessionsKeepingRecent(ctx context.Context, adminID int64, keep int) (int64, error) {
+	if adminID <= 0 {
+		return 0, errors.New("store: bad admin id")
+	}
+	if keep <= 0 {
+		keep = 1
+	}
+	// 子查询选出「按 created_at 新→旧的前 keep 条」的 id,删掉不在其中的本 admin 会话。
+	// created_at 并列时以 id 二级排序,保证 OFFSET 边界确定、不会漏删/多删。
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM web_sessions
+		  WHERE admin_id = ?
+		    AND id NOT IN (
+		        SELECT id FROM web_sessions
+		         WHERE admin_id = ?
+		         ORDER BY created_at DESC, id DESC
+		         LIMIT ?
+		    )`,
+		adminID, adminID, keep)
+	if err != nil {
+		return 0, fmt.Errorf("store: prune web sessions keeping recent: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	return n, nil

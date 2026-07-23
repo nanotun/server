@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -131,6 +132,11 @@ func writeQRPNG(opts *globalOpts, path, url string, force bool) error {
 //     后缀,且以 0600 建文件,既防预置符号链接、又天然收紧权限。
 //   - force=false 时先 Lstat 目标,已存在(普通文件 / 符号链接 / 目录)即拒,避免误覆盖含密产物;
 //     force=true 才允许覆盖。最终 rename 不跟随目标符号链接(替换链接本身),不会经链接写到别处。
+//   - 第四轮深扫 LOW(e_writefiletight):force=false 的**落盘**也做成原子 no-clobber。此前 Lstat
+//     只是「检查那一刻」不存在,最终仍用 os.Rename —— rename(2) 会**静默覆盖**目标。若在 Lstat 与 rename
+//     之间目标被 race 建出(并发调用 / 攻击者抢建),含密产物照样被覆盖。改为 force=false 走 os.Link:
+//     link(2) 目标已存在即 EEXIST 失败,把「不存在→落盘」这步合并成一个原子操作,彻底关掉该窗口。
+//     force=true 保持 os.Rename(语义就是原子替换)。
 func writeFileTight(path string, data []byte, mode os.FileMode, force bool) error {
 	if !force {
 		if _, err := os.Lstat(path); err == nil {
@@ -164,9 +170,23 @@ func writeFileTight(path string, data []byte, mode os.FileMode, force bool) erro
 		_ = os.Remove(tmp)
 		return fmt.Errorf("close %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename %s: %w", path, err)
+	if force {
+		// 原子替换(允许覆盖):rename 覆盖目标符号链接本身,不经其写到别处。
+		if err := os.Rename(tmp, path); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("rename %s: %w", path, err)
+		}
+		return nil
 	}
+	// 原子 no-clobber(不允许覆盖):link 目标已存在返回 EEXIST —— 堵住 Lstat 与落盘之间的 TOCTOU。
+	// 成功后删掉随机临时名,只留 path 这一个硬链接(inode 权限即上面 fchmod 的 mode)。
+	if err := os.Link(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("refusing to overwrite existing %s (use --force)", path)
+		}
+		return fmt.Errorf("link %s: %w", path, err)
+	}
+	_ = os.Remove(tmp)
 	return nil
 }

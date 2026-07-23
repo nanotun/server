@@ -110,44 +110,10 @@ func (o *vpnHybridOutbound) UDP(reqAddr string) (hyserver.UDPConn, error) {
 	return &hysteriaUDPProxyConn{UDPConn: conn}, nil
 }
 
+// validateHysteriaUserConfig 现委托到 config 包的共享实现(e_config_lint):启动期与
+// `nanotun-admin config lint` 共用同一套 hy2 调优约束,避免两处规则漂移。
 func validateHysteriaUserConfig(hc *config.HysteriaConfig) error {
-	const minWindow = 16384
-	if hc.QUICInitialStreamRecvWindow != 0 && hc.QUICInitialStreamRecvWindow < minWindow {
-		return fmt.Errorf("hysteria: quic_initial_stream_recv_window 须为 0 或 ≥ %d", minWindow)
-	}
-	if hc.QUICMaxStreamRecvWindow != 0 && hc.QUICMaxStreamRecvWindow < minWindow {
-		return fmt.Errorf("hysteria: quic_max_stream_recv_window 须为 0 或 ≥ %d", minWindow)
-	}
-	if hc.QUICInitialConnRecvWindow != 0 && hc.QUICInitialConnRecvWindow < minWindow {
-		return fmt.Errorf("hysteria: quic_initial_conn_recv_window 须为 0 或 ≥ %d", minWindow)
-	}
-	if hc.QUICMaxConnRecvWindow != 0 && hc.QUICMaxConnRecvWindow < minWindow {
-		return fmt.Errorf("hysteria: quic_max_conn_recv_window 须为 0 或 ≥ %d", minWindow)
-	}
-	if hc.QUICMaxIdleTimeoutSec != 0 {
-		if hc.QUICMaxIdleTimeoutSec < 4 || hc.QUICMaxIdleTimeoutSec > 120 {
-			return fmt.Errorf("hysteria: quic_max_idle_timeout_sec 须为 0 或 4～120")
-		}
-	}
-	if hc.QUICMaxIncomingStreams != 0 && hc.QUICMaxIncomingStreams < 8 {
-		return fmt.Errorf("hysteria: quic_max_incoming_streams 须为 0 或 ≥ 8")
-	}
-	const minBps = 65536
-	if hc.BandwidthMaxTxBps != 0 && hc.BandwidthMaxTxBps < minBps {
-		return fmt.Errorf("hysteria: bandwidth_max_tx_bps 须为 0 或 ≥ %d", minBps)
-	}
-	if hc.BandwidthMaxRxBps != 0 && hc.BandwidthMaxRxBps < minBps {
-		return fmt.Errorf("hysteria: bandwidth_max_rx_bps 须为 0 或 ≥ %d", minBps)
-	}
-	if hc.UDPRelayEnabled && hc.UDPIdleTimeoutSec != 0 {
-		if hc.UDPIdleTimeoutSec < 2 || hc.UDPIdleTimeoutSec > 600 {
-			return fmt.Errorf("hysteria: udp_idle_timeout_sec 须为 0 或 2～600")
-		}
-	}
-	if hc.MTU != 0 && (hc.MTU < 1200 || hc.MTU > 9216) {
-		return fmt.Errorf("hysteria: mtu 须为 0 或 1200～9216")
-	}
-	return nil
+	return hc.ValidateTuning()
 }
 
 func buildHysteriaServerConfig(hc *config.HysteriaConfig, cert tls.Certificate, tcpOut hyserver.Outbound) (*hyserver.Config, error) {

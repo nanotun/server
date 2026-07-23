@@ -143,10 +143,35 @@ func prepareControlSocketPath(path string) error {
 	}
 	dir := filepath.Dir(path)
 	if dir != "" && dir != "." {
+		// 记录目录是否由我们新建:新建的才收紧到 0700。**不**擅自 chmod 已存在的目录——
+		// 它可能是 /run(systemd RuntimeDirectory,常 0755 root-owned)或 /tmp(1777),强改会
+		// 误伤其它服务/整机;已存在目录只做下面的 fail-closed 权限校验。Stat 与 MkdirAll 间的
+		// TOCTOU 只影响"是否 chmod",无安全后果(最终以 fail-closed 校验为准)。
+		_, statErr := os.Stat(dir)
+		createdByUs := os.IsNotExist(statErr)
 		if err := os.MkdirAll(dir, controlSocketDirMode); err != nil {
 			return fmt.Errorf("mkdir %s: %w", dir, err)
 		}
-		_ = os.Chmod(dir, controlSocketDirMode)
+		if createdByUs {
+			// 第四轮深扫 LOW(e_ctrl_dir):chmod 错误不再吞掉。新建目录必须能收紧到 0700,
+			// 否则无鉴权控制面的"父目录也受控"前提不成立 → fail-closed 拒绝启动。
+			if err := os.Chmod(dir, controlSocketDirMode); err != nil {
+				return fmt.Errorf("chmod control socket dir %s to %#o: %w", dir, controlSocketDirMode, err)
+			}
+		}
+		// fail-closed:控制面 socket 无鉴权,靠 0600 socket 文件把关;但若**父目录**可被 group/other
+		// 写入且无 sticky 位,本地非 owner 用户能 unlink 我们的 socket 再在同路径 squat 一个自己的
+		// listener —— 后续管理员 CLI 连上去就把 reload/kick/rate 等特权指令发给了攻击者的进程(路径
+		// 抢占 / 潜在中间人),或纯粹 DoS 掉管理面。这里以实测目录权限为准,不安全即拒绝启动管理面
+		// (与下方 socket 文件权限复核同口径)。
+		info, serr := os.Stat(dir)
+		if serr != nil {
+			return fmt.Errorf("stat control socket dir %s: %w", dir, serr)
+		}
+		if !controlSocketDirPermSafe(info.Mode()) {
+			return fmt.Errorf("control socket 父目录 %s 权限不安全(%s):group/other 可写且未设 sticky 位,"+
+				"拒绝在其中放置无鉴权管理面 socket(改成 owner-only 0700,或用带 sticky 的目录)", dir, info.Mode())
+		}
 	}
 	// 上次没退干净留下的 socket 文件:Listen("unix") 会因 EADDRINUSE 失败;
 	// unlink 之前先 stat 确认这是 socket(避免误删运维误放的同名文件)。
@@ -159,6 +184,18 @@ func prepareControlSocketPath(path string) error {
 		}
 	}
 	return nil
+}
+
+// controlSocketDirPermSafe 判定承载**无鉴权**控制面 socket 的父目录权限是否安全(e_ctrl_dir)。
+//
+// 允许 group/other 的 r/x —— 目录可读/可遍历本身无害,真正把关的是 socket 文件的 0600;
+// **禁止** group/other 写,除非目录设了 sticky 位(如 /tmp 的 1777):sticky 下非 owner 无法
+// unlink/rename 他人文件,socket 抢占不成立,故视为安全。
+func controlSocketDirPermSafe(m os.FileMode) bool {
+	if m&0o022 == 0 {
+		return true // group/other 均不可写
+	}
+	return m&os.ModeSticky != 0 // 有写位:仅 sticky 才安全
 }
 
 // controlSessionInfo:GET /status 返回的单条会话信息。

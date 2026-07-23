@@ -149,6 +149,17 @@ func rebuildSubnetRouteTable(ctx context.Context) {
 // deviceInSubnetRouteTable 报告该 deviceID 是否为**已批准子网路由**的宣告方（当前生效表里有其条目）。
 // 只读 atomic 快照、无 DB 查询，供 routes-list 广播门控：宣告方设备上/下线只在「确是已批准宣告方」时才重推
 // routes-list（刷新每条路由的 online），避免为无关设备频繁广播。deviceID==0 恒 false；表未构建返回 false。
+// subnetRouteTableLoaded 报告已批准子网路由表是否已完成过至少一次加载(atomic 指针非 nil)。
+//
+// 第四轮深扫 MED(c_exit_approve 的子网对称项):advertisedSubnetApproved 是 M2 豁免闸,决定一个已批准子网
+// 路由器能否以「非自身 vIP」的 LAN 回程源发包。此前它直接 Store(deviceInSubnetRouteTable(...)),而后者在
+// 表尚未加载(ptr==nil,启动初 / reload 瞬间)时返回 false —— 会把一个**其实已批准**的宣告方的豁免误清成
+// false,其合法回程流量被 connSourceSpoofed 丢弃直到下次重连。与出口侧 deviceHasApprovedExitRoute 的 (approved,ok)
+// 语义对齐:仅当表确已加载时才据其改写豁免闸,未加载则**保留上次已知值**。
+func subnetRouteTableLoaded() bool {
+	return subnetRouteTable.Load() != nil
+}
+
 func deviceInSubnetRouteTable(deviceID int64) bool {
 	if deviceID == 0 {
 		return false

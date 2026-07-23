@@ -14,9 +14,9 @@ import (
 func TestLoopbackProxyHeaderRoundTrip(t *testing.T) {
 	cases := []struct {
 		name       string
-		writeLocal bool          // true 走 LOCAL(无源)头
-		src        *net.TCPAddr  // writeLocal=false 时透传的真实源
-		wantRemote string        // 期望 readLoopbackClientAddr 后 RemoteAddr().String();空=回退底层
+		writeLocal bool         // true 走 LOCAL(无源)头
+		src        *net.TCPAddr // writeLocal=false 时透传的真实源
+		wantRemote string       // 期望 readLoopbackClientAddr 后 RemoteAddr().String();空=回退底层
 	}{
 		{
 			name:       "reality_v4_source_threaded",

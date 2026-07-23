@@ -257,7 +257,7 @@ func TestHandleRouteList_FullRender(t *testing.T) {
 			t.Fatalf("approve exit: %v", err)
 		}
 	}
-	if err := s.store.SetDeviceFixedVIP(ctx, exitDev.ID, "100.64.0.77", ""); err != nil {
+	if err := s.store.SetDeviceFixedVIP(ctx, exitDev.ID, "100.64.0.77", "", false); err != nil {
 		t.Fatalf("SetDeviceFixedVIP: %v", err)
 	}
 	// 待批出口自荐:capable(linux)与 incapable(ios)各一。

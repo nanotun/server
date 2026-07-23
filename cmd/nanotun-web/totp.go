@@ -149,13 +149,21 @@ func VerifyTOTPStep(secretBase32, code string) (int64, error) {
 		return 0, err
 	}
 	now := time.Now().Unix()
+	// 第四轮深扫 LOW:**扫完所有** skew 步再判定,不在命中处提前 return。此前 early-return 让「命中靠前时间步」
+	// 的码返回更快,泄漏时钟 skew 信息(虽非直接秘密,但恒定扫描更稳妥)。用 ConstantTimeSelect 在无数据依赖
+	// 分支的前提下记录命中步,matched 用按位或累积。窗口极小(2*skew+1 步),额外开销可忽略。
+	matched := 0
+	matchedStep := int64(0)
 	for skew := -int64(totpAllowedSkew); skew <= int64(totpAllowedSkew); skew++ {
 		t := now/int64(totpPeriodSec) + skew
 		got := truncatedHOTP(key, uint64(t))
 		expected := fmt.Sprintf("%0*d", totpDigits, got)
-		if subtle.ConstantTimeCompare([]byte(expected), []byte(code)) == 1 {
-			return t, nil
-		}
+		eq := subtle.ConstantTimeCompare([]byte(expected), []byte(code))
+		matched |= eq
+		matchedStep = int64(subtle.ConstantTimeSelect(eq, int(t), int(matchedStep)))
+	}
+	if matched == 1 {
+		return matchedStep, nil
 	}
 	return 0, ErrTOTPMismatch
 }

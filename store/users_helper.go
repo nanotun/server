@@ -20,6 +20,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -62,70 +63,67 @@ func (s *Store) RotateUserPSKAndEnsureCredential(
 	if u == nil {
 		return "", 0, fmt.Errorf("store: RotateUserPSKAndEnsureCredential: nil user")
 	}
-	now := time.Now().UTC().Unix()
-	// 第六轮深扫 P1#2:用 CAS(`WHERE id=? AND psk_hash=?`)替代无条件 UPDATE。
-	//
-	// CAS base 取 `u.PSKHash` —— caller 传进来的 user snapshot 上的 hash。
-	// 两个 admin 同时 reset-psk:
-	//   - A: GetUser → u.PSKHash="h_orig" → CAS old=h_orig new=h_A → ok(影响 1 行)
-	//   - B: GetUser → u.PSKHash="h_orig" → CAS old=h_orig new=h_B → 0 行(A 已改)
-	//     B 收 ErrPSKConcurrentRotation,caller 拒绝下发 h_B 的 QR。
-	// SQLite 单 writer 串行也满足此语义(A 的 UPDATE 已 commit,B 的 WHERE 守门生效)。
-	//
-	// **第七轮深扫 P1**:`u.PSKHash == ""` 不再退回无条件 rotate。
-	// 生产里:0001 migration `psk_hash TEXT NOT NULL` + CreateUser/Web/CLI create 都
-	// 强制非空,理论永不发生。一旦真发生(手工改库 / migration 出错),静默退回无
-	// CAS 路径会重现 P1#2 的双赢家无效 QR 行为 —— 用 "silently 退化到 race-vulnerable"
-	// 换 "比 panic 好" 不值。改成显式 error:caller 看到失败 → 排查 DB 状态。
 	if u.PSKHash == "" {
+		// 见下方历史注释:空 psk_hash 不退回无 CAS 路径,显式报错。
 		return "", 0, fmt.Errorf("store: refusing CAS-less rotate: user_id=%d has empty psk_hash "+
 			"(check DB integrity / migration)", u.ID)
 	}
-	wrote, rerr := s.RotateUserPSKCAS(ctx, u.ID, pskHash, u.PSKHash, now)
-	if rerr != nil {
-		return "", 0, rerr
+	if pskHash == "" {
+		return "", 0, errors.New("store: empty psk_hash")
 	}
-	if !wrote {
+	now := time.Now().UTC().Unix()
+
+	// 第四轮深扫 MED(store #9):把「CAS rotate + backfill credential_id」收进**同一事务**,消除此前
+	// 「rotate 成功、backfill 失败 → PSK 已变但 credential_id 仍空」的半成功态(会让客户端 QR 生成失败,
+	// 需靠下次 credentials show 自愈)。事务以 CAS UPDATE(**写**)起手,规避 DEFERRED 事务读后升级写撞
+	// BUSY_SNAPSHOT;且 SQLite 单写者串行化让并发 rotate / EnsureUserCredentialID 天然序列化——本 tx 持写锁
+	// 期间无人能插进来 backfill,故不再需要旧版那套「backfill race → 重读」的兜底分支。
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("store: rotate psk begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// CAS:仅当 DB 当前 psk_hash 仍等于 caller snapshot(u.PSKHash)时才改。0 行 = row 不存在或已被他人改写
+	// (stale view race)→ ErrPSKConcurrentRotation,caller 拒绝展示可能过期的 QR。
+	res, err := tx.ExecContext(ctx,
+		`UPDATE users SET psk_hash=?, credential_created_at=? WHERE id=? AND psk_hash=?`,
+		pskHash, now, u.ID, u.PSKHash)
+	if err != nil {
+		return "", 0, fmt.Errorf("store: rotate psk (cas): %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
 		return "", 0, ErrPSKConcurrentRotation
 	}
-	credentialID = u.CredentialID
-	if credentialID == "" {
-		// **第三轮深扫 P1-B → 第七轮深扫 P1·注释更新**:
-		//
-		// CAS 落地之前(P1-B 时代)这里防的是「两个 admin 同时 reset-psk 同一老 user」
-		// → 两边各自生成不同 UUID 调 BackfillUserCredentialID → 后写者拿 wrote=false。
-		// CAS 之后这条 race **在本函数里不会再触发** —— 多 worker 同时 reset-psk 已经
-		// 在 CAS 阶段(`RotateUserPSKCAS`)被序列化,只有 1 个 winner 进 backfill。
-		//
-		// 那么 `!wrote` 分支什么时候会触发?
-		//   1. **rotate × EnsureUserCredentialID 交叉**:本函数刚 CAS 成功还没 backfill
-		//      期间,另一个进程的 `credentials show`(EnsureUserCredentialID 入口,不走
-		//      CAS)先一步把 credential_id backfill 了 → 我们看到 wrote=false。
-		//   2. 数据修复脚本 / 手工 INSERT credential_id 抢先(极罕见运维场景)。
-		// 两种情况下 helper 必须重读 DB 拿权威 UUID,而不是吐自生未入库 UUID(否则
-		// CLI/Web 拿这条 QR 给客户端 → UUID 与 server 不匹配 → 反复换卡)。
-		credentialID = uuid.NewString()
-		wrote, berr := s.BackfillUserCredentialID(ctx, u.ID, credentialID, now)
-		if berr != nil {
-			return "", 0, berr
+
+	// 事务内重读 credential_id(权威值:含本 tx 之前已提交的任何 backfill)。空 → 生成并写入;非空 → 复用,
+	// 保证 credential_id 一经写入生命周期不变。createdAt 取 DB 值以与 UUID 同源。
+	var curCredID string
+	var curCredTS int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(credential_id,''), COALESCE(credential_created_at,0) FROM users WHERE id=?`,
+		u.ID).Scan(&curCredID, &curCredTS); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", 0, ErrNotFound
 		}
-		if !wrote {
-			reloaded, gerr := s.GetUser(ctx, u.ID)
-			if gerr != nil {
-				return "", 0, gerr
+		return "", 0, fmt.Errorf("store: read credential_id in rotate tx: %w", err)
+	}
+	if curCredID == "" {
+		curCredID = uuid.NewString()
+		curCredTS = now
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET credential_id=?, credential_created_at=? WHERE id=?`,
+			curCredID, curCredTS, u.ID); err != nil {
+			if isUniqueConstraintErr(err) {
+				return "", 0, fmt.Errorf("store: backfill credential_id (user_id=%d): %w", u.ID, ErrDuplicate)
 			}
-			if reloaded.CredentialID == "" {
-				return "", 0, fmt.Errorf("store: backfill credential_id raced but row still empty (user_id=%d)", u.ID)
-			}
-			// CAS 之后 winner 的 PSK rotate 不会被 peer 覆盖,但 credential_created_at
-			// 仍以 DB reload 为准:winner 的 rotate 写了 now,但若 EnsureUserCredentialID
-			// 在 winner 写完 PSK 之后、本 backfill 之前先 backfill,它带的 createdAt
-			// 是它 own 时钟读数(略早),DB 里就是那个 — 取 reloaded.CredentialCreatedAt
-			// 而非 now,保证 UUID 与时间戳同源。
-			return reloaded.CredentialID, reloaded.CredentialCreatedAt, nil
+			return "", 0, fmt.Errorf("store: backfill credential_id: %w", err)
 		}
 	}
-	return credentialID, now, nil
+	if err := tx.Commit(); err != nil {
+		return "", 0, fmt.Errorf("store: rotate psk commit: %w", err)
+	}
+	return curCredID, curCredTS, nil
 }
 
 // EnsureUserCredentialID 是「PSK 没变,但需要 credentials QR」的入口。

@@ -86,3 +86,43 @@ func TestConfigLint_MissingFile_Exit1(t *testing.T) {
 		t.Fatalf("文件不存在应 exit 1, got %d, stderr=%q", code, errMsg)
 	}
 }
+
+// e_config_lint:语义非法的配置(字段名都对、值不合法)以前会误报 OK。现应 exit 3。
+func TestConfigLint_SemanticInvalid_Exit3(t *testing.T) {
+	cases := map[string]string{
+		"negative_rate": `
+[server]
+listen_addr = "0.0.0.0:443"
+upload_rate = -1
+`,
+		"bad_cidr": `
+[server]
+listen_addr = "0.0.0.0:443"
+[tun]
+subnets = ["not-a-cidr"]
+`,
+		"bad_exit_mode": `
+[server]
+listen_addr = "0.0.0.0:443"
+[tun]
+exit_mode = "isolat"
+`,
+		"hy2_out_of_range": `
+[server]
+listen_addr = "0.0.0.0:443"
+[hysteria]
+password = "0123456789abcdef01"
+tls_cert_file = "/tmp/c.pem"
+tls_key_file = "/tmp/k.pem"
+mtu = 100
+`,
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			code, _, errMsg := runConfigLint(t, writeTOML(t, cfg))
+			if code != 3 {
+				t.Fatalf("语义非法配置应 exit 3, got %d, stderr=%q", code, errMsg)
+			}
+		})
+	}
+}

@@ -76,6 +76,14 @@ const (
 	maxArgonMemoryKiB uint32 = 1 * 1024 * 1024 // 1 GiB in KiB
 	maxArgonTime      uint32 = 100
 	maxArgonThreads   uint8  = 64
+
+	// argon2id 参数**下限**(第四轮深扫 MED):此前只兜上限 + 非零,一条 m=8,t=1,p=1 的 PHC 能通过校验并被
+	// verify —— 这种「合法但极弱」的哈希几乎瞬间可暴力破解,等于把 PSK 保护降级。设下限拒掉明显偏弱的参数。
+	// 取值刻意保守:nanotun 自产哈希恒为 m=65536(64 MiB)/t=2/p=4,远高于这些下限,不会误伤任何合法条目;
+	// 只挡「手改 / 恶意导入 / 老工具」写进来的弱参数。
+	minArgonMemoryKiB uint32 = 8 * 1024 // 8 MiB;低于此视为不安全的弱 argon2
+	minArgonTime      uint32 = 1
+	minArgonThreads   uint8  = 1
 )
 
 // HashPSK 接受明文 PSK，返回 PHC 风格编码后的字符串：
@@ -171,6 +179,16 @@ func DecodePSK(encoded string) (salt, hash []byte, memory, time uint32, threads 
 		return nil, nil, 0, 0, 0, err
 	}
 
+	// 第四轮深扫 HIGH:在**解码前**先按编码后长度封顶。base64 解码会一次性分配 ~3/4·len(输入) 的字节,
+	// 若 parts[3]/parts[4] 是几 MB 的巨串(手改 / 恶意导入 / DB 写坏),即便随后被 max*Bytes 拒掉,解码那一下
+	// 已经把大内存 alloc 出来了(放大攻击 / GC 压力)。EncodedLen(maxXxxBytes) 是合法值对应的最大编码长度,
+	// 超过它直接判畸形、根本不解码,把分配钉在上限内。
+	if len(parts[3]) > base64.RawStdEncoding.EncodedLen(maxSaltBytes) {
+		return nil, nil, 0, 0, 0, fmt.Errorf("auth: salt b64 too long: %d chars", len(parts[3]))
+	}
+	if len(parts[4]) > base64.RawStdEncoding.EncodedLen(maxHashBytes) {
+		return nil, nil, 0, 0, 0, fmt.Errorf("auth: hash b64 too long: %d chars", len(parts[4]))
+	}
 	salt, err = base64.RawStdEncoding.DecodeString(parts[3])
 	if err != nil {
 		return nil, nil, 0, 0, 0, fmt.Errorf("auth: decode salt: %w", err)
@@ -241,6 +259,17 @@ func parseArgonParams(s string) (memory, time uint32, threads uint8, err error) 
 	}
 	if memory == 0 || time == 0 || threads == 0 {
 		return 0, 0, 0, errors.New("auth: missing argon param")
+	}
+	// 参数**下限**(第四轮深扫 MED):拒掉「合法但极弱」的 argon 参数(见 minArgon* 说明)。放在 max 校验之后、
+	// 返回之前统一判定。nanotun 自产哈希恒高于这些下限,不会误伤。
+	if memory < minArgonMemoryKiB {
+		return 0, 0, 0, fmt.Errorf("auth: argon m=%d below floor %d KiB", memory, minArgonMemoryKiB)
+	}
+	if time < minArgonTime {
+		return 0, 0, 0, fmt.Errorf("auth: argon t=%d below floor %d", time, minArgonTime)
+	}
+	if threads < minArgonThreads {
+		return 0, 0, 0, fmt.Errorf("auth: argon p=%d below floor %d", threads, minArgonThreads)
 	}
 	return memory, time, threads, nil
 }

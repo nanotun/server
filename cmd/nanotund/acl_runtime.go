@@ -292,6 +292,11 @@ type pktTuple struct {
 	dst     netip.Addr
 	proto   string // "tcp" / "udp" / "icmp" / "icmpv6" / ""(未识别)
 	dstPort uint16 // tcp/udp 才有意义;其他 0
+	// hasL4Ports 表示 dstPort 确实来自本报文里**存在**的 L4 头(整包 / IPv4 首片的 tcp/udp)。
+	// 第四轮深扫 MED:IPv4 **非首片**(fragment offset != 0)不携带 L4 头,`p[ihl+2:ihl+4]` 是净荷字节而非端口;
+	// 截断头亦然。此时 hasL4Ports=false,带端口的规则一律视为不命中(见 ruleMatchesPacket),避免:
+	//   ① 净荷碰巧等于某放行端口 → 绕过 default-deny;② 把随机净荷当端口做出错误 allow/deny 判定。
+	hasL4Ports bool
 }
 
 // aclDropPacketDirected 是 demux 热路径上的入口:
@@ -518,6 +523,10 @@ func ruleMatchesPacket(r ruleEntry, t pktTuple) bool {
 		if t.proto != "tcp" && t.proto != "udp" {
 			return false
 		}
+		// 无可信 L4 端口(非首片 / 截断头)→ 端口维度无从判定,带端口的规则不命中(见 pktTuple.hasL4Ports)。
+		if !t.hasL4Ports {
+			return false
+		}
 		if t.dstPort < r.portLo || t.dstPort > r.portHi {
 			return false
 		}
@@ -548,19 +557,25 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 		copy(src[:], p[12:16])
 		copy(dst[:], p[16:20])
 		out := pktTuple{src: netip.AddrFrom4(src), dst: netip.AddrFrom4(dst)}
+		// 分片判定(第四轮深扫 MED):flags+fragOffset 在 p[6:8],低 13 位是 fragment offset(以 8 字节为单位)。
+		// offset != 0 = **非首片**,不含 L4 头 → 不解析端口(见 pktTuple.hasL4Ports)。首片(offset==0,含 MF=1
+		// 的分片首片与不分片整包)才携带 tcp/udp 头。
+		isNonFirstFragment := (binary.BigEndian.Uint16(p[6:8]) & 0x1fff) != 0
 		proto := p[9]
 		switch proto {
 		case 1:
 			out.proto = "icmp"
 		case 6:
 			out.proto = "tcp"
-			if len(p) >= ihl+4 {
+			if !isNonFirstFragment && len(p) >= ihl+4 {
 				out.dstPort = binary.BigEndian.Uint16(p[ihl+2 : ihl+4])
+				out.hasL4Ports = true
 			}
 		case 17:
 			out.proto = "udp"
-			if len(p) >= ihl+4 {
+			if !isNonFirstFragment && len(p) >= ihl+4 {
 				out.dstPort = binary.BigEndian.Uint16(p[ihl+2 : ihl+4])
+				out.hasL4Ports = true
 			}
 		}
 		return out, true
@@ -581,11 +596,13 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 			out.proto = "tcp"
 			if len(p) >= 40+4 {
 				out.dstPort = binary.BigEndian.Uint16(p[40+2 : 40+4])
+				out.hasL4Ports = true
 			}
 		case 17:
 			out.proto = "udp"
 			if len(p) >= 40+4 {
 				out.dstPort = binary.BigEndian.Uint16(p[40+2 : 40+4])
+				out.hasL4Ports = true
 			}
 		}
 		return out, true
@@ -662,6 +679,7 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 //     一次只几微秒~几十微秒,远低于 RWMutex 在高并发读时的争用开销。
 //   - 拷贝路径足够简单(浅拷贝 netip.Addr → int64),不需要 RCU 或更复杂的并发数据结构。
 //   - aclCurrent (ACL 快照) 已经用同样模式,保持一致风格。
+//
 // vipOwnerEntry 是 vipOwner 表的值:userID 供 ACL 反查;ownerConnID 作**注销守卫**(见 unregisterVIPOwners)。
 type vipOwnerEntry struct {
 	userID      int64

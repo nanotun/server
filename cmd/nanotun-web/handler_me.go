@@ -95,11 +95,13 @@ func (s *Server) handleMeTOTPSetup(w http.ResponseWriter, r *http.Request) {
 
 	secret, err := GenerateTOTPSecret()
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.genSecretFailed")+err.Error())
+		// 第四轮深扫 MED(d_err_mask):内部错误详情只进服务端日志,页面回通用文案,不向(已登录但可能是
+		// viewer 角色的)用户回显 err.Error()。下同。
+		s.renderInternalError(w, r, "me:totp_gen_secret", err)
 		return
 	}
 	if err := s.store.SetWebAdminTOTPSecret(r.Context(), admin.ID, secret); err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.saveSecretFailed")+err.Error())
+		s.renderInternalError(w, r, "me:totp_save_secret", err)
 		return
 	}
 	host := r.Host
@@ -110,7 +112,7 @@ func (s *Server) handleMeTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	uri := BuildOtpauthURI(secret, account)
 	png, err := RenderTOTPQRCodePNG(uri)
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.renderQrFailed")+err.Error())
+		s.renderInternalError(w, r, "me:totp_render_qr", err)
 		return
 	}
 	s.audit.WriteFromRequest(r, "totp_setup_start", FormatTarget("web_admin", admin.ID), "")
@@ -130,8 +132,8 @@ func (s *Server) handleMeTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	//
 	// 在这里显式 EnsureCSRFToken(复用现有 cookie 或新签),写到 PageData.CSRFToken
 	// 让模板能拿到正确值。这个模式应当用于所有「POST 之后又渲染含 form 的页面」
-	// 的 handler;handleMeTOTPEnable 渲染恢复码页是个静态展示页(不含再次提交的
-	// form,只有 GET 链接回 /me),所以那条路径不受影响。
+	// 的 handler;enable / regen 恢复码页已改走 PRG(POST 只 303,GET /me/totp/codes 才渲染,
+	// 见 d_recovery_prg),那条路径由 GET 中间件正常注入 csrf,不受本问题影响。
 	tok, _ := s.sess.EnsureCSRFToken(r, w)
 
 	s.renderPage(w, r, "me_totp_setup.html", PageData{
@@ -190,25 +192,72 @@ func (s *Server) handleMeTOTPEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	plain, hashes, err := GenerateRecoveryCodes()
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.genRecoveryFailed")+err.Error())
+		s.renderInternalError(w, r, "me:totp_gen_recovery", err)
 		return
 	}
 	n, err := s.store.EnableWebAdminTOTP(r.Context(), admin.ID, hashes, time.Now().Unix())
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.enableFailed")+err.Error())
+		s.renderInternalError(w, r, "me:totp_enable", err)
 		return
 	}
 	s.audit.WriteFromRequest(r, "totp_enable",
 		FormatTarget("web_admin", admin.ID),
 		FormatDetail("recovery_codes", n))
 
-	// 一次性展示恢复码,刷新就再也看不到了。模板里给"我已保存"按钮 → /me。
+	// 第四轮深扫 MED(d_recovery_prg):不再在本 POST 响应里直接渲染明文码。stash 进一次性 flash(绑定当前
+	// admin)后 303 到 GET /me/totp/codes?token=... —— 刷新 / 后退只 GET,不会重发 POST;明文码只在一次 GET
+	// 里出现,不落浏览器 POST 历史。stash 失败(crypto/rand 故障,极罕见)时 TOTP 已启用,引导用户去 regen。
+	s.redirectRecoveryCodesFlash(w, r, admin, plain, true, "totp_enable")
+}
+
+// redirectRecoveryCodesFlash 把明文恢复码 stash 进一次性 flash(绑定当前 admin)并 303 到 GET /me/totp/codes。
+// firstTime 区分「启用首发」与「重刷」文案;auditAction 仅用于 stash 失败时的审计打点。
+func (s *Server) redirectRecoveryCodesFlash(w http.ResponseWriter, r *http.Request, admin *store.WebAdmin, codes []string, firstTime bool, auditAction string) {
+	token, err := s.credFlash.Stash(credentialsFlashPayload{
+		Kind:          credentialsFlashKindRecoveryCodes,
+		UserID:        admin.ID, // 复用字段承载 admin id,便于排错;真正的绑定由 Stash 的 adminID 参数完成
+		Username:      admin.Username,
+		RecoveryCodes: strings.Join(codes, "\n"),
+		FirstTime:     firstTime,
+	}, admin.ID)
+	if err != nil {
+		s.audit.WriteFromRequest(r, auditAction+"_stash_failed",
+			FormatTarget("web_admin", admin.ID), FormatDetail("err", err.Error()))
+		s.renderInternalError(w, r, "me:recovery_codes_stash", err)
+		return
+	}
+	http.Redirect(w, r, "/me/totp/codes?token="+token, http.StatusSeeOther)
+}
+
+// handleMeTOTPCodesFlash:GET /me/totp/codes?token=... — 一次性消费 flash 里的恢复码明文并渲染。
+// token 缺失 / 过期 / 已消费 / 非本人 → 410 Gone(与 credentials 一次性页同语义)。
+func (s *Server) handleMeTOTPCodesFlash(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	admin := adminFromCtx(r.Context())
+	if admin == nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	payload, err := s.credFlash.Pop(token, credentialsFlashKindRecoveryCodes, admin.ID)
+	if err != nil {
+		s.renderError(w, r, http.StatusGone, tr(r, "me.recoveryCodesExpired"))
+		return
+	}
+	title := "page.meTotpCodesRegen.title"
+	if payload.FirstTime {
+		title = "page.meTotpCodesEnable.title"
+	}
 	s.renderPage(w, r, "me_totp_codes.html", PageData{
-		Title: tr(r, "page.meTotpCodesEnable.title"),
+		Title: tr(r, title),
 		Admin: admin,
 		Data: map[string]any{
-			"Codes":     plain,
-			"FirstTime": true,
+			"Codes":     strings.Split(payload.RecoveryCodes, "\n"),
+			"FirstTime": payload.FirstTime,
 		},
 		Nav: NavContext{Active: "me"},
 	})
@@ -276,7 +325,7 @@ func (s *Server) handleMeTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.MarkRecoveryCodeUsed(r.Context(), recoveryID, clientIP(r), time.Now().Unix())
 	}
 	if err := s.store.DisableWebAdminTOTP(r.Context(), admin.ID); err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.closeFailed")+err.Error())
+		s.renderInternalError(w, r, "me:totp_disable", err)
 		return
 	}
 	s.audit.WriteFromRequest(r, "totp_disable",
@@ -336,25 +385,19 @@ func (s *Server) handleMeTOTPRegen(w http.ResponseWriter, r *http.Request) {
 	s.stepUpFailures.Reset(ip)
 	plain, hashes, err := GenerateRecoveryCodes()
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.genRecoveryFailed")+err.Error())
+		s.renderInternalError(w, r, "me:totp_regen_gen", err)
 		return
 	}
 	if err := s.store.RegenerateRecoveryCodes(r.Context(), admin.ID, hashes, time.Now().Unix()); err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.saveRecoveryFailed")+err.Error())
+		s.renderInternalError(w, r, "me:totp_regen_save", err)
 		return
 	}
 	s.audit.WriteFromRequest(r, "totp_regen_codes",
 		FormatTarget("web_admin", admin.ID),
 		FormatDetail("count", len(plain)))
-	s.renderPage(w, r, "me_totp_codes.html", PageData{
-		Title: tr(r, "page.meTotpCodesRegen.title"),
-		Admin: admin,
-		Data: map[string]any{
-			"Codes":     plain,
-			"FirstTime": false,
-		},
-		Nav: NavContext{Active: "me"},
-	})
+	// d_recovery_prg:与 enable 路径一致走 PRG,不在 POST 响应里渲染明文码(重刷路径尤其重要——
+	// 刷新重发 POST 会再作废旧码刷新码)。
+	s.redirectRecoveryCodesFlash(w, r, admin, plain, false, "totp_regen_codes")
 }
 
 // handleMeAction:/me/totp/* dispatcher;只接收 POST。
@@ -374,6 +417,9 @@ func (s *Server) handleMeAction(w http.ResponseWriter, r *http.Request) {
 		s.handleMeTOTPDisable(w, r)
 	case "regen-codes":
 		s.handleMeTOTPRegen(w, r)
+	case "codes":
+		// d_recovery_prg:一次性恢复码展示页(GET,PRG 的 G)。
+		s.handleMeTOTPCodesFlash(w, r)
 	default:
 		s.renderError(w, r, http.StatusNotFound, tr(r, "err.unknownTotpAction", segs[2]))
 	}

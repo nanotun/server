@@ -485,27 +485,49 @@ func ParseLoginReqLinkPayload(data []byte) (*LoginReq, error) {
 
 // ValidIPPacket 校验负载是否为合理 IPv4/IPv6 数据报（从首字节版本与长度判断）
 func ValidIPPacket(p []byte) bool {
+	_, ok := IPPacketTotalLen(p)
+	return ok
+}
+
+// IPPacketTotalLen 返回 IP 报文头部**声明**的总长度(IPv4 Total Length / IPv6 40+PayloadLength),并报告
+// p 是否为合理 IP 报文(与 ValidIPPacket 同一判定)。ok=false 时 total 无意义。
+func IPPacketTotalLen(p []byte) (total int, ok bool) {
 	if len(p) < 1 {
-		return false
+		return 0, false
 	}
-	ver := p[0] >> 4
-	switch ver {
+	switch p[0] >> 4 {
 	case 4:
 		if len(p) < 20 {
-			return false
+			return 0, false
 		}
-		total := int(binary.BigEndian.Uint16(p[2:4]))
-		return total >= 20 && total <= len(p)
+		t := int(binary.BigEndian.Uint16(p[2:4]))
+		if t < 20 || t > len(p) {
+			return 0, false
+		}
+		return t, true
 	case 6:
 		if len(p) < 40 {
-			return false
+			return 0, false
 		}
-		pl := int(binary.BigEndian.Uint16(p[4:6]))
-		total := 40 + pl
-		return pl >= 0 && total <= len(p)
+		t := 40 + int(binary.BigEndian.Uint16(p[4:6]))
+		if t > len(p) {
+			return 0, false
+		}
+		return t, true
 	default:
-		return false
+		return 0, false
 	}
+}
+
+// TrimIPPacketToTotalLen 把 p 截到其 IP 头声明的总长度,剥掉尾部多余字节——第四轮深扫 LOW:合法 IP 报文之后
+// 可能被追加以太填充或**攻击者的隐蔽数据**,而 ValidIPPacket 只要求 total<=len(p)(允许尾随)。截断后下游
+// ACL 判定 / 源校验 / 出口 NAT 转发 / TUN 写都只处理真实报文,不把尾随字节转发上公网或投给 mesh 对端。
+// 非法 / 无需截断时原样返回(交由调用方先行的 ValidIPPacket 兜底)。
+func TrimIPPacketToTotalLen(p []byte) []byte {
+	if total, ok := IPPacketTotalLen(p); ok && total < len(p) {
+		return p[:total]
+	}
+	return p
 }
 
 // ParseLoginRespLinkPayload 解析 LinkTypeLoginResp 的 JSON

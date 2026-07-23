@@ -385,7 +385,7 @@ func (s *Server) handleSettingsRateSet(w http.ResponseWriter, r *http.Request) {
 	old, _ := s.store.GetRateDefaults(r.Context())
 	if err := s.store.SetRateDefaults(r.Context(),
 		store.RateDefaults{UploadBPS: upBPS, DownloadBPS: downBPS, BurstBytes: burstBytes}); err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.saveFailed")+err.Error())
+		s.renderInternalError(w, r, "settings:set_rate_defaults", err)
 		return
 	}
 	s.audit.WriteFromRequest(r, "settings_rate_default_set", "",
@@ -475,7 +475,7 @@ func (s *Server) handleRuntimeMeshToggle(w http.ResponseWriter, r *http.Request)
 	default:
 		// 无显式 to → 依赖 current 取反。读失败则不猜(防误开),直接报错让用户重试。
 		if cerr != nil {
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+cerr.Error())
+			s.renderInternalError(w, r, "mesh_toggle:read_current", cerr)
 			return
 		}
 		target = !current
@@ -483,7 +483,7 @@ func (s *Server) handleRuntimeMeshToggle(w http.ResponseWriter, r *http.Request)
 	if err := s.store.SetMeshEnabled(r.Context(), target); err != nil {
 		s.audit.WriteFromRequest(r, "mesh_toggle_fail", "",
 			FormatDetail("from", current, "to", target, "err", err.Error()))
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.saveMeshFailed")+err.Error())
+		s.renderInternalError(w, r, "mesh_toggle:set_enabled", err)
 		return
 	}
 	// 同步 reload:拉的是隔离总闸,必须当场确认数据面已切换;失败不回滚 DB(管理员意图已明确),

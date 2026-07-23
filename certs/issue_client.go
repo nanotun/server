@@ -65,6 +65,21 @@ func IssueClientCert(caCertPEM, caKeyPEM, commonName string, validDays int) (*Is
 	if !caCert.IsCA {
 		return nil, errors.New("CA 证书缺少 CA:TRUE（basicConstraints）")
 	}
+	// 第四轮深扫 MED:若 CA 证书带了 KeyUsage 扩展,必须包含 keyCertSign;否则它根本没被授权签发证书,用它签出的
+	// 客户端证书会被严格校验方(RFC 5280)拒绝(建链失败),等到运维部署时才发现。KeyUsage==0 = 未声明该扩展,
+	// 按 X.509 惯例视为不限,放行(与既有仅 IsCA 的宽松度一致)。
+	if caCert.KeyUsage != 0 && caCert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return nil, errors.New("CA 证书 KeyUsage 缺少 keyCertSign（无签发证书权限）")
+	}
+	// 拒绝**已过期 / 尚未生效**的 CA:用它签出的客户端证书链在校验时必然失败(签发者证书本身无效)。及早报错
+	// 好过让运维拿到一张「客户端一连就被拒」的 profile。
+	now := time.Now().UTC()
+	if now.After(caCert.NotAfter) {
+		return nil, fmt.Errorf("CA 证书已过期(NotAfter=%s)", caCert.NotAfter.Format(time.RFC3339))
+	}
+	if now.Before(caCert.NotBefore) {
+		return nil, fmt.Errorf("CA 证书尚未生效(NotBefore=%s)", caCert.NotBefore.Format(time.RFC3339))
+	}
 
 	caKey, err := parsePrivateKeyPEM(caKeyPEM)
 	if err != nil {
@@ -81,7 +96,12 @@ func IssueClientCert(caCertPEM, caKeyPEM, commonName string, validDays int) (*Is
 		return nil, err
 	}
 
-	now := time.Now().UTC()
+	notAfter := now.Add(time.Duration(validDays) * 24 * time.Hour)
+	// 把叶子证书有效期**夹到 CA 有效期以内**(第四轮深扫 MED):若签出的客户端证书 NotAfter 超过 CA 的 NotAfter,
+	// CA 过期后这张仍「未过期」的客户端证书也会因链上 CA 失效而被拒——徒增困惑。夹住后二者同进退,语义清晰。
+	if notAfter.After(caCert.NotAfter) {
+		notAfter = caCert.NotAfter
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
@@ -89,7 +109,7 @@ func IssueClientCert(caCertPEM, caKeyPEM, commonName string, validDays int) (*Is
 			Organization: []string{"nanotun-client"},
 		},
 		NotBefore: now.Add(-time.Hour),
-		NotAfter:  now.Add(time.Duration(validDays) * 24 * time.Hour),
+		NotAfter:  notAfter,
 		// Ed25519 只能签名，去掉 KeyEncipherment（TLS 1.3 客户端认证只需 DigitalSignature）。
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},

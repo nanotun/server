@@ -46,7 +46,7 @@ func TestResolveDialTarget_NodeNoDrift(t *testing.T) {
 	setGlobalContextForTest(t)
 	gw := newRouteTestGateway(t)
 	_, deviceID := mustCreateUserAndDevice(t, gw, "alice")
-	if err := gw.store.SetDeviceFixedVIP(t.Context(), deviceID, "10.201.0.6", ""); err != nil {
+	if err := gw.store.SetDeviceFixedVIP(t.Context(), deviceID, "10.201.0.6", "", false); err != nil {
 		t.Fatal(err)
 	}
 	const uuid = "11111111-1111-4111-8111-111111111111"
@@ -64,7 +64,7 @@ func TestResolveDialTarget_NodeDriftUsesCurrent(t *testing.T) {
 	setGlobalContextForTest(t)
 	gw := newRouteTestGateway(t)
 	_, deviceID := mustCreateUserAndDevice(t, gw, "alice")
-	if err := gw.store.SetDeviceFixedVIP(t.Context(), deviceID, "10.201.0.9", ""); err != nil { // 当前是 .9
+	if err := gw.store.SetDeviceFixedVIP(t.Context(), deviceID, "10.201.0.9", "", false); err != nil { // 当前是 .9
 		t.Fatal(err)
 	}
 	const uuid = "11111111-1111-4111-8111-111111111111"

@@ -144,6 +144,12 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 	}
 
 	ok, verr := VerifyWebPassword(ctx, password, a.PasswordHash)
+	if verr != nil {
+		// 第四轮深扫 MED:存储 password_hash 畸形(手改库 / 老迁移 / 损坏)时,VerifyPSK 在 DecodePSK 阶段就
+		// 快速返错(**不跑 argon2**),时序明显快于正常「密码错」路径 → 泄漏「此账号 hash 异常」。补跑一次 decoy
+		// verify 对齐耗时,再按普通登录失败处理(与 VPN 侧 auth.VerifyLogin 的畸形 hash 分支一致)。
+		_, _ = VerifyWebPassword(ctx, password, decoyWebHash())
+	}
 	if verr != nil || !ok {
 		_, lockUntil, _ := st.RecordWebAdminLoginFailure(ctx, a.ID,
 			cfg.MaxLoginFailures, cfg.LockoutSeconds)
@@ -176,6 +182,7 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 //   - 天然**无数据竞争**——此前用惰性写 `decoyWebHashCached string` 存在良性 data race(go test -race 报警);
 //   - 也不会像「sync.Once + 随机生成」那样一旦首次 entropy 抖动失败就永久退化为无 timing 防护
 //     (与 nanotun/auth 侧把 decoy 改成固定值同一思路)。
+//
 // decoy 不保护任何真实秘密,只需触发等价耗时的 argon2 计算,故固定盐无碍。
 var decoyWebHashCached = fallbackDecoy()
 
@@ -192,11 +199,12 @@ func fallbackDecoy() string {
 }
 
 // ConstantTimeStringEqual 暴露给 csrf / session id 比较用。
+//
+// 第四轮深扫 LOW:此前手写「长度不等就 ConstantTimeCompare(a, a)」的分支其实是**多余且误导**的——
+// 它拿 a 和自己比,恒返回 1(被丢弃),耗时还随 len(a) 变化,并没有真正掩盖长度差。crypto/subtle 的
+// ConstantTimeCompare 本身已保证:长度不匹配立即返回 0,且耗时只与输入长度有关、与内容无关(这正是
+// 恒定时间比较对「长度非机密」的标准约定;session/CSRF token 均为定长,长度本就不是秘密)。直接委托它,
+// 语义等价而更清晰。
 func ConstantTimeStringEqual(a, b string) bool {
-	if len(a) != len(b) {
-		// 长度不等仍跑一次比较,避免长度泄露 timing。
-		_ = subtle.ConstantTimeCompare([]byte(a), []byte(a))
-		return false
-	}
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

@@ -38,6 +38,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -238,45 +239,65 @@ func NewPoWService(
 	if failures == nil {
 		failures = NewIPFailureTracker()
 	}
-	// 取值守卫:区分两种语义 —
-	//   - **零值 / 未配置** → 用业务推荐默认(8/14/2/22/300),跟 config.go 注释承诺
-	//     "开箱即用"对齐;
-	//   - **非法值**(负数 / 超过 powMinDifficulty..powMaxDifficulty 范围)→ 夹回合法区间。
+	// 取值守卫,三种语义(第四轮深扫 LOW,e_pow_cfg):
+	//   - **零值 / 未配置** → 用业务推荐默认(8/14/2/22/300),跟 config.go 注释承诺"开箱即用"对齐;
+	//   - **显式非法值**(负数 / 正但越出 [powMinDifficulty, powMaxDifficulty] / 顺序倒置)→ **fail-fast 返回
+	//     error**,由 main 走 util.FatalExit(ExitConfigSemantic) 拒绝启动;
+	//   - 不再"静默夹断":之前把 base_difficulty=40 悄悄夹到 26、ramp=2 夹到 base、ceiling<ramp 抬到 ramp,
+	//     运维以为按自己写的难度在跑,实际是被改写过的值 —— 安全参数被静默篡改比直接报错更危险。
 	//
-	// 重要:之前的实现把零值跟非法值合并处理,导致 [server.pow] 段未配时
-	// base/ramp/ceiling 全被夹到 4(powMinDifficulty),PoW 实际近乎完全无效。
-	// round-3 deep scan 发现并修复(P1)。
+	// 历史:round-3 deep scan 修过「零值被误当非法夹到 4 导致 PoW 近乎失效」;本轮把剩下的"非法即夹断"
+	// 也改成"非法即报错",零值→默认的语义保持不变。
+	var perrs []string
 	if failuresEnable < 0 {
-		// failuresEnable=0 是合法语义("从第 1 次失败就 ramp"),保留;
-		// 仅拒负数。
-		failuresEnable = 0
+		// failuresEnable=0 合法("从第 1 次失败就 ramp");仅负数非法。
+		perrs = append(perrs, fmt.Sprintf("[server.pow].failures_enable=%d 不能为负(0=从第 1 次失败即 ramp)", failuresEnable))
 	}
-	if baseDifficulty <= 0 {
+	// 各难度字段:==0 视作未配 → 用默认;其余(含负数)必须落在 [powMinDifficulty, powMaxDifficulty]。
+	if baseDifficulty == 0 {
 		baseDifficulty = 8 // 业务推荐默认,~5ms M1 客户端
-	} else if baseDifficulty < powMinDifficulty {
-		baseDifficulty = powMinDifficulty
-	} else if baseDifficulty > powMaxDifficulty {
-		baseDifficulty = powMaxDifficulty
+	} else if baseDifficulty < powMinDifficulty || baseDifficulty > powMaxDifficulty {
+		perrs = append(perrs, fmt.Sprintf("[server.pow].base_difficulty=%d 越界(须 %d..%d;0=用默认 8)",
+			baseDifficulty, powMinDifficulty, powMaxDifficulty))
 	}
-	if rampDifficulty <= 0 {
+	if rampDifficulty == 0 {
 		rampDifficulty = 14 // 业务推荐默认,~50ms 跳档
-	} else if rampDifficulty < baseDifficulty {
-		rampDifficulty = baseDifficulty
-	} else if rampDifficulty > powMaxDifficulty {
-		rampDifficulty = powMaxDifficulty
+	} else if rampDifficulty < powMinDifficulty || rampDifficulty > powMaxDifficulty {
+		perrs = append(perrs, fmt.Sprintf("[server.pow].ramp_difficulty=%d 越界(须 %d..%d;0=用默认 14)",
+			rampDifficulty, powMinDifficulty, powMaxDifficulty))
 	}
-	if stepPerFailure <= 0 {
+	if stepPerFailure == 0 {
 		stepPerFailure = 2
+	} else if stepPerFailure < 0 {
+		perrs = append(perrs, fmt.Sprintf("[server.pow].step_per_failure=%d 不能为负(0=用默认 2)", stepPerFailure))
 	}
-	if adaptiveCeiling <= 0 {
+	if adaptiveCeiling == 0 {
 		adaptiveCeiling = 22 // 业务推荐默认,~10s 封顶
-	} else if adaptiveCeiling < rampDifficulty {
-		adaptiveCeiling = rampDifficulty
-	} else if adaptiveCeiling > powMaxDifficulty {
-		adaptiveCeiling = powMaxDifficulty
+	} else if adaptiveCeiling < powMinDifficulty || adaptiveCeiling > powMaxDifficulty {
+		perrs = append(perrs, fmt.Sprintf("[server.pow].adaptive_ceiling=%d 越界(须 %d..%d;0=用默认 22)",
+			adaptiveCeiling, powMinDifficulty, powMaxDifficulty))
 	}
-	if ttlSec <= 0 {
+	if ttlSec == 0 {
 		ttlSec = 300
+	} else if ttlSec < 0 {
+		perrs = append(perrs, fmt.Sprintf("[server.pow].ttl_sec=%d 不能为负(0=用默认 300)", ttlSec))
+	}
+	// 区间错误先行返回,避免用被污染的值再做顺序校验产生二次误导。
+	if len(perrs) > 0 {
+		return nil, fmt.Errorf("pow: 配置非法:\n  - %s", strings.Join(perrs, "\n  - "))
+	}
+	// 顺序约束(在已解析出的值上):base ≤ ramp ≤ ceiling。倒置意味着"失败后难度反而更低",
+	// 让自适应升级失效 —— 同样 fail-fast 而非悄悄抬高。
+	if rampDifficulty < baseDifficulty {
+		perrs = append(perrs, fmt.Sprintf("[server.pow].ramp_difficulty(%d) 必须 ≥ base_difficulty(%d)",
+			rampDifficulty, baseDifficulty))
+	}
+	if adaptiveCeiling < rampDifficulty {
+		perrs = append(perrs, fmt.Sprintf("[server.pow].adaptive_ceiling(%d) 必须 ≥ ramp_difficulty(%d)",
+			adaptiveCeiling, rampDifficulty))
+	}
+	if len(perrs) > 0 {
+		return nil, fmt.Errorf("pow: 配置非法:\n  - %s", strings.Join(perrs, "\n  - "))
 	}
 	return &PoWService{
 		hmacKey:         key,

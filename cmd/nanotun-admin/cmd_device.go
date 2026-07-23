@@ -365,7 +365,9 @@ func cmdDeviceSetFixedVIP(ctx context.Context, st *store.Store, opts *globalOpts
 		}
 	}
 	oldV4, oldV6 := d.FixedVIPv4, d.FixedVIPv6
-	if err := st.SetDeviceFixedVIP(ctx, d.ID, newV4, newV6); err != nil {
+	// --force 传到 store 层:让它在跨表 lease 冲突时释放他设备占用后再钉(而非 ErrDuplicate 拒绝),
+	// 与 CLI 侧「--force 跳过预检」的语义一致(见 SetDeviceFixedVIP)。
+	if err := st.SetDeviceFixedVIP(ctx, d.ID, newV4, newV6, *force); err != nil {
 		return err
 	}
 	_ = st.Audit(ctx, "admin-cli", "device_set_fixed_vip",
