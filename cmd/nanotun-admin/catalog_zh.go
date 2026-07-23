@@ -303,6 +303,7 @@ var catZH = map[string]string{
 	"credentials.pskRotateMutex":     "--psk 与 --rotate-psk 互斥;二选一",
 	"credentials.pskOrRotate":        "PSK 不可从 hash 反解,请二选一:--psk <plain> 或 --rotate-psk",
 	"credentials.formatInvalid":      "--format 必须是 json | url | both | qr | qr-png,当前是 %q",
+	"credentials.refuseOverwrite":    "输出目标 %q 已存在,轮换 PSK 前拒绝覆盖(加 --force 或换一个 --output);PSK 未轮换",
 	"credentials.rotateDisabled":     "user %q 已被禁用 — 请先 `nanotun-admin user enable %s` 再 --rotate-psk",
 	"credentials.readAdvertisedHost": "读 advertised_host",
 	"credentials.readServerID":       "读 server_id",

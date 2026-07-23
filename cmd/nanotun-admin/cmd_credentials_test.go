@@ -158,6 +158,39 @@ func TestCredentialsShow_RotatePSK(t *testing.T) {
 	}
 }
 
+// TestCredentialsShow_RotatePreflightNoClobber(第六轮深扫 HIGH):rotate + --output 目标已存在 + 无
+// --force 时,必须在**落库前**报错,且 PSK 不被轮换(老 PSK 仍可 verify)——否则新 PSK 已入库却因输出
+// 失败从未交付,用户被下线且运维无新密钥。
+func TestCredentialsShow_RotatePreflightNoClobber(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "p.db")
+	if c, _, e := runCLI(t, db, "", "user", "create", "alice", "--psk", "init-psk"); c != 0 {
+		t.Fatalf("create alice: %s", e)
+	}
+	// 预先放一个已存在的输出目标。
+	out := filepath.Join(dir, "cred.json")
+	if err := os.WriteFile(out, []byte("preexisting"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// rotate + 已存在 output + 无 --force → 应失败。
+	c, _, _ := runCLI(t, db, "",
+		"credentials", "show", "alice",
+		"--rotate-psk", "--format", "json", "--output", out,
+	)
+	if c == 0 {
+		t.Fatal("rotate 写到已存在目标(无 --force)应失败")
+	}
+	// 目标文件内容不变(没被覆盖)。
+	if b, _ := os.ReadFile(out); string(b) != "preexisting" {
+		t.Fatalf("已存在目标不应被改动, got %q", b)
+	}
+	// 关键:PSK 未被轮换 —— 老 psk 仍可 verify(说明落库前就 fail,没提交新 hash)。
+	if c2, _, e := runCLI(t, db, "", "credentials", "show", "alice", "--psk", "init-psk", "--format", "json"); c2 != 0 {
+		t.Fatalf("预检失败后老 PSK 应仍有效(未轮换),但 verify 失败: %s", e)
+	}
+}
+
 func TestCredentialsShow_PSKMismatch(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "p.db")
