@@ -925,6 +925,7 @@ var catZH = map[string]string{
 	"me.secretNotGenerated":     "尚未生成 secret,请重新点击「启用 TOTP」",
 	"me.totpCodeWrongCloseFail": "验证码错误,无法关闭 TOTP",
 	"me.totpNotEnabledRegen":    "TOTP 未启用,无法生成恢复码",
+	"me.recoveryCodesExpired":   "恢复码展示已过期或已被查看过。每次只展示一次,如需重新获取请在「我的账号」重新生成恢复码。",
 	"me.totpCodeWrongCheckTime": "验证码错误:%s。检查手机时间是否同步,或在「启用 TOTP」页面重新扫码。",
 	"me.totpCodeWrong":          "验证码错误:%s",
 	"me.totpTooManyAttempts":    "该 IP 验证码错误次数过多,请等待几分钟后再试。",

@@ -33,7 +33,7 @@ func TestGcOrphanLeases_FixedVIPGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 把 fixed_vip 设到 dFixed(事务里也会把 manual 同步成 1)……
-	if err := s.SetDeviceFixedVIP(ctx, dFixed.ID, "10.0.0.50", ""); err != nil {
+	if err := s.SetDeviceFixedVIP(ctx, dFixed.ID, "10.0.0.50", "", false); err != nil {
 		t.Fatal(err)
 	}
 	// ……然后**故意**把 manual 打回 0,模拟漂移;此时只有 fixed_vip 实值守卫能挡住回收。
@@ -82,7 +82,7 @@ func TestSetDeviceFixedVIP_SyncsManual(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.SetDeviceFixedVIP(ctx, d.ID, "10.0.0.70", ""); err != nil {
+	if err := s.SetDeviceFixedVIP(ctx, d.ID, "10.0.0.70", "", false); err != nil {
 		t.Fatal(err)
 	}
 	l, err := s.GetLeaseByDevice(ctx, d.ID)
@@ -93,7 +93,7 @@ func TestSetDeviceFixedVIP_SyncsManual(t *testing.T) {
 		t.Fatal("设固定 vIP 后 lease.manual 应为 true")
 	}
 
-	if err := s.SetDeviceFixedVIP(ctx, d.ID, "", ""); err != nil {
+	if err := s.SetDeviceFixedVIP(ctx, d.ID, "", "", false); err != nil {
 		t.Fatal(err)
 	}
 	l, err = s.GetLeaseByDevice(ctx, d.ID)

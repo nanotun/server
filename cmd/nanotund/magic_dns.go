@@ -3,7 +3,7 @@ package main
 // P2#11 Magic DNS(2026-05-22):server 内置 UDP DNS server,把 peer 主机名解析成 vIP。
 //
 // 设计:
-//   - 监听 UDP <listenAddr>:<listenPort>(典型 TUN gateway IP:5353)。
+//   - 监听 UDP <listenAddr>:<listenPort>(默认 TUN gateway IP:53;listen_port 留空即 53,见 resolveMagicDNSConfig)。
 //   - 拦截 *.<DomainSuffix> 类查询(例如 "alice-mac.alice.lan"),
 //     拆 host + user → 查 store(devices + leases)→ 拼 A/AAAA 响应。
 //   - 其它域名转发到上游(若配置 upstream_v4/v6),无 upstream → SERVFAIL。

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
 )
@@ -89,10 +90,59 @@ func TestDevicesFixedVIPEmptyStringNotUnique(t *testing.T) {
 		t.Fatalf("d2 空串写入不应撞唯一索引: %v", err)
 	}
 	// 相同非空值仍应冲突。
-	if err := s.SetDeviceFixedVIP(ctx, d1.ID, "10.5.5.5", ""); err != nil {
+	if err := s.SetDeviceFixedVIP(ctx, d1.ID, "10.5.5.5", "", false); err != nil {
 		t.Fatalf("d1 设固定 vip 应成功: %v", err)
 	}
-	if err := s.SetDeviceFixedVIP(ctx, d2.ID, "10.5.5.5", ""); !errors.Is(err, ErrDuplicate) {
+	if err := s.SetDeviceFixedVIP(ctx, d2.ID, "10.5.5.5", "", false); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("d2 设相同固定 vip 应 ErrDuplicate,got %v", err)
+	}
+}
+
+// TestSetDeviceFixedVIP_ForceReleasesConflictingLease 验证 --force 语义:钉一个被**另一台设备动态
+// lease** 占用的地址时,force=false 报 ErrDuplicate;force=true 释放对方 lease 后成功钉上,且钉完
+// 不再有跨表双占(对方 lease 的该 vip 被置空)。
+func TestSetDeviceFixedVIP_ForceReleasesConflictingLease(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	u, err := s.CreateUser(ctx, NewUser{Username: "dave", PSKHash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim, err := s.UpsertDevice(ctx, u.ID, "uuid-victim", "vm", "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taker, err := s.UpsertDevice(ctx, u.ID, "uuid-taker", "tk", "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// victim 动态 lease 占住 10.9.9.9。
+	if _, err := s.UpsertLease(ctx, victim.ID, "10.9.9.9", "", false); err != nil {
+		t.Fatalf("upsert victim lease: %v", err)
+	}
+	// force=false:跨表冲突 → ErrDuplicate。
+	if err := s.SetDeviceFixedVIP(ctx, taker.ID, "10.9.9.9", "", false); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("force=false 撞他设备 lease 应 ErrDuplicate,got %v", err)
+	}
+	// force=true:应成功,并把 victim 的 lease vip 释放掉。
+	if err := s.SetDeviceFixedVIP(ctx, taker.ID, "10.9.9.9", "", true); err != nil {
+		t.Fatalf("force=true 应成功钉上,got %v", err)
+	}
+	// victim lease 的 vip_v4 现应为 NULL(被释放),无跨表双占。
+	var victimVIP sql.NullString
+	if err := s.DB().QueryRowContext(ctx, `SELECT vip_v4 FROM leases WHERE device_id=?`, victim.ID).Scan(&victimVIP); err != nil {
+		t.Fatalf("query victim lease: %v", err)
+	}
+	if victimVIP.Valid && victimVIP.String == "10.9.9.9" {
+		t.Fatalf("force 钉后 victim lease 仍占 10.9.9.9(双占未消除)")
+	}
+	// taker 的 fixed_vip_v4 应已落库。
+	td, err := s.GetDevice(ctx, taker.ID)
+	if err != nil {
+		t.Fatalf("get taker: %v", err)
+	}
+	if td.FixedVIPv4 != "10.9.9.9" {
+		t.Fatalf("taker fixed_vip_v4=%q want 10.9.9.9", td.FixedVIPv4)
 	}
 }

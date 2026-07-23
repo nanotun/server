@@ -200,11 +200,29 @@ var ErrLastAdmin = errors.New("store: refuse to leave zero enabled admins")
 
 // CreateUser 创建一个新用户并返回其完整记录（含自增 ID）。
 func (s *Store) CreateUser(ctx context.Context, in NewUser) (*User, error) {
-	if strings.TrimSpace(in.Username) == "" {
+	// 第四轮深扫 MED(store #4/#15):用户名首尾空白**入库前统一裁剪**。此前 " alice " 会原样入库,与 "alice"
+	// 表面同名却被 BINARY UNIQUE 视作不同行 → 登录 / 展示歧义、可被用来伪装。裁剪 + 下方 NOCASE 预检共同收敛。
+	in.Username = strings.TrimSpace(in.Username)
+	if in.Username == "" {
 		return nil, errors.New("store: empty username")
 	}
 	if strings.TrimSpace(in.PSKHash) == "" {
 		return nil, errors.New("store: empty psk_hash")
+	}
+	// 大小写不敏感去重(应用层预检):列上的 UNIQUE 是 BINARY(区分大小写),挡不住 "Alice" vs "alice"。这里
+	// 先按 COLLATE NOCASE 查重,命中即 ErrDuplicate。残留极小 TOCTOU 窗口(两个并发创建仅大小写不同的同名)
+	// 由管理端低并发场景与 BINARY UNIQUE 兜底,实际不构成问题;不引入 NOCASE 唯一索引迁移是为了避免既有部署里
+	// 历史大小写变体用户名让启动期迁移直接失败(宁可应用层收敛,不冒 brick 风险)。
+	if exists, err := s.usernameExistsCI(ctx, in.Username, 0); err != nil {
+		return nil, err
+	} else if exists {
+		return nil, fmt.Errorf("store: create user username=%q (case-insensitive match): %w", in.Username, ErrDuplicate)
+	}
+	// 第四轮深扫 MED(store #10):与 SetUserBandwidth 对齐,创建时也拒绝负带宽。此前 CreateUser 不校验,
+	// 负值会入库,被 effectiveRate 等消费方按无符号 / 意外语义解读(潜在限速绕过或整型回绕)。
+	if in.BandwidthUpBPS < 0 || in.BandwidthDownBPS < 0 {
+		return nil, fmt.Errorf("store: bandwidth must be >= 0 (got up=%d down=%d): %w",
+			in.BandwidthUpBPS, in.BandwidthDownBPS, ErrInvalid)
 	}
 	role := in.Role
 	if role == "" {
@@ -240,6 +258,21 @@ func (s *Store) CreateUser(ctx context.Context, in NewUser) (*User, error) {
 		return nil, fmt.Errorf("store: last insert id: %w", err)
 	}
 	return s.GetUser(ctx, id)
+}
+
+// usernameExistsCI 判断是否已存在大小写不敏感同名的 user(排除 excludeID,用于 update 场景;create 传 0)。
+func (s *Store) usernameExistsCI(ctx context.Context, username string, excludeID int64) (bool, error) {
+	var dummy int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM users WHERE username = ? COLLATE NOCASE AND id != ? LIMIT 1`,
+		username, excludeID).Scan(&dummy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: username ci check: %w", err)
+	}
+	return true, nil
 }
 
 // GetUser 按主键取用户。

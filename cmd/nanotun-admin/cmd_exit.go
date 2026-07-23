@@ -160,7 +160,7 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 			}
 		}
 		if newV4 != d.FixedVIPv4 || newV6 != d.FixedVIPv6 {
-			if err := st.SetDeviceFixedVIP(ctx, id, newV4, newV6); err != nil {
+			if err := st.SetDeviceFixedVIP(ctx, id, newV4, newV6, *force); err != nil {
 				return fmt.Errorf("set fixed vip: %w", err)
 			}
 		}
@@ -282,7 +282,7 @@ func cmdExitRevoke(ctx context.Context, st *store.Store, opts *globalOpts, args 
 		}
 	}
 	if *clearVip {
-		if err := st.SetDeviceFixedVIP(ctx, id, "", ""); err != nil {
+		if err := st.SetDeviceFixedVIP(ctx, id, "", "", false); err != nil {
 			return fmt.Errorf("clear fixed vip: %w", err)
 		}
 	}

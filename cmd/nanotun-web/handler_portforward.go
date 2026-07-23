@@ -180,7 +180,7 @@ func (s *Server) handlePortForwardAction(w http.ResponseWriter, r *http.Request)
 				s.renderError(w, r, http.StatusNotFound, tr(r, "err.pfNotFound"))
 				return
 			}
-			s.renderError(w, r, http.StatusInternalServerError, "delete: "+err.Error())
+			s.renderInternalError(w, r, "portforward:delete", err)
 			return
 		}
 		s.audit.WriteFromRequest(r, "port_forward_delete", FormatTarget("port_forward", segs[1]), "")
@@ -193,7 +193,7 @@ func (s *Server) handlePortForwardAction(w http.ResponseWriter, r *http.Request)
 				s.renderError(w, r, http.StatusNotFound, tr(r, "err.pfNotFound"))
 				return
 			}
-			s.renderError(w, r, http.StatusInternalServerError, verb+": "+err.Error())
+			s.renderInternalError(w, r, "portforward:set_enabled:"+verb, err)
 			return
 		}
 		s.audit.WriteFromRequest(r, "port_forward_"+verb, FormatTarget("port_forward", segs[1]), "")

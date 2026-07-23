@@ -828,10 +828,11 @@ func validFormat(s string) bool {
 //   - path 非空 → 写进内存缓冲;closer 通过 writeFileTight **原子落盘**。
 //
 // 第三轮深扫 M3 加固:此前 force=true 走 `os.OpenFile(path, O_CREATE|O_WRONLY|O_TRUNC, 0600)`,含两处缺陷——
-//   1. 无 O_EXCL / 无 Lstat:path 是符号链接时 open **跟随**它,把明文 PSK / hy2 密码 / mTLS client key
-//      写进链接目标(泄密)或截断受害文件;
-//   2. 0600 mode 只在**创建**文件时生效,覆盖既有 0644 文件会**保留** 0644 → 密材世界可读;
-//   且 closer 里 `_ = f.Sync(); _ = f.Close()` 吞掉刷盘错误,ENOSPC/EIO 下产出截断密材却报成功。
+//  1. 无 O_EXCL / 无 Lstat:path 是符号链接时 open **跟随**它,把明文 PSK / hy2 密码 / mTLS client key
+//     写进链接目标(泄密)或截断受害文件;
+//  2. 0600 mode 只在**创建**文件时生效,覆盖既有 0644 文件会**保留** 0644 → 密材世界可读;
+//     且 closer 里 `_ = f.Sync(); _ = f.Close()` 吞掉刷盘错误,ENOSPC/EIO 下产出截断密材却报成功。
+//
 // 改为复用兄弟函数 writeFileTight(CreateTemp O_EXCL + fchmod 0600 + fsync + 原子 rename):force 语义也交给它
 // (false=目标存在即拒;true=覆盖但仍经临时文件+rename,不跟随链接),并把落盘错误经 closer 返回值交回调用方。
 //

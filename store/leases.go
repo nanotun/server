@@ -35,7 +35,16 @@ func (s *Store) GetLeaseByDevice(ctx context.Context, deviceID int64) (*Lease, e
 // 调用方传入空字符串视为「该协议下无 vIP」，并在数据库里存为 NULL（受唯一索引约束）。
 func (s *Store) UpsertLease(ctx context.Context, deviceID int64, vipV4, vipV6 string, manual bool) (*Lease, error) {
 	now := nowUnix()
-	_, err := s.db.ExecContext(ctx,
+
+	// 事务 + **写优先**(第四轮深扫 HIGH):INSERT..ON CONFLICT 先取写锁(规避 DEFERRED 事务「读后升级写」撞
+	// BUSY_SNAPSHOT),leases 自身的 vip UNIQUE(lease↔lease)冲突在此即触发。随后再做**跨表**守卫。
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("store: upsert lease begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO leases(device_id, vip_v4, vip_v6, manual, assigned_at)
 		 VALUES(?,?,?,?,?)
 		 ON CONFLICT(device_id) DO UPDATE SET
@@ -44,8 +53,7 @@ func (s *Store) UpsertLease(ctx context.Context, deviceID int64, vipV4, vipV6 st
 		   manual=excluded.manual,
 		   assigned_at=excluded.assigned_at`,
 		deviceID, nullableString(vipV4), nullableString(vipV6), boolToInt(manual), now,
-	)
-	if err != nil {
+	); err != nil {
 		// idx_leases_vip_v4 / _v6 UNIQUE 冲突意味着「这个 vIP 已经被另一台设备持有」。
 		// 之前直接 %w 透传 modernc.org/sqlite 的内部错误,调用方无法区分这种业务级冲突
 		// 与「IO 错误」「Disk 满」等系统错误,结果是 cmd/nanotund/alloc_lease.go 用 Warn 吞掉,
@@ -58,6 +66,30 @@ func (s *Store) UpsertLease(ctx context.Context, deviceID int64, vipV4, vipV6 st
 				ErrDuplicate, deviceID, vipV4, vipV6, ErrDuplicate.Error())
 		}
 		return nil, fmt.Errorf("store: upsert lease: %w", err)
+	}
+
+	// 跨表守卫:SQLite 无法在 leases 与 devices 之间强制 UNIQUE。若**另一台**设备已把同一 vIP 钉成
+	// fixed_vip,本 lease 与之双占同一地址 → 数据面路由黑洞 / IP 漂移。写后校验,命中即回滚成 ErrDuplicate,
+	// 让登录路径拒登并重分配。传 nullableString:空族存 NULL,`fixed_vip_x = NULL` 恒为假,自动跳过该族。
+	if vipV4 != "" || vipV6 != "" {
+		var dummy int
+		qerr := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM devices
+			  WHERE id != ?
+			    AND ( (fixed_vip_v4 IS NOT NULL AND fixed_vip_v4 = ?)
+			       OR (fixed_vip_v6 IS NOT NULL AND fixed_vip_v6 = ?) )
+			  LIMIT 1`,
+			deviceID, nullableString(vipV4), nullableString(vipV6)).Scan(&dummy)
+		if qerr == nil {
+			return nil, i18nErrWrap("store.lease.vipConflict",
+				fmt.Sprintf("store: upsert lease vIP 与他设备 fixed_vip 冲突 (device=%d v4=%q v6=%q): %s", deviceID, vipV4, vipV6, ErrDuplicate.Error()),
+				ErrDuplicate, deviceID, vipV4, vipV6, ErrDuplicate.Error())
+		} else if !errors.Is(qerr, sql.ErrNoRows) {
+			return nil, fmt.Errorf("store: upsert lease cross-table check: %w", qerr)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: upsert lease commit: %w", err)
 	}
 	return s.GetLeaseByDevice(ctx, deviceID)
 }
@@ -85,7 +117,17 @@ func (s *Store) AllUsedVIPs(ctx context.Context) (v4 map[string]bool, v6 map[str
 	v4 = map[string]bool{}
 	v6 = map[string]bool{}
 
-	rows, err := s.db.QueryContext(ctx, `SELECT vip_v4, vip_v6 FROM leases`)
+	// 单个只读事务包住「读 leases + 读 devices.fixed_vip」两次查询(第四轮深扫 MED):WAL 下同一事务内两条
+	// SELECT 共享同一读快照,得到 leases∪fixed_vip 的**点一致**已用集;否则两次读之间的 lease/fixed churn 会让
+	// 并集出现「刚被释放的地址仍在、刚被占用的地址缺失」的错位,分配器据此可能选到瞬时冲突地址(最终仍被
+	// UpsertLease 的 UNIQUE / 跨表守卫兜住,但一致快照能减少无谓的分配-拒绝往返)。
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: all used vips begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, `SELECT vip_v4, vip_v6 FROM leases`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("store: list leases: %w", err)
 	}
@@ -109,7 +151,7 @@ func (s *Store) AllUsedVIPs(ctx context.Context) (v4 map[string]bool, v6 map[str
 	// 0008(2026-05-23):固定 vIP 已从 users 表迁到 devices 表。这里也跟着改 —
 	// 任何 device.fixed_vip_* 都必须从「可用 vIP 集合」里排除,即便该 device 还没拿到
 	// lease 也算占用(否则 admin 钉的 fixed_vip 会被自动分配给别人,登录时撞 UNIQUE 失败)。
-	drows, err := s.db.QueryContext(ctx, `SELECT COALESCE(fixed_vip_v4,''), COALESCE(fixed_vip_v6,'') FROM devices`)
+	drows, err := tx.QueryContext(ctx, `SELECT COALESCE(fixed_vip_v4,''), COALESCE(fixed_vip_v6,'') FROM devices`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("store: list device fixed vip: %w", err)
 	}

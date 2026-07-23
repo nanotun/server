@@ -51,10 +51,19 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 			s.renderInternalError(w, r, "setup:captcha_gen", err)
 			return
 		}
+		// 第四轮深扫 MED(d_setup_pow):/setup 是 web_admins 为空时的**公开**端点(TOFU 窗口),此前只有
+		// captcha 一道闸。补上与 /login 同款的自适应 PoW —— 同 IP 失败累积后下发题目,给自动化抢占首个
+		// 管理员的脚本加成本。平时(失败少)difficulty=0 不下发,honest 运维无感。
+		ip := clientIP(r)
+		powCh, err := s.sess.IssueChallenge(ComputeDifficulty(s.sess.ipFailures.Recent(ip)))
+		if err != nil {
+			s.renderInternalError(w, r, "setup:pow_issue", err)
+			return
+		}
 		s.renderPage(w, r, "setup.html", PageData{
 			Title:     tr(r, "page.setup.title"),
 			CSRFToken: tok,
-			Data:      map[string]any{"Captcha": cap},
+			Data:      map[string]any{"Captcha": cap, "PoW": FormatPoWForTemplate(powCh)},
 			Nav:       NavContext{Active: "setup"},
 		})
 	case http.MethodPost:
@@ -65,15 +74,38 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		// 先验 captcha,过了再消耗 password verify;无论 captcha 成功失败都立刻
 		// Clear,防止 attacker 拿一对 (cookie, answer) 反复重放。setupRetry 会
 		// 自己再签一张新的图。
+		setupIP := clientIP(r)
 		if err := s.sess.VerifyCaptcha(r, r.FormValue("captcha")); err != nil {
 			s.sess.ClearCaptcha(w)
+			s.sess.ipFailures.Inc(setupIP) // d_setup_pow:公开端点失败计数,驱动自适应 PoW
 			s.audit.Write(ctx, nil, "web.setup.captcha_fail",
 				FormatTarget("username", strings.TrimSpace(r.FormValue("username"))),
-				FormatDetail("ip", clientIP(r), "reason", err.Error()))
+				FormatDetail("ip", setupIP, "reason", err.Error()))
 			s.setupRetry(w, r, tr(r, "auth.captchaInvalidRefresh"))
 			return
 		}
 		s.sess.ClearCaptcha(w)
+		// d_setup_pow:captcha 过后校验 PoW(仅当当前 IP 失败数已把期望难度顶到 >0 时)。与 /login 同口径:
+		// VerifyPoWProof 内部用 expectedDiff 防「低难度旧签名重放」。缺字段 / 校验失败均计一次失败并 retry。
+		if expectedDiff := ComputeDifficulty(s.sess.ipFailures.Recent(setupIP)); expectedDiff > 0 {
+			proof, perr := parsePoWFormFields(r)
+			if perr != nil {
+				s.sess.ipFailures.Inc(setupIP)
+				s.audit.Write(ctx, nil, "web.setup.pow_fail",
+					FormatTarget("username", strings.TrimSpace(r.FormValue("username"))),
+					FormatDetail("ip", setupIP, "reason", "missing:"+perr.Error()))
+				s.setupRetry(w, r, tr(r, "auth.securityCheckFailed"))
+				return
+			}
+			if verr := s.sess.VerifyPoWProof(proof, expectedDiff); verr != nil {
+				s.sess.ipFailures.Inc(setupIP)
+				s.audit.Write(ctx, nil, "web.setup.pow_fail",
+					FormatTarget("username", strings.TrimSpace(r.FormValue("username"))),
+					FormatDetail("ip", setupIP, "reason", verr.Error(), "expected_difficulty", expectedDiff))
+				s.setupRetry(w, r, tr(r, "auth.securityCheckFailed"))
+				return
+			}
+		}
 		username := strings.TrimSpace(r.FormValue("username"))
 		password := r.FormValue("password")
 		confirm := r.FormValue("password_confirm")
@@ -136,6 +168,11 @@ func (s *Server) setupRetry(w http.ResponseWriter, r *http.Request, msg string) 
 	data := map[string]any{}
 	if capErr == nil {
 		data["Captcha"] = cap
+	}
+	// d_setup_pow:retry 页也按当前 IP 失败数重新下发 PoW 题(与 loginRetry 同理),否则失败一次抬升
+	// 难度后,retry 页缺 PoW 字段,合法用户再提交必然 pow_fail 死循环。issue 失败则不带(降级为无 PoW)。
+	if powCh, perr := s.sess.IssueChallenge(ComputeDifficulty(s.sess.ipFailures.Recent(clientIP(r)))); perr == nil {
+		data["PoW"] = FormatPoWForTemplate(powCh)
 	}
 	s.renderPage(w, r, "setup.html", PageData{
 		Title:     tr(r, "page.setup.title"),

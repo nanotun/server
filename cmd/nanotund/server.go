@@ -165,7 +165,6 @@ func resetLazyPoWForTest() {
 // 智能模式 takeover（reality→hy2 等热切换）相关字段：
 //   - takeoverSecret：登录成功时随机生成的 32B nonce hex；下发给客户端 LoginResp.TakeoverSecret，
 //     新链路接管时回填到 LoginReq.TakeoverSecret 由本端 subtle.ConstantTimeCompare 校验。
-//   - loginToken：本会话 LoginReq.Token（PR 3 仅做调试记录；实际身份校验依赖 takeoverSecret）。
 //   - takenOver：被新链路接管后置 true；本 conn defer 跳过虚拟 IP 释放、TunChan 关闭与 SessionRelease。
 //   - takeoverMu：保证「停老 demux → 转移 clientIPs → 启动新 demux → set takenOver」原子完成，避免双 demux 抢同一 TunChan。
 //   - tunnelDone：runLinkTunnel 完整退出时被关闭；接管路径 <-oldConn.tunnelDone 等老链路完全释放 TunChan 后再启动新 demux。
@@ -323,7 +322,6 @@ type Connection struct {
 	platformAtLogin string
 
 	takeoverSecret string      // 客户端将来通过 LoginReq.TakeoverSecret 发起接管时的口令（hex 64 字符）
-	loginToken     string      // 本次登录时的 token（仅记录；身份校验走 takeoverSecret）
 	takenOver      atomic.Bool // 是否已被同账号新链路接管（true 时 defer 跳过 vip / TunChan / SessionRelease 清理）
 	// superseded：本会话已被 server **主动**判定为「即将 close」但其异步 cleanup 尚未完成。覆盖所有 server 发起、
 	// 关链路后走异步 cleanup 的踢除路径：① 同 device 全新登录踢旧（supersede）；② 同 user 会话超限踢最老（evict）；
@@ -342,6 +340,11 @@ type Connection struct {
 	superseded atomic.Bool
 	takeoverMu sync.Mutex    // 保护接管转移的原子性（防止 race 和重入）
 	tunnelDone chan struct{} // runLinkTunnel 完整退出信号；初始化为 make(chan struct{})；运行末尾 close
+	// tunnelCancel:runLinkTunnel 启动时存入其 tunCtx 的 cancel(第四轮深扫 MED,c_tunnel_dual)。takeover
+	// 在「等 oldConn.tunnelDone 超时」时用它**主动 cancel 老 tunnel 的 ctx**,逼停仍在消费共享 TunChan 的老
+	// demux goroutine,再等一段 grace 后才启动新 demux —— 避免两个 demux 并发抢同一 TunChan 导致下行丢包。
+	// atomic.Pointer 存 *context.CancelFunc:未启动 / 已退出时为 nil,调用方判 nil 跳过。
+	tunnelCancel atomic.Pointer[context.CancelFunc]
 	// cleanupDone 在 cleanupConnection **完整执行完**(vIP 释放 / TunChan 注销 / map 摘除)后 close。
 	// 与 tunnelDone 的区别很关键:tunnelDone 只标志 runLinkTunnel 返回,而真正释放 vIP 的
 	// cleanupConnection 是在其后由 handleVPNLink 的 defer 才跑的。supersede 的 waitConnsCleanup 必须
@@ -538,15 +541,15 @@ var (
 	// tunWriteDropCount:tunWriteChan 满导致的丢包总数(readLoop 非阻塞投递失败)。
 	// 回程数据面上唯一的用户态静默丢包点,暴露成 metric 才能在「客户端说卡」时排除/坐实
 	// (2026-07 排查 CDN 回程黑洞时此处无计数,只能靠两端抓包对差集,代价极高)。
-	tunWriteDropCount  atomic.Uint64
+	tunWriteDropCount atomic.Uint64
 	// tunOversizeDropCount:入向 IP 帧长度超过 tunBufSize 被丢的总数(此前会被 copy 静默截断写入 TUN)。
 	tunOversizeDropCount atomic.Uint64
-	sharedTUN          tun.Device
-	sharedTUNGateway   string // IPv4 网关 CIDR，如 10.1.0.1/16
-	sharedTUNGatewayV6 string // IPv6 网关 CIDR，如 fd00:vpn:200::1/64；为空表示未启用 IPv6
-	clientIPUsedMu     sync.Mutex
-	clientIPUsed       = make(map[string]bool) // 当前已占用的虚拟 IP（IPv4 和 IPv6 共用）
-	tunRandSeed        atomic.Uint32           // 随机选合法网段
+	sharedTUN            tun.Device
+	sharedTUNGateway     string // IPv4 网关 CIDR，如 10.1.0.1/16
+	sharedTUNGatewayV6   string // IPv6 网关 CIDR，如 fd00:vpn:200::1/64；为空表示未启用 IPv6
+	clientIPUsedMu       sync.Mutex
+	clientIPUsed         = make(map[string]bool) // 当前已占用的虚拟 IP（IPv4 和 IPv6 共用）
+	tunRandSeed          atomic.Uint32           // 随机选合法网段
 )
 
 func loadConfig(path string) (config.Config, error) {
@@ -1736,6 +1739,10 @@ func tunDemuxToLink(ch <-chan *util.TunPacket, w io.Writer, mu *sync.Mutex, ctx 
 func runLinkTunnel(ctx context.Context, rw io.ReadWriteCloser, c *Connection, remote string) {
 	tunCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// c_tunnel_dual:暴露本 tunnel 的 cancel 给 takeover 超时分支主动逼停(见 Connection.tunnelCancel)。
+	// 退出前清空,避免调用方拿到指向已返回上下文的悬垂 cancel(cancel 幂等,清空只为语义整洁)。
+	c.tunnelCancel.Store(&cancel)
+	defer c.tunnelCancel.Store(nil)
 	defer func() {
 		if c.tunnelDone != nil {
 			// 用 recover 防御「未初始化的 conn 重复进入」(理论不会发生) 引发 panic
@@ -1806,6 +1813,9 @@ readLoop:
 			if !util.ValidIPPacket(payload) {
 				continue
 			}
+			// 第四轮深扫 LOW:截到 IP 头声明的总长度,剥掉尾随字节(以太填充 / 客户端在合法报文后追加的隐蔽数据),
+			// 使下游 ACL / 源校验 / 出口 NAT / TUN 写只处理真实报文,不把尾随字节转发上公网或投给 mesh 对端。
+			payload = util.TrimIPPacketToTotalLen(payload)
 			// 入向 IP 帧长度必须 ≤ TUN buffer(tunBufSize=2048,已覆盖 MTU 1500 + 余量)。链路层单帧上限
 			// MaxLinkPayload=65534 远大于此,恶意/异常客户端可发超大帧——此前落到下方 copy(pkt, payload) 会**静默
 			// 截断**成半截包(校验和/长度全错)写进 server TUN 或投给 mesh 对端。超限直接丢并计数,不污染数据面。
@@ -2713,11 +2723,13 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		userID:         userID,
 		linkConn:       raw,
 		takeoverSecret: takeoverSecret,
-		loginToken:     loginReq.Token,
-		tunnelDone:     make(chan struct{}),
-		cleanupDone:    make(chan struct{}),
-		createdAt:      time.Now(),
-		exitAllowed:    true,
+		// 第四轮深扫 LOW:不再把 LoginReq.Token(= **PSK 明文**)存进 Connection —— 它此前仅作「调试记录」
+		// 从不被读取,却让明文 PSK 在整条会话生命周期内驻留内存(core dump / 内存取证泄密面)。身份校验一直
+		// 走 takeoverSecret,与 PSK 明文无关,删除无任何功能影响。
+		tunnelDone:  make(chan struct{}),
+		cleanupDone: make(chan struct{}),
+		createdAt:   time.Now(),
+		exitAllowed: true,
 		// 平台白名单踢线用快照;此刻 AllowsPlatform 已放行过,快照必然合规,
 		// 只有 admin 之后改白名单才可能让它变不合规(user_invalidate 扫到即踢)。
 		platformAtLogin: loginReq.Platform,
@@ -2908,7 +2920,11 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 					for i := range ipv4LocalIPs {
 						var netCfg ClientNetConfig
 						var errAlloc error
-						if i == 0 && preferredVIPUsable(sharedTUNGateway, leasedV4, clientIPUsed) {
+						// 第四轮深扫 MED(c_dbresv):fast-path 采用偏好 vIP 前,used 集必须与 AllocClientIP 分支
+						// **一致**地并入 dbResvV4(别的 device 的离线 lease)。此前只查内存 clientIPUsed(仅在线),
+						// 偏好 vIP 若正是另一台离线设备的 lease 会被直接采用 → 随后 UpsertLease 撞 UNIQUE、persistDeviceLease
+						// 拒登(本可避免的登录失败)。dbResvV4 已排除本设备自身 lease,故不会挡住本设备的合法偏好 vIP。
+						if i == 0 && preferredVIPUsable(sharedTUNGateway, leasedV4, mergeUsedVIPs(clientIPUsed, dbResvV4)) {
 							netCfg = ClientNetConfig{ClientIP: leasedV4, Mask: maskStr, Gateway: gatewayAddrFromCIDR(sharedTUNGateway)}
 						} else {
 							netCfg, errAlloc = AllocClientIP(sharedTUNGateway, mergeUsedVIPs(clientIPUsed, dbResvV4), nil)
@@ -2948,7 +2964,8 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 					maskStrV6 := maskFromGatewayCIDR(sharedTUNGatewayV6)
 					var netCfgV6 ClientNetConfig
 					var errAllocV6 error
-					if preferredVIPUsable(sharedTUNGatewayV6, leasedV6, clientIPUsed) {
+					// c_dbresv(同 v4):并入 dbResvV6,与 AllocClientIP 分支的 used 集一致,避免采用他设备离线 lease 的 v6。
+					if preferredVIPUsable(sharedTUNGatewayV6, leasedV6, mergeUsedVIPs(clientIPUsed, dbResvV6)) {
 						netCfgV6 = ClientNetConfig{ClientIP: leasedV6, Mask: maskStrV6, Gateway: gatewayAddrFromCIDR(sharedTUNGatewayV6)}
 					} else {
 						netCfgV6, errAllocV6 = AllocClientIP(sharedTUNGatewayV6, mergeUsedVIPs(clientIPUsed, dbResvV6), nil)
@@ -3153,6 +3170,14 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		}
 	}
 
+	// 第四轮深扫 MED(b_takeover_oracle):所有 takeover 失败分支对**线路**统一回同一条泛化消息,消除
+	// session-liveness / secret-correctness oracle —— 此前 "session not found" / "secret mismatch" /
+	// "already taken over" / "session gone" 各不相同,持有某 sid 的攻击者据此即可判断该 sid 是否在线、
+	// secret 是否命中等。真实失败原因只写进服务端 audit_logs(auditTakeoverFail),不上线。合法客户端在任何
+	// takeover 失败后都会退回全新 primary login,消息内容对其无功能意义。code 保留(多为 1;PSK 分支沿用与
+	// primary login 同款收敛 code,不构成新增 oracle)。
+	const takeoverFailWireMsg = "takeover failed"
+
 	sid := loginReq.TakeoverSessionID
 	if sid == "" {
 		logrus.WithField("remote", remote).Warn("[takeover] LoginReq.takeover_session_id 为空")
@@ -3160,7 +3185,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		// detail 写失败原因。**不**写 secret/sid 全文,避免攻击者通过 audit log 反向
 		// 枚举 / 验证已知 sid。
 		auditTakeoverFail(gw, remote, "empty_session_id", "")
-		_ = writeLinkLoginResp(raw, 1, "takeover failed: empty session id", "")
+		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
 	}
 
@@ -3172,7 +3197,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		auditTakeoverFail(gw, remote, "session_not_found", "")
 		// session_id 枚举攻击 → 升 PoW 难度。
 		markTakeoverAsIPFailure()
-		_ = writeLinkLoginResp(raw, 1, "takeover failed: session not found", "")
+		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
 	}
 
@@ -3210,7 +3235,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		unlockTakeover()
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn 已被清理(链路先于接管断开),拒绝接管")
 		auditTakeoverFail(gw, remote, "session_cleaned", oldConn.userID)
-		_ = writeLinkLoginResp(raw, 1, "takeover failed: session gone", "")
+		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
 	}
 	if oldConn.takenOver.Load() {
@@ -3218,7 +3243,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn 已被接管")
 		auditTakeoverFail(gw, remote, "already_taken_over", oldConn.userID)
 		// 多发竞态:不算攻击。
-		_ = writeLinkLoginResp(raw, 1, "takeover failed: already taken over", "")
+		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
 	}
 	// 同样拒绝**已被 supersede**(同 device 新 primary 登录已把这条标记为 victim、正异步 close+cleanup)的 oldConn
@@ -3231,7 +3256,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		unlockTakeover()
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn 已被 supersede(同设备新登录抢先),拒绝接管")
 		auditTakeoverFail(gw, remote, "session_superseded", oldConn.userID)
-		_ = writeLinkLoginResp(raw, 1, "takeover failed: session gone", "")
+		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
 	}
 	// 防御「空 secret 全等」bypass:如果 oldConn 在登录时 crypto/rand 失败,takeoverSecret
@@ -3244,7 +3269,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		auditTakeoverFail(gw, remote, "empty_secret", oldConn.userID)
 		// 试空字符串 secret 是典型 fuzz / bypass 尝试 → 升难度。
 		markTakeoverAsIPFailure()
-		_ = writeLinkLoginResp(raw, 1, "takeover failed: empty secret", "")
+		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
 	}
 	if subtle.ConstantTimeCompare(
@@ -3256,9 +3281,18 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		auditTakeoverFail(gw, remote, "secret_mismatch", oldConn.userID)
 		// 试错 secret → 升难度。secret 256-bit 暴破毫无意义,但代码上统一。
 		markTakeoverAsIPFailure()
-		_ = writeLinkLoginResp(raw, 1, "takeover failed: secret mismatch", "")
+		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
 	}
+
+	// 第四轮深扫 MED(b_takeover_mu):**先放 takeoverMu 再跑 argon2**。authenticatePSK 内部跑 argon2id
+	// (数十 ms,且受全局 argon2 信号量约束,过载时 Acquire 会排队阻塞)。若持 takeoverMu 跑它:
+	//   ① oldConn.cleanupConnection(同样要 takeoverMu)被阻塞整个 verify 时长;
+	//   ② 攻击者对同一 sid 猛发**错 PSK** 的 takeover,借持锁的 argon2 把 victim 的清理长期钉住(局部 DoS)。
+	// 故此处放锁、无锁跑 verify,再重新加锁并**复验竞态**。secret 已在持锁下比对过;secret 仅在**成功**
+	// takeover 结束时于锁内轮换,窗口内两个持同一有效 secret 的并发请求都会跑到重加锁后的复验,由 takenOver
+	// 复检保证只有先完成过户者胜出。放锁后的失败分支不再持锁(unlockTakeover 幂等,故不重复调用)。
+	unlockTakeover()
 
 	// 在 secret 匹配通过之后,**再加一层 PSK 验证**:防止只持有 (session_id, secret) 的
 	// 攻击者(从客户端内存 / 抓包 / log dump 拿到)不知道 PSK 也能接管会话。
@@ -3268,7 +3302,6 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	//     + 偷来的 session_id+secret 来接管别人的会话)。
 	authResult, authErr := authenticatePSK(gw, loginReq)
 	if authErr != nil {
-		unlockTakeover()
 		logrus.WithFields(logrus.Fields{
 			"remote": remote,
 			"sid":    sid,
@@ -3282,12 +3315,11 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		if authErr.code != util.CodeServerError && authErr.code != util.CodePlatformNotAllowed {
 			markTakeoverAsIPFailure()
 		}
-		// 与 primary login 一致:对外只暴露收敛后的 code(user_not_found→token_invalid),不透传内部 message。
-		_ = writeLinkLoginResp(raw, clientFacingLoginCode(authErr.code), "takeover failed: auth", "")
+		// 与 primary login 一致:对外只暴露收敛后的 code(user_not_found→token_invalid),message 走泛化文案。
+		_ = writeLinkLoginResp(raw, clientFacingLoginCode(authErr.code), takeoverFailWireMsg, "")
 		return
 	}
 	if authResult.UserID != oldConn.userID {
-		unlockTakeover()
 		logrus.WithFields(logrus.Fields{
 			"remote":      remote,
 			"sid":         sid,
@@ -3297,7 +3329,23 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		auditTakeoverFail(gw, remote, "user_mismatch", oldConn.userID)
 		// 跨用户接管尝试 → 升难度(典型攻击模式)。
 		markTakeoverAsIPFailure()
-		_ = writeLinkLoginResp(raw, 1, "takeover failed: user mismatch", "")
+		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
+		return
+	}
+
+	// 重新加锁 + 复验(b_takeover_mu):argon2 窗口内 oldConn 可能已被 cleanup / 接管 / supersede。任一发生即按
+	// 「session 已消失」良性拒绝(客户端退回全新 primary login,不计 PoW)。复验通过后到过户完成之间持锁不再
+	// 释放(除成功路径在 runLinkTunnel 前显式放锁),保证过户原子性——与放锁前的 TOCTOU 复验同一套判据。
+	oldConn.takeoverMu.Lock()
+	takeoverMuHeld = true
+	connIDMapMu.RLock()
+	curAfter, stillAfter := connIDMap[sid]
+	connIDMapMu.RUnlock()
+	if !stillAfter || curAfter != oldConn || oldConn.takenOver.Load() || oldConn.superseded.Load() {
+		unlockTakeover()
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] argon2 期间 oldConn 状态变更(清理/接管/supersede),拒绝接管")
+		auditTakeoverFail(gw, remote, "session_gone_after_verify", oldConn.userID)
+		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
 	}
 
@@ -3316,7 +3364,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	if newSecret == "" {
 		unlockTakeover()
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Error("[takeover] 轮换 secret 失败(熵源故障?),拒绝接管")
-		_ = writeLinkLoginResp(raw, 1, "takeover failed: server entropy", "")
+		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
 	}
 
@@ -3337,7 +3385,6 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		userID:         oldConn.userID,
 		linkConn:       raw,
 		takeoverSecret: newSecret, // 新 secret,客户端将通过下方 LoginResp 收到
-		loginToken:     loginReq.Token,
 		tunnelDone:     make(chan struct{}),
 		cleanupDone:    make(chan struct{}),
 		createdAt:      time.Now(),
@@ -3601,9 +3648,23 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		select {
 		case <-oldConn.tunnelDone:
 		case <-time.After(5 * time.Second):
+			// 第四轮深扫 MED(c_tunnel_dual):5s 内老链路 runLinkTunnel 仍未退出,意味着它的 demux goroutine 还在
+			// 消费**与 newConn 共享**的 TunChan。此刻直接启动 newConn 的 demux → 两个 demux 并发抢同一 TunChan,
+			// 下行包被随机分给已 Close 的老链路而**丢失**(不止乱序)。故先主动 cancel 老 tunnel 的 ctx 逼停其
+			// demux,再等一段 grace;仍不退出才作为最后手段继续(极端 pathological:某 goroutine 无视 cancel)。
 			logrus.WithFields(logrus.Fields{
 				"remote": remote, "sid": sid,
-			}).Warn("[takeover] 老链路 5s 内未退出 runLinkTunnel；继续启动新 demux（最坏后果：IP 包短暂乱序）")
+			}).Warn("[takeover] 老链路 5s 内未退出 runLinkTunnel；主动 cancel 其 tunnel ctx 后再等")
+			if cf := oldConn.tunnelCancel.Load(); cf != nil {
+				(*cf)()
+			}
+			select {
+			case <-oldConn.tunnelDone:
+			case <-time.After(3 * time.Second):
+				logrus.WithFields(logrus.Fields{
+					"remote": remote, "sid": sid,
+				}).Error("[takeover] cancel 后老链路仍未退出 runLinkTunnel；作为最后手段启动新 demux（可能短暂下行丢包）")
+			}
 		}
 	}
 

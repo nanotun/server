@@ -34,7 +34,36 @@
             <div class="hint">{{T "login.captchaHintPrefix"}}<a href="/setup">{{T "login.captchaRefresh"}}</a></div>
         </div>
         {{end}}
-        <button class="btn" type="submit">{{T "setup.submit"}}</button>
+        {{/* d_setup_pow:自适应 PoW,与 login.html 同款。平时 .Data.PoW.Required=false 整段不渲染;
+             同 IP 失败累积后服务端下发题目,浏览器用 pow_solver.js 算 nonce。无 JS 走 <noscript>。 */}}
+        {{with .Data.PoW}}{{if .Required}}
+        <input type="hidden" name="pow_challenge_id" value="{{.ChallengeID}}">
+        <input type="hidden" name="pow_salt"         value="{{.Salt}}">
+        <input type="hidden" name="pow_difficulty"   value="{{.DifficultyStr}}">
+        <input type="hidden" name="pow_expires_at"   value="{{.ExpiresAt}}">
+        <input type="hidden" name="pow_signature"    value="{{.Signature}}">
+        <input type="hidden" name="pow_nonce" id="pow-nonce" value="">
+        <div class="field" id="pow-field">
+            <div id="pow-status" class="hint" data-difficulty="{{.DifficultyStr}}"
+                 data-i18n-verifying="{{T "pow.verifying"}}"
+                 data-i18n-progress="{{T "pow.progress"}}"
+                 data-i18n-fail-pre="{{T "pow.failPre"}}"
+                 data-i18n-fail-mid="{{T "pow.failMid"}}"
+                 data-i18n-fail-refresh="{{T "pow.failRefresh"}}"
+                 data-i18n-fail-post="{{T "pow.failPost"}}"
+                 data-i18n-done="{{T "pow.done"}}"
+                 data-i18n-login="{{T "pow.login"}}">
+                {{T "login.powStatus" .DifficultyStr}}
+            </div>
+            <noscript>
+                <div class="flash err" style="margin-top:8px">
+                    {{T "login.powNoscript"}}
+                </div>
+            </noscript>
+        </div>
+        <script src="/static/pow_solver.js"></script>
+        {{end}}{{end}}
+        <button class="btn" type="submit" id="submit-btn">{{T "setup.submit"}}</button>
     </form>
 </div>
 

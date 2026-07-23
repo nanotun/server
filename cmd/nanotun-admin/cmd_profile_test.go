@@ -702,6 +702,32 @@ func TestWriteFileTight_RefusesExistingUnlessForce(t *testing.T) {
 	}
 }
 
+// TestWriteFileTight_NoClobberOnRaceCreate 模拟 e_writefiletight 修的 TOCTOU:
+// Lstat 检查时目标不存在,随后(落盘前)被人 race 建出来。force=false 的原子 no-clobber
+// 落盘(os.Link)必须失败、且不覆盖 race 建出的文件内容。
+func TestWriteFileTight_NoClobberOnRaceCreate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sekret.json")
+	// 直接对一个已存在目标调用:force=false 必须拒绝且不改动其内容
+	// (Lstat 早拦是一层;即便绕过 Lstat,最终 os.Link 也会 EEXIST —— 这里覆盖整条契约)。
+	if err := os.WriteFile(path, []byte("victim"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileTight(path, []byte("attacker-would-overwrite"), 0o600, false); err == nil {
+		t.Fatal("force=false 落盘到已存在目标应失败(no-clobber)")
+	}
+	if b, _ := os.ReadFile(path); string(b) != "victim" {
+		t.Fatalf("no-clobber 后目标内容应不变,got %q", b)
+	}
+	// 目录里不应残留临时文件(link 失败分支必须清理 CreateTemp 产物)。
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if e.Name() != "sekret.json" {
+			t.Fatalf("落盘失败后应无临时残留,发现 %q", e.Name())
+		}
+	}
+}
+
 func TestWriteQRPNG_WritesValidPNG(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "profile.png")

@@ -267,19 +267,30 @@ func (s *Store) TouchDevice(ctx context.Context, id int64) error {
 // lease_gc 跑前用这个把所有 active session 持有的 device 一次性顶上时间戳,避免
 // 长会话(>30 天)期间的 vIP 被误回收。空 ids 直接 noop。
 //
-// 用 IN(...) 拼参数;SQLite 默认上限 32k 参数,千用户级别用不到。
+// 用 IN(...) 拼参数。第四轮深扫 MED:SQLite 的 host 参数上限(SQLITE_MAX_VARIABLE_NUMBER,老构建可能低至
+// 999)不保证到 32k,超大 session 集会让整条 UPDATE 直接失败(整批 touch 丢失 → 长会话 vIP 被误 GC)。
+// 改为分块(每块 batchTouchChunk 个 id),各块独立 UPDATE,规避变量上限;失败即返回。
 func (s *Store) BatchTouchDevices(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	q := `UPDATE devices SET last_seen_at=? WHERE id IN (?` + strings.Repeat(`,?`, len(ids)-1) + `)`
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, nowUnix())
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	if _, err := s.db.ExecContext(ctx, q, args...); err != nil {
-		return fmt.Errorf("store: batch touch devices: %w", err)
+	now := nowUnix()
+	const batchTouchChunk = 500 // 远低于任何 SQLite 变量上限,单条 UPDATE(+1 个时间戳参数)始终安全
+	for start := 0; start < len(ids); start += batchTouchChunk {
+		end := start + batchTouchChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		q := `UPDATE devices SET last_seen_at=? WHERE id IN (?` + strings.Repeat(`,?`, len(chunk)-1) + `)`
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, now)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		if _, err := s.db.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("store: batch touch devices: %w", err)
+		}
 	}
 	return nil
 }
@@ -366,7 +377,12 @@ func (s *Store) SetDeviceAlias(ctx context.Context, id int64, alias string) erro
 //
 // 用一个语句完成,避免事务复杂度;两个 UPDATE 之间发生进程崩溃的情况下,数据
 // 不一致仅停留到该设备下次登录,可以接受。
-func (s *Store) SetDeviceFixedVIP(ctx context.Context, id int64, fixedV4, fixedV6 string) error {
+// force(第四轮深扫修正):admin 显式覆盖。false 时下面的跨表守卫命中即回滚成 ErrDuplicate;
+// true 时**不是无脑忽略冲突**(那会重新制造双占黑洞),而是在同一事务里先把**其它设备**动态
+// lease 上占用该地址的 vip 释放(置 NULL,被夺设备下次登录 alloc_lease 会另分配),消除双占后再钉。
+// CLI `--force` / exit designate `--force` 走 true,web(无 force,冲突时 409 前置拦截)与其它
+// 内部调用走 false。
+func (s *Store) SetDeviceFixedVIP(ctx context.Context, id int64, fixedV4, fixedV6 string, force bool) error {
 	// **事务包住两条 UPDATE**:devices.fixed_vip_* 与 leases.manual 必须同生同死。此前是两条独立
 	// ExecContext——若 devices 更新成功、leases 同步失败(锁 / IO),会留下「fixed_vip 已设但 leases.manual=0」
 	// 的错位:GC 会把这个手钉 vIP 的 lease 当空闲回收,下次登录该设备可能拿不回固定地址(前一句注释说的
@@ -392,19 +408,62 @@ func (s *Store) SetDeviceFixedVIP(ctx context.Context, id int64, fixedV4, fixedV
 	if n == 0 {
 		return ErrNotFound
 	}
-	// 同步 leases.manual。空 fixed_v4/v6 一律 0,任一匹配则 1。
-	// CASE WHEN 让单语句覆盖所有 (v4 匹配, v6 匹配, 都匹配, 都不匹配) 组合。
-	// lease 行可能根本不存在(device 没登录过)— UPDATE 影响 0 行不算错。
+
+	// 跨表守卫(第四轮深扫 HIGH):devices 上的 UNIQUE 索引只挡 device↔device 的 fixed_vip 撞车(上面的 UPDATE
+	// 会直接抛 UNIQUE);它挡不住「**另一台**设备的动态 lease 正好占了这个要钉的地址」。若不查,fixed_vip 与他设备
+	// lease 双占同一 vIP → 路由黑洞。
+	if fixedV4 != "" || fixedV6 != "" {
+		if force {
+			// admin 显式 --force:先释放**其它设备**动态 lease 上占用该地址的 vip(置 NULL),消除跨表双占后再钉。
+			// vip_v4/vip_v6 为 NULL 时不参与比较(SQL NULL 语义),故空 fixed 族天然是 no-op。
+			if _, rerr := tx.ExecContext(ctx,
+				`UPDATE leases
+				    SET vip_v4 = CASE WHEN vip_v4 = ? THEN NULL ELSE vip_v4 END,
+				        vip_v6 = CASE WHEN vip_v6 = ? THEN NULL ELSE vip_v6 END
+				  WHERE device_id != ?
+				    AND ( vip_v4 = ? OR vip_v6 = ? )`,
+				nullableString(fixedV4), nullableString(fixedV6), id,
+				nullableString(fixedV4), nullableString(fixedV6),
+			); rerr != nil {
+				return fmt.Errorf("store: set fixed vip force-release conflicting leases device_id=%d: %w", id, rerr)
+			}
+		} else {
+			// 写后校验:另一 device 的 lease 持有该地址则回滚成 ErrDuplicate。
+			var dummy int
+			qerr := tx.QueryRowContext(ctx,
+				`SELECT 1 FROM leases
+				  WHERE device_id != ?
+				    AND ( (vip_v4 IS NOT NULL AND vip_v4 = ?)
+				       OR (vip_v6 IS NOT NULL AND vip_v6 = ?) )
+				  LIMIT 1`,
+				id, nullableString(fixedV4), nullableString(fixedV6)).Scan(&dummy)
+			if qerr == nil {
+				return fmt.Errorf("store: set fixed vip device_id=%d v4=%q v6=%q conflicts with another device lease: %w",
+					id, fixedV4, fixedV6, ErrDuplicate)
+			} else if !errors.Is(qerr, sql.ErrNoRows) {
+				return fmt.Errorf("store: set fixed vip cross-table check: %w", qerr)
+			}
+		}
+	}
+
+	// 同步该 device 的 lease(第四轮深扫 MED,store #6 一并修):
+	//   - 非空 fixed_vip 族:把 lease 的对应 vip **搬到** fixed 值 —— 否则旧的动态 vip 会与新 fixed 同时被
+	//     AllUsedVIPs 计为「已用」,该设备白占两个地址直到下次登录 / GC;搬过来后旧地址立即释放。
+	//   - 空 fixed_vip 族:保留 lease 里既有的动态 vip(ELSE 分支不动)。
+	//   - manual:任一 fixed 非空即 1(手钉,GC 不回收),否则 0。
+	// lease 行可能不存在(device 没登录过)→ UPDATE 影响 0 行不算错,下次登录 alloc_lease 会按 fixed 建。
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE leases
-		    SET manual = CASE
-		        WHEN (?<>'' AND vip_v4=?) OR (?<>'' AND vip_v6=?) THEN 1
-		        ELSE 0
-		    END
+		    SET vip_v4 = CASE WHEN ? <> '' THEN ? ELSE vip_v4 END,
+		        vip_v6 = CASE WHEN ? <> '' THEN ? ELSE vip_v6 END,
+		        manual = CASE WHEN (? <> '' OR ? <> '') THEN 1 ELSE 0 END
 		  WHERE device_id=?`,
-		fixedV4, fixedV4, fixedV6, fixedV6, id,
+		fixedV4, fixedV4, fixedV6, fixedV6, fixedV4, fixedV6, id,
 	); err != nil {
-		return fmt.Errorf("store: sync lease manual after fixed_vip: %w", err)
+		if isUniqueConstraintErr(err) {
+			return fmt.Errorf("store: set fixed vip lease move device_id=%d: %w", id, ErrDuplicate)
+		}
+		return fmt.Errorf("store: sync lease after fixed_vip: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: set fixed vip commit: %w", err)

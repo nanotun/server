@@ -60,6 +60,41 @@ func cmdConfigLint(opts *globalOpts, args []string) int {
 		fmt.Fprintln(opts.stderr, opts.T("config.strictFail", path, err.Error()))
 		return 3
 	}
+	// 第四轮深扫 LOW(e_config_lint):此前 lint 只查「语法 + 未知字段」,一份**语义**非法的配置
+	// (负速率、非法 CIDR、越界 hy2 调优、REALITY dest 缺 port、exit_mode 拼错……)照样报 OK,却会
+	// 在真正重启 server 时才 Fatal —— lint 的价值(重启前拦截)大打折扣。这里补齐启动期同款语义校验:
+	// cfg.Validate() + hy2(凭证配套 & 调优区间) + REALITY(启用时) + exit_mode / exit_dns_redirect。
+	// 不含 validateVPNListenAddr(那条依赖运行期环回可达性语义,且会 os.Exit,不适合 lint)。
+	if lerr := lintSemantic(&cfg); lerr != nil {
+		fmt.Fprintln(opts.stderr, opts.T("config.strictFail", path, lerr.Error()))
+		return 3
+	}
 	fmt.Fprintf(opts.stdout, "%s OK\n", path)
 	return 0
+}
+
+// lintSemantic 复用 config 包里与 server 启动期一致的语义校验,聚合首个失败返回。
+// 顺序与 cmd/nanotund 启动路径对齐:通用 Validate → hy2 → REALITY → exit。
+func lintSemantic(cfg *config.Config) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	// hy2:凭证「全空或全配齐」+ 启用时的调优区间。两者都对未启用(全空)场景无害。
+	if err := cfg.Hysteria.ValidateHysteriaCredentials(); err != nil {
+		return err
+	}
+	if err := cfg.Hysteria.ValidateTuning(); err != nil {
+		return err
+	}
+	// REALITY:仅在 listen_addr 非空(即启用)时做深校验;Validate 内部已对空 listen_addr 直接放行。
+	if err := cfg.Reality.Validate(); err != nil {
+		return fmt.Errorf("reality: %w", err)
+	}
+	if err := cfg.TUN.ValidateExitMode(); err != nil {
+		return err
+	}
+	if err := cfg.TUN.ValidateExitDNSRedirect(); err != nil {
+		return err
+	}
+	return nil
 }

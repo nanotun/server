@@ -16,8 +16,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/nanotun/server/store"
 )
+
+// maxConcurrentWebSessionsPerAdmin 是单个 web admin 的并发有效 session 上限(d_relogin_revoke)。
+// 登录成功后 IssueSession 会把该 admin 的 session 数封顶到此值(保留最近若干条)。取 10:足够覆盖
+// 「笔记本 + 手机 + 平板 + 几个浏览器」的正常多设备使用,又能阻止无界累积。要「一键踢全部」走
+// DeleteWebSessionsByAdmin(改密 / 禁用 / 删除路径已用)。
+const maxConcurrentWebSessionsPerAdmin = 10
 
 // M2:Web 后台 session cookie 管理。
 //
@@ -146,6 +154,12 @@ func (s *SessionService) IssueSession(ctx context.Context, w http.ResponseWriter
 		UserAgent: truncate(ua, 256),
 	}); err != nil {
 		return err
+	}
+	// 第四轮深扫 MED(d_relogin_revoke):登录成功即把该 admin 的并发 session 数**封顶**到
+	// maxConcurrentWebSessionsPerAdmin,删掉较旧的多余项。防止反复登录无界累积有效 session、给失窃 /
+	// 遗留 cookie 一个确定的淘汰路径。best-effort:prune 失败只记日志,不阻断本次登录(会话已建成)。
+	if _, perr := s.store.PruneWebSessionsKeepingRecent(ctx, adminID, maxConcurrentWebSessionsPerAdmin); perr != nil {
+		logrus.WithError(perr).WithField("admin_id", adminID).Warn("[web] 登录后封顶并发 session 失败(忽略)")
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,

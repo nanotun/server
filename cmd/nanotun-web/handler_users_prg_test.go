@@ -104,12 +104,14 @@ func TestHandleUserCreatedFlash_UserIDMismatch(t *testing.T) {
 	alice := newPRGTestUser(t, s, "alice")
 	bob := newPRGTestUser(t, s, "bob")
 
+	// adminID 传 0:handler 走的 req 无 admin context,currentAdminID(r)==0,绑定校验(0==0)通过,
+	// 让本测试专注验证「UserID mismatch → 410 + 消费 token」这条不变式(d_flash_bind 绑定另有单测覆盖)。
 	tok, err := s.credFlash.Stash(credentialsFlashPayload{
 		Kind:     credentialsFlashKindUserCreated,
 		UserID:   alice.ID,
 		Username: "alice",
 		PSK:      "PLAIN_ALICE",
-	})
+	}, 0)
 	if err != nil {
 		t.Fatalf("Stash: %v", err)
 	}
@@ -152,7 +154,7 @@ func TestHandleUserCreatedFlash_SecondPopGone(t *testing.T) {
 		Kind:   credentialsFlashKindUserCreated,
 		UserID: u.ID,
 		PSK:    "PLAIN_CAROL",
-	})
+	}, 0)
 
 	// 第一次:token + UserID 全对。无模板 → 500,但 token 已被 Pop。
 	req1 := httptest.NewRequest(http.MethodGet, "/users/1/created?token="+tok, nil)
@@ -184,7 +186,7 @@ func TestHandleUserResetPSKResultFlash_KindMismatch(t *testing.T) {
 		Kind:   credentialsFlashKindUserCreated, // 写入 user_created
 		UserID: u.ID,
 		PSK:    "PLAIN_DAVE",
-	})
+	}, 0)
 
 	// GET reset-psk-result 路径(kind = user_reset_psk),会去 Pop(token, user_reset_psk),
 	// kind 不匹配 → store 立即删 + handler 410。

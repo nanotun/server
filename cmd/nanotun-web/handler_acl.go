@@ -180,7 +180,7 @@ func (s *Server) handleACLAction(w http.ResponseWriter, r *http.Request) {
 				s.renderError(w, r, http.StatusNotFound, tr(r, "err.aclNotFound"))
 				return
 			}
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.deleteFailed")+err.Error())
+			s.renderInternalError(w, r, "acl:delete", err)
 			return
 		}
 		s.audit.WriteFromRequest(r, "acl_delete", FormatTarget("acl", id), "")

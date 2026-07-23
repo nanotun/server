@@ -96,4 +96,36 @@ func TestApplyFlagPrecedence(t *testing.T) {
 			t.Errorf("-trusted-proxies=off should clear env value, got %v", cfg.TrustedProxies)
 		}
 	})
+
+	// e_extra_sans:显式 -extra-sans **替换**(而非追加)env 派生的 SAN。
+	t.Run("extra_sans_flag_replaces_env", func(t *testing.T) {
+		t.Setenv("NANOTUN_WEB_EXTRA_SANS", "env-a.com,env-b.com")
+		cfg := defaultConfig()
+		applyFlagPrecedence(&cfg, map[string]bool{"extra-sans": true}, flagOverrides{
+			extraSANs: "flag-x.com, flag-y.com",
+		})
+		if len(cfg.ExtraSANs) != 2 || cfg.ExtraSANs[0] != "flag-x.com" || cfg.ExtraSANs[1] != "flag-y.com" {
+			t.Errorf("-extra-sans should REPLACE env SANs (not append), got %v", cfg.ExtraSANs)
+		}
+	})
+
+	// 未设 flag 时保留 env 派生的 SAN。
+	t.Run("extra_sans_env_wins_when_flag_absent", func(t *testing.T) {
+		t.Setenv("NANOTUN_WEB_EXTRA_SANS", "env-a.com,env-b.com")
+		cfg := defaultConfig()
+		applyFlagPrecedence(&cfg, map[string]bool{}, flagOverrides{extraSANs: "ignored.com"})
+		if len(cfg.ExtraSANs) != 2 || cfg.ExtraSANs[0] != "env-a.com" || cfg.ExtraSANs[1] != "env-b.com" {
+			t.Errorf("env SANs should apply when -extra-sans absent, got %v", cfg.ExtraSANs)
+		}
+	})
+
+	// 显式 -extra-sans=""(空)清空 env 派生项。
+	t.Run("extra_sans_explicit_empty_clears_env", func(t *testing.T) {
+		t.Setenv("NANOTUN_WEB_EXTRA_SANS", "env-a.com")
+		cfg := defaultConfig()
+		applyFlagPrecedence(&cfg, map[string]bool{"extra-sans": true}, flagOverrides{extraSANs: ""})
+		if len(cfg.ExtraSANs) != 0 {
+			t.Errorf("-extra-sans=\"\" should clear env SANs, got %v", cfg.ExtraSANs)
+		}
+	})
 }

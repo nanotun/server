@@ -80,6 +80,7 @@ type flagOverrides struct {
 	noAutoReload   bool
 	trustedProxies string
 	allowSetup     bool
+	extraSANs      string // -extra-sans 原始 CSV;显式设过时**替换**(而非追加)env 派生的 SAN
 }
 
 // applyFlagPrecedence 实现「显式 flag > env > default」:先用 env 覆盖默认值,再把**显式设过**
@@ -111,6 +112,14 @@ func applyFlagPrecedence(cfg *Config, setFlags map[string]bool, ov flagOverrides
 	if setFlags["allow-setup"] {
 		// 显式 -allow-setup=false 压过 env / 默认,彻底关闭 /setup 抢占面。
 		cfg.AllowSetup = ov.allowSetup
+	}
+	if setFlags["extra-sans"] {
+		// 第四轮深扫 LOW(e_extra_sans):显式 -extra-sans **替换** env(NANOTUN_WEB_EXTRA_SANS)派生的 SAN,
+		// 而非与之**追加**求并集。此前 main() 在 applyEnvOverrides 之前就把 flag SAN append 进 cfg,env 再 append
+		// 一遍 → 最终是 flag∪env,运维用 flag 想「只签这几个 SAN」却被 systemd 里的 env 残留额外条目污染证书
+		// (多签的 SAN = 证书可被用于本不该覆盖的名字,收窄面失败)。与 -trusted-proxies 的 env「覆盖非追加」同口径:
+		// 显式给了就以 flag 为准;`-extra-sans=`(空)则显式清空 env 派生项。未设 flag 时保留 applyEnvOverrides 结果。
+		cfg.ExtraSANs = splitCSV(ov.extraSANs)
 	}
 }
 
@@ -159,14 +168,8 @@ func main() {
 	setFlags := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
 
-	if *extraSANs != "" {
-		for _, s := range strings.Split(*extraSANs, ",") {
-			if s = strings.TrimSpace(s); s != "" {
-				cfg.ExtraSANs = append(cfg.ExtraSANs, s)
-			}
-		}
-	}
-
+	// e_extra_sans:不再在此处 append flag SAN(那样会与 applyEnvOverrides 追加的 env SAN 求并集)。
+	// 改为把原始 flag 值交给 applyFlagPrecedence,在 env 覆盖之后按「显式 flag 替换 env」处理。
 	flagAllowSetup := cfg.AllowSetup
 	applyFlagPrecedence(&cfg, setFlags, flagOverrides{
 		listen:         flagListen,
@@ -176,6 +179,7 @@ func main() {
 		noAutoReload:   *noAutoReload,
 		trustedProxies: *trustedProxies,
 		allowSetup:     flagAllowSetup,
+		extraSANs:      *extraSANs,
 	})
 	if err := cfg.Validate(); err != nil {
 		logrus.WithError(err).Fatal("[web] 配置校验失败,退出")

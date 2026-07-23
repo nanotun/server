@@ -920,6 +920,7 @@ var catEN = map[string]string{
 	"me.secretNotGenerated":     "Secret not generated yet, please click \"Enable TOTP\" again",
 	"me.totpCodeWrongCloseFail": "Wrong code, cannot disable TOTP",
 	"me.totpNotEnabledRegen":    "TOTP is not enabled, cannot generate recovery codes",
+	"me.recoveryCodesExpired":   "The recovery-code display has expired or has already been viewed. It is shown only once; to obtain them again, regenerate recovery codes from \"My Account\".",
 	"me.totpCodeWrongCheckTime": "Wrong code: %s. Check that your phone's clock is in sync, or rescan on the \"Enable TOTP\" page.",
 	"me.totpCodeWrong":          "Wrong code: %s",
 	"me.totpTooManyAttempts":    "Too many failed code attempts from your IP. Please wait a few minutes and try again.",

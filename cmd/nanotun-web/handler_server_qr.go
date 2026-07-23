@@ -156,7 +156,7 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 	// dial host。
 	dialHost, err := s.store.GetServerDialHost(ctx)
 	if err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.readDialHost")+err.Error())
+		s.renderInternalError(w, r, "server_qr:read_dial_host", err)
 		return
 	}
 	if dialHost == "" {
@@ -438,7 +438,7 @@ func (s *Server) handleSettingsAdvertisedHostSet(w http.ResponseWriter, r *http.
 	}
 	old, _ := s.store.GetAdvertisedHost(ctx)
 	if err := s.store.SetAdvertisedHost(ctx, newHost); err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.saveFailed")+trErr(r, err))
+		s.renderInternalError(w, r, "settings:set_advertised_host", err)
 		return
 	}
 	s.audit.WriteFromRequest(r, "settings_advertised_host_set", "",
@@ -606,7 +606,7 @@ func (s *Server) handleSettingsServerDialHostSet(w http.ResponseWriter, r *http.
 
 	old, _ := s.store.GetServerDialHost(ctx)
 	if err := s.store.SetServerDialHost(ctx, newHost); err != nil {
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.saveFailed")+trErr(r, err))
+		s.renderInternalError(w, r, "settings:set_server_dial_host", err)
 		return
 	}
 	auditAction := "settings_server_dial_host_set"

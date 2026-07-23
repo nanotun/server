@@ -57,6 +57,10 @@ type credentialsFlashKind string
 const (
 	credentialsFlashKindUserCreated  credentialsFlashKind = "user_created"
 	credentialsFlashKindUserResetPSK credentialsFlashKind = "user_reset_psk"
+	// credentialsFlashKindRecoveryCodes:TOTP 恢复码一次性展示(第四轮深扫 MED,d_recovery_prg)。启用 TOTP /
+	// 重刷恢复码此前在 **POST 响应里直接渲染明文码** —— admin 刷新 / 后退会重发 POST(重刷路径直接再作废旧码、
+	// 刷出新码),且明文码留在浏览器历史。改走 PRG:POST 只 stash + 303 到 GET /me/totp/codes,GET 一次性消费。
+	credentialsFlashKindRecoveryCodes credentialsFlashKind = "recovery_codes"
 )
 
 // credentialsFlashPayload 是一次性结果页要展示的全部字段。
@@ -83,12 +87,23 @@ type credentialsFlashPayload struct {
 	//   ServerID = app_settings.server_id(UUID;模板不展示,只为 audit / debug 留)
 	Host     string
 	ServerID string
+
+	// 恢复码一次性展示(d_recovery_prg):仅 Kind==credentialsFlashKindRecoveryCodes 时有意义。
+	//   RecoveryCodes = 换行分隔的明文恢复码(GET handler split 回 []string 交模板);用 string 而非 []string
+	//                   是为了保持本结构可比较(测试里有 out != in 断言,含 slice 会编译失败)。
+	//   FirstTime     = true 表示「启用 TOTP 时首发」,false 表示「重刷」——仅影响展示文案。
+	RecoveryCodes string
+	FirstTime     bool
 }
 
 // credentialsFlashEntry 是 store 内部记录,external 不可见。
 type credentialsFlashEntry struct {
 	payload credentialsFlashPayload
 	expires time.Time
+	// adminID:创建(Stash)这条 flash 的 web admin id(第四轮深扫 MED,d_flash_bind)。Pop 时要求请求方
+	// admin id 与之一致,否则视作 missing。防止 token 经 Referer / 浏览器历史 / 共享终端泄漏后,**另一个**
+	// 已登录 admin 拿它复看别人刚创建 / 重置的 PSK。绑定后即便 token 泄漏,也只有原始操作者本人能取。
+	adminID int64
 }
 
 // credentialsFlashStore 是进程内一次性 token → payload 映射。
@@ -135,10 +150,9 @@ func (s *credentialsFlashStore) prune(now time.Time) {
 	}
 }
 
-// Stash 写入一条 payload 并返回 token。失败返回错误(crypto/rand 故障)。
-//
-// 写完即可在 Location: ?token=<token> 里 redirect。
-func (s *credentialsFlashStore) Stash(p credentialsFlashPayload) (string, error) {
+// Stash 写入一条 payload 并返回 token,并把它**绑定到创建者 adminID**(d_flash_bind)。失败返回错误
+// (crypto/rand 故障)。写完即可在 Location: ?token=<token> 里 redirect。
+func (s *credentialsFlashStore) Stash(p credentialsFlashPayload, adminID int64) (string, error) {
 	tok, err := flashGenerateToken()
 	if err != nil {
 		return "", err
@@ -147,6 +161,7 @@ func (s *credentialsFlashStore) Stash(p credentialsFlashPayload) (string, error)
 	s.entries[tok] = credentialsFlashEntry{
 		payload: p,
 		expires: time.Now().Add(credentialsFlashTTL),
+		adminID: adminID,
 	}
 	s.mu.Unlock()
 	return tok, nil
@@ -158,9 +173,9 @@ func (s *credentialsFlashStore) Stash(p credentialsFlashPayload) (string, error)
 // 通过反复刷新 URL 持续看到 PSK。
 var errCredentialsFlashMissing = errors.New("credentials flash: token missing or expired")
 
-// Pop 拿出 payload 并立即从 map 删。kind 不匹配也视作 missing(防止
-// reset-psk URL 拼到 user_created 路径之类的混淆攻击)。
-func (s *credentialsFlashStore) Pop(token string, kind credentialsFlashKind) (credentialsFlashPayload, error) {
+// Pop 拿出 payload 并立即从 map 删。kind 不匹配也视作 missing(防止 reset-psk URL 拼到 user_created 路径
+// 之类的混淆攻击)。reqAdminID 必须与 Stash 时的创建者 adminID 一致,否则视作 missing(d_flash_bind)。
+func (s *credentialsFlashStore) Pop(token string, kind credentialsFlashKind, reqAdminID int64) (credentialsFlashPayload, error) {
 	if token == "" {
 		return credentialsFlashPayload{}, errCredentialsFlashMissing
 	}
@@ -179,6 +194,12 @@ func (s *credentialsFlashStore) Pop(token string, kind credentialsFlashKind) (cr
 		// 写入时 kind 固定,redirect URL 也对应固定的 GET path)→ 不匹配 = referrer
 		// 泄漏后的枚举 / 拼接攻击。此时立刻删除该 entry,避免攻击者继续试 kind 值。
 		// 副作用:若 token 真的被误拼,合法路径下次访问会显示「已过期」,这就是预期。
+		delete(s.entries, token)
+		return credentialsFlashPayload{}, errCredentialsFlashMissing
+	}
+	// 第四轮深扫 MED(d_flash_bind):绑定校验。token 泄漏后被**另一个** admin(reqAdminID != 创建者)拿来
+	// 复看 → 视作 missing 并删除,拒绝跨 admin 读取,同时阻断继续试探。合法路径下发起 GET 的必是创建者本人。
+	if entry.adminID != reqAdminID {
 		delete(s.entries, token)
 		return credentialsFlashPayload{}, errCredentialsFlashMissing
 	}

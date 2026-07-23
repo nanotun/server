@@ -38,6 +38,15 @@ func adminFromCtx(ctx context.Context) *store.WebAdmin {
 	return nil
 }
 
+// currentAdminID 返回当前请求已登录 admin 的 id;未登录 / 无 admin 时返回 0。
+// 供 credentials flash 绑定(d_flash_bind)等「按操作者归属」的场景取当前 admin。
+func currentAdminID(r *http.Request) int64 {
+	if a := adminFromCtx(r.Context()); a != nil {
+		return a.ID
+	}
+	return 0
+}
+
 func csrfTokenFromCtx(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxKeyCSRFToken).(string); ok {
 		return v

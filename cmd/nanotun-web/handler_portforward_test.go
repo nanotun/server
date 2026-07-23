@@ -30,7 +30,7 @@ func newPFTestServer(t *testing.T) (*Server, *store.Device) {
 		t.Fatalf("UpsertDevice: %v", err)
 	}
 	// 钉死 vIP（node 目标校验用）。
-	if err := st.SetDeviceFixedVIP(ctx, dev.ID, "10.201.0.6", ""); err != nil {
+	if err := st.SetDeviceFixedVIP(ctx, dev.ID, "10.201.0.6", "", false); err != nil {
 		t.Fatalf("SetDeviceFixedVIP: %v", err)
 	}
 	// 已批准网段。

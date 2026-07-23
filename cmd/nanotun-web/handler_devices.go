@@ -136,7 +136,7 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 			s.renderError(w, r, http.StatusNotFound, tr(r, "err.deviceNotFound"))
 			return
 		}
-		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryFailed")+err.Error())
+		s.renderInternalError(w, r, "devices:get_device", err)
 		return
 	}
 
@@ -308,7 +308,7 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 		if v4 != "" && v4 != d.FixedVIPv4 {
 			conflict, derr := s.checkFixedVIPConflict(r.Context(), v4, d.ID)
 			if derr != nil {
-				s.renderError(w, r, http.StatusInternalServerError, derr.Error())
+				s.renderInternalError(w, r, "devices:fixedvip4_conflict_check", derr)
 				return
 			}
 			if conflict != "" {
@@ -320,7 +320,7 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 		if v6 != "" && v6 != d.FixedVIPv6 {
 			conflict, derr := s.checkFixedVIPConflict(r.Context(), v6, d.ID)
 			if derr != nil {
-				s.renderError(w, r, http.StatusInternalServerError, derr.Error())
+				s.renderInternalError(w, r, "devices:fixedvip6_conflict_check", derr)
 				return
 			}
 			if conflict != "" {
@@ -330,7 +330,8 @@ func (s *Server) handleDeviceAction(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if err := s.store.SetDeviceFixedVIP(r.Context(), id, v4, v6); err != nil {
+		// web 无 --force:冲突已在上面 409 前置拦截,这里必不撞车,force=false。
+		if err := s.store.SetDeviceFixedVIP(r.Context(), id, v4, v6, false); err != nil {
 			s.renderStoreWriteErr(w, r, err, "err.deviceNotFound", "err.setFailed")
 			return
 		}
@@ -551,7 +552,7 @@ func (s *Server) handleLeaseAction(w http.ResponseWriter, r *http.Request) {
 				s.renderError(w, r, http.StatusNotFound, tr(r, "err.leaseNotFound"))
 				return
 			}
-			s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.releaseFailed")+err.Error())
+			s.renderInternalError(w, r, "devices:lease_release", err)
 			return
 		}
 		s.audit.WriteFromRequest(r, "lease_release", FormatTarget("device", deviceID), "")

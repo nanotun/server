@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 )
@@ -234,10 +235,29 @@ func (s *Store) RegenerateRecoveryCodes(ctx context.Context, adminID int64,
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// **写优先**:先 DELETE(取写锁,规避 DEFERRED 事务读后升级写撞 BUSY_SNAPSHOT),再在同一 tx 内校验前置条件。
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM web_admin_recovery_codes WHERE admin_id=?`, adminID); err != nil {
 		return fmt.Errorf("store: clear recovery codes: %w", err)
 	}
+
+	// 第四轮深扫 MED(store #8):校验目标 admin **存在**且 **totp_enabled=1**,再写新码。
+	//   - 不存在:此前 INSERT 会因 FK 抛一条晦涩的约束错;归一化为 ErrNotFound,与其余 DAL 一致。
+	//   - 未启用 TOTP:恢复码是「TOTP 丢失时的兜底」,给一个没开 TOTP 的账号塞恢复码是无意义的孤儿数据
+	//     (且可能被误当成「已有第二因子」)。要求先启用 TOTP,契合本函数「只换码不改 enabled」的语义。
+	var totpEnabled int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT totp_enabled FROM web_admins WHERE id=?`, adminID).Scan(&totpEnabled); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("store: check totp_enabled for regen: %w", err)
+	}
+	if totpEnabled == 0 {
+		return fmt.Errorf("store: refuse to regenerate recovery codes: admin_id=%d has TOTP disabled: %w",
+			adminID, ErrInvalid)
+	}
+
 	stmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO web_admin_recovery_codes(admin_id, code_hash, created_at)
 		 VALUES(?,?,?)`)
