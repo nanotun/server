@@ -102,11 +102,17 @@ func (t *IPFailureTracker) Inc(ip string) int {
 	if v, ok := t.m.Load(ip); ok {
 		return t.bump(v.(*ipFailureRecord))
 	}
-	// 慢路径:新 IP。受 maxTrackedIPs 软上限保护 —— 超限先 Prune,仍满则丢弃本次(防跨 IP 灌爆内存)。
+	// 慢路径:新 IP。受 maxTrackedIPs 软上限保护 —— 超限先 Prune 回收陈旧项;仍满则**驱逐任意一个**旧条目
+	// 腾位,而**不是**放弃追踪返回 0。
+	//
+	// 第四轮深扫 MED(修 L7 引入的 fail-open):此前满了直接 return 0 → 新 IP 不进表 → Recent()=0 →
+	// ComputeDifficulty=0 → PoW 被跳过。攻击者只要先用一万多个不同源 IP 把 map 灌满,之后用**真实攻击 IP**
+	// 就能永久免 PoW(把本该驱动自适应难度的失败信号一起关掉了)。改为 fail-closed:超限时驱逐一个旧条目
+	// 让新 IP 仍被追踪,PoW 信号不丢;map 规模仍被 evict-on-insert 钉在 ~maxTrackedIPs,内存有界。
 	if t.size.Load() >= maxTrackedIPs {
 		t.Prune()
 		if t.size.Load() >= maxTrackedIPs {
-			return 0
+			t.evictOne()
 		}
 	}
 	v, loaded := t.m.LoadOrStore(ip, &ipFailureRecord{})
@@ -114,6 +120,17 @@ func (t *IPFailureTracker) Inc(ip string) int {
 		t.size.Add(1)
 	}
 	return t.bump(v.(*ipFailureRecord))
+}
+
+// evictOne 删掉 map 里**任意一个** entry(sync.Map 无序,取 Range 首个即可)给新 IP 腾位。
+// 只在触顶时调用;用 LoadAndDelete 确保仅在确实删除时才 size--(并发下不双减)。
+func (t *IPFailureTracker) evictOne() {
+	t.m.Range(func(k, _ any) bool {
+		if _, loaded := t.m.LoadAndDelete(k); loaded {
+			t.size.Add(-1)
+		}
+		return false // 只删一个即停
+	})
 }
 
 // bump 在持 record 锁下做「窗口过期归零 + 计数 +1 + 刷新 lastFail」,返回新计数。

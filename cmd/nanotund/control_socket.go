@@ -914,10 +914,11 @@ func controlHandleRateRefresh(gw *gatewayState) http.HandlerFunc {
 		}
 		var req controlRateRefreshReq
 		// body 允许空(全量刷)。bad json 不阻塞 — 允许走 query 兜底。
-		if r.ContentLength > 0 {
-			r.Body = http.MaxBytesReader(w, r.Body, controlMaxBodyBytes)
-			_ = json.NewDecoder(r.Body).Decode(&req)
-		}
+		// 第四轮深扫 MED:此前仅在 ContentLength>0 时才 MaxBytesReader;chunked / 未知长度(ContentLength==-1)
+		// 会绕过上限。改为**无条件**先包 MaxBytesReader 再解码(空 body 解码得 io.EOF,被忽略,不影响 query 兜底),
+		// 与 /kick 一致地封顶请求体,杜绝本地畸形调用方 memory-DoS 守护进程。
+		r.Body = http.MaxBytesReader(w, r.Body, controlMaxBodyBytes)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req.DeviceID == 0 {
 			// N22:query 解析失败显式 400,避免运维拼错(device_5、abc)时静默回退到
 			// 全量刷,触发不必要的 N 条 conn 重算。
@@ -1035,10 +1036,9 @@ func controlHandleUserRateRefresh(gw *gatewayState) http.HandlerFunc {
 			return
 		}
 		var req controlUserRateRefreshReq
-		if r.ContentLength > 0 {
-			r.Body = http.MaxBytesReader(w, r.Body, controlMaxBodyBytes)
-			_ = json.NewDecoder(r.Body).Decode(&req)
-		}
+		// 无条件封顶请求体(见 /rate/refresh 同款说明,第四轮深扫 MED):chunked/未知长度也不再绕过上限。
+		r.Body = http.MaxBytesReader(w, r.Body, controlMaxBodyBytes)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req.UserID == 0 {
 			// N22:query 非数字 → 400(对齐 /rate/refresh 行为)。
 			if q := r.URL.Query().Get("user_id"); q != "" {

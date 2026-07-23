@@ -130,6 +130,22 @@ func VerifyPSK(plaintext, encoded string) (bool, error) {
 	return subtle.ConstantTimeCompare(cand, hash) == 1, nil
 }
 
+// VerifyPSKLimited 是 VerifyPSK 的**并发受限**版本:先取全局 argon2 semaphore(与 Verifier.VerifyLogin 同一把,
+// 见 argon2Sema)再跑 argon2id,把整个进程「同时进行中的 argon2 verify」数封顶。
+//
+// 第四轮深扫 HIGH:nanotun-web 后台登录 / decoy / TOTP 恢复码校验此前直接调 VerifyPSK,**绕过**了信号量,
+// 每次 argon2 申请 ~64MB;并发 web 登录(尤其恢复码路径单次最多 10 次 verify)可把宿主 RAM 打爆。让 web
+// 侧改走本函数即与 VPN 登录共用同一 DoS 天花板。
+//
+// ctx 取消 / 无 deadline 导致 Acquire 失败时返回 (false, 非 nil err) —— 调用方应视为「暂时不可用」而非「密码错误」。
+func VerifyPSKLimited(ctx context.Context, plaintext, encoded string) (bool, error) {
+	if err := argon2Sema.Acquire(ctx, 1); err != nil {
+		return false, fmt.Errorf("auth: argon2 capacity exhausted: %w", err)
+	}
+	defer argon2Sema.Release(1)
+	return VerifyPSK(plaintext, encoded)
+}
+
 // DecodePSK 解析 EncodePSK 写出的 PHC 字符串。导出供测试与 admin 后台诊断使用。
 func DecodePSK(encoded string) (salt, hash []byte, memory, time uint32, threads uint8, err error) {
 	parts := strings.Split(encoded, "$")

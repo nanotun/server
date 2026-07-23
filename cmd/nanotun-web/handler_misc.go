@@ -563,6 +563,19 @@ func safeReturnToOrFallback(returnTo, referer, fallback string) string {
 // 第八轮深扫 P1 引入。供 mesh toggle 等需要回跳的 handler 复用,避免每处各写
 // 一份不同强度的白名单(devices 仅 `HasPrefix("/") && !HasPrefix("//")`,
 // 这里加上反斜杠 / scheme / host 三层防御)。
+// hasControlByte 判断字符串是否含 C0 控制字符(<0x20)或 DEL(0x7f)。用于 return-to 白名单兜底:
+// 双重编码的 CRLF(如 %250d%250a)在浏览器/一次表单解码后成 %0d%0a,url.Parse 再解码即得真实 CR/LF 落进
+// u.Path。虽然 Go 1.25+ 会把 Location 头里的 CR/LF 改写成空格(经典响应头注入已被消音),但白名单本就不该
+// 放行含控制字符的路径 —— 与运行时版本无关地拒之(第四轮深扫 LOW,纵深防御)。
+func hasControlByte(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
 func sanitizeReturnTo(returnTo, referer string) string {
 	// strictPath 只接受站内 path(/ 开头, 不含 //, 不含 \, 无 host 无 scheme)。
 	//
@@ -593,6 +606,9 @@ func sanitizeReturnTo(returnTo, referer string) string {
 		if u.RawQuery != "" {
 			out += "?" + u.RawQuery
 		}
+		if hasControlByte(out) {
+			return "" // 双重编码 CRLF 等控制字符(见 hasControlByte),白名单一律拒
+		}
 		return out
 	}
 	// pathFromReferer 接受绝对 / 相对 URL,但只复用 path + query,丢 scheme/host。
@@ -615,6 +631,9 @@ func sanitizeReturnTo(returnTo, referer string) string {
 		}
 		if !strings.HasPrefix(out, "/") || strings.HasPrefix(out, "//") {
 			return ""
+		}
+		if hasControlByte(out) {
+			return "" // 双重编码 CRLF 等控制字符,拒
 		}
 		return out
 	}

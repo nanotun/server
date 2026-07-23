@@ -235,11 +235,11 @@ func TestHashWebPasswordFormat(t *testing.T) {
 	if len(h) < 50 || h[:9] != "argon2id$" {
 		t.Fatalf("hash format wrong: %s", h)
 	}
-	ok, _ := VerifyWebPassword("StrongPass1!aaa", h)
+	ok, _ := VerifyWebPassword(context.Background(), "StrongPass1!aaa", h)
 	if !ok {
 		t.Fatal("verify same psk should ok")
 	}
-	ok, _ = VerifyWebPassword("Wrong!", h)
+	ok, _ = VerifyWebPassword(context.Background(), "Wrong!", h)
 	if ok {
 		t.Fatal("verify wrong should fail")
 	}

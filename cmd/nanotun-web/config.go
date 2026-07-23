@@ -289,8 +289,12 @@ func (c *Config) Validate() error {
 	if c.MaxLoginFailures < 1 {
 		return fmt.Errorf("max_login_failures=%d must be >= 1; 0 would disable brute-force lockout entirely", c.MaxLoginFailures)
 	}
-	if c.LockoutSeconds < 0 {
-		return fmt.Errorf("lockout_seconds=%d cannot be < 0", c.LockoutSeconds)
+	// 必须 >= 1。RecordWebAdminLoginFailure 达阈值时把 locked_until 设为 `now + lockSeconds`;若 lockSeconds=0
+	// 则 locked_until==now,而 AttemptLogin 的锁定判定是 `LockedUntil > now`(严格大于)→ **永远不锁**,且滑动
+	// 窗口(=lockSeconds)也退化为每次失败都重置计数。等于把账号级暴力破解锁定整个关掉(第四轮深扫 MED,与
+	// max_login_failures=0 同类脚枪)。默认 900 已在构造时给出,这里只拦显式设成 0/负数的情况。
+	if c.LockoutSeconds < 1 {
+		return fmt.Errorf("lockout_seconds=%d must be >= 1; 0 would disable account lockout entirely", c.LockoutSeconds)
 	}
 	if c.ReadHeaderTimeout <= 0 {
 		c.ReadHeaderTimeout = 10 * time.Second

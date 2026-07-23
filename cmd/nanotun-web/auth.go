@@ -27,12 +27,16 @@ func HashWebPassword(plaintext string) (string, error) {
 	return auth.HashPSK(plaintext)
 }
 
-// VerifyWebPassword 与 auth.VerifyPSK 等价。
+// VerifyWebPassword 与 auth.VerifyPSK 等价,但**经全局 argon2 semaphore 限流**(auth.VerifyPSKLimited)。
 //
-// 注意:这里没有复用 *auth.Verifier 是因为它要求 store.User,而 web_admins
-// 是单独表;但 VerifyPSK 本身仅需要 PHC 字符串,可直接用。
-func VerifyWebPassword(plaintext, encoded string) (bool, error) {
-	return auth.VerifyPSK(plaintext, encoded)
+// 注意:这里没有复用 *auth.Verifier 是因为它要求 store.User,而 web_admins 是单独表;但 VerifyPSKLimited
+// 仅需要 PHC 字符串,可直接用。第四轮深扫 HIGH:此前直接调 VerifyPSK 绕过了信号量,web 登录 / decoy / 恢复码
+// 校验可并发起大量 64MB argon2 把宿主 OOM;改走 VerifyPSKLimited 后与 VPN 登录共用同一并发天花板。
+//
+// ctx 取消 / 容量耗尽时返回 (false, err);调用方(AttemptLogin 等)对 err 的既有处理是「按验证失败/记一次失败」,
+// 语义安全(不会误判为验证通过)。
+func VerifyWebPassword(ctx context.Context, plaintext, encoded string) (bool, error) {
+	return auth.VerifyPSKLimited(ctx, plaintext, encoded)
 }
 
 // ValidatePasswordStrength 在 setup / create / reset 时给一道基础门槛。
@@ -123,7 +127,7 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 	a, err := st.GetWebAdminByUsername(ctx, username)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			_, _ = VerifyWebPassword(password, decoyWebHash())
+			_, _ = VerifyWebPassword(ctx, password, decoyWebHash())
 			return AuthResult{Err: ErrAuthBadCredentials}
 		}
 		// 深扫第八轮 LOW:此前返回内联中文 fmt.Errorf,trErr 既非哨兵也无 LocaleKey,
@@ -131,15 +135,15 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 		return AuthResult{Err: newLocErr("err.queryFailed")}
 	}
 	if !a.Enabled {
-		_, _ = VerifyWebPassword(password, decoyWebHash())
+		_, _ = VerifyWebPassword(ctx, password, decoyWebHash())
 		return AuthResult{Admin: a, Err: ErrAuthDisabled}
 	}
 	if a.LockedUntil > 0 && a.LockedUntil > nowUnix() {
-		_, _ = VerifyWebPassword(password, decoyWebHash())
+		_, _ = VerifyWebPassword(ctx, password, decoyWebHash())
 		return AuthResult{Admin: a, Err: ErrAuthLocked, LockedUntil: a.LockedUntil}
 	}
 
-	ok, verr := VerifyWebPassword(password, a.PasswordHash)
+	ok, verr := VerifyWebPassword(ctx, password, a.PasswordHash)
 	if verr != nil || !ok {
 		_, lockUntil, _ := st.RecordWebAdminLoginFailure(ctx, a.ID,
 			cfg.MaxLoginFailures, cfg.LockoutSeconds)

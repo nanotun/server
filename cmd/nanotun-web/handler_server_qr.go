@@ -183,7 +183,7 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 		s.renderServerQRPasswordPage(w, r, tr(r, "serverQr.passwordRequired"), http.StatusBadRequest)
 		return
 	}
-	ok, verr := VerifyWebPassword(password, admin.PasswordHash)
+	ok, verr := VerifyWebPassword(r.Context(), password, admin.PasswordHash)
 	if verr != nil || !ok {
 		newCount := s.stepUpFailures.Inc(ip)
 		reason := "wrong_password"

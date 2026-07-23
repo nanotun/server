@@ -509,7 +509,7 @@ func (s *Server) verifyTOTPOrRecovery(ctx context.Context, admin *store.WebAdmin
 			return false, false, 0, "recovery_list:" + err.Error()
 		}
 		for _, c := range codes {
-			match, _ := VerifyWebPassword(norm, c.CodeHash)
+			match, _ := VerifyWebPassword(ctx, norm, c.CodeHash)
 			if match {
 				return true, true, c.ID, ""
 			}

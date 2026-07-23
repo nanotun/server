@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base32"
 	"encoding/hex"
 	"strings"
@@ -165,7 +166,7 @@ func TestGenerateRecoveryCodes_ShapeAndUnique(t *testing.T) {
 			t.Fatalf("hash[%d] 不是 argon2id PHC: %q", i, hashes[i])
 		}
 		// 用对应 hash 验明文应当通过
-		ok, err := VerifyWebPassword(p, hashes[i])
+		ok, err := VerifyWebPassword(context.Background(), p, hashes[i])
 		if err != nil || !ok {
 			t.Fatalf("hash[%d] verify 失败: ok=%v err=%v", i, ok, err)
 		}

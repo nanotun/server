@@ -192,6 +192,12 @@ var ErrDuplicate = errors.New("store: unique constraint violation")
 // CreateFirstWebAdmin 用它把「原子首建的竞争失败」与真正的 DB 错误区分开;handleSetup 收到即 302 /login。
 var ErrSetupClosed = errors.New("store: web admin setup already completed")
 
+// ErrLastAdmin:某个禁用 / 删除 / 降级操作会导致系统中不再有任何「enabled 且 role=admin」的账号(控制台
+// 将无人可登录),被原子事务拒绝(第四轮深扫 HIGH)。此前上层 ensureNotLastAdmin 是「先 Count 后写」的
+// check-then-act,两个并发请求可同时看到 count=2 各自放行 → 双双成功 → 归零。DisableWebAdminEnsuringAdmin /
+// DeleteWebAdminEnsuringAdmin / SetWebAdminRoleEnsuringAdmin 在单个事务里「先写后验 floor,违则回滚」返回它。
+var ErrLastAdmin = errors.New("store: refuse to leave zero enabled admins")
+
 // CreateUser 创建一个新用户并返回其完整记录（含自增 ID）。
 func (s *Store) CreateUser(ctx context.Context, in NewUser) (*User, error) {
 	if strings.TrimSpace(in.Username) == "" {

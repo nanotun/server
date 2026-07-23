@@ -245,6 +245,69 @@ func (s *Store) DeleteWebAdmin(ctx context.Context, id int64) error {
 	return nil
 }
 
+// mutateWebAdminEnsuringAdmin 在**单个事务**里执行 mutate(禁用 / 删除 / 改角色),提交前确认系统仍存在
+// ≥1 个「enabled 且 role=admin」的账号;不足则回滚并返回 ErrLastAdmin(第四轮深扫 HIGH,修 last-admin TOCTOU)。
+//
+// 关键点:mutate 里第一条语句必须是**写**(UPDATE/DELETE),事务因此以取写锁起手 —— 并发的同类事务会被
+// SQLite 单写者串行化(靠 busy_timeout 等待,而非读快照升级),故两个并发禁用不同 admin 时,后者在前者提交后
+// 才跑自己的写 + floor 校验,看到计数已降到 0 → 回滚拒绝。write-then-read 也规避了 DEFERRED 事务「读后升级写」
+// 撞 BUSY_SNAPSHOT。mutate 返回 rowsAffected==0 → ErrNotFound(目标不存在)。
+func (s *Store) mutateWebAdminEnsuringAdmin(ctx context.Context, what string, mutate func(*sql.Tx) (sql.Result, error)) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin %s tx: %w", what, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := mutate(tx)
+	if err != nil {
+		return fmt.Errorf("store: %s: %w", what, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	var enabledAdmins int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM web_admins WHERE role='admin' AND enabled=1`).Scan(&enabledAdmins); err != nil {
+		return fmt.Errorf("store: %s count enabled admins: %w", what, err)
+	}
+	if enabledAdmins == 0 {
+		// defer Rollback 撤销本次 mutate —— 绝不允许把系统推入「零可登录管理员」。
+		return ErrLastAdmin
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit %s: %w", what, err)
+	}
+	return nil
+}
+
+// SetWebAdminEnabledEnsuringAdmin 禁用(enabled=false)一个账号,但保证不会禁掉最后一个 enabled admin。
+// 仅用于 disable 语义;enable(不减少 admin 计数)继续用 SetWebAdminEnabled。
+func (s *Store) SetWebAdminEnabledEnsuringAdmin(ctx context.Context, id int64) error {
+	return s.mutateWebAdminEnsuringAdmin(ctx, "disable web admin", func(tx *sql.Tx) (sql.Result, error) {
+		return tx.ExecContext(ctx, `UPDATE web_admins SET enabled=0 WHERE id=?`, id)
+	})
+}
+
+// DeleteWebAdminEnsuringAdmin 删除账号,但保证不会删掉最后一个 enabled admin。CASCADE 一并删其 web_sessions。
+func (s *Store) DeleteWebAdminEnsuringAdmin(ctx context.Context, id int64) error {
+	return s.mutateWebAdminEnsuringAdmin(ctx, "delete web admin", func(tx *sql.Tx) (sql.Result, error) {
+		return tx.ExecContext(ctx, `DELETE FROM web_admins WHERE id=?`, id)
+	})
+}
+
+// SetWebAdminRoleEnsuringAdmin 改角色,但保证降级(admin→viewer)不会把最后一个 enabled admin 降没。
+// 升级(→admin)天然满足 floor(计数只增),同一路径无害。
+func (s *Store) SetWebAdminRoleEnsuringAdmin(ctx context.Context, id int64, role string) error {
+	role = strings.TrimSpace(role)
+	if role != "admin" && role != "viewer" {
+		return fmt.Errorf("store: invalid web admin role %q", role)
+	}
+	return s.mutateWebAdminEnsuringAdmin(ctx, "set web admin role", func(tx *sql.Tx) (sql.Result, error) {
+		return tx.ExecContext(ctx, `UPDATE web_admins SET role=? WHERE id=?`, role, id)
+	})
+}
+
 // RecordWebAdminLoginSuccess 登录成功后调用:更新 last_login + 清失败计数(含衰减用的 last_failure_at)。
 func (s *Store) RecordWebAdminLoginSuccess(ctx context.Context, id int64, ip string) error {
 	_, err := s.db.ExecContext(ctx,
