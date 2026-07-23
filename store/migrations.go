@@ -214,6 +214,19 @@ func (s *Store) SettingsSet(ctx context.Context, key, value string) error {
 		if err := ValidateRateBurstSetting(value); err != nil {
 			return fmt.Errorf("store: set %s: %s: %w", key, err.Error(), ErrInvalid)
 		}
+	case "acl_default_action":
+		// 第五轮深扫 MED:补齐与 rate 键同款的 DAL 纵深校验。此前只有 CLI 入口校验,任何绕过它直接
+		// SettingsSet(web / SDK / 未来代码)可写入 "deni" 之类拼错值,数据面读到无法识别 → fail-closed
+		// 兜到 deny,运维却以为设成了别的。
+		if err := ValidateACLDefaultActionSetting(value); err != nil {
+			return fmt.Errorf("store: set %s: %s: %w", key, err.Error(), ErrInvalid)
+		}
+	case MeshEnabledKey:
+		// 同上。mesh_enabled 拼错更危险:parseMeshEnabled 兜底是 **true**(fail-open)——「想关 mesh 却把
+		// false 拼成 flase」会静默保持开启,跨用户流量继续互通。DAL 层拒绝不可确定解析的布尔量。
+		if err := ValidateMeshEnabledSetting(value); err != nil {
+			return fmt.Errorf("store: set %s: %s: %w", key, err.Error(), ErrInvalid)
+		}
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO app_settings(key,value) VALUES(?,?)

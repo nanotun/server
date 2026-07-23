@@ -536,10 +536,9 @@ func ruleMatchesPacket(r ruleEntry, t pktTuple) bool {
 
 // parsePacketTuple 从 IP 报文解析出 dst / proto / dstPort,失败时 ok=false。
 //
-// IPv4:Total Length / IHL 不验证(已经由 util.ValidIPPacket 兜底);
-// IPv6:只支持「Next Header 直接是 L4」的简单情况,带扩展头时退化为 proto=""
-// (与 ruleMatchesPacket 的"无 L4 信息 → 带端口规则不命中"策略配合,扩展头流量
-// 仍然能匹配「任意 proto / 任意端口」的规则,语义可接受)。
+// IPv4:Total Length / IHL 不验证(已经由 util.ValidIPPacket 兜底);非首片 / 截断首片不取端口。
+// IPv6:走扩展头链定位 L4(第五轮深扫 HIGH),Fragment 首片解析端口、非首片不取端口;
+// 遇 ESP/AH/未知扩展头或越界时退化为 hasL4Ports=false(带端口规则不命中,见 ruleMatchesPacket)。
 func parsePacketTuple(p []byte) (pktTuple, bool) {
 	if len(p) < 1 {
 		return pktTuple{}, false
@@ -588,21 +587,59 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 		copy(dst[:], p[24:40])
 		// Unmap:把 v4-mapped-in-v6（::ffff:a.b.c.d）归一成 v4，避免 vIP 反查 / 源校验因表示差异漏判。
 		out := pktTuple{src: netip.AddrFrom16(src).Unmap(), dst: netip.AddrFrom16(dst).Unmap()}
+		// 第五轮深扫 HIGH:走**扩展头链**定位真正的 L4,而不再只看首个 Next Header。旧实现遇到
+		// Fragment(44) / Hop-by-Hop(0) / Routing(43) / Dest-Opts(60) 直接判 proto=""、hasL4Ports=false ——
+		// 于是**分片 IPv6(含首片)**在 default=allow 下能绕过任何 proto/port 维度的 deny(规则不命中 →
+		// 落 default allow → 放行)。现在:
+		//   * 逐个跳过已知扩展头(变长按 Hdr-Ext-Len,Fragment 定长 8B);
+		//   * Fragment 头取 fragment offset:offset==0(首片,RFC 7112 要求首片含完整头链)继续解析其后
+		//     L4 头拿端口;offset!=0(非首片)标记 nonFirstFrag,不解析端口(与 IPv4 非首片同口径);
+		//   * 遇 ESP(50)/AH(51)/未知/越界 → L4 不可判(hasL4Ports=false),保守处理;
+		//   * 跳数封顶 8,杜绝畸形链导致死循环。
 		nh := p[6]
-		switch nh {
-		case 58:
-			out.proto = "icmpv6"
-		case 6:
-			out.proto = "tcp"
-			if len(p) >= 40+4 {
-				out.dstPort = binary.BigEndian.Uint16(p[40+2 : 40+4])
-				out.hasL4Ports = true
-			}
-		case 17:
-			out.proto = "udp"
-			if len(p) >= 40+4 {
-				out.dstPort = binary.BigEndian.Uint16(p[40+2 : 40+4])
-				out.hasL4Ports = true
+		off := 40
+		nonFirstFrag := false
+	walk:
+		for i := 0; i < 8; i++ {
+			switch nh {
+			case 6: // TCP
+				out.proto = "tcp"
+				if !nonFirstFrag && len(p) >= off+4 {
+					out.dstPort = binary.BigEndian.Uint16(p[off+2 : off+4])
+					out.hasL4Ports = true
+				}
+				break walk
+			case 17: // UDP
+				out.proto = "udp"
+				if !nonFirstFrag && len(p) >= off+4 {
+					out.dstPort = binary.BigEndian.Uint16(p[off+2 : off+4])
+					out.hasL4Ports = true
+				}
+				break walk
+			case 58: // ICMPv6
+				out.proto = "icmpv6"
+				break walk
+			case 0, 43, 60: // Hop-by-Hop / Routing / Dest-Opts:前 8B 必存,Hdr-Ext-Len 以 8B 为单位且不含首 8B
+				if len(p) < off+2 {
+					break walk
+				}
+				extLen := (int(p[off+1]) + 1) * 8
+				nh = p[off]
+				off += extLen
+				if off > len(p) {
+					break walk
+				}
+			case 44: // Fragment 头:定长 8B;p[off+2:off+4] 高 13 位是 fragment offset
+				if len(p) < off+8 {
+					break walk
+				}
+				if (binary.BigEndian.Uint16(p[off+2:off+4]) >> 3) != 0 {
+					nonFirstFrag = true
+				}
+				nh = p[off]
+				off += 8
+			default: // ESP(50) / AH(51) / 未知 → 无法可靠定位 L4 头
+				break walk
 			}
 		}
 		return out, true

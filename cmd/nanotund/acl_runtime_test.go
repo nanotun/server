@@ -294,6 +294,48 @@ func TestParsePacketTuple(t *testing.T) {
 	if !ok || !tu.dst.Is6() || tu.proto != "" || tu.dstPort != 0 {
 		t.Fatalf("ipv6 nh=59 parse got %+v %v, want valid ipv6 with no proto", tu, ok)
 	}
+
+	// 第五轮深扫 HIGH:IPv6 首片(Fragment 头,offset=0)后接 TCP,应解析出 proto=tcp + dstPort。
+	// header chain: base(40) → Fragment(8) → TCP。旧实现会误判 proto=""(→ 分片绕过 port deny)。
+	ipv6frag := make([]byte, 40+8+4)
+	ipv6frag[0] = 0x60
+	ipv6frag[6] = 44 // Next Header = Fragment
+	// Fragment 头 @40:next header=6(TCP),offset=0(首片,MF 可为 1)
+	ipv6frag[40] = 6      // fragment.NextHeader = TCP
+	ipv6frag[42] = 0x00   // offset high
+	ipv6frag[43] = 0x01   // offset=0, M(more)=1 → 首片
+	// TCP 头 @48:dst port = 22
+	ipv6frag[48+2] = 0x00
+	ipv6frag[48+3] = 0x16
+	tu, ok = parsePacketTuple(ipv6frag)
+	if !ok || tu.proto != "tcp" || tu.dstPort != 22 || !tu.hasL4Ports {
+		t.Fatalf("ipv6 first-fragment tcp parse got %+v %v, want tcp 22 hasL4Ports", tu, ok)
+	}
+
+	// 非首片(offset != 0):proto 解析到 tcp,但 hasL4Ports=false(净荷非 L4 头,不当端口)。
+	ipv6frag2 := make([]byte, 40+8+4)
+	ipv6frag2[0] = 0x60
+	ipv6frag2[6] = 44
+	ipv6frag2[40] = 6    // → tcp
+	ipv6frag2[42] = 0x00 // offset high bits
+	ipv6frag2[43] = 0x10 // offset != 0 → 非首片
+	tu, ok = parsePacketTuple(ipv6frag2)
+	if !ok || tu.proto != "tcp" || tu.hasL4Ports {
+		t.Fatalf("ipv6 non-first-fragment got %+v %v, want tcp with hasL4Ports=false", tu, ok)
+	}
+
+	// Hop-by-Hop 扩展头(nh=0,ExtLen=0 → 8B)后接 UDP dst 53。
+	ipv6hbh := make([]byte, 40+8+4)
+	ipv6hbh[0] = 0x60
+	ipv6hbh[6] = 0     // Hop-by-Hop
+	ipv6hbh[40] = 17   // hbh.NextHeader = UDP
+	ipv6hbh[41] = 0    // Hdr-Ext-Len=0 → 8 字节
+	ipv6hbh[48+2] = 0x00
+	ipv6hbh[48+3] = 0x35 // dst 53
+	tu, ok = parsePacketTuple(ipv6hbh)
+	if !ok || tu.proto != "udp" || tu.dstPort != 53 || !tu.hasL4Ports {
+		t.Fatalf("ipv6 hop-by-hop udp parse got %+v %v, want udp 53", tu, ok)
+	}
 }
 
 // 数据面 enforcement 端到端:user-kind 规则。

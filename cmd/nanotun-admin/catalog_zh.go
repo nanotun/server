@@ -258,6 +258,7 @@ var catZH = map[string]string{
 	"profile.dialHostInvalid":         "--dial-host 不合法: %s(必须是 IPv4 / IPv6 / 末段含字母的合法域名)",
 	"profile.advertisedHostInvalid":   "--advertised-host 不合法: %s",
 	"profile.formatInvalid":           "--format 必须是 json | url | both | qr | qr-png，当前是 %q",
+	"profile.portOutOfRange":          "%s 必须是 0..65535，当前是 %d",
 	"profile.usernameEmpty":           "username 不能为空",
 	"profile.queryUser":               "查询用户 %q",
 	"profile.warnReadConfig":          "[warn] 读取 server config %q 失败：%s；reality / hy2 字段将留空，由客户端套默认值",

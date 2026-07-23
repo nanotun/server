@@ -261,6 +261,7 @@ var catEN = map[string]string{
 	"profile.dialHostInvalid":         "--dial-host is invalid: %s (must be IPv4 / IPv6 / a valid domain whose last label contains a letter)",
 	"profile.advertisedHostInvalid":   "--advertised-host is invalid: %s",
 	"profile.formatInvalid":           "--format must be json | url | both | qr | qr-png, got %q",
+	"profile.portOutOfRange":          "%s must be 0..65535, got %d",
 	"profile.usernameEmpty":           "username must not be empty",
 	"profile.queryUser":               "query user %q",
 	"profile.warnReadConfig":          "[warn] failed to read server config %q: %s; reality / hy2 fields will be left empty, clients fall back to defaults",
