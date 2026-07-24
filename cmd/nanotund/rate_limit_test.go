@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/nanotun/server/config"
 	"golang.org/x/time/rate"
@@ -187,6 +189,40 @@ func TestEffectiveBurst(t *testing.T) {
 		if got := effectiveBurst(c.in); got != c.want {
 			t.Errorf("%s: effectiveBurst(%d) = %d, want %d", c.name, c.in, got, c.want)
 		}
+	}
+}
+
+// TestRateLimitedConn_WriteWaitNAbortsOnCtxCancel 覆盖第二十轮深扫 MED(Conn#2):当 Write 卡在限速器 WaitN
+// 等令牌时,取消 setLimiterCtx 设定的 ctx 必须让它**立刻**返回。这正是 kick/supersede/takeover/admin-kick 逼停
+// 「持 linkWrMu 卡在 WaitN 的下行 demux」的底层机制:teardown 前 forceCancelTunnel → cancel(tunCtx) → 在途
+// WaitN 中止 → Write 返回 → linkWrMu 释放。
+func TestRateLimitedConn_WriteWaitNAbortsOnCtxCancel(t *testing.T) {
+	rwc := newRateLimitedConn(nopReadWriteCloser{}, nil, nil, context.Background())
+	// 极低下行限速:1 B/s,burst 64(桶初始满)。
+	rwc.SetDownloadLimit(1, 64)
+	ctx, cancel := context.WithCancel(context.Background())
+	rwc.setLimiterCtx(ctx)
+
+	// 先写 64 B 把令牌桶抽干(桶初始满,这次瞬时返回)。
+	if _, err := rwc.Write(make([]byte, 64)); err != nil {
+		t.Fatalf("首次(排空令牌桶)Write 不应报错: %v", err)
+	}
+
+	// 第二次 64 B 需要 ~64s 才能攒够令牌 —— 只有 ctx 取消才能让它提前返回。
+	done := make(chan struct{})
+	go func() {
+		_, _ = rwc.Write(make([]byte, 64))
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond) // 让 Write 真正进入 WaitN
+	cancel()
+
+	select {
+	case <-done:
+		// 取消后 Write 迅速返回 —— 符合预期。
+	case <-time.After(2 * time.Second):
+		t.Fatal("Write 未在 ctx 取消后及时返回:WaitN 仍卡在令牌等待(Conn#2 修复失效)")
 	}
 }
 

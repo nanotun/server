@@ -1789,6 +1789,19 @@ func tunDemuxToLink(ch <-chan *util.TunPacket, w io.Writer, mu *sync.Mutex, ctx 
 // 退出（任一 readLoop 退出路径）时 close(c.tunnelDone)，供 takeover 路径
 // `<-oldConn.tunnelDone` 同步等待老链路完全释放 TunChan 后再启动新 demux。
 // 当 c.tunnelDone 为 nil（理论不应发生）时跳过 close，保持向后兼容。
+// forceCancelTunnel 主动取消 c 的 tunnel ctx(若已启动)。第二十轮深扫 MED:teardown 路径(kick/supersede/
+// takeover/admin-kick)在抢 c.linkWrMu **之前**调它,逼停一个可能正卡在限速器 WaitN、且持有 linkWrMu 的下行
+// demux —— 否则低限速配置下 linkWrMu.Lock() 可能阻塞数秒(WaitN 不受 SetWriteDeadline 约束)。cancel 幂等,与
+// demux 自身退出 / 其它 teardown 并发调用安全;tunnelCancel 为 nil(tunnel 未起 / 已退)时 no-op。
+func forceCancelTunnel(c *Connection) {
+	if c == nil {
+		return
+	}
+	if cf := c.tunnelCancel.Load(); cf != nil {
+		(*cf)()
+	}
+}
+
 func runLinkTunnel(ctx context.Context, rw io.ReadWriteCloser, c *Connection, remote string) {
 	tunCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1796,6 +1809,14 @@ func runLinkTunnel(ctx context.Context, rw io.ReadWriteCloser, c *Connection, re
 	// 退出前清空,避免调用方拿到指向已返回上下文的悬垂 cancel(cancel 幂等,清空只为语义整洁)。
 	c.tunnelCancel.Store(&cancel)
 	defer c.tunnelCancel.Store(nil)
+	// 第二十轮深扫 MED:把限速器 WaitN 的取消源从进程级 globalContext 切到本 tunnel 的可取消 tunCtx。此前
+	// rwc.ctx=globalContext,仅进程退出才取消 → 低限速配置下 tunDemuxToLink 的 WaitN 可持 linkWrMu 阻塞数秒
+	// (WaitN 不受 SetWriteDeadline 约束),导致 kick/supersede/takeover/admin-kick 抢不到 linkWrMu 去 Close。
+	// 切到 tunCtx 后,forceCancelTunnel(经 c.tunnelCancel)与 readLoop 退出 / demux 写错触发的 cancel(tunCtx),
+	// 都能立刻中止在途 WaitN、释放锁。rw 非 *rateLimitedConn(测试桩)时跳过。
+	if rl, ok := rw.(*rateLimitedConn); ok {
+		rl.setLimiterCtx(tunCtx)
+	}
 	defer func() {
 		if c.tunnelDone != nil {
 			// 用 recover 防御「未初始化的 conn 重复进入」(理论不会发生) 引发 panic
@@ -2921,6 +2942,10 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 					"old_conn="+victim.connIDStr+",new_conn="+c.connIDStr)
 			}
 		}
+		// 第二十轮深扫 MED:抢 victim.linkWrMu 之前先取消其 tunnel ctx,逼停可能卡在限速器 WaitN(持该锁)的下行
+		// demux。否则低限速配置下这里的 Lock() 可能阻塞数秒(WaitN 不受下面钉的 SetWriteDeadline 约束),连累
+		// supersede/evict 迟迟完不成(且 supersede victim 后面还要 waitConnsCleanup,进一步放大延迟)。
+		forceCancelTunnel(victim)
 		victim.linkWrMu.Lock()
 		if victim.linkConn != nil {
 			// M3:会话超限踢除(evict,非同 device supersede)是被动踢线——给受害端先发一帧带码
@@ -3688,6 +3713,13 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// 握手两次写已完成:清掉上面钉的有界写超时,后续数据面写走各自的超时/无超时语义,不受此约束。
 	_ = rwc.SetWriteDeadline(time.Time{})
 
+	// 第二十轮深扫 MED:takeover 常因老链路变差(拥塞 / 低带宽)才触发,老 conn 的下行 demux 恰恰更可能正卡在
+	// 限速器 WaitN 上持着 oldConn.linkWrMu。在抢该锁(下方 TakenOver 通知 + 更下方关老链路)之前先取消老 tunnel 的
+	// ctx,逼停在途 WaitN,否则这两处 Lock() 可能阻塞数秒,期间全程持 takeoverMu(connByDevice 仍解析到老 conn,
+	// 出口流量灌进将死的老链路黑洞)。取消是幂等的;它使老 demux 尽早停止消费共享 TunChan(对下方避免新老 demux
+	// 并发抢 TunChan 只会更有利),下方 <-oldConn.tunnelDone 也会更快返回。TakenOver 通知本就是 best-effort。
+	forceCancelTunnel(oldConn)
+
 	// best-effort 通知老链路：发 LinkTypeTakenOver 后客户端将不会触发 on_disconnected。
 	takenOverBody, mErr := util.MarshalTakenOverJSON(oldConn.connIDStr, loginReq.Transport)
 	if mErr == nil {
@@ -3774,9 +3806,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 			logrus.WithFields(logrus.Fields{
 				"remote": remote, "sid": sid,
 			}).Warn("[takeover] 老链路 5s 内未退出 runLinkTunnel；主动 cancel 其 tunnel ctx 后再等")
-			if cf := oldConn.tunnelCancel.Load(); cf != nil {
-				(*cf)()
-			}
+			forceCancelTunnel(oldConn)
 			select {
 			case <-oldConn.tunnelDone:
 			case <-time.After(3 * time.Second):

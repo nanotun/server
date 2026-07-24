@@ -241,6 +241,9 @@ func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connect
 		logrus.WithError(err).Warn("[user-invalidate] 构造 CloseMsg 失败,直接 Close linkConn")
 	}
 
+	// 第二十轮深扫 MED:抢 c.linkWrMu 之前先取消其 tunnel ctx,逼停可能卡在限速器 WaitN(持该锁)的下行 demux。
+	// 否则低限速配置下 admin kick / PSK 失效自动踢的 Lock() 可能阻塞数秒(WaitN 不受下面钉的 SetWriteDeadline 约束)。
+	forceCancelTunnel(c)
 	c.linkWrMu.Lock()
 	linkConn := c.linkConn
 	if linkConn != nil && closeBody != nil {

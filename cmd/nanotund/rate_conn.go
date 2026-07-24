@@ -55,6 +55,10 @@ type rateLimitedConn struct {
 	uploadLimiter   *rate.Limiter
 	downloadLimiter *rate.Limiter
 
+	// ctx 是限速器 WaitN 使用的上下文,受 mu 保护(与 limiter 指针同锁快照)。
+	// 第二十轮深扫 MED:登录期以 globalContext 建立(仅进程退出才取消),runLinkTunnel 起来后经 setLimiterCtx
+	// 热切到 per-tunnel 的可取消 tunCtx —— 这样 kick/supersede/takeover 逼停(cancel tunCtx)能立刻中止在途
+	// WaitN、释放 linkWrMu。详见 setLimiterCtx。
 	ctx context.Context
 }
 
@@ -81,6 +85,17 @@ func (c *rateLimitedConn) SetUploadLimit(bps int64, burst int) {
 }
 func (c *rateLimitedConn) SetDownloadLimit(bps int64, burst int) {
 	c.setOneLimit(&c.downloadLimiter, bps, burst)
+}
+
+// setLimiterCtx 热切限速器 WaitN 所用的 ctx。第二十轮深扫 MED:runLinkTunnel 在建好本 tunnel 的可取消 tunCtx
+// 后立刻调它,把 WaitN 的取消源从进程级 globalContext 换到 per-tunnel tunCtx。此后任何 teardown(kick/supersede/
+// takeover 经 forceCancelTunnel,或 readLoop 退出 / demux 写错触发的 cancel)取消 tunCtx,都能立刻中止一个正卡在
+// 令牌等待、且持有 linkWrMu 的 Write —— 释放锁让 teardown 推进。正常运行期 tunCtx 恒活,不改限速语义。
+// 与 limiter 指针同用 mu 保护(Read/Write 在同一临界区里连 ctx 一起快照)。
+func (c *rateLimitedConn) setLimiterCtx(ctx context.Context) {
+	c.mu.Lock()
+	c.ctx = ctx
+	c.mu.Unlock()
 }
 
 func (c *rateLimitedConn) setOneLimit(field **rate.Limiter, bps int64, burst int) {
@@ -151,9 +166,10 @@ func (c *rateLimitedConn) Read(p []byte) (n int, err error) {
 	if err == nil && n > 0 {
 		c.mu.Lock()
 		lim := c.uploadLimiter
+		ctx := c.ctx
 		c.mu.Unlock()
 		if lim != nil {
-			_ = lim.WaitN(c.ctx, n)
+			_ = lim.WaitN(waitCtxOrBackground(ctx), n)
 		}
 	}
 	return n, err
@@ -163,9 +179,10 @@ func (c *rateLimitedConn) Write(p []byte) (n int, err error) {
 	if len(p) > 0 {
 		c.mu.Lock()
 		lim := c.downloadLimiter
+		ctx := c.ctx
 		c.mu.Unlock()
 		if lim != nil {
-			_ = lim.WaitN(c.ctx, len(p))
+			_ = lim.WaitN(waitCtxOrBackground(ctx), len(p))
 		}
 	}
 	n, err = c.inner.Write(p)
@@ -181,6 +198,16 @@ func (c *rateLimitedConn) Write(p []byte) (n int, err error) {
 
 func (c *rateLimitedConn) Close() error {
 	return c.inner.Close()
+}
+
+// waitCtxOrBackground 防御:limiter.WaitN 对 nil ctx 会 panic(内部访问 ctx.Done/Deadline)。测试桩可能以
+// nil ctx 建 rateLimitedConn;正常路径 ctx 恒非 nil(globalContext / tunCtx)。nil 时退回 Background(= 不可取消,
+// 与「无 per-tunnel 取消」等价,行为不劣于取此改动之前)。
+func waitCtxOrBackground(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 // SetWriteDeadline 把写截止时间下推到底层 conn。
