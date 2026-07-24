@@ -91,17 +91,19 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New(opts.T("credentials.usage"))
+		// 第十二轮深扫 MED:参数元数错误属**用法错误** → exit 2(此前 errors.New 恒 exit 1,与 restore /
+		// 顶层 dispatch 的 usage 退出码不一致)。下面的空用户名 / flag 互斥同理。
+		return usageError(opts.T("credentials.usage"))
 	}
 	username := strings.TrimSpace(pos[0])
 	if username == "" {
-		return errors.New(opts.T("profile.usernameEmpty"))
+		return usageError(opts.T("profile.usernameEmpty"))
 	}
 	if *pskPlain != "" && *rotatePSK {
-		return errors.New(opts.T("credentials.pskRotateMutex"))
+		return usageError(opts.T("credentials.pskRotateMutex"))
 	}
 	if *pskPlain == "" && !*rotatePSK {
-		return errors.New(opts.T("credentials.pskOrRotate"))
+		return usageError(opts.T("credentials.pskOrRotate"))
 	}
 	if *pskPlain != "" {
 		opts.warnPSKOnArgv()

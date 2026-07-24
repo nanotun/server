@@ -304,9 +304,15 @@ func TestRulePortIndeterminate_L4Unresolved_FailsClosed(t *testing.T) {
 	if !rulePortIndeterminate(protoScopedDeny, unresolved) {
 		t.Fatal("unresolved L4 + proto-scoped port deny must still fail-closed")
 	}
-	// 非端口 deny / allow 规则不触发 indeterminate。
+	// 第十二轮深扫 MED(补丁的关键回归):**纯 proto deny**(无端口,如 `deny tcp`)在 l4Unresolved 下也必须
+	// fail-closed —— 这正是上一提交漏掉、被 `!r.hasPorts` 早退绕过的口子。
+	protoOnlyDeny := ruleEntry{action: store.ACLDeny, proto: "tcp"}
+	if !rulePortIndeterminate(protoOnlyDeny, unresolved) {
+		t.Fatal("unresolved L4 + proto-ONLY deny (deny tcp, no ports) must fail-closed")
+	}
+	// 全通配 deny(无 proto 无端口)本就经 ruleMatchesPacket 命中一切,不走不可判定路径 → false。
 	if rulePortIndeterminate(blanketDeny, unresolved) {
-		t.Fatal("blanket (portless) deny is not port-indeterminate")
+		t.Fatal("fully-blanket (no proto, no ports) deny is not indeterminate (it matches everything anyway)")
 	}
 	if rulePortIndeterminate(portAllow, unresolved) {
 		t.Fatal("port ALLOW is never indeterminate (only deny fails closed)")

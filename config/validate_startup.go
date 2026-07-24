@@ -16,6 +16,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -111,6 +112,30 @@ func (s ServerConfig) ValidateJumpHostFirewall() error {
 	}
 	if len(s.JumpHostAllowedIPs) == 0 {
 		return fmt.Errorf("[server] 启用 jump_host_firewall 必须在 [server].jump_host_allowed_ips 提供跳板机 IPv4 名单(留空等于全网开放,这通常不是你想要的)。要么填名单,要么把 jump_host_firewall 设为 false。")
+	}
+	// 第十二轮深扫 MED:逐条校验必须是可解析的 **IPv4 地址**(runtime sanitizeJumpHostIPv4s 只认 net.ParseIP
+	// 的 IPv4:CIDR / 主机名 / IPv6 一律静默丢弃)。此前只查 len==0 → 配 ["not-an-ip"] 能过 lint 与启动,运行期
+	// 全被丢 → ensureLoopbackIPv4Allowlist 退化为仅 127.0.0.1 → 预期跳板机被静默挡死(自锁)。任一非法即报错,
+	// 且要求至少留下一个有效 IPv4。空白项容忍(与 runtime skip 空串一致)。
+	var errs []string
+	valid := 0
+	for _, raw := range s.JumpHostAllowedIPs {
+		e := strings.TrimSpace(raw)
+		if e == "" {
+			continue
+		}
+		if ip := net.ParseIP(e); ip == nil || ip.To4() == nil {
+			errs = append(errs, fmt.Sprintf("%q 不是合法 IPv4 地址(不支持 CIDR / 主机名 / IPv6)", raw))
+			continue
+		}
+		valid++
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("[server].jump_host_allowed_ips 存在非法条目(runtime 会静默丢弃 → 预期跳板机被挡死;请改成合法 IPv4 或移除):\n  - %s",
+			strings.Join(errs, "\n  - "))
+	}
+	if valid == 0 {
+		return fmt.Errorf("[server].jump_host_allowed_ips 全是空白项,启用 jump_host_firewall 时等于只允许 127.0.0.1(预期跳板机会被挡死)。请填至少一个合法 IPv4,或把 jump_host_firewall 设为 false。")
 	}
 	return nil
 }

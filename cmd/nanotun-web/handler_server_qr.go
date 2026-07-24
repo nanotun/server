@@ -143,6 +143,19 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 	unlock := s.lockTOTPVerify(admin.ID)
 	defer unlock()
 
+	// 第十二轮深扫 MED:锁内**重读**最新账号,下面的密码 / TOTP step-up 一律用它(而非 requireAuth 请求初
+	// 快照 admin)—— 抹掉「快照 → reveal 执行」间紧急改密+吊销会话的 TOCTOU 窗口(与 /login/totp 同源)。
+	// 停用即拒:被停用的账号不该还能揭示含 REALITY/hy2 密钥的 server profile。
+	fresh, ferr := s.store.GetWebAdmin(ctx, admin.ID)
+	if ferr != nil || fresh == nil {
+		s.renderInternalError(w, r, "server_qr:reload_admin", ferr)
+		return
+	}
+	if !fresh.Enabled {
+		s.renderServerQRPasswordPage(w, r, tr(r, "err.stepUpAccountDisabled"), http.StatusForbidden)
+		return
+	}
+
 	// (3) IP cooldown
 	if s.stepUpFailures.Recent(ip) >= stepUpMaxFailures {
 		s.audit.WriteFromRequest(r, "server_profile_qr_locked",
@@ -192,7 +205,7 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 		s.renderServerQRPasswordPage(w, r, tr(r, "serverQr.passwordRequired"), http.StatusBadRequest)
 		return
 	}
-	ok, verr := VerifyWebPassword(r.Context(), password, admin.PasswordHash)
+	ok, verr := VerifyWebPassword(r.Context(), password, fresh.PasswordHash)
 	if verr != nil || !ok {
 		newCount := s.stepUpFailures.Inc(ip)
 		reason := "wrong_password"
@@ -223,20 +236,20 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 	// **当前 6 位 TOTP 码**。刻意不接受恢复码 —— reveal 是可重复的只读操作,不该消耗珍贵的
 	// 一次性恢复码;丢了 TOTP 设备的 admin 应先去 /me 重建 2FA 再来。用 VerifyTOTP 非消费式
 	// 校验(与 regen 一致),避免烧掉登录用的 TOTP step 形成自锁式 UX;失败与错误密码同权
-	// 计入 IP 冷却配额。admin.TOTPEnabled / TOTPSecret 取自 middleware 请求初的快照(经
-	// GetWebAdmin 全列 scan 填充),对这条一次性 step-up 足够新。
+	// 计入 IP 冷却配额。第十二轮深扫 MED:TOTPEnabled / TOTPSecret 现取自**锁内重读**的 fresh(不再是
+	// 请求初快照),与密码 step-up 一致,消除紧急改密/改 secret 的 TOCTOU 窗口。
 	//
 	// 第七轮深扫 MED(补充):改用消费式校验(与登录共享 totp_last_used_step),关闭「reveal 里输过的码
 	// 被重放到登录」的窗口 —— 一码一用。代价是「登录后 30s 内立即 reveal 用同一枚码」需等下一枚码;reveal
 	// 属低频运维动作,权衡可接受。仍不接受恢复码(reveal 是可重复只读操作,不该烧一次性恢复码)。
-	if admin.TOTPEnabled {
+	if fresh.TOTPEnabled {
 		code := strings.TrimSpace(r.FormValue("code"))
 		if code == "" {
 			// 空码不计失败配额(与空密码一致,避免误提交自锁),回渲提示补填。
 			s.renderServerQRPasswordPage(w, r, tr(r, "serverQr.totpRequired"), http.StatusBadRequest)
 			return
 		}
-		if terr := s.verifyAndConsumeStepUpTOTP(r.Context(), admin.ID, admin.TOTPSecret, code); terr != nil {
+		if terr := s.verifyAndConsumeStepUpTOTP(r.Context(), admin.ID, fresh.TOTPSecret, code); terr != nil {
 			newCount := s.stepUpFailures.Inc(ip)
 			s.audit.WriteFromRequest(r, "server_profile_qr_totp_fail",
 				FormatTarget("web_admin", admin.ID),

@@ -134,6 +134,15 @@ func cmdConnection(opts *globalOpts, args []string) int {
 		fmt.Fprintln(opts.stderr, opts.T("cli.unexpectedArgs", fmt.Sprint(rest)))
 		return 2
 	}
+	// 第十二轮深扫 MED:先校验 verb,再拨控制 socket。否则 `connection <bogus>` 会先执行 controlStatusDo,
+	// 在 server 不可达时返回 dial 错误(exit 1)、掩盖「未知子命令」本应的 exit 2 —— 退出码随服务端可达性漂移。
+	switch sub {
+	case "list", "ls", "status":
+		// 合法 verb,继续拨号。
+	default:
+		fmt.Fprintln(opts.stderr, opts.T("cli.unknownSubcommand", "connection", sub))
+		return 2
+	}
 	cli := newControlHTTPClient(resolveControlSocketPath(opts.controlSocket))
 	out, err := controlStatusDo(cli, WithLimit(limit), WithOffset(offset))
 	if err != nil {

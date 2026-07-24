@@ -138,6 +138,16 @@ func exitCodeForErr(err error) int {
 	if isUsageErr(err) {
 		return 2
 	}
+	// 第十二轮深扫 MED:未知子命令(`user bogus` / `route bogus` …)属**用法错误**,应与顶层 dispatch、
+	// `config` 未知子命令、restore 的 exit 2 对齐,而非经 runWithStore 默认吞成的 exit 1。这些错误由
+	// newLocErr 携带 LocaleKey(cli.unknownSubcommand[Bare])而非 *usageErr,故在此按 key 归一。
+	var le *locErr
+	if errors.As(err, &le) {
+		switch le.key {
+		case "cli.unknownSubcommand", "cli.unknownSubcommandBare":
+			return 2
+		}
+	}
 	return 1
 }
 

@@ -99,6 +99,18 @@ func cmdInit(ctx context.Context, st *store.Store, opts *globalOpts, args []stri
 			// 兜底守门（理论上前面已 return 不会到这里）
 			return errors.New(opts.T("init.refuseReset", username))
 		}
+		// 第十二轮深扫 MED:`init --reset-psk` 轮换**已存在**管理员的 PSK 属破坏性操作(旧 PSK 立即作废),
+		// 与 `user reset-psk` / `credentials --rotate-psk` 一致要求二次确认。仅在显式 --reset-psk 时提示
+		// (首次向导 / 未完成 setup 的补建路径不提示)。复用上面的 bufio.Reader r(避免 confirm() 另起一个
+		// reader 与 r 抢 stdin 缓冲);--yes / -y 跳过供脚本化(非交互且未 --yes → 读到 EOF/空 → 保守取消)。
+		if *resetPSK && !opts.yes {
+			fmt.Fprintf(opts.stdout, "%s [y/N]: ", opts.T("init.confirmResetPSK", username))
+			line, _ := r.ReadString('\n')
+			if s := strings.ToLower(strings.TrimSpace(line)); s != "y" && s != "yes" {
+				fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
+				return nil
+			}
+		}
 		// 0013(2026-05-25):RotateUserPSK 内部刷 credential_created_at;若 existing 是
 		// 老 user(credential_id 空),helper 顺手生成 UUID v4 backfill —— 这样 init
 		// --reset-psk 后,用户立刻能扫 credentials show 拿到完整 (UUID, PSK, created_at)。

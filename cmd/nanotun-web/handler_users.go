@@ -130,7 +130,10 @@ func (s *Server) handleUserNew(w http.ResponseWriter, r *http.Request) {
 		// 平台白名单:复选框多值收集(2026-07-19,原自由文本 CSV)。全选/全不选 = 不限。
 		allowedPlatforms, err := platformsFromForm(r)
 		if err != nil {
-			s.renderUserNew(w, r, nil, err.Error())
+			// 第十二轮深扫 LOW:平台来自复选框(受控),非法 token 仅可能来自手工构造 POST。回本地化的通用校验
+			// 文案,不再把 store 层 err(含 "store: unknown platform ...")原样回显到页面。
+			logrus.WithError(err).Warn("[users] platformsFromForm(create) rejected")
+			s.renderUserNew(w, r, nil, tr(r, "form.invalidPlatforms"))
 			return
 		}
 		// 自动生成 PSK,创建成功后一次性展示给管理员(不入审计 detail)。
@@ -500,7 +503,9 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 		// set-platforms 同口径)。2026-07-19 改复选框多值收集,全选/全不选 = 不限。
 		csv, err := platformsFromForm(r)
 		if err != nil {
-			s.renderError(w, r, http.StatusBadRequest, err.Error())
+			// 第十二轮深扫 LOW:同 create 路径,回本地化通用校验文案,不泄漏 store 层错误串。
+			logrus.WithError(err).Warn("[users] platformsFromForm(set-platforms) rejected")
+			s.renderError(w, r, http.StatusBadRequest, tr(r, "form.invalidPlatforms"))
 			return
 		}
 		if err := s.store.SetUserAllowedPlatforms(r.Context(), id, csv); err != nil {

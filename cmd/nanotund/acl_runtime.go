@@ -594,15 +594,20 @@ func ruleMatchesPacket(r ruleEntry, t pktTuple) bool {
 // 无端口规则)行为**零变化**,合法分片流量不受影响;只有显式配了端口 deny 的运维,才会对无法归类的 tcp/udp 分片
 // 采取更严格的丢弃姿态(可接受:这正是他们想封的方向)。
 func rulePortIndeterminate(r ruleEntry, t pktTuple) bool {
-	if r.action != store.ACLDeny || !r.hasPorts {
+	if r.action != store.ACLDeny {
 		return false
 	}
-	// 第十二轮深扫 MED:报文 L4 **无法解析**(IPv6 扩展头封顶 / 链截断,见 pktTuple.l4Unresolved)时,
-	// 我们既定位不到 proto 也定位不到端口,但目的端仍可能投递到某 tcp/udp 端口 —— 任何**端口 deny** 都可能适用,
-	// 一律 fail-closed(不受规则的 proto scope 约束,因为连 proto 都没解出来)。这与下方「非首片/截断头」同源:
-	// 都是「端口维度不可判定的 tcp/udp-可能流量」,对端口 deny 采取更严格的丢弃姿态。
+	// 第十二轮深扫 MED(修补上一提交的不完整):报文 L4 **无法解析**(IPv6 扩展头封顶 / 链截断,见 pktTuple.l4Unresolved)
+	// 时,我们既定位不到 proto 也定位不到端口,但目的端仍可能投递到某 tcp/udp 端口 —— 任何**带 proto 或端口约束**的
+	// deny 都可能适用,一律 fail-closed。此判定必须放在下面 `!r.hasPorts` 早退**之前**:否则「纯 proto deny」
+	// (如 `deny tcp`,无端口)会在早退处被判「不命中」→ 8 个扩展头后的 TCP 在 default=allow 下绕过封锁。
+	// 「全通配 deny」(proto 空且无端口)本就经 ruleMatchesPacket 命中一切,无需走本不可判定路径,故排除。
 	if t.l4Unresolved {
-		return true
+		return r.proto != "" || r.hasPorts
+	}
+	// 以下是「已解析出 proto,但端口维度不可判定」(IPv4/IPv6 非首片 / 截断头)的原有语义:仅对**端口 deny** 生效。
+	if !r.hasPorts {
+		return false
 	}
 	if r.proto != "" && r.proto != t.proto {
 		return false

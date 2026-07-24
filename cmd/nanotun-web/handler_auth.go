@@ -296,6 +296,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return AttemptLogin(ctx, s.store, s.cfg, username, password, ip)
 		}()
 		if res.Err != nil {
+			// 第十二轮深扫 MED:argon2 容量/ctx 超时(ErrAuthUnavailable)属「暂时不可用」,非用户之过 ——
+			// **不**累加 ipFailures(PoW 难度/验证码升级)与账号锁定,回 503 让用户重试,避免容量抖动被放大
+			// 成对合法管理员的锁定/难度 DoS。真相仍落 audit 供运维观测。
+			if errors.Is(res.Err, ErrAuthUnavailable) {
+				s.audit.Write(ctx, nil, "web.login.unavailable",
+					FormatTarget("username", username),
+					FormatDetail("ip", ip, "reason", "argon2_verify_unavailable"))
+				s.renderError(w, r, http.StatusServiceUnavailable, tr(r, "auth.tryAgainLater"))
+				return
+			}
 			s.sess.ipFailures.Inc(ip)
 			s.audit.Write(ctx, nil, "web.login.fail",
 				FormatTarget("username", username),
