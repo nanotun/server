@@ -519,6 +519,26 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 		if fresh, ferr := s.store.GetWebAdmin(ctx, admin.ID); ferr == nil && fresh != nil {
 			admin = fresh
 		}
+		// 第十轮深扫 MED:锁内用**最新**行重验密码指纹 + enabled/TOTP 开关,而非只重读 locked_until。
+		// 背景:上面(行 450 快照)基于请求开始时的旧行做过一次指纹/开关校验,但应急改密
+		// (UpdateWebAdminPasswordHash + DeleteWebSessionsByAdmin + locked_until 清零)若落在
+		// 「行 450 快照读」与下方 IssueSession 之间,本请求仍凭旧指纹通过 460 的检查,且清零的
+		// locked_until 反而助其过锁 —— TOTP 用未变的 secret 验过后,会在 DeleteWebSessionsByAdmin
+		// **之后**再颁一枚新 session,使「应急改密立即斩断在途登录」失效。锁内用 fresh 行重验即闭合
+		// 该 TOCTOU(改密方拿到 totpVerifyLocks 之前或之后,本请求都能看到新指纹并作废 pending)。
+		if !admin.Enabled || !admin.TOTPEnabled {
+			s.sess.ClearTOTPPending(w)
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		if want := passwordFingerprint(admin.PasswordHash); subtle.ConstantTimeCompare(pendingPwFp[:], want[:]) != 1 {
+			s.sess.ClearTOTPPending(w)
+			s.audit.Write(ctx, admin, "web.totp.pending_stale",
+				FormatTarget("web_admin", admin.ID),
+				FormatDetail("ip", ip, "reason", "password_changed"))
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
 		if admin.LockedUntil > 0 && admin.LockedUntil > nowUnix() {
 			s.sess.ClearTOTPPending(w)
 			s.audit.Write(ctx, admin, "web.totp.locked",

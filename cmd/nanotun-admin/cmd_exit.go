@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"github.com/nanotun/server/store"
@@ -127,6 +128,13 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 				lease = l
 			}
 		}
+		// 第十轮深扫 MED:显式 --v4/--v6 必须**族校验 + 规范化**后再参与冲突预检 —— 与 sibling
+		// `device set-fixed-vip`(cmd_device.go)、`lease set`(cmd_lease.go)同口径。否则:
+		//   (a) 非规范 IPv6(如 "FD00::2")与已规范的存量比较字符串不等 → 预检漏判冲突 → 批准路由后
+		//       SetDeviceFixedVIP 再规范化才撞 ErrDuplicate,重开第九轮堵掉的「已批准出口却 vIP 没钉上」
+		//       半完成态;
+		//   (b) 写错族(--v4 传 IPv6)会把 IPv6 塞进 fixed_vip_v4,分配时静默失效。
+		// 校验/规范化发生在任何持久化写入(批准路由 / SetDeviceFixedVIP)之前,非法即 fail-fast、不留残状态。
 		switch *v4 {
 		case exitVIPAutoSentinel:
 			if lease != nil && lease.VIPv4 != "" {
@@ -135,7 +143,15 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 		case "":
 			// 显式空串:不动 v4。
 		default:
-			newV4 = strings.TrimSpace(*v4)
+			nv := strings.TrimSpace(*v4)
+			if nv != "" {
+				a, aerr := netip.ParseAddr(nv)
+				if aerr != nil || !a.Unmap().Is4() {
+					return errors.New(opts.T("device.badFixedV4", nv))
+				}
+				nv = a.String()
+			}
+			newV4 = nv
 		}
 		switch *v6 {
 		case exitVIPAutoSentinel:
@@ -144,7 +160,15 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 			}
 		case "":
 		default:
-			newV6 = strings.TrimSpace(*v6)
+			nv := strings.TrimSpace(*v6)
+			if nv != "" {
+				a, aerr := netip.ParseAddr(nv)
+				if aerr != nil || !a.Is6() || a.Is4In6() {
+					return errors.New(opts.T("device.badFixedV6", nv))
+				}
+				nv = a.String()
+			}
+			newV6 = nv
 		}
 		// 冲突检查（仅对真的变了的值；--force 跳过）。
 		if newV4 != d.FixedVIPv4 {

@@ -33,6 +33,9 @@
          请到设置页手动保存」+ 同位置加 link 到 /settings(候选已预填,直接保存即可)。
          JS 失败(浏览器禁 JS)→ 行为退化为原 onsubmit(灰按钮 + 检测中文案),
          不破坏 form submit 本身。 */}}
+    {{/* 第十轮深扫 LOW:一键确认拨号 host 是写设置(admin-only)。viewer 隐藏确认按钮 + 设置回退
+         链接(settings 页本身已 admin-only),只留纯文字引导。 */}}
+    {{if .Data.IsAdminRole}}
     <form method="post" action="/settings/server-dial-host" class="inline" id="dial-host-banner-form"
         style="display:inline;margin-left:8px"
         onsubmit="var b=this.querySelector('button'),f=this;b.disabled=true;b.textContent='{{T "dashboard.probing"}}';setTimeout(function(){if(b.disabled){b.textContent='{{T "dashboard.probeNoResp"}}';var l=document.getElementById('dial-host-banner-fallback');if(l){l.style.display='inline';}}},30000);">
@@ -43,6 +46,7 @@
     </form>
     <a id="dial-host-banner-fallback" href="/settings" style="display:none;margin-left:8px;font-size:12px"
         class="btn small secondary">{{T "dashboard.dialHostBannerFallback"}}</a>
+    {{end}}
     {{T "dashboard.orGoSettingsPre"}}<a href="/settings"><strong>{{T "dashboard.goSettingsStrong"}}</strong></a>{{T "dashboard.orGoSettingsPost"}}
     {{- else}}
     {{T "dashboard.dialHostGuidePre"}}<a href="/settings"><strong>{{T "dashboard.settingsWord"}}</strong></a>{{T "dashboard.dialHostGuideMid"}}<code>203.0.113.10</code>{{T "dashboard.orExample"}}<code>vpn.example.com</code>{{T "dashboard.dialHostGuidePost"}}
@@ -66,7 +70,11 @@
     {{/* admin 灾备 / 跨机迁移时需对照此值;客户端按 server_id upsert profile,server_id 变 = 客户端会当全新 server。 */}}
     <p class="muted"><code>server_id</code>{{T "dashboard.serverIdSuffix"}}<code>{{.Data.ServerID}}</code></p>
     {{end}}
+    {{/* 第十轮深扫 LOW:server-QR reveal 是 admin-only(step-up)敏感操作,按钮仅 admin 可见 ——
+         viewer 点了也会被 requireAdminRole 拒。 */}}
+    {{if .Data.IsAdminRole}}
     <p><a href="/server-qr" class="btn">{{T "dashboard.showServerQr"}}</a></p>
+    {{end}}
     {{else}}
     {{/* 卡片保留禁用态按钮位置感,避免布局 ghost。文案根据是否有候选区分:
          2026-05-27 第二十三轮 A3:有候选时引导回 banner 的「✓ 确认使用候选」按钮,
@@ -88,11 +96,15 @@
 {{with .Data.Runtime}}
 <div class="card">
     <div class="card-header"><h2>{{T "dashboard.dataplaneRuntime"}}</h2>
+        {{/* 第十轮深扫 LOW:写操作(reload ACL)仅 admin 可见,与 nav / audit 卡片同口径 —— viewer
+             点了也是 403,不显示避免误导。 */}}
+        {{if $.Data.IsAdminRole}}
         <form method="post" action="/runtime/reload" class="inline">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <button class="btn small secondary" type="submit"
                 onclick="return confirm('{{T "dashboard.reloadAclConfirm"}}')">{{T "dashboard.reloadAcl"}}</button>
         </form>
+        {{end}}
     </div>
     <div class="grid-stats">
         <div class="stat"><div class="label">{{T "common.status"}}</div>
