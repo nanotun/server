@@ -566,3 +566,41 @@ func TestVia6_RebuildAssignsSiteIDAndBuildFillsIt(t *testing.T) {
 		t.Fatal("buildRoutesList 应含 192.168.1.0/24")
 	}
 }
+
+// TestRebuild_SkipsMeshOverlappingRoute(第十八轮深扫 MED):approved 一条与 server mesh 网段交叠的子网路由,
+// rebuildSubnetRouteTable 应把它挡在转发表外(数据面兜底);同批的非交叠路由仍应生效。
+func TestRebuild_SkipsMeshOverlappingRoute(t *testing.T) {
+	gw := newRouteTestGateway(t)
+	oldGW := gatewayInstance
+	gatewayInstance = gw
+	t.Cleanup(func() { gatewayInstance = oldGW })
+	prevTbl := subnetRouteTable.Load()
+	prevVia6 := via6SiteTable.Load()
+	t.Cleanup(func() { subnetRouteTable.Store(prevTbl); via6SiteTable.Store(prevVia6) })
+
+	// mesh 网段 = 10.201.0.0/16(网关 10.201.0.1)。测试后清回 nil。
+	setServerGatewayAddrs("10.201.0.1/16", "")
+	t.Cleanup(func() { serverGatewayAddrs.Store(nil) })
+
+	_, deviceID := mustCreateUserAndDevice(t, gw, "dave")
+	// 交叠路由(落进 mesh /16)与非交叠对照,都是 RFC1918 私有段,能过 advertise 归一。
+	for _, cidr := range []string{"10.201.5.0/24", "192.168.7.0/24"} {
+		if _, err := gw.store.UpsertAdvertisedRoute(t.Context(), deviceID, cidr); err != nil {
+			t.Fatalf("UpsertAdvertisedRoute %s: %v", cidr, err)
+		}
+		if err := gw.store.SetRouteStatus(t.Context(), deviceID, cidr, store.RouteStatusApproved, ""); err != nil {
+			t.Fatalf("SetRouteStatus %s: %v", cidr, err)
+		}
+	}
+
+	rebuildSubnetRouteTable(t.Context())
+
+	// 交叠段被跳过:lookupSubnetRoute 对其地址无命中。
+	if dev, ok := lookupSubnetRoute(netip.MustParseAddr("10.201.5.5")); ok {
+		t.Fatalf("与 mesh 交叠的子网路由应被跳过,却命中 device=%d", dev)
+	}
+	// 非交叠段仍生效。
+	if dev, ok := lookupSubnetRoute(netip.MustParseAddr("192.168.7.5")); !ok || dev != deviceID {
+		t.Fatalf("非交叠子网路由应生效:lookupSubnetRoute = (%d,%v),期望 (%d,true)", dev, ok, deviceID)
+	}
+}

@@ -129,6 +129,19 @@ func cmdRouteApprove(ctx context.Context, st *store.Store, opts *globalOpts, arg
 			return errors.New(opts.T("exit.ownerDisabled", owner.Username))
 		}
 	}
+	// 第十八轮深扫 MED:批准期拒绝与 server 自身 mesh 网段交叠的**具体**子网路由(0/0 / ::/0 出口是特例,不检查
+	// —— 它按 IsExitDefaultRoute 交给出口路径、不进子网路由表)。交叠会让发往「当前离线的 mesh 地址」的包被子网
+	// 路由中继进宣告方 LAN(跨信任域泄漏)。mesh 网段快照由 server 启动落库(mesh_cidrs);读不到(server 从未跑
+	// 过 / 老库)则跳过本检查,由数据面 rebuild 兜底。--force 不越过——重叠是**配置错误**而非策略权衡。
+	if !util.IsExitDefaultRoute(cidr) {
+		meshCIDRs, merr := st.GetMeshCIDRs(ctx)
+		if merr != nil {
+			return fmt.Errorf("get mesh cidrs: %w", merr)
+		}
+		if util.CIDROverlapsAny(cidr, meshCIDRs) {
+			return errors.New(opts.T("route.overlapsMesh", cidr))
+		}
+	}
 	if err := st.SetRouteStatus(ctx, deviceID, cidr, util.RouteStatusApproved, ""); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return errors.New(opts.T("route.notFound", deviceID, cidr))

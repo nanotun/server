@@ -30,6 +30,9 @@ var systemManagedSettingKeys = map[string]string{
 	// 这里在 CLI 入口再拦一层并给出清晰 hint。
 	"vip_canonicalized":    "setting.sysHint.vipCanonicalized",
 	"vip_canonicalized_v2": "setting.sysHint.vipCanonicalized", // 第十六轮:当前版本键,同样系统托管
+	// 第十八轮深扫 MED:mesh_cidrs 是 server 启动落库的本 mesh 网段快照,供批准子网路由时判交叠。DAL 的
+	// reservedSettingKeys 已兜底,这里在 CLI 入口再拦一层并给出清晰 hint。
+	store.MeshCIDRsKey: "setting.sysHint.meshCidrs", // "mesh_cidrs"
 }
 
 // validatedSettingKeys 列出可通过 `setting set` 修改、但**必须先走 schema 校验**的 key。

@@ -212,3 +212,29 @@ func NormalizeExitAdvertisedCIDR(in string) (string, error) {
 	// 其余具体 CIDR 与普通子网路由同权，必须过与非出口帧一致的私有/保留段收敛。
 	return NormalizeAdvertisedCIDR(in)
 }
+
+// CIDROverlapsAny 报告 cidr 是否与 others 中任一 CIDR 有地址交叠（按网络范围比较，忽略 host 位）。
+//
+// 第十八轮深扫 MED:供「批准子网路由」在批准期拒绝与 server 自身 mesh 网段(TUN 网关 CIDR)交叠的具体
+// CIDR —— 交叠会让发往「离线 mesh 地址」的包被中继进宣告方 LAN(跨信任域泄漏)。跨地址族天然不交叠
+// (netip.Prefix.Overlaps 对 v4/v6 位宽不同的前缀返回 false)。
+//
+// 容错:cidr 自身不可解析时返回 false(把「非法 CIDR」交给上游各自的 CIDR 校验报更精确的错,不在这里吞);
+// others 里不可解析的项跳过(mesh 快照理论已规范,防御性)。
+func CIDROverlapsAny(cidr string, others []string) bool {
+	p, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+	if err != nil {
+		return false
+	}
+	p = p.Masked()
+	for _, o := range others {
+		op, oerr := netip.ParsePrefix(strings.TrimSpace(o))
+		if oerr != nil {
+			continue
+		}
+		if p.Overlaps(op.Masked()) {
+			return true
+		}
+	}
+	return false
+}

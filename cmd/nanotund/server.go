@@ -1508,6 +1508,23 @@ func main() {
 	// lookupActiveConnByDevice 实时解析)。rebuild 内部会 INFO 打印当前生效路由条数。
 	rebuildSubnetRouteTable(context.Background())
 
+	// 第十八轮深扫 MED:把本 mesh 网段(TUN 网关 v4/v6 CIDR)快照落库(mesh_cidrs),供 nanotun-admin /
+	// nanotun-web 这两个**独立进程**在「批准子网路由」时读取,批准期就拒绝与 mesh 交叠的具体 CIDR(它们
+	// 各自不知道数据面 mesh 网段;此 key 是唯一跨进程可读的来源)。best-effort:落库失败只 warn 不阻断启动
+	// —— rebuildSubnetRouteTable 侧的运行时兜底(meshPrefixOverlaps 跳过交叠路由)仍在。
+	{
+		var meshCIDRs []string
+		if sharedTUNGateway != "" {
+			meshCIDRs = append(meshCIDRs, sharedTUNGateway)
+		}
+		if sharedTUNGatewayV6 != "" {
+			meshCIDRs = append(meshCIDRs, sharedTUNGatewayV6)
+		}
+		if serr := gw.store.SetMeshCIDRs(context.Background(), meshCIDRs); serr != nil {
+			logrus.WithError(serr).Warn("[subnet-route] 落库 mesh 网段快照失败(批准期重叠检查暂不可用,数据面兜底仍在)")
+		}
+	}
+
 	// FRP 式反向端口转发：加载 enabled 映射、在公网端口起 TCP 监听，转发到 mesh 节点自身端口 / LAN 后设备。
 	// admin 改映射经 control-socket /reload?what=portforward 实时启停。TUN 设备名供 LAN 目标装主机路由用。
 	tunDevName := ""
@@ -3664,6 +3681,20 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	connByDeviceAddLocked(newConn)
 	connIDMapMu.Unlock()
 
+	// H2(B3): 接管转移已完成(newConn 进 connIDMap/connByUser/connByDevice + oldConn.takenOver=true),
+	// 后续 close + tunnelDone 等待都是清理 oldConn 而非取消接管。从这里开始,newConn 的生命周期由
+	// cleanupConnection 接管,rollback 不能再删 connections[newConn.connID](会让 newConn 凭空消失)。
+	// 深扫第八轮 MED:cleanup defer 必须在此注册,否则「maps 已切换 → 注册 defer」之间一旦 panic,
+	// newConn 已入表却无人清理,成为永久僵尸(vIP 占用 + 设备重登异常)。
+	//
+	// 第十八轮深扫:再前移到 vipOwner 过户**之前**。旧放置点在 registerVIPOwners 之后,过户那几步一旦
+	// panic 仍落在窗口外 —— rollbackNewConn 只删 connections 一张表,connIDMap/connByUser/connByDevice
+	// 三表 + clientIPUsed(接管继承的 vIP)全泄漏到进程重启。紧跟 map 切换即注册 cleanup defer,把这个残
+	// 留窗口也闭合:此后任何 panic 都由 cleanupConnection 全量回收 newConn 的表项 + vIP;registerVIPOwners
+	// 若只过户了一部分,owner-guarded unregister 也能按 newConn.connID 一致清理已登记项。
+	rollbackNewConnNeeded = false
+	defer cleanupConnection(newConn)
+
 	// vipOwner 过户:takeover 继承了 oldConn 的 vIP 到 newConn,但 vipOwner 表里这些 vIP 的 ownerConnID 仍是
 	// oldConn 的。重登记到 newConn.connID(userID 不变),否则将来 newConn cleanup 时 owner-guarded unregister 会
 	// 因 connID 不符而删不掉 → vipOwner 泄漏。oldConn 走 takenOver 分支不动 vipOwner,这里覆盖是安全的。
@@ -3677,16 +3708,6 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		}
 		registerVIPOwners(addrs, uid, newConn.connID)
 	}
-
-	// H2(B3): 接管转移已完成(newConn 进 connIDMap + oldConn.takenOver=true),
-	// 后续 close + tunnelDone 等待都是清理 oldConn 而非取消接管。从这里开始,
-	// newConn 的生命周期由 cleanupConnection 接管,rollback 不能再删
-	// connections[newConn.connID](会让 newConn 凭空消失)。
-	// 深扫第八轮 MED:cleanup defer 必须**在这里**注册,而不是 runLinkTunnel 之前 ——
-	// 否则「maps 已切换 → 注册 defer」之间(关老链路、等 tunnelDone 5s、日志等)一旦
-	// panic,newConn 已入四张表却无人清理,成为永久僵尸(vIP 占用 + 设备重登异常)。
-	rollbackNewConnNeeded = false
-	defer cleanupConnection(newConn)
 
 	// 关老 link → 老 readLoop EOF → 老 demux 退出 → close oldConn.tunnelDone。
 	// 持 oldConn.linkWrMu 是为了与 kick goroutine 读 c.linkConn 串行化,避免 race。
