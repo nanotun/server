@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"hash/fnv"
 	"net/http"
 	"net/url"
 	"strings"
@@ -286,7 +287,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		res := AttemptLogin(ctx, s.store, s.cfg, username, password, ip)
+		// 第九轮深扫 LOW:按用户名分桶串行化「读锁定态 + verify + 记账」整段,关闭密码步账号锁定的
+		// check-then-act 竞态(见 Server.loginAttemptLocks)。captcha / PoW 已在上方校验完毕,锁只
+		// 罩住 AttemptLogin 这段;用闭包 + defer 确保即便 argon2 / DB 路径 panic 也必然解锁。
+		res := func() AuthResult {
+			unlock := s.lockLoginAttempt(username)
+			defer unlock()
+			return AttemptLogin(ctx, s.store, s.cfg, username, password, ip)
+		}()
 		if res.Err != nil {
 			s.sess.ipFailures.Inc(ip)
 			s.audit.Write(ctx, nil, "web.login.fail",
@@ -348,18 +356,23 @@ func (s *Server) loginRetry(w http.ResponseWriter, r *http.Request,
 	// 等在创建时已翻好、或后端错误)由 trErr 兜底(携带 LocaleKey 则译,否则原文)。
 	msg := trErr(r, res.Err)
 	switch {
-	case errors.Is(res.Err, ErrAuthLocked):
-		if res.LockedUntil > 0 {
-			msg = tr(r, "auth.accountLocked", fmtTime(res.LockedUntil))
-		} else {
-			msg = tr(r, "auth.accountLockedGeneric")
-		}
 	// **第三轮深扫 P1-A**:`ErrAuthDisabled` 对外文案不能区别于 `ErrAuthBadCredentials`,
 	// 否则 attacker 用账号枚举工具能直接定位「用户存在但已禁用」名单 — 部分破坏了
 	// `AttemptLogin` 顶部承诺的「不暴露用户存在性」。修法:对外统一 BadCredentials 同
 	// 文案,**audit 仍写真实 reason**("账号已被禁用",由 handleLogin 的 `res.Err.Error()`
 	// 落 detail.reason),运维内部可见、attacker 不可见,与 captcha_fail 同款设计。
-	case errors.Is(res.Err, ErrAuthBadCredentials), errors.Is(res.Err, ErrAuthDisabled):
+	//
+	// **第九轮深扫 LOW(账号枚举)**:`ErrAuthLocked` 亦并入本分支。此前锁定态给出区别于「凭证
+	// 错误」的专属文案("账号已锁定,请于 X 后重试"),而**不存在**的用户名走 decoy(id=0 永不
+	// 锁定)恒返回 ErrAuthBadCredentials —— attacker 用 5 次失败把某用户名锁掉后,凭第 6 次
+	// 「锁定 vs 凭证错误」的文案差即可判定该用户名是否存在,构成确定性存在性 oracle,恰与顶部
+	// 承诺相悖。修法:**密码步**对外统一 badCredentials,锁定真相仍落 audit(handleLogin 用
+	// res.Err.Error() 写 detail.reason)。时序早已由 decoy verify + DecoyWebAdminLoginFailure
+	// 抹平。注意:`/login/totp` 步仍显式展示锁定倒计时(handleLoginTOTP)——那一步已凭密码 +
+	// pending cookie 证明账号存在,展示锁定不再泄露存在性,反而是必要的可用性反馈。
+	case errors.Is(res.Err, ErrAuthLocked),
+		errors.Is(res.Err, ErrAuthBadCredentials),
+		errors.Is(res.Err, ErrAuthDisabled):
 		msg = tr(r, "auth.badCredentials")
 	}
 	tok, _ := s.sess.EnsureCSRFToken(r, w)
@@ -403,6 +416,19 @@ func (s *Server) loginRetry(w http.ResponseWriter, r *http.Request,
 func (s *Server) lockTOTPVerify(adminID int64) func() {
 	m, _ := s.totpVerifyLocks.LoadOrStore(adminID, &sync.Mutex{})
 	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// lockLoginAttempt 取(按用户名分桶的)/login 密码步互斥锁并加锁,返回解锁函数。
+// 用于把 AttemptLogin 的「读锁定态 + verify + 记账」临界区按账号串行化(第九轮深扫 LOW,
+// 见 Server.loginAttemptLocks)。归一(ToLower+Trim)与 store 的 CI 用户名查找口径对齐,
+// 使同一账号的不同大小写/空白写法落同一桶。桶数固定,内存有界。
+func (s *Server) lockLoginAttempt(username string) func() {
+	key := strings.ToLower(strings.TrimSpace(username))
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	mu := &s.loginAttemptLocks[h.Sum32()%loginAttemptLockBuckets]
 	mu.Lock()
 	return mu.Unlock
 }

@@ -76,9 +76,26 @@ type Server struct {
 	// 键空间 = web_admins 行数(有界),*sync.Mutex 只增不删可接受,无需 GC。
 	totpVerifyLocks sync.Map // adminID(int64) -> *sync.Mutex
 
+	// loginAttemptLocks(第九轮深扫 LOW)按**用户名**分桶串行化 /login **密码步**的「读锁定态 +
+	// verify + 记账」临界区,补上与 totpVerifyLocks 同类的另一半竞态:此前 AttemptLogin 用请求初
+	// 读到的 locked_until 快照判锁、失败计数却在 argon2 verify **之后**才落库,并发密码猜测都在任一
+	// RecordWebAdminLoginFailure 落地前读到「未锁」快照,可把单个锁定窗口内的尝试数放大到并发度。
+	//
+	// 为何不像 totpVerifyLocks 那样按 adminID:密码步的设计契约是**不泄露用户是否存在**(不存在的
+	// 用户名走 decoy、无 adminID)。改按**提交的用户名串**(归一后)分桶取模到**固定桶数**——内存
+	// 有界(不随 attacker 提交的任意用户名膨胀),对存在/不存在的用户名一视同仁加解锁(不引入锁竞争
+	// 的存在性旁路);同一用户名恒落同一桶 → 顺序化其并发猜测,使账号级锁定在并发下即时生效。不同
+	// 用户名偶发同桶只是额外串行,无害。密码步已有一次性 captcha + 自适应 PoW + argon2 节流兜底,
+	// 本锁是纵深防御的补齐。
+	loginAttemptLocks [loginAttemptLockBuckets]sync.Mutex
+
 	// startedAt 用于 /metrics uptime。
 	startedAt time.Time
 }
+
+// loginAttemptLockBuckets 是 loginAttemptLocks 的固定桶数(2 的幂,便于位掩码取模)。
+// 256 桶足以让正常并发下不同账号几乎不撞桶,同时把锁数组内存钉在常量级。
+const loginAttemptLockBuckets = 256
 
 // flagOverrides 收集 main 里已 Parse 的、需要按「显式 flag > env」复写的 flag 值快照。
 type flagOverrides struct {
