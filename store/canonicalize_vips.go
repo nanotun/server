@@ -58,6 +58,22 @@ func (s *Store) canonicalizeStoredVIPs(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 第十一轮深扫 MED:**先写后读**,把本 tx 变成 write-first —— 与本包所有热路径(UpsertLease /
+	// mutateWebAdminEnsuringAdmin 等)刻意保持的纪律一致。SQLite WAL 下 DEFERRED tx 在**首条语句**
+	// 取快照:若首条是 SELECT(read snapshot),而另一连接(如滚动升级期仍在服务的旧实例:写 audit /
+	// touch lease / session GC,或第二个进程)在本 tx 首次写之前 commit,则本 tx 的写会以
+	// SQLITE_BUSY_SNAPSHOT 失败,而 busy_timeout **不重试**该错 —— 导致 Migrate/启动非可重试地失败。
+	// Migrate 的 flock + s.mu 只串行化「其它 Migrate」,拦不住旧实例的常规写。故这里把一次性完成标记的
+	// 写**前置为 tx 首条语句**:立即拿到 reserved 写锁 / 写级快照,后续 SELECT/UPDATE 不再被并发 commit
+	// 打断。标记与实际改写仍在同一 tx —— commit 一起生效、rollback(中途崩溃)一起回滚,幂等不变。
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO app_settings(key,value) VALUES(?, '1')
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		vipCanonicalizedKey,
+	); err != nil {
+		return fmt.Errorf("store: canonicalize vips: write done flag: %w", err)
+	}
+
 	rewritten, skipped := 0, 0
 	for _, c := range cols {
 		// 表名 / 列名均为**硬编码常量**(非入参),无注入面。只扫非空值。
@@ -124,14 +140,7 @@ func (s *Store) canonicalizeStoredVIPs(ctx context.Context) error {
 		}
 	}
 
-	// 落一次性完成标记(与 schema_version 同表,直连写,绕过 SettingsSet 的 reserved 守卫)。
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO app_settings(key,value) VALUES(?, '1')
-		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-		vipCanonicalizedKey,
-	); err != nil {
-		return fmt.Errorf("store: canonicalize vips: write done flag: %w", err)
-	}
+	// 一次性完成标记已在 tx 首条语句写入(见上方 write-first 说明),此处只需 commit。
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: canonicalize vips: commit: %w", err)
 	}

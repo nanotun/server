@@ -938,6 +938,7 @@ var catZH = map[string]string{
 	"me.totpCodeWrong":          "验证码错误:%s",
 	"me.totpTooManyAttempts":    "该 IP 验证码错误次数过多,请等待几分钟后再试。",
 	"me.totpCodeRequired":       "请输入验证码。",
+	"me.enrollPasswordRequired": "请输入当前密码以启用两步验证。",
 	// 管理员保护:
 	"admins.cannotActOnSelf": "不允许对自己执行此操作(避免锁死自己)",
 	"admins.lastAdmin":       "拒绝:这是最后一个 enabled admin,不能禁用 / 删除 / 降级 —— 否则将无人能登录",

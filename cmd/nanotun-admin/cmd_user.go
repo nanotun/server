@@ -511,6 +511,16 @@ func cmdUserResetPSK(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	if u.DisabledAt != 0 {
 		return errors.New(opts.T("user.resetDisabled", u.Username, u.Username))
 	}
+	// 第十一轮深扫 MED:reset-psk 是破坏性操作(立即作废旧 PSK + 踢线该用户所有会话),main.go 顶部
+	// 「危险操作(删用户 / 重置 PSK)需 --yes 二次确认」的契约点名要求它像 user delete 一样先确认。
+	// 此前直接执行,误打用户名会静默把**错的人**的凭证换掉。--yes / -y 跳过(供脚本/自动化)。
+	if !opts.yes {
+		ok, _ := confirm(opts, opts.T("user.confirmResetPSK", u.Username))
+		if !ok {
+			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
+			return nil
+		}
+	}
 	if *psk != "" {
 		opts.warnPSKOnArgv()
 	}

@@ -728,6 +728,14 @@ func (s *Server) metricsAccessAllowed(r *http.Request) bool {
 		got := strings.TrimSpace(strings.TrimPrefix(h, pfx))
 		return subtle.ConstantTimeCompare([]byte(got), []byte(tok)) == 1
 	}
+	// 第十一轮深扫 LOW:未配 token 的环回白名单**仅在无前置反代时成立**。一旦配了 trusted proxies,
+	// nanotun-web 通常挂在同机反代之后,r.RemoteAddr 恒为反代自身(常是 127.0.0.1)—— 于是**每个**经反代
+	// 的公网访客都会被下面的 IsLoopback() 判定为环回而放行,把 /metrics(uptime / 请求&错误计数 / admin 账号数)
+	// 暴露给匿名互联网。故配置了 trusted proxies 却未设 MetricsToken 时,一律拒:此时必须显式配 token 才能抓取。
+	// (刻意不改用 clientIP/XFF 判环回 —— 门禁看真实对端才防伪造,而反代场景下真实对端本就不是环回。)
+	if len(s.cfg.TrustedProxies) > 0 {
+		return false
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr

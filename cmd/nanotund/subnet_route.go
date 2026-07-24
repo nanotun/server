@@ -116,7 +116,18 @@ func rebuildSubnetRouteTable(ctx context.Context) {
 		if perr != nil {
 			continue // 入库前已归一，理论上不会到这；防御性跳过坏数据。
 		}
-		tbl = append(tbl, subnetRouteEntry{prefix: p.Masked(), deviceID: r.DeviceID})
+		masked := p.Masked()
+		// 第十一轮深扫 MED:载入时复核私有/保留段(NormalizeAdvertisedCIDR 的写路径收敛不回溯存量)。
+		// 旧代码期批准过的公网/宽段子网路由若留在转发表,会绕过出口闸 + 出口 ACL(confused-deputy);
+		// 这里把它们挡在转发表外(不删库,admin 可重新处置 / 改走出口节点),并 warn 提示。
+		if !util.PrefixWithinAdvertisable(masked) {
+			logrus.WithFields(logrus.Fields{
+				"cidr":      r.CIDR,
+				"device_id": r.DeviceID,
+			}).Warn("[subnet-route] 跳过非私有/保留段的历史 approved 子网路由(绕过出口闸风险):请重新审批为出口节点或删除")
+			continue
+		}
+		tbl = append(tbl, subnetRouteEntry{prefix: masked, deviceID: r.DeviceID})
 		// SR-VIA6：确保该 approved 子网宣告方设备已分配稳定 siteID（幂等；供 4via6 消歧数据面 + routes-list 下发）。
 		// 集中在此分配：不论 approve 来自 admin CLI 还是 web，都经 /reload?what=routes 触发本 rebuild。0/0 出口已在
 		// 上面 continue 跳过，不占用 siteID（4via6 只对具体子网）。
