@@ -227,7 +227,7 @@ func cmdDeviceSetAlias(ctx context.Context, st *store.Store, opts *globalOpts, a
 	}
 	id, err := parseInt64(args[0])
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.T("cli.invalidDeviceID", args[0]), err)
+		return usageErrorWrap(fmt.Sprintf("%s: %v", opts.T("cli.invalidDeviceID", args[0]), err), err)
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {
@@ -256,7 +256,7 @@ func cmdDeviceDelete(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	}
 	id, err := parseInt64(args[0])
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.T("cli.invalidDeviceID", args[0]), err)
+		return usageErrorWrap(fmt.Sprintf("%s: %v", opts.T("cli.invalidDeviceID", args[0]), err), err)
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {
@@ -317,7 +317,7 @@ func cmdDeviceSetFixedVIP(ctx context.Context, st *store.Store, opts *globalOpts
 	}
 	id, err := parseInt64(pos[0])
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.T("cli.invalidDeviceID", pos[0]), err)
+		return usageErrorWrap(fmt.Sprintf("%s: %v", opts.T("cli.invalidDeviceID", pos[0]), err), err)
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {
@@ -429,7 +429,7 @@ func cmdDeviceSetRate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 	}
 	id, err := parseInt64(pos[0])
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.T("cli.invalidDeviceID", pos[0]), err)
+		return usageErrorWrap(fmt.Sprintf("%s: %v", opts.T("cli.invalidDeviceID", pos[0]), err), err)
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {

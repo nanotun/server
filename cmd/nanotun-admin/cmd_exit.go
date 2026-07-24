@@ -88,7 +88,7 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 	}
 	id, err := parseInt64(pos[0])
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.T("cli.invalidDeviceID", pos[0]), err)
+		return usageErrorWrap(fmt.Sprintf("%s: %v", opts.T("cli.invalidDeviceID", pos[0]), err), err)
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {
@@ -295,7 +295,7 @@ func cmdExitRevoke(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	}
 	id, err := parseInt64(pos[0])
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.T("cli.invalidDeviceID", pos[0]), err)
+		return usageErrorWrap(fmt.Sprintf("%s: %v", opts.T("cli.invalidDeviceID", pos[0]), err), err)
 	}
 	d, err := st.GetDevice(ctx, id)
 	if err != nil {

@@ -241,7 +241,7 @@ func parseRouteTarget(opts *globalOpts, args []string) (int64, string, error) {
 	}
 	id, err := parseInt64(args[0])
 	if err != nil {
-		return 0, "", fmt.Errorf("%s: %w", opts.T("cli.invalidDeviceID", args[0]), err)
+		return 0, "", usageErrorWrap(fmt.Sprintf("%s: %v", opts.T("cli.invalidDeviceID", args[0]), err), err)
 	}
 	// 用出口语境归一器（允许 0.0.0.0/0 与 ::/0）：出口节点（exit-node）正是靠 admin 批准 device 的 /0
 	// 路由来生效；用非出口归一器会把 /0 一律拒掉，导致**根本无法批准出口**。approve/reject/delete 共用

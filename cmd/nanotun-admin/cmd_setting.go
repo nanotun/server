@@ -311,7 +311,7 @@ func cmdSettingProbeDialHost(ctx context.Context, opts *globalOpts, args []strin
 	}
 	host := strings.TrimSpace(pos[0])
 	if host == "" {
-		return errors.New(opts.T("setting.probe.hostEmpty"))
+		return usageError(opts.T("setting.probe.hostEmpty"))
 	}
 
 	if verr := store.ValidateServerDialHost(host); verr != nil {

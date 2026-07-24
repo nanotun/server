@@ -42,7 +42,7 @@ func cmdLeaseGc(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 		return err
 	}
 	if *idle <= 0 {
-		return errors.New(opts.T("lease.idleMustPositive"))
+		return usageError(opts.T("lease.idleMustPositive"))
 	}
 	if *dry {
 		var n int64
@@ -139,7 +139,7 @@ func cmdLeaseRelease(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	}
 	id, err := parseInt64(args[0])
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.T("cli.invalidDeviceID", args[0]), err)
+		return usageErrorWrap(fmt.Sprintf("%s: %v", opts.T("cli.invalidDeviceID", args[0]), err), err)
 	}
 	if err := st.DeleteLease(ctx, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -169,7 +169,7 @@ func cmdLeaseSet(ctx context.Context, st *store.Store, opts *globalOpts, args []
 	}
 	deviceID, err := parseInt64(pos[0])
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.T("cli.invalidDeviceID", pos[0]), err)
+		return usageErrorWrap(fmt.Sprintf("%s: %v", opts.T("cli.invalidDeviceID", pos[0]), err), err)
 	}
 	if _, err := st.GetDevice(ctx, deviceID); err != nil {
 		return opts.notFoundErr(err, "device.notFound", deviceID)

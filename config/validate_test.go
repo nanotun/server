@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestConfigValidate(t *testing.T) {
 	// 合法基线：应通过。
@@ -122,5 +125,17 @@ func TestReality_ValidateListenAddrFormat(t *testing.T) {
 	// 空 listen_addr = 未启用 → 直接放行。
 	if err := base("").Validate(); err != nil {
 		t.Fatalf("空 listen_addr 应视为未启用直接放行: %v", err)
+	}
+	// 第十七轮深扫(修回归):REALITY 支持 ":0"(内核分配端口),listen_addr 校验不应拦它;
+	// 但主 [server].listen_addr 校验仍拒 :0(server 不应绑临时端口)。
+	if err := validateListenAddrFormatAllowZero(":0"); err != nil {
+		t.Fatalf("REALITY 应允许 :0(内核分配端口): %v", err)
+	}
+	if err := validateListenAddrFormat(":0"); err == nil {
+		t.Fatal("[server] 主 listen_addr 校验仍应拒绝 :0")
+	}
+	// REALITY ":0" 过了 listen_addr 一关后,报错(若有)不应再是 listen_addr 的。
+	if err := base("0.0.0.0:0").Validate(); err != nil && strings.Contains(err.Error(), "listen_addr") {
+		t.Fatalf(":0 不应再被 listen_addr 校验拦下, got %v", err)
 	}
 }
