@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"net/http"
 	"net/url"
@@ -149,7 +150,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		}
 		// 直接颁发 session,登入。
 		ip := clientIP(r)
-		if err := s.sess.IssueSession(ctx, w, admin.ID, ip, r.UserAgent()); err != nil {
+		if _, err := s.sess.IssueSession(ctx, w, admin.ID, ip, r.UserAgent()); err != nil {
 			s.renderInternalError(w, r, "setup:issue_session", err)
 			return
 		}
@@ -336,7 +337,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, redirectTo, http.StatusFound)
 			return
 		}
-		if err := s.sess.IssueSession(ctx, w, res.Admin.ID, ip, r.UserAgent()); err != nil {
+		if _, err := s.sess.IssueSession(ctx, w, res.Admin.ID, ip, r.UserAgent()); err != nil {
 			s.renderInternalError(w, r, "login:issue_session", err)
 			return
 		}
@@ -597,21 +598,29 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
 		}
-		// 通过 → 把恢复码标记 used(如有);颁正式 session;清 pending。
+		// 第十五轮深扫 MED:改「**先颁 session,再** MarkRecoveryCodeUsed」顺序,并在标记失败时回滚 session。
+		// 此前是「先标记 used 再 IssueSession」:IssueSession 失败(建 session DB 抖动)会白白**烧掉**一枚恢复码
+		// 却拿不到会话。新顺序下——
+		//   · IssueSession 失败:恢复码**尚未**标记,用户可用同码重登(pending 已消费,需重走密码步),不浪费码;
+		//   · MarkRecoveryCodeUsed 失败:删掉刚建的 session 回滚,保证「一码一用」不被「session 已发但码未烧」破坏。
+		// 顺序仍在 MarkPendingConsumed(nonce 一次性)之后,重放保护不变。
+		sid, err := s.sess.IssueSession(ctx, w, admin.ID, ip, r.UserAgent())
+		if err != nil {
+			s.renderInternalError(w, r, "login_totp:issue_session", err)
+			return
+		}
 		if usedRecovery && recoveryID > 0 {
-			if err := s.store.MarkRecoveryCodeUsed(ctx, recoveryID, ip, time.Now().Unix()); err != nil {
-				// 这条恢复码可能并发被用了 / DB 抖动 — 拒绝本次登录,让用户重试。
-				// 不应该让一个恢复码"看起来用过其实没用过"或者反过来。
+			if merr := s.store.MarkRecoveryCodeUsed(ctx, recoveryID, ip, time.Now().Unix()); merr != nil {
+				// 恢复码可能并发被用了 / DB 抖动 —— 回滚刚发的 session(删库 + 清 cookie)并拒绝本次登录,
+				// 避免会话已发而恢复码未标记 used(否则该码可被重放,破坏一码一用)。
+				_ = s.store.DeleteWebSession(ctx, sid)
+				s.sess.clearSessionCookie(w)
 				s.loginTOTPRetry(w, r, tr(r, "auth.recoveryCodeError"), admin.Username, next)
 				return
 			}
 			s.audit.Write(ctx, admin, "web.totp.recovery_used",
 				FormatTarget("web_admin", admin.ID),
 				FormatDetail("ip", ip, "recovery_id", recoveryID))
-		}
-		if err := s.sess.IssueSession(ctx, w, admin.ID, ip, r.UserAgent()); err != nil {
-			s.renderInternalError(w, r, "login_totp:issue_session", err)
-			return
 		}
 		s.sess.ClearTOTPPending(w)
 		// 第七轮深扫 MED:成功登录减半 IP 失败计数(非清零),NAT 共享 IP 下不清空同段攻击者的失败信号。
@@ -629,9 +638,14 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// reasonVerifyUnavailable:verifyTOTPOrRecovery 在恢复码 argon2 校验遇容量/ctx 超时时冒泡的专属 reason,
-// 调用方据此回 503(暂时不可用)而非当作码错计入失败/锁定(第十四轮深扫 MED)。
+// reasonVerifyUnavailable:verifyTOTPOrRecovery 在恢复码 argon2 校验遇容量/ctx 超时(或第十五轮起的
+// ConsumeTOTPStep DB 瞬时错误)时冒泡的专属 reason,调用方据此回 503(暂时不可用)而非当作码错计入失败/锁定。
 const reasonVerifyUnavailable = "verify_unavailable"
+
+// ErrTOTPStepUnavailable:verifyAndConsumeStepUpTOTP 在 ConsumeTOTPStep 遇 **DB 瞬时错误** 时冒泡的哨兵。
+// 第十五轮深扫 MED:step-up 各调用方据此回 503(暂时不可用),**不**累加 stepUpFailures —— 码已 VerifyTOTPStep
+// 通过、只是消费写库抖了一下,不该把正确码 + 一次 DB 抖动推进 step-up 冷却(与登录 reasonVerifyUnavailable 对齐)。
+var ErrTOTPStepUnavailable = errors.New("totp step consume unavailable")
 
 // verifyTOTPOrRecovery 二选一校验,简化 handler 逻辑。
 // 返回 (ok, usedRecovery, recoveryID, errReason)。
@@ -647,7 +661,11 @@ func (s *Server) verifyTOTPOrRecovery(ctx context.Context, admin *store.WebAdmin
 			// ConsumeTOTPStep 返回 false → 本次登录判为失败(reason=totp_replay,便于审计区分)。
 			consumed, cerr := s.store.ConsumeTOTPStep(ctx, admin.ID, step)
 			if cerr != nil {
-				return false, false, 0, "totp_step_consume:" + cerr.Error()
+				// 第十五轮深扫 MED:消费时间步的 **DB 瞬时错误** ≠ 码错。码已 VerifyTOTPStep 通过,只是消费写库抖了一下。
+				// 若当失败返回,正确码 + 一次 DB 抖动就累加 ipFailures / 账号锁定(与 argon2 容量同类 DoS)。改用
+				// reasonVerifyUnavailable 冒泡 → 调用方回 503、不计失败、不消费 pending,用户可重试。无 session 被颁,
+				// 无重放旁路(码尚未被消费,重试会重新走完整消费)。
+				return false, false, 0, reasonVerifyUnavailable
 			}
 			if !consumed {
 				return false, false, 0, "totp_replay"
@@ -704,7 +722,8 @@ func (s *Server) verifyAndConsumeStepUpTOTP(ctx context.Context, adminID int64, 
 	}
 	consumed, cerr := s.store.ConsumeTOTPStep(ctx, adminID, step)
 	if cerr != nil {
-		return cerr
+		// 第十五轮深扫 MED:DB 瞬时错误 ≠ 码错。包 ErrTOTPStepUnavailable 让调用方回 503、不累加冷却(见哨兵注释)。
+		return fmt.Errorf("%w: %v", ErrTOTPStepUnavailable, cerr)
 	}
 	if !consumed {
 		return ErrTOTPMismatch

@@ -23,7 +23,7 @@ func TestIssueAndLookupSession(t *testing.T) {
 	sess := NewSessionService(st, cfg)
 	w := httptest.NewRecorder()
 
-	if err := sess.IssueSession(ctx, w, a.ID, "10.0.0.1", "test-ua"); err != nil {
+	if _, err := sess.IssueSession(ctx, w, a.ID, "10.0.0.1", "test-ua"); err != nil {
 		t.Fatalf("issue: %v", err)
 	}
 	setCookie := w.Header().Get("Set-Cookie")
@@ -65,7 +65,7 @@ func TestLookupSession_DisabledAdminInvalidates(t *testing.T) {
 	a, _ := st.CreateWebAdmin(ctx, store.NewWebAdmin{Username: "u", PasswordHash: hash})
 	sess := NewSessionService(st, cfg)
 	w := httptest.NewRecorder()
-	_ = sess.IssueSession(ctx, w, a.ID, "ip", "ua")
+	_, _ = sess.IssueSession(ctx, w, a.ID, "ip", "ua")
 	cookie := w.Header().Get("Set-Cookie")
 
 	_ = st.SetWebAdminEnabled(ctx, a.ID, false)

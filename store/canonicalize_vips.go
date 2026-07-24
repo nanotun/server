@@ -41,15 +41,23 @@ func (s *Store) canonicalizeStoredVIPs(ctx context.Context) error {
 		return nil
 	}
 
+	// 第十五轮深扫 LOW:碰撞检查从「同表同列」扩到**跨表配对列**(leases.vip ↔ devices.fixed_vip 同族)。
+	// 此前只查同表:把 leases.vip_v6 从 "FD00::2" 归一成 "fd00::2" 时,只看 leases 里有没有 "fd00::2",看不到
+	// **别的设备**的 devices.fixed_vip_v6 已是 "fd00::2" → 归一后跨表双占,却被落库。ownerCol/pOwnCol 用于**排除
+	// 同一设备**的合法配对(SetDeviceFixedVIP 会同写 device.fixed_vip + 同值 manual lease,同设备两处相等是正常的)。
 	type vipCol struct {
-		table string
-		col   string
+		table    string
+		col      string
+		ownerCol string // 本表内标识「归属设备」的列:leases→device_id,devices→id
+		pTable   string // 配对的另一表
+		pCol     string // 配对列(同族 v4/v6)
+		pOwnCol  string // 配对表内标识归属设备的列
 	}
 	cols := []vipCol{
-		{"leases", "vip_v4"},
-		{"leases", "vip_v6"},
-		{"devices", "fixed_vip_v4"},
-		{"devices", "fixed_vip_v6"},
+		{"leases", "vip_v4", "device_id", "devices", "fixed_vip_v4", "id"},
+		{"leases", "vip_v6", "device_id", "devices", "fixed_vip_v6", "id"},
+		{"devices", "fixed_vip_v4", "id", "leases", "vip_v4", "device_id"},
+		{"devices", "fixed_vip_v6", "id", "leases", "vip_v6", "device_id"},
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -81,24 +89,26 @@ func (s *Store) canonicalizeStoredVIPs(ctx context.Context) error {
 
 	rewritten, skipped := 0, 0
 	for _, c := range cols {
-		// 表名 / 列名均为**硬编码常量**(非入参),无注入面。只扫非空值。
+		// 表名 / 列名均为**硬编码常量**(非入参),无注入面。只扫非空值。同时取「归属设备」列(owner),
+		// 供下方跨表碰撞检查排除同一设备的合法 fixed_vip↔sticky-lease 配对。
 		//nolint:gosec // identifiers are compile-time constants, not user input
-		q := fmt.Sprintf("SELECT id, %s FROM %s WHERE %s IS NOT NULL AND %s != ''",
-			c.col, c.table, c.col, c.col)
+		q := fmt.Sprintf("SELECT id, %s, %s FROM %s WHERE %s IS NOT NULL AND %s != ''",
+			c.ownerCol, c.col, c.table, c.col, c.col)
 		rows, err := tx.QueryContext(ctx, q)
 		if err != nil {
 			return fmt.Errorf("store: canonicalize vips: scan %s.%s: %w", c.table, c.col, err)
 		}
-		// 先把本列所有 (id,val) 读进内存再逐行 UPDATE —— 不在遍历游标的同时对同表发写,
+		// 先把本列所有 (id,owner,val) 读进内存再逐行 UPDATE —— 不在遍历游标的同时对同表发写,
 		// 避免 SQLite 游标失效 / 未定义行为。
 		type row struct {
-			id  int64
-			val string
+			id    int64
+			owner int64
+			val   string
 		}
 		var pending []row
 		for rows.Next() {
 			var r row
-			if err := rows.Scan(&r.id, &r.val); err != nil {
+			if err := rows.Scan(&r.id, &r.owner, &r.val); err != nil {
 				rows.Close()
 				return fmt.Errorf("store: canonicalize vips: scan row %s.%s: %w", c.table, c.col, err)
 			}
@@ -115,13 +125,33 @@ func (s *Store) canonicalizeStoredVIPs(ctx context.Context) error {
 			if canonical == r.val {
 				continue // 已规范,no-op。
 			}
-			// 碰撞检查:同表同列是否已有 canonical(可能是既有规范行,或本轮已改写的另一行)。
+			// 碰撞检查(两处):
+			//   1) 同表同列已有 canonical(既有规范行,或本轮已改写的另一行);
+			//   2) 跨表配对列(另一表同族列)被**别的设备**占用 —— 同设备的 fixed_vip↔sticky-lease 配对合法,排除。
+			// 任一命中即视为「规范形已被占用」→ 存量本已双占 → 跳过,不由迁移裁决赢家(标记留 '0' 下次重跑)。
 			//nolint:gosec // identifiers are compile-time constants, not user input
-			existsQ := fmt.Sprintf("SELECT 1 FROM %s WHERE %s=? LIMIT 1", c.table, c.col)
+			sameQ := fmt.Sprintf("SELECT 1 FROM %s WHERE %s=? LIMIT 1", c.table, c.col)
+			//nolint:gosec // identifiers are compile-time constants, not user input
+			crossQ := fmt.Sprintf("SELECT 1 FROM %s WHERE %s=? AND %s != ? LIMIT 1", c.pTable, c.pCol, c.pOwnCol)
+			collided := false
 			var dummy int
-			switch scanErr := tx.QueryRowContext(ctx, existsQ, canonical).Scan(&dummy); {
+			switch scanErr := tx.QueryRowContext(ctx, sameQ, canonical).Scan(&dummy); {
 			case scanErr == nil:
-				// 规范形已被占用 → 存量本已双占(或两行归一到同一地址)。跳过,不由迁移裁决赢家。
+				collided = true
+			case errors.Is(scanErr, sql.ErrNoRows):
+				switch cErr := tx.QueryRowContext(ctx, crossQ, canonical, r.owner).Scan(&dummy); {
+				case cErr == nil:
+					collided = true
+				case errors.Is(cErr, sql.ErrNoRows):
+					// 两处均无碰撞,可安全重写。
+				default:
+					return fmt.Errorf("store: canonicalize vips: cross-table collision check %s.%s vs %s.%s: %w",
+						c.table, c.col, c.pTable, c.pCol, cErr)
+				}
+			default:
+				return fmt.Errorf("store: canonicalize vips: collision check %s.%s: %w", c.table, c.col, scanErr)
+			}
+			if collided {
 				skipped++
 				logrus.WithFields(logrus.Fields{
 					"table":     c.table,
@@ -129,12 +159,8 @@ func (s *Store) canonicalizeStoredVIPs(ctx context.Context) error {
 					"id":        r.id,
 					"raw":       r.val,
 					"canonical": canonical,
-				}).Warn("[store] VIP 规范化跳过:规范形已被占用(存量双占),请人工核对释放冲突方")
+				}).Warn("[store] VIP 规范化跳过:规范形已被占用(存量双占/跨表),请人工核对释放冲突方")
 				continue
-			case errors.Is(scanErr, sql.ErrNoRows):
-				// 无碰撞,可安全重写。
-			default:
-				return fmt.Errorf("store: canonicalize vips: collision check %s.%s: %w", c.table, c.col, scanErr)
 			}
 			//nolint:gosec // identifiers are compile-time constants, not user input
 			upd := fmt.Sprintf("UPDATE %s SET %s=? WHERE id=?", c.table, c.col)

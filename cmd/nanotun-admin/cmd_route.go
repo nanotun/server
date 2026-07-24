@@ -48,7 +48,8 @@ func cmdRouteList(ctx context.Context, st *store.Store, opts *globalOpts, args [
 	deviceID := fs.Int64("device", 0, opts.T("route.flag.device"))
 	status := fs.String("status", "", opts.T("route.flag.status"))
 	if err := fs.Parse(args); err != nil {
-		return err
+		// 第十五轮深扫 MED:flag 解析错误属用法错误 → exit 2(与 dispatch / parseInterspersed 一致)。
+		return usageErrorWrap(err.Error(), err)
 	}
 
 	var rows []store.SubnetRoute

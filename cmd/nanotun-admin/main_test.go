@@ -294,6 +294,54 @@ func TestInitWizard(t *testing.T) {
 	}
 }
 
+// TestInitWizard_SecondAdminNeedsConfirm 第十五轮深扫 HIGH:users>0 但 setup_completed≠"1"(被 `setting set`
+// 清或历史库)时,输一个**新用户名**跑 init 不再无声创建第二个 admin —— 必须二次确认(--yes / 输 y 才建;
+// 拒绝或 EOF → 取消不建)。n==0 首装向导不受影响(TestInitWizard 已覆盖)。
+func TestInitWizard_SecondAdminNeedsConfirm(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "init2.db")
+	// 先正常 init 造出首位 admin wenhai(setup_completed=1)。
+	if c, _, e := runCLI(t, db, "wenhai\n\n", "init"); c != 0 {
+		t.Fatalf("first init: code=%d stderr=%s", c, e)
+	}
+	// 清掉 setup_completed → 模拟被 `setting set` 清或历史库(setup_completed≠"1" 但 users>0)。
+	if c, _, e := runCLI(t, db, "", "setting", "set", "setup_completed", "0"); c != 0 {
+		t.Fatalf("clear setup_completed: code=%d stderr=%s", c, e)
+	}
+
+	// runCLI 恒注入 --yes,测不了确认门 —— 直接调 cmdInit 且 opts.yes=false。
+	st := openStoreForTest(t, db)
+	ctx := t.Context()
+
+	// (1) 拒绝确认(输 n):不应创建 eve。
+	{
+		out := &bytes.Buffer{}
+		opts := &globalOpts{lang: "zh", stdout: out, stderr: &bytes.Buffer{}, stdin: strings.NewReader("eve\n\nn\n")}
+		if err := cmdInit(ctx, st, opts, nil); err != nil {
+			t.Fatalf("declined init returned err: %v", err)
+		}
+		if !strings.Contains(out.String(), "已取消") {
+			t.Fatalf("declined init should print canceled; got %s", out.String())
+		}
+		if _, err := st.GetUserByUsername(ctx, "eve"); err == nil {
+			t.Fatal("拒绝确认后不应创建第二个 admin eve")
+		}
+	}
+	// (2) 确认(输 y):创建 eve。
+	{
+		out := &bytes.Buffer{}
+		opts := &globalOpts{lang: "zh", stdout: out, stderr: &bytes.Buffer{}, stdin: strings.NewReader("eve\n\ny\n")}
+		if err := cmdInit(ctx, st, opts, nil); err != nil {
+			t.Fatalf("confirmed init returned err: %v", err)
+		}
+		if !strings.Contains(out.String(), "PSK:") {
+			t.Fatalf("confirmed init should print PSK; got %s", out.String())
+		}
+		if _, err := st.GetUserByUsername(ctx, "eve"); err != nil {
+			t.Fatalf("确认后应创建 eve: %v", err)
+		}
+	}
+}
+
 // 0008 device 维度版冲突测试:B device 的 lease 占了 100.64.0.10,给 A device
 // 设 fixed_vip_v4=100.64.0.10 默认应当报错;加 --force 才放行。
 func TestDeviceSetFixedVIP_CollisionGuard(t *testing.T) {

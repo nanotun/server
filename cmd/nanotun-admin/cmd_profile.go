@@ -222,7 +222,9 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 		}
 	}
 	if !validFormat(*format) {
-		return errors.New(opts.T("profile.formatInvalid", *format))
+		// 第十五轮深扫 LOW:非法 --format 值属**用法错误** → exit 2(与 credentials show / 顶层 dispatch 一致;
+		// 此前 errors.New 恒 exit 1)。
+		return usageError(opts.T("profile.formatInvalid", *format))
 	}
 	// 第五轮深扫 MED:端口 flag 用 flag.Uint 解析后再 uint16() 强转会**静默截断** ——
 	// --gateway-port 70000 → 4464;65536 → 0 被当「未设」悄悄回退默认。脚本可能因此发出错误端口

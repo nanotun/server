@@ -628,7 +628,8 @@ func rulePortIndeterminate(r ruleEntry, t pktTuple) bool {
 //
 // IPv4:Total Length / IHL 不验证(已经由 util.ValidIPPacket 兜底);非首片 / 截断首片不取端口。
 // IPv6:走扩展头链定位 L4(第五轮深扫 HIGH),Fragment 首片解析端口、非首片不取端口;
-// 遇 ESP/AH/未知扩展头或越界时退化为 hasL4Ports=false(带端口规则不命中,见 ruleMatchesPacket)。
+// 遇 ESP → resolved(加密无明文端口);遇 AH/未知扩展头或越界 → l4Unresolved,端口 deny fail-closed
+// (第十五轮深扫 LOW,见 ruleMatchesPacket / rulePortIndeterminate)。
 func parsePacketTuple(p []byte) (pktTuple, bool) {
 	if len(p) < 1 {
 		return pktTuple{}, false
@@ -684,7 +685,8 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 		//   * 逐个跳过已知扩展头(变长按 Hdr-Ext-Len,Fragment 定长 8B);
 		//   * Fragment 头取 fragment offset:offset==0(首片,RFC 7112 要求首片含完整头链)继续解析其后
 		//     L4 头拿端口;offset!=0(非首片)标记 nonFirstFrag,不解析端口(与 IPv4 非首片同口径);
-		//   * 遇 ESP(50)/AH(51)/未知/越界 → L4 不可判(hasL4Ports=false),保守处理;
+		//   * 遇 ESP(50)→ 载荷加密无明文端口,判 resolved(proto="");遇 AH(51)/未知/越界 → L4 不可判,
+		//     保持 !resolved → 标 l4Unresolved 让端口 deny fail-closed(第十五轮深扫 LOW);
 		//   * 跳数封顶 8,杜绝畸形链导致死循环。
 		nh := p[6]
 		off := 40
@@ -734,8 +736,15 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 				}
 				nh = p[off]
 				off += 8
-			default: // ESP(50) / AH(51) / 未知 → 无法可靠定位 L4 头,但与目的端看法一致(它也无 tcp/udp 端口)
+			case 50: // ESP:其后 L4 被加密,目的端无 SA 也解不出明文 tcp/udp 端口 → 无可藏的端口绕过面。
+				// 判 resolved(proto="")与目的端看法一致,不当 l4Unresolved(避免对 mesh 内合法 ESP 在有端口 deny
+				// 规则时误 fail-closed 丢弃)。
 				resolved = true
+				break walk
+			default: // AH(51) / 未知 next-header → 其后可能仍有**明文** L4(AH 不加密载荷,只在其后拼真正的 L4)。
+				// 第十五轮深扫 LOW:不再当 resolved(空 proto)—— 那样「AH + TCP:22」在 default=allow 下能绕过 `deny tcp
+				// port 22`(规则不命中 → 放行)。改为保持 !resolved → 循环外标 l4Unresolved,让 proto/port deny fail-closed
+				// (与扩展头耗尽 / 分片非首片同口径)。AH 无 SA 通常已被内核丢弃、实际面窄,此处按纵深防御一并收口。
 				break walk
 			}
 		}
@@ -790,6 +799,15 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 
 	// (2) 源是另一在线会话的 vIP → 冒充他人,任何会话都不允许(含已批准出口 / 子网)。
 	if _, owned := lookupVIPOwner(src); owned {
+		return true
+	}
+
+	// 第十五轮深扫 MED:源 == server 自身网关地址(v4/v6)→ 任何会话(**含已批准出口/子网转发者**)一律判伪造,
+	// 在下面 (3) 的出口/子网豁免**之前**拦截。客户端把 server 网关当**信任锚**:MagicDNS resolver 监听 gateway:53、
+	// 回程 ICMP 也以网关为对端。若允许已批准出口/子网方以网关为源向别的 mesh 对端注包,即可伪造「来自可信 resolver」
+	// 的 DNS 应答 / ICMP → 对任意 mesh 对端做 DNS 投毒 / 欺骗。合法的出口/子网回程源只会是外网/LAN 地址或对端 vIP,
+	// 绝不会是 server 网关本身,故此拦截不误伤正常中继。
+	if isServerGatewayAddr(src) {
 		return true
 	}
 

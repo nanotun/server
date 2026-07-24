@@ -96,15 +96,21 @@ func (s *Store) EnableWebAdminTOTP(ctx context.Context, id int64,
 	// 同会话攻击者亦可在受害者验过自己二维码后,抢先把 secret 换成攻击者可控值再 enable。
 	// CAS `AND totp_secret=?` 保证:只有当库里仍是被验过的那个 secret 时才翻 enabled,否则 0 行
 	// → ErrNotFound(handler 引导重走 setup)。
+	//
+	// 第十五轮深扫 LOW(与 SetWebAdminTOTPSecret 的 `totp_enabled=0` 守卫对称,防御纵深):再加 `AND totp_enabled=0`——
+	// enable 只对**当前处于禁用态**的账号有效。否则对一个**已启用** TOTP 的账号重复调用 enable,会 DELETE 旧恢复码 +
+	// 生成新码 + 重置 totp_enabled_at,等于绕过带 step-up 的 regen 流程从 enable 路径静默换恢复码(劫持会话 / 误操作)。
+	// handler 侧 setup 已查 cur.TOTPEnabled 拦截,这里在 DAL 再兜一层。命中 0 行(不存在 / secret 不符 / **已启用**)
+	// 统一回 ErrNotFound。
 	res, err := tx.ExecContext(ctx,
 		`UPDATE web_admins
 		    SET totp_enabled=1, totp_enabled_at=?
-		  WHERE id=? AND totp_secret=?`, now, id, expectedSecret)
+		  WHERE id=? AND totp_secret=? AND totp_enabled=0`, now, id, expectedSecret)
 	if err != nil {
 		return 0, fmt.Errorf("store: enable totp: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		// id 不存在 / 没设过 secret / secret 在校验后被并发改写(setup 竞态)——都归一为 ErrNotFound,
+		// id 不存在 / 没设过 secret / secret 在校验后被并发改写(setup 竞态)/ 已启用 —— 都归一为 ErrNotFound,
 		// 语义上都是「当前状态无法据此启用,请重新开始 setup」。
 		return 0, ErrNotFound
 	}

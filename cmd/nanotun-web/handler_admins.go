@@ -258,6 +258,11 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if terr := s.verifyAndConsumeStepUpTOTP(r.Context(), me.ID, fresh.TOTPSecret, code); terr != nil {
+					if errors.Is(terr, ErrTOTPStepUnavailable) {
+						// 第十五轮深扫 MED:消费时间步的 DB 瞬时错误非码错 —— 不计冷却,回 503(与登录对齐)。
+						s.renderError(w, r, http.StatusServiceUnavailable, tr(r, "auth.tryAgainLater"))
+						return
+					}
 					s.stepUpFailures.Inc(ip)
 					s.audit.WriteFromRequest(r, "webadmin_reset_pwd_stepup_fail",
 						FormatTarget("web_admin", id), FormatDetail("ip", ip, "reason", "wrong_totp"))
@@ -282,6 +287,16 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.renderInternalError(w, r, "admins:hash_pwd", err)
 			return
+		}
+		// 第十五轮深扫 HIGH:改**他人**密码也要按 target 串行化(与 /login/totp 同锁 totpVerifyLocks),否则在途
+		// /login/totp 可能在本次 UpdateWebAdminPasswordHash + DeleteWebSessionsByAdmin **之后**用旧密码指纹颁出一枚新
+		// session(该 session 后续能通过 requireAuth,因 LookupSession 不复验密码)→「应急改密立即斩断在途登录」失效。
+		// 拿锁后 login 侧要么先完成(其 session 被下面的 DeleteWebSessionsByAdmin 清掉),要么后进(锁内重读到新指纹→
+		// 指纹不匹配拒登)。自改路径上面 isSelf 分支已持同锁(Mutex 不可重入),故此处仅非自改再取。
+		// disable/delete 无需此锁:LookupSession 每请求复验 admin 存在 + Enabled,那两类在途 session 下一请求即失效。
+		if !isSelf {
+			unlock := s.lockTOTPVerify(id)
+			defer unlock()
 		}
 		if err := s.store.UpdateWebAdminPasswordHash(r.Context(), id, hash); err != nil {
 			s.renderStoreWriteErr(w, r, err, "err.adminNotFound", "err.pwChangeFailed")

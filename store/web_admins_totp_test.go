@@ -169,3 +169,33 @@ func TestWebAdminTOTP_EnableCASRejectsChangedSecret(t *testing.T) {
 		t.Fatalf("用当前 secret S2 enable 应成功, got %v", err)
 	}
 }
+
+// TestWebAdminTOTP_EnableRejectsAlreadyEnabled 第十五轮深扫 LOW:EnableWebAdminTOTP 加了 `AND totp_enabled=0`
+// 守卫(与 SetWebAdminTOTPSecret 对称)——对一个**已启用** TOTP 的账号重复 enable(即便传入当前 secret)必须命中
+// 0 行 → ErrNotFound,且**不**会 DELETE 旧恢复码 / 重置 enabled_at(否则等于从 enable 路径静默换掉恢复码,绕过
+// 带 step-up 的 regen 流程)。
+func TestWebAdminTOTP_EnableRejectsAlreadyEnabled(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	a, _ := s.CreateWebAdmin(ctx, NewWebAdmin{
+		Username: "already_enabled", PasswordHash: "argon2id$dummy$$$$dummy", Role: "admin",
+	})
+	_ = s.SetWebAdminTOTPSecret(ctx, a.ID, "JBSWY3DPEHPK3PXP")
+	if _, err := s.EnableWebAdminTOTP(ctx, a.ID, "JBSWY3DPEHPK3PXP",
+		[]string{"h1", "h2", "h3"}, 100); err != nil {
+		t.Fatalf("首次 enable 应成功: %v", err)
+	}
+	// 再次 enable(相同 secret,但账号已 enabled)→ ErrNotFound。
+	if _, err := s.EnableWebAdminTOTP(ctx, a.ID, "JBSWY3DPEHPK3PXP",
+		[]string{"x1", "x2"}, 200); err != ErrNotFound {
+		t.Fatalf("对已启用账号重复 enable 应 ErrNotFound, got %v", err)
+	}
+	a2, _ := s.GetWebAdmin(ctx, a.ID)
+	if a2.TOTPEnabledAt != 100 {
+		t.Fatalf("enabled_at 不应被二次 enable 重置: got %d, want 100", a2.TOTPEnabledAt)
+	}
+	// 恢复码仍是首批 3 条,未被 DELETE 覆盖成 x*。
+	if c, _ := s.CountUnusedRecoveryCodes(ctx, a.ID); c != 3 {
+		t.Fatalf("恢复码数应保持 3(未被二次 enable 覆盖), got %d", c)
+	}
+}

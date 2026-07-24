@@ -105,7 +105,8 @@ func cmdDeviceList(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	username := fs.String("user", "", opts.T("device.flag.user"))
 	effective := fs.Bool("effective", false, opts.T("device.flag.effective"))
 	if err := fs.Parse(args); err != nil {
-		return err
+		// 第十五轮深扫 MED:flag 解析错误属用法错误 → exit 2(与 dispatch / parseInterspersed 一致)。
+		return usageErrorWrap(err.Error(), err)
 	}
 
 	var devs []*store.Device

@@ -188,7 +188,8 @@ func cmdSettingRate(ctx context.Context, st *store.Store, opts *globalOpts, args
 		return err
 	}
 	if len(pos) > 0 {
-		return errors.New(opts.T("setting.rate.unexpectedPos", fmt.Sprintf("%v", pos)))
+		// 第十五轮深扫 LOW:多余位置参数属用法错误 → exit 2(与 audit.noPositional / dispatch 一致)。
+		return usageError(opts.T("setting.rate.unexpectedPos", fmt.Sprintf("%v", pos)))
 	}
 	cur, err := st.GetRateDefaults(ctx)
 	if err != nil {
