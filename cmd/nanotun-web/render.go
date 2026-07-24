@@ -57,6 +57,11 @@ type PageData struct {
 	// Referer,依赖 Referer 的「操作后回原页」全部静默退化回 dashboard —— 侧栏
 	// 组网开关等全局表单需要显式 return_to,模板从这里取。renderPage 自动填。
 	Path string
+
+	// Nonce 本次请求的 CSP script nonce(withCommonHeaders 生成并注入 ctx,renderPage
+	// 从 ctx 填)。模板里所有内联 <script> 必须写 nonce="{{.Nonce}}" 才能在
+	// script-src 'nonce-...' 下执行 —— 第十一轮深扫 LOW:去掉 'unsafe-inline' 的配套。
+	Nonce string
 }
 
 // Flash 一条提示。Kind: "ok" / "warn" / "err"。
@@ -212,6 +217,12 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 	}
 	if data.Title == "" {
 		data.Title = translate(data.Lang, "app.title")
+	}
+	// CSP script nonce:从 withCommonHeaders 注入的 ctx 取,填进 PageData 供模板内联
+	// <script nonce="{{.Nonce}}"> 用。空串(crypto/rand 失败的极端情形)时内联脚本会被
+	// CSP 拦,但页面 HTML 仍正常渲染 —— 只有依赖内联 JS 的增强功能降级。
+	if data.Nonce == "" {
+		data.Nonce = cspNonceFromCtx(r.Context())
 	}
 
 	// 第十一轮性能:优先用启动时按语言预 Clone 好的模板集(见 buildLangTemplates),

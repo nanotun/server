@@ -8,7 +8,10 @@
 <div class="card-header"><h2>{{T "settings.dialHostHeading"}} <span class="badge">{{T "settings.required"}}</span></h2></div>
 <p class="hint">{{Th "settings.dialHostHint"}}</p>
 <form method="post" action="/settings/server-dial-host" id="server-dial-host-form"
-    onsubmit="document.getElementById('dh-submit').disabled=true;document.getElementById('dh-submit').textContent='{{T "dashboard.probing"}}';document.getElementById('dh-progress').style.display='inline';">
+    data-progress-form
+    data-progress-btn="#dh-submit"
+    data-progress-text="{{T "dashboard.probing"}}"
+    data-progress-show="#dh-progress">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <div class="field">
         <label>{{T "settings.dialHostFieldLabel"}}</label>

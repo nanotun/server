@@ -15,7 +15,7 @@ import (
 
 func cmdDevice(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) == 0 {
-		return errors.New(opts.usage("nanotun-admin device <create|list|delete|set-fixed-vip|set-rate|set-alias> [...]"))
+		return usageError(opts.usage("nanotun-admin device <create|list|delete|set-fixed-vip|set-rate|set-alias> [...]"))
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -57,7 +57,7 @@ func cmdDeviceCreate(ctx context.Context, st *store.Store, opts *globalOpts, arg
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New(opts.usage("nanotun-admin device create <username> --uuid <uuidv4> [--name N] [--platform P]"))
+		return usageError(opts.usage("nanotun-admin device create <username> --uuid <uuidv4> [--name N] [--platform P]"))
 	}
 	username := pos[0]
 	uuidNorm := util.NormalizeDeviceUUID(*uuidFlag)
@@ -222,7 +222,7 @@ func fetchRateConfigFromControl(opts *globalOpts) (cliRateConfig, error) {
 //	nanotun-admin device set-alias <device_id> ''        清除
 func cmdDeviceSetAlias(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) != 2 {
-		return errors.New(opts.usage("nanotun-admin device set-alias <device_id> <alias|''>"))
+		return usageError(opts.usage("nanotun-admin device set-alias <device_id> <alias|''>"))
 	}
 	id, err := parseInt64(args[0])
 	if err != nil {
@@ -251,7 +251,7 @@ func cmdDeviceSetAlias(ctx context.Context, st *store.Store, opts *globalOpts, a
 
 func cmdDeviceDelete(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) != 1 {
-		return errors.New(opts.usage("nanotun-admin device delete <device_id>"))
+		return usageError(opts.usage("nanotun-admin device delete <device_id>"))
 	}
 	id, err := parseInt64(args[0])
 	if err != nil {
@@ -312,7 +312,7 @@ func cmdDeviceSetFixedVIP(ctx context.Context, st *store.Store, opts *globalOpts
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New(opts.usage("nanotun-admin device set-fixed-vip <device_id> [--v4 IP] [--v6 IP] [--force]"))
+		return usageError(opts.usage("nanotun-admin device set-fixed-vip <device_id> [--v4 IP] [--v6 IP] [--force]"))
 	}
 	id, err := parseInt64(pos[0])
 	if err != nil {
@@ -411,7 +411,7 @@ func cmdDeviceSetRate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New(opts.usage("nanotun-admin device set-rate <device_id> [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--no-refresh]"))
+		return usageError(opts.usage("nanotun-admin device set-rate <device_id> [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--no-refresh]"))
 	}
 	id, err := parseInt64(pos[0])
 	if err != nil {

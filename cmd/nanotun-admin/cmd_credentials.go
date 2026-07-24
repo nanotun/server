@@ -53,7 +53,7 @@ type credentialsSchema = util.CredentialsSchema
 //   - list                                  列出已发过凭证(credential_id 非空)的用户
 func cmdCredentials(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) == 0 {
-		return errors.New(opts.usage("nanotun-admin credentials <show|list> [...]"))
+		return usageError(opts.usage("nanotun-admin credentials <show|list> [...]"))
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -270,6 +270,7 @@ func resolveCredentialsPSK(
 //   - qr-png:必须写文件,--output 必填(缺失 → 落库后才报,正是要前移的坑);
 //   - qr(非 --json):纯终端 stdout,忽略 output;
 //   - json/url/both(默认):output 非空才写文件,否则 stdout。
+//
 // 只做能在落库前确定的判定;真正的原子 no-clobber 仍由落盘那道(os.Link)最终把关。
 func preflightCredentialsOutput(format, output string, force bool, opts *globalOpts) error {
 	f := strings.ToLower(strings.TrimSpace(format))

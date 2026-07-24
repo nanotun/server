@@ -99,6 +99,48 @@ func (o *globalOpts) usage(syntax string) string {
 	return o.T("common.usagePrefix") + syntax
 }
 
+// usageErr 标记「用法 / 参数错误」——与运行期错误(DB / IO / 业务失败)区分,让顶层退出码映射
+// 把它统一到 exit 2(与顶层 dispatch、restore、config lint、connection 的 usage 退出码一致),
+// 而非 runWithStore / 直连 handler 默认的 exit 1。
+//
+// 第十一轮深扫 LOW(保留项):此前经 runWithStore 的子命令把 usage 错误当普通 error 返回 → 恒 exit 1,
+// 与 CLI 其余「usage = exit 2」的约定不一致(如 `nanotun-admin user` 无 verb 曾 exit 1,而 `restore`
+// 无参 exit 2)。用本 sentinel 把二者归一。errText 走 err.Error()(usageErr 无 LocaleKey),文案与
+// 原 errors.New(opts.usage(...)) 完全一致。
+type usageErr struct {
+	msg   string
+	inner error
+}
+
+func (e *usageErr) Error() string {
+	if e.inner != nil {
+		return e.msg + ": " + e.inner.Error()
+	}
+	return e.msg
+}
+func (e *usageErr) Unwrap() error { return e.inner }
+
+// usageError 把一段已拼好的 usage 文本(通常来自 opts.usage(...))包成 *usageErr。
+func usageError(msg string) error { return &usageErr{msg: msg} }
+
+// usageErrorWrap 同 usageError,但额外携带内层错误(如 flag / 数字解析失败),
+// Error() 拼成 "用法: ...: <inner>",与原 fmt.Errorf("%s: %w", opts.usage(...), err) 文案一致。
+func usageErrorWrap(msg string, inner error) error { return &usageErr{msg: msg, inner: inner} }
+
+// isUsageErr 报告 err 链中是否含 *usageErr(顶层据此把退出码判为 2)。
+func isUsageErr(err error) bool {
+	var u *usageErr
+	return errors.As(err, &u)
+}
+
+// exitCodeForErr 把一次子命令返回的非 nil 错误映射为进程退出码:用法/参数错误 → 2,其余 → 1。
+func exitCodeForErr(err error) int {
+	if isUsageErr(err) {
+		return 2
+	}
+	return 1
+}
+
 // localizedError 是「携带翻译 key」的错误契约(store.LocalizedError 等实现它)。
 // 结构化(duck-typed)接口:任何带 LocaleKey() (string, []any) 方法的类型都匹配,
 // 无需 import 具体类型。

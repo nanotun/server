@@ -38,7 +38,11 @@
     {{if .Data.IsAdminRole}}
     <form method="post" action="/settings/server-dial-host" class="inline" id="dial-host-banner-form"
         style="display:inline;margin-left:8px"
-        onsubmit="var b=this.querySelector('button'),f=this;b.disabled=true;b.textContent='{{T "dashboard.probing"}}';setTimeout(function(){if(b.disabled){b.textContent='{{T "dashboard.probeNoResp"}}';var l=document.getElementById('dial-host-banner-fallback');if(l){l.style.display='inline';}}},30000);">
+        data-progress-form
+        data-progress-text="{{T "dashboard.probing"}}"
+        data-progress-timeout-ms="30000"
+        data-progress-timeout-text="{{T "dashboard.probeNoResp"}}"
+        data-progress-timeout-show="#dial-host-banner-fallback">
         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
         <input type="hidden" name="server_dial_host" value="{{.Data.ServerDialHostSuggestion}}">
         <input type="hidden" name="return_to" value="/">
@@ -102,7 +106,7 @@
         <form method="post" action="/runtime/reload" class="inline">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <button class="btn small secondary" type="submit"
-                onclick="return confirm('{{T "dashboard.reloadAclConfirm"}}')">{{T "dashboard.reloadAcl"}}</button>
+                data-confirm="{{T "dashboard.reloadAclConfirm"}}">{{T "dashboard.reloadAcl"}}</button>
         </form>
         {{end}}
     </div>

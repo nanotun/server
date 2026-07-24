@@ -24,7 +24,7 @@
             <form method="post" action="/routes/exit/revoke" class="inline">
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <input type="hidden" name="device_id" value="{{.DeviceID}}">
-                <button class="btn small danger" onclick="return confirm('{{T "routes.revokeExitConfirm"}}')">{{T "routes.revokeExit"}}</button>
+                <button class="btn small danger" data-confirm="{{T "routes.revokeExitConfirm"}}">{{T "routes.revokeExit"}}</button>
             </form>
         </div>
         {{end}}
@@ -60,7 +60,7 @@
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <input type="hidden" name="device_id" value="{{.DeviceID}}">
                 <button class="btn small" type="submit"
-                    onclick="return confirm('{{T "routes.approveAsExitConfirm"}}')">{{T "routes.approveAsExit"}}</button>
+                    data-confirm="{{T "routes.approveAsExitConfirm"}}">{{T "routes.approveAsExit"}}</button>
             </form>
             {{end}}
             <form method="post" action="/routes/exit/reject" class="inline">
@@ -98,7 +98,7 @@
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <input type="hidden" name="device_id" value="{{.DeviceID}}">
                 <button class="btn small" type="submit"
-                    onclick="return confirm('{{T "routes.approveAsExitConfirm"}}')">{{T "routes.approveAsExit"}}</button>
+                    data-confirm="{{T "routes.approveAsExitConfirm"}}">{{T "routes.approveAsExit"}}</button>
             </form>
             {{end}}
             <form method="post" action="/routes/exit/revoke" class="inline">
@@ -106,7 +106,7 @@
                 <input type="hidden" name="device_id" value="{{.DeviceID}}">
                 <input type="hidden" name="mode" value="clear">
                 <button class="btn small" type="submit"
-                    onclick="return confirm('{{T "routes.clearRejectedConfirm"}}')">{{T "routes.clearRejected"}}</button>
+                    data-confirm="{{T "routes.clearRejectedConfirm"}}">{{T "routes.clearRejected"}}</button>
             </form>
         </div>
         {{end}}
@@ -182,7 +182,7 @@
                 {{if eq $.Admin.Role "admin"}}
                 <form method="post" action="/routes/{{.DeviceID}}/{{.CIDR | urlquery}}/delete" class="inline">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                    <button class="btn small danger" onclick="return confirm('{{T "routes.deleteConfirm"}}')">{{T "common.delete"}}</button>
+                    <button class="btn small danger" data-confirm="{{T "routes.deleteConfirm"}}">{{T "common.delete"}}</button>
                 </form>
                 {{end}}
             </td>
@@ -216,7 +216,7 @@
                 <form method="post" action="/routes/{{.DeviceID}}/{{.CIDR | urlquery}}/delete" class="inline">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <button class="btn small danger" type="submit"
-                        onclick="return confirm('{{T "routes.clearRejectedConfirm"}}')">{{T "routes.clearRejected"}}</button>
+                        data-confirm="{{T "routes.clearRejectedConfirm"}}">{{T "routes.clearRejected"}}</button>
                 </form>
                 {{end}}
             </td>

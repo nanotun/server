@@ -38,7 +38,7 @@
                 <input id="dis_recovery" name="recovery_code" type="text" placeholder="XXXX-XXXX">
             </div>
             <button class="btn danger" type="submit"
-                    onclick="return confirm('{{T "me.disableTotpConfirm"}}')">
+                    data-confirm="{{T "me.disableTotpConfirm"}}">
                 {{T "me.disableTotp"}}
             </button>
         </form>
@@ -52,7 +52,7 @@
                 <input id="regen_code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456">
             </div>
             <button class="btn secondary" type="submit"
-                    onclick="return confirm('{{T "me.regenConfirm"}}')">
+                    data-confirm="{{T "me.regenConfirm"}}">
                 {{T "me.regenBtn"}}
             </button>
         </form>

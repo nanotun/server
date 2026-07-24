@@ -129,7 +129,7 @@ type profileSchema struct {
 // 整条链路连同 wire 字段一并删除。
 func cmdProfile(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) == 0 {
-		return errors.New(opts.usage("nanotun-admin profile show [...]"))
+		return usageError(opts.usage("nanotun-admin profile show [...]"))
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {

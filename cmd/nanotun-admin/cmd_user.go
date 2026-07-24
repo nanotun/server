@@ -17,7 +17,7 @@ import (
 
 func cmdUser(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) == 0 {
-		return errors.New(opts.usage("nanotun-admin user <create|list|show|disable|enable|delete|reset-psk|set-bandwidth|set-platforms|set-max-sessions> [...]"))
+		return usageError(opts.usage("nanotun-admin user <create|list|show|disable|enable|delete|reset-psk|set-bandwidth|set-platforms|set-max-sessions> [...]"))
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -73,7 +73,7 @@ func cmdUserSetBandwidth(ctx context.Context, st *store.Store, opts *globalOpts,
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New(opts.usage("nanotun-admin user set-bandwidth <username> [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--no-refresh]"))
+		return usageError(opts.usage("nanotun-admin user set-bandwidth <username> [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--no-refresh]"))
 	}
 	u, err := st.GetUserByUsername(ctx, pos[0])
 	if err != nil {
@@ -122,7 +122,7 @@ func cmdUserSetBandwidth(ctx context.Context, st *store.Store, opts *globalOpts,
 // 全局缺省 0 = 不限制 —— 不设账号级也不设全局时完全放开。
 func cmdUserSetMaxSessions(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) != 2 {
-		return errors.New(opts.usage("nanotun-admin user set-max-sessions <username> <n>   # n: >0 覆盖全局; 0 跟随全局; -1 该账号不限"))
+		return usageError(opts.usage("nanotun-admin user set-max-sessions <username> <n>   # n: >0 覆盖全局; 0 跟随全局; -1 该账号不限"))
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {
@@ -169,7 +169,7 @@ func formatMaxSessions(opts *globalOpts, n int) string {
 // 新登录在 authenticatePSK 即时拦截。
 func cmdUserSetPlatforms(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) < 1 || len(args) > 2 {
-		return errors.New(opts.usage(`nanotun-admin user set-platforms <username> ["macos,ios,android,windows,linux,router"]   # 留空=不限`))
+		return usageError(opts.usage(`nanotun-admin user set-platforms <username> ["macos,ios,android,windows,linux,router"]   # 留空=不限`))
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {
@@ -221,7 +221,7 @@ func cmdUserCreate(ctx context.Context, st *store.Store, opts *globalOpts, args 
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New(opts.usage("nanotun-admin user create <username> [--psk PLAIN] [--admin] [--exit-allowed=false] [--platforms macos,ios,...]"))
+		return usageError(opts.usage("nanotun-admin user create <username> [--psk PLAIN] [--admin] [--exit-allowed=false] [--platforms macos,ios,...]"))
 	}
 	username := strings.TrimSpace(pos[0])
 	if username == "" {
@@ -301,7 +301,7 @@ func cmdUserList(ctx context.Context, st *store.Store, opts *globalOpts, args []
 		return err
 	}
 	if len(pos) != 0 {
-		return errors.New(opts.usage("nanotun-admin user list [--all]"))
+		return usageError(opts.usage("nanotun-admin user list [--all]"))
 	}
 	var users []*store.User
 	if *all {
@@ -380,7 +380,7 @@ func viewFromUser(u *store.User) userView {
 
 func cmdUserShow(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) != 1 {
-		return errors.New(opts.usage("nanotun-admin user show <username>"))
+		return usageError(opts.usage("nanotun-admin user show <username>"))
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {
@@ -434,9 +434,9 @@ func cmdUserShow(ctx context.Context, st *store.Store, opts *globalOpts, args []
 func cmdUserSetDisabled(ctx context.Context, st *store.Store, opts *globalOpts, args []string, disabled bool) error {
 	if len(args) != 1 {
 		if disabled {
-			return errors.New(opts.usage("nanotun-admin user disable <username>"))
+			return usageError(opts.usage("nanotun-admin user disable <username>"))
 		}
-		return errors.New(opts.usage("nanotun-admin user enable <username>"))
+		return usageError(opts.usage("nanotun-admin user enable <username>"))
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {
@@ -464,7 +464,7 @@ func cmdUserSetDisabled(ctx context.Context, st *store.Store, opts *globalOpts, 
 
 func cmdUserDelete(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) != 1 {
-		return errors.New(opts.usage("nanotun-admin user delete <username>"))
+		return usageError(opts.usage("nanotun-admin user delete <username>"))
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {
@@ -499,7 +499,7 @@ func cmdUserResetPSK(ctx context.Context, st *store.Store, opts *globalOpts, arg
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New(opts.usage("nanotun-admin user reset-psk <username> [--psk PLAIN]"))
+		return usageError(opts.usage("nanotun-admin user reset-psk <username> [--psk PLAIN]"))
 	}
 	u, err := st.GetUserByUsername(ctx, pos[0])
 	if err != nil {

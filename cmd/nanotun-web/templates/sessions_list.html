@@ -81,7 +81,7 @@
                             <input type="hidden" name="fixed_vip_v6" value="">
                             <input type="hidden" name="return_to" value="{{if $.Data.AutoRefresh}}/sessions?autorefresh=1{{else}}/sessions{{end}}">
                             <button class="btn small secondary" type="submit"
-                                    onclick="return confirm('{{T "sessions.unbindConfirm"}}');">
+                                    data-confirm="{{T "sessions.unbindConfirm"}}">
                                 {{T "sessions.unbind"}}
                             </button>
                         </form>
@@ -96,7 +96,7 @@
                             <input type="hidden" name="return_to" value="{{if $.Data.AutoRefresh}}/sessions?autorefresh=1{{else}}/sessions{{end}}">
                             <button class="btn small" type="submit"
                                     title="{{T "sessions.bindTitle"}}"
-                                    onclick="return confirm('{{T "sessions.bindConfirmPre"}}{{.VIPv4}}{{if and .VIPv4 .VIPv6}} / {{end}}{{.VIPv6}}{{T "sessions.bindConfirmMid"}}{{.DeviceName}}{{T "sessions.bindConfirmPost"}}');">
+                                    data-confirm="{{T "sessions.bindConfirmPre"}}{{.VIPv4}}{{if and .VIPv4 .VIPv6}} / {{end}}{{.VIPv6}}{{T "sessions.bindConfirmMid"}}{{.DeviceName}}{{T "sessions.bindConfirmPost"}}">
                                 {{T "sessions.bindCurrentIp"}}
                             </button>
                         </form>
@@ -130,7 +130,7 @@
                     {{/* Referrer-Policy: no-referrer — 回跳必须显式带 return_to。 */}}
                     <input type="hidden" name="return_to" value="{{if $.Data.AutoRefresh}}/sessions?autorefresh=1{{else}}/sessions{{end}}">
                     <button class="btn small danger" type="submit"
-                            onclick="return confirm('{{T "sessions.kickConfirm"}}');">
+                            data-confirm="{{T "sessions.kickConfirm"}}">
                         {{T "sessions.kick"}}
                     </button>
                 </form>
@@ -158,7 +158,7 @@
 </div>
 
 {{if .Data.AutoRefresh}}
-<script>
+<script nonce="{{.Nonce}}">
 // 自动刷新(2026-07-19):10s 整页 reload;标签页隐藏时跳过(document.hidden),
 // 切回后下一个 tick 再刷。与 sysmon 的 hidden 守门策略一致,省流量也不打扰后台标签。
 // reload 前剥掉 flash / flash_kind:一次性提示不该每 10 秒重现;

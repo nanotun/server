@@ -37,7 +37,7 @@
         <form method="post" action="/users/{{.Data.User.ID}}/disable" class="inline">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <button type="submit" class="btn secondary"
-                onclick="return confirm('{{T "userDetail.disableConfirm"}}')">{{T "common.disable"}}</button>
+                data-confirm="{{T "userDetail.disableConfirm"}}">{{T "common.disable"}}</button>
         </form>
     {{else}}
         <form method="post" action="/users/{{.Data.User.ID}}/enable" class="inline">
@@ -53,7 +53,7 @@
         {{/* Referrer-Policy: no-referrer — 回跳必须显式带 return_to。 */}}
         <input type="hidden" name="return_to" value="/users/{{.Data.User.ID}}">
         <button type="submit" class="btn secondary"
-            onclick="return confirm('{{T "userDetail.kickConfirm"}}')">{{T "userDetail.kickAll"}}</button>
+            data-confirm="{{T "userDetail.kickConfirm"}}">{{T "userDetail.kickAll"}}</button>
     </form>
 </div>
 <form method="post" action="/users/{{.Data.User.ID}}/set-platforms"
@@ -123,7 +123,7 @@
     <form method="post" action="/users/{{.Data.User.ID}}/reset-psk" class="inline">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <button type="submit" class="btn danger"
-            onclick="return confirm('{{T "userDetail.resetPskConfirm"}}')">{{T "userDetail.resetPsk"}}</button>
+            data-confirm="{{T "userDetail.resetPskConfirm"}}">{{T "userDetail.resetPsk"}}</button>
     </form>
     {{end}}
 </div>
@@ -132,7 +132,7 @@
     <form method="post" action="/users/{{.Data.User.ID}}/delete" class="inline">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <button type="submit" class="btn danger"
-            onclick="return confirm('{{T "userDetail.deleteConfirm"}}')">{{T "common.delete"}}</button>
+            data-confirm="{{T "userDetail.deleteConfirm"}}">{{T "common.delete"}}</button>
     </form>
 </div>
 </div>

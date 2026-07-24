@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -29,6 +31,7 @@ const (
 	ctxKeySessionID
 	ctxKeyCSRFToken
 	ctxKeyLang
+	ctxKeyCSPNonce
 )
 
 func adminFromCtx(ctx context.Context) *store.WebAdmin {
@@ -54,9 +57,37 @@ func csrfTokenFromCtx(ctx context.Context) string {
 	return ""
 }
 
-// withCommonHeaders 给每个响应加上安全头。CSP 用最严格策略:
-// 自身脚本/样式 + 内联(模板里有少量 inline JS / style)+ 同源资源,
+// cspNonceFromCtx 取本请求的 CSP script nonce(由 withCommonHeaders 注入);无则空串。
+// renderPage 把它填进 PageData.Nonce,模板里内联 <script nonce="{{.Nonce}}"> 用。
+func cspNonceFromCtx(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxKeyCSPNonce).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// newCSPNonce 生成一次性 CSP script nonce(16 字节 crypto/rand → std base64)。
+// 失败(crypto/rand 出错,极罕见)返回空串:此时本次响应的 CSP 为 script-src 'self'
+// (不含 nonce)→ 页面内联 <script> 被拦、JS 失效,但绝不回退到 'unsafe-inline'
+// (宁可这一页降级,也不放开 XSS 兜底)。
+func newCSPNonce() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// withCommonHeaders 给每个响应加上安全头。CSP 用最严格策略:自身脚本/样式 + 同源资源,
 // 拒绝远程 CDN。img-src 放宽到 data: 让 QR / base64 内嵌图片能用。
+//
+// 第十一轮深扫 LOW(保留项):script-src 去掉 'unsafe-inline',改用 per-request nonce ——
+// 模板里的内联 <script> 必须带 nonce="{{.Nonce}}"(renderPage 从 ctx 注入)才执行;所有内联
+// 事件处理器(onclick / onsubmit)已改为 /static/app.js 的委托监听 + data-* 属性('self' 覆盖
+// 外链)。如此即便某处输出转义被绕过,注入的 <script> / on*= 也拿不到本次随机 nonce → 被 CSP
+// 拦下,作为反射/存储型 XSS 的纵深兜底。
+// style-src 仍保留 'unsafe-inline':模板里 style="" 内联样式遍布,且样式非脚本执行面,
+// 强行剥离成本高、收益低,故此轮不动。
 func withCommonHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -64,10 +95,16 @@ func withCommonHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		nonce := newCSPNonce()
+		r = r.WithContext(context.WithValue(r.Context(), ctxKeyCSPNonce, nonce))
+		scriptSrc := "script-src 'self'"
+		if nonce != "" {
+			scriptSrc += " 'nonce-" + nonce + "'"
+		}
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; "+
 				"img-src 'self' data:; "+
-				"script-src 'self' 'unsafe-inline'; "+
+				scriptSrc+"; "+
 				"style-src 'self' 'unsafe-inline'; "+
 				"font-src 'self' data:; "+
 				"form-action 'self'; "+

@@ -13,7 +13,7 @@ import (
 
 func cmdLease(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) == 0 {
-		return errors.New(opts.usage("nanotun-admin lease <list|release|set|gc> [...]"))
+		return usageError(opts.usage("nanotun-admin lease <list|release|set|gc> [...]"))
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -117,7 +117,7 @@ func cmdLeaseList(ctx context.Context, st *store.Store, opts *globalOpts, _ []st
 
 func cmdLeaseRelease(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) != 1 {
-		return errors.New(opts.usage("nanotun-admin lease release <device_id>"))
+		return usageError(opts.usage("nanotun-admin lease release <device_id>"))
 	}
 	id, err := parseInt64(args[0])
 	if err != nil {
@@ -147,7 +147,7 @@ func cmdLeaseSet(ctx context.Context, st *store.Store, opts *globalOpts, args []
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New(opts.usage("nanotun-admin lease set <device_id> [--v4 IP] [--v6 IP] [--manual=false]"))
+		return usageError(opts.usage("nanotun-admin lease set <device_id> [--v4 IP] [--v6 IP] [--manual=false]"))
 	}
 	deviceID, err := parseInt64(pos[0])
 	if err != nil {
