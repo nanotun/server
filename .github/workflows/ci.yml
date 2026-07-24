@@ -1,0 +1,73 @@
+name: CI
+
+# 三件套静态门禁 + 构建。作用见 README/提交说明:
+#   - go vet         查可疑写法(格式化串、锁拷贝、unreachable 等)—— 阻断
+#   - staticcheck    查正确性/死代码/误用 API/deprecated  —— 先设为信息性(不阻断),待残留项清零后可翻成阻断
+#   - govulncheck    查依赖 + 标准库中「代码真实调用到」的已知 CVE —— 信息性(存在上游暂无修复的条目,硬阻断会卡死合并)
+# 逻辑层的问题靠 review/测试;这三件套专补「依赖/stdlib 层」这条 review 看不到的盲区。
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+# 同一分支/PR 上新 push 取消旧运行,省 CI 额度。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-vet:
+    name: build + go vet (blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # 与 go.mod 的 toolchain 行保持一致:go1.26.5 修掉了多个 stdlib CVE。
+          # 升级 go.mod toolchain 时记得同步这里。
+          go-version: '1.26.5'
+          cache: true
+      - name: go build
+        run: go build ./...
+      - name: go vet
+        run: go vet ./...
+
+  staticcheck:
+    name: staticcheck (informational)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: true
+      - name: install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+      - name: staticcheck
+        # 当前残留均为噪声(见 staticcheck.conf 已关掉 SA6002;其余为测试用 deprecated 调用、
+        # 自文档算术等)。设为不阻断:红叉会以告警形式显示在日志里但不拦合并。
+        # 待把残留项 //lint:ignore 或修掉后,删掉本行即可升级为硬门禁。
+        continue-on-error: true
+        run: staticcheck ./...
+
+  govulncheck:
+    name: govulncheck (informational)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: true
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: govulncheck
+        # 不阻断:存在 GO-2026-5288(hysteria core,上游 Fixed in: N/A 且我们未启用 sniff 路径)这类
+        # 「暂无修复但需容忍」的条目,硬阻断会让任何合并都失败。日志里仍会完整列出可达 CVE,便于持续盯防。
+        # 上游一旦发布 hysteria 修复版,升级依赖后此处应回到 0 可达。
+        continue-on-error: true
+        run: govulncheck ./...
