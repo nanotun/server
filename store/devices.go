@@ -438,46 +438,64 @@ func (s *Store) SetDeviceFixedVIP(ctx context.Context, id int64, fixedV4, fixedV
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 第十六轮深扫 MED:KeepFixedVIP 哨兵 → 在**事务内**读当前值填充「本次不改动的族」,消除 CLI 侧「事务外
-	// GetDevice 读旧值 → 合并 → 写两列」的丢更新竞态:两个只改单族(一个 --v4、一个 --v6)的并发 set-fixed-vip
-	// 此前各自把另一族的旧值一起写回,后提交者覆盖前者对另一族的修改。改由 store 在同一 tx 内读当前值,SQLite
-	// 串行化两 tx → 后者读到前者已提交的另一族值,两族更新都保留。空串仍表示「清除」,与 Keep 语义区分。
-	if fixedV4 == KeepFixedVIP || fixedV6 == KeepFixedVIP {
-		var curV4, curV6 sql.NullString
-		if serr := tx.QueryRowContext(ctx,
-			`SELECT fixed_vip_v4, fixed_vip_v6 FROM devices WHERE id=?`, id).Scan(&curV4, &curV6); serr != nil {
-			if errors.Is(serr, sql.ErrNoRows) {
-				return ErrNotFound
-			}
-			return fmt.Errorf("store: set fixed vip read current: %w", serr)
-		}
-		if fixedV4 == KeepFixedVIP {
-			fixedV4 = curV4.String
-		}
-		if fixedV6 == KeepFixedVIP {
-			fixedV6 = curV6.String
-		}
-	}
+	// 第十六轮深扫 MED:KeepFixedVIP 哨兵 → 只改指定族,另一族保持不变,消除 CLI 侧「事务外 GetDevice 读旧值
+	// → 合并 → 写两列」的丢更新竞态:两个只改单族(一个 --v4、一个 --v6)的并发 set-fixed-vip 此前各自把另一
+	// 族的旧值一起写回,后提交者覆盖前者对另一族的修改。空串仍表示「清除」,与 Keep 语义区分。
+	//
+	// 第十七轮深扫 LOW(改写为写在先):此前用「先 SELECT 现值填 Keep 族 → 再 UPDATE」两步,但 DSN 为
+	// DEFERRED 事务(无 _txlock=immediate),read-then-write 在升级取写锁时可能撞 SQLITE_BUSY_SNAPSHOT
+	// (busy_timeout 不覆盖此错)→ 并发写下 CLI 偶发报错。改为**首条即写**:devices 的 UPDATE 用 CASE 让不
+	// 改动的族沿用列内现值(Keep 在 SQL 侧完成,无需前置 SELECT)→ 事务一开始就取到写锁,彻底消除升级竞态。
+	keepV4 := fixedV4 == KeepFixedVIP
+	keepV6 := fixedV6 == KeepFixedVIP
 
 	// 第七轮深扫 HIGH:与 UpsertLease 同源规范化 —— fixed_vip 也走 netip 标准文本,才能让 UNIQUE 索引、
 	// 跨表守卫、AllUsedVIPs 已用集与登录分配路径处在同一文本域,杜绝 "FD00::2" vs "fd00::2" 双占。
-	fixedV4 = canonicalVIP(fixedV4)
-	fixedV6 = canonicalVIP(fixedV6)
+	// 只规范化**改动的族**;Keep 族沿用列内现值(存入时已规范化)。
+	var v4Arg, v6Arg any // 改动族的写入值(nullableString);Keep 族走 CASE 的 THEN 分支,此实参不被采用。
+	if keepV4 {
+		v4Arg = nil
+	} else {
+		fixedV4 = canonicalVIP(fixedV4)
+		v4Arg = nullableString(fixedV4)
+	}
+	if keepV6 {
+		v6Arg = nil
+	} else {
+		fixedV6 = canonicalVIP(fixedV6)
+		v6Arg = nullableString(fixedV6)
+	}
 
 	res, err := tx.ExecContext(ctx,
-		`UPDATE devices SET fixed_vip_v4=?, fixed_vip_v6=? WHERE id=?`,
-		nullableString(fixedV4), nullableString(fixedV6), id,
+		`UPDATE devices
+		    SET fixed_vip_v4 = CASE WHEN ? THEN fixed_vip_v4 ELSE ? END,
+		        fixed_vip_v6 = CASE WHEN ? THEN fixed_vip_v6 ELSE ? END
+		  WHERE id=?`,
+		keepV4, v4Arg,
+		keepV6, v6Arg,
+		id,
 	)
 	if err != nil {
 		if isUniqueConstraintErr(err) {
-			return fmt.Errorf("store: set fixed vip device_id=%d v4=%q v6=%q: %w",
-				id, fixedV4, fixedV6, ErrDuplicate)
+			return fmt.Errorf("store: set fixed vip device_id=%d: %w", id, ErrDuplicate)
 		}
 		return fmt.Errorf("store: set fixed vip: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return ErrNotFound
+	}
+
+	// 读回最终值(此刻已持写锁,后续读不会 BUSY_SNAPSHOT):跨表守卫与 lease 同步都需要两族的**实际**当前值,
+	// Keep 族的值在上面的 CASE 里由 SQL 保留,Go 侧此前并不知晓,故统一从库读回。
+	{
+		var fv4, fv6 sql.NullString
+		if serr := tx.QueryRowContext(ctx,
+			`SELECT fixed_vip_v4, fixed_vip_v6 FROM devices WHERE id=?`, id).Scan(&fv4, &fv6); serr != nil {
+			return fmt.Errorf("store: set fixed vip read back: %w", serr)
+		}
+		fixedV4 = fv4.String
+		fixedV6 = fv6.String
 	}
 
 	// 跨表守卫(第四轮深扫 HIGH):devices 上的 UNIQUE 索引只挡 device↔device 的 fixed_vip 撞车(上面的 UPDATE

@@ -41,7 +41,9 @@ func (r *RealityConfig) Validate() error {
 	// 第十六轮深扫 MED:listen_addr 非空(= 启用)时须是合法 host:port —— 此前只判「非空即启用」,格式非法
 	// (如 "443" 缺冒号 / "host:99999" 越界)过 lint 却在真正 bind REALITY 监听时失败 → 启动 Fatal。与
 	// [server].listen_addr 同口径提前到启动/ lint 期拦截。
-	if err := validateListenAddrFormat(strings.TrimSpace(r.ListenAddr)); err != nil {
+	// 第十七轮深扫 MED(修回归):REALITY 支持 ":0"(内核分配端口,见 reality_listen.go),故用允许端口 0 的
+	// 变体校验;缺冒号 / 越界等其它格式问题仍会被拦。
+	if err := validateListenAddrFormatAllowZero(strings.TrimSpace(r.ListenAddr)); err != nil {
 		return fmt.Errorf("listen_addr=%q %w", r.ListenAddr, err)
 	}
 	if err := validateRealityDest(r.Dest); err != nil {

@@ -948,11 +948,15 @@ func main() {
 		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"exit_dns_redirect": cfg.TUN.ExitDNSRedirect}, "%v", err)
 	}
 
+	// 第十七轮深扫 MED:启动期改用与 `config lint` 同一个 ValidateTUNSubnets —— 既查「两者皆空(含仅
+	// 空白项)」,也查族错配(IPv4 CIDR 落进 subnets_v6 / IPv6 CIDR 落进 subnets)。此前启动仅判
+	// len==0 && len==0:漏掉「仅空白项」与「v6 写进 v4 池」,后者会让数据面把 IPv6 段塞进 v4 网关路径
+	// → 该族无可用地址 / iptables 错配 → 晚一步才 Fatal 且报错含糊。与 lint 同口径,重启前就给清晰错误。
+	if err := cfg.TUN.ValidateTUNSubnets(); err != nil {
+		util.FatalExit(util.ExitConfigSemantic, nil, "%v", err)
+	}
 	tunCount := len(cfg.TUN.Subnets)
 	tunCountV6 := len(cfg.TUN.SubnetsV6)
-	if tunCount == 0 && tunCountV6 == 0 {
-		util.FatalExit(util.ExitConfigSemantic, nil, "配置的 Subnets 和 SubnetsV6 均为空，至少配置一项")
-	}
 	if tunCount > 0 || tunCountV6 > 0 {
 		deviceName := cfg.TUN.DeviceName
 		if deviceName == "" {

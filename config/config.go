@@ -690,13 +690,25 @@ func validateSmux(s *SmuxConfig, errs *[]string) {
 // validateListenAddrFormat 校验监听地址是否为 "host:port" 或 ":port"，且端口在 1..65535。
 // 空 host（":8080"）合法（所有网卡）。不解析 IP 语义（那由 validateVPNListenAddr 在 hy2/REALITY 环回场景另做）。
 func validateListenAddrFormat(addr string) error {
+	return validateListenAddrPort(addr, 1)
+}
+
+// validateListenAddrFormatAllowZero 同 validateListenAddrFormat,但额外允许端口 0(":0" = 由内核分配端口)。
+// 第十七轮深扫 MED(修回归):REALITY listen_addr 明确支持 ":0"(内核分配,见 reality_listen.go 注释与
+// tcpPort 上报);第十六轮误用只认 1..65535 的 validateListenAddrFormat 把它拦成非法 → 回归。REALITY 用本
+// 变体放行端口 0,格式其它问题(缺冒号 / 越界)仍与主校验一致。
+func validateListenAddrFormatAllowZero(addr string) error {
+	return validateListenAddrPort(addr, 0)
+}
+
+func validateListenAddrPort(addr string, minPort int) error {
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("无法解析为 host:port(%v)", err)
 	}
 	p, perr := strconv.Atoi(port)
-	if perr != nil || p < 1 || p > 65535 {
-		return fmt.Errorf("端口 %q 非法(需 1..65535)", port)
+	if perr != nil || p < minPort || p > 65535 {
+		return fmt.Errorf("端口 %q 非法(需 %d..65535)", port, minPort)
 	}
 	return nil
 }

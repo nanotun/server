@@ -606,6 +606,9 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 		// 顺序仍在 MarkPendingConsumed(nonce 一次性)之后,重放保护不变。
 		sid, err := s.sess.IssueSession(ctx, w, admin.ID, ip, r.UserAgent())
 		if err != nil {
+			// 第十七轮深扫 LOW:pending nonce 已在上面 MarkPendingConsumed 消费,IssueSession 又失败 →
+			// 清掉 pending cookie,否则浏览器留着一枚死 nonce,用户重试会撞 pending_replay 再跳登录。
+			s.sess.ClearTOTPPending(w)
 			s.renderInternalError(w, r, "login_totp:issue_session", err)
 			return
 		}

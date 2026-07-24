@@ -456,6 +456,16 @@ func (s *Server) handleMeTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		s.renderInternalError(w, r, "me:totp_disable", err)
 		return
 	}
+	// 第十七轮深扫 LOW:与「启用 2FA 吊销其余会话」(handler enable)及改密对称 —— 关闭 2FA 同样是安全状态
+	// 变更(常因 2FA 设备丢失/疑似泄露而触发),吊销该 admin 其余会话并给当前操作者换发新 token,避免旧会话
+	// 在新姿态下继续存活。删/发失败不阻断本次关闭(已落库),仅审计留痕。
+	if _, derr := s.store.DeleteWebSessionsByAdmin(r.Context(), admin.ID); derr != nil {
+		s.audit.WriteFromRequest(r, "totp_disable_revoke_failed",
+			FormatTarget("web_admin", admin.ID), FormatDetail("err", derr.Error()))
+	} else if _, ierr := s.sess.IssueSession(r.Context(), w, admin.ID, ip, r.UserAgent()); ierr != nil {
+		s.audit.WriteFromRequest(r, "totp_disable_reissue_failed",
+			FormatTarget("web_admin", admin.ID), FormatDetail("err", ierr.Error()))
+	}
 	s.audit.WriteFromRequest(r, "totp_disable",
 		FormatTarget("web_admin", admin.ID),
 		FormatDetail("via", choose(usedRecovery, "recovery", "totp")))
