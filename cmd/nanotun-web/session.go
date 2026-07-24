@@ -150,12 +150,15 @@ func NewSessionService(st *store.Store, cfg Config) *SessionService {
 }
 
 // IssueSession 创建一条 session 并写 cookie。在成功登录路径调用。
+// 第十五轮深扫 MED:返回新建 session 的 id(sid),供调用方在**后置**步骤失败时回滚(DeleteWebSession)。
+// /login/totp 恢复码路径据此改为「先 IssueSession 再 MarkRecoveryCodeUsed」:标记失败即删掉刚发的 session,
+// 避免「session 已发但恢复码未烧」破坏一码一用;而 IssueSession 本身失败时恢复码尚未烧,用户可重登。
 func (s *SessionService) IssueSession(ctx context.Context, w http.ResponseWriter,
-	adminID int64, ip, ua string) error {
+	adminID int64, ip, ua string) (string, error) {
 
 	sid, err := generateRandomToken(32)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := s.store.CreateWebSession(ctx, store.WebSession{
 		ID:        sid,
@@ -164,7 +167,7 @@ func (s *SessionService) IssueSession(ctx context.Context, w http.ResponseWriter
 		IP:        ip,
 		UserAgent: truncate(ua, 256),
 	}); err != nil {
-		return err
+		return "", err
 	}
 	// 第四轮深扫 MED(d_relogin_revoke):登录成功即把该 admin 的并发 session 数**封顶**到
 	// maxConcurrentWebSessionsPerAdmin,删掉较旧的多余项。防止反复登录无界累积有效 session、给失窃 /
@@ -181,7 +184,21 @@ func (s *SessionService) IssueSession(ctx context.Context, w http.ResponseWriter
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(s.cfg.SessionTTLSec),
 	})
-	return nil
+	return sid, nil
+}
+
+// clearSessionCookie 把 session cookie 立即过期(用于 IssueSession 后需回滚的场景:cookie 已写入 w,
+// 但对应 DB 行已被删,留个指向空的 cookie 无害但不干净,这里显式清掉)。
+func (s *SessionService) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     s.cookieName(sessionCookieName),
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.cookieSecure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
 }
 
 // LookupSession 从 r.Cookie 取出 session id 并去库里验证。

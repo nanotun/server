@@ -27,7 +27,10 @@ func canonicalVIP(s string) string {
 	if err != nil {
 		return s
 	}
-	return a.String()
+	// 第十五轮深扫 MED:.Unmap() 归一 IPv4-mapped IPv6(::ffff:a.b.c.d → a.b.c.d)。否则同一地址的映射形与点分形
+	// 产出不同规范串 → AllUsedVIPs 去重失配(同一 vIP 被当两个)/ 跨行唯一性 & 冲突守卫漏判(映射形绕过 fixed_vip
+	// 精确匹配)→ 双占 / 下行黑洞。纯 IPv4/纯 IPv6 上 Unmap 是 no-op。与数据面 destKey.Unmap() 同键域。
+	return a.Unmap().String()
 }
 
 // Lease 表示一台设备的 vIP 持久化分配。

@@ -216,6 +216,7 @@ var catEN = map[string]string{
 	"init.noop":            "(setup complete, user %q exists; no changes made. To reset the PSK add --reset-psk.)",
 	"init.promptPSK":       "admin PSK (press Enter to auto-generate)",
 	"init.confirmResetPSK": "confirm resetting the PSK for existing admin %q? The old PSK is invalidated immediately and the user's sessions are kicked.",
+	"init.confirmAddAdmin": "other users already exist but setup is not marked complete; create a NEW admin %q? (to add admins use `user create`)",
 	"init.refuseReset":     "refusing to reset already-setup user %q: add --reset-psk",
 	"init.resetNoUser":     "cannot --reset-psk: user %q does not exist (check for typos); create it first with `user create %s --admin`",
 	"init.resetRaced":      "another admin reset admin %q's PSK first; refresh or rerun init",

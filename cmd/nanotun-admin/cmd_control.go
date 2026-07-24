@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -76,7 +75,8 @@ func cmdKick(_ context.Context, _ any, opts *globalOpts, args []string) error {
 		switch args[i] {
 		case "--reason":
 			if i+1 >= len(args) {
-				return errors.New(opts.T("control.reasonNeedsArg"))
+				// 第十五轮深扫 LOW:缺 flag 取值属用法错误 → exit 2。
+				return usageError(opts.T("control.reasonNeedsArg"))
 			}
 			reason = args[i+1]
 			i++

@@ -45,7 +45,7 @@ func TestHandleLogout_SessionBoundCSRF_Succeeds(t *testing.T) {
 
 	// 1) 发一个 session,拿到 session cookie。
 	wIssue := httptest.NewRecorder()
-	if err := sess.IssueSession(ctx, wIssue, a.ID, "10.0.0.1", "ua"); err != nil {
+	if _, err := sess.IssueSession(ctx, wIssue, a.ID, "10.0.0.1", "ua"); err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
 	sessCookie := recorderCookie(t, wIssue, sess.cookieName(sessionCookieName))
@@ -107,7 +107,7 @@ func TestHandleLogout_MissingCSRF_Forbidden(t *testing.T) {
 	srv := &Server{store: st, audit: NewAuditor(st), sess: sess}
 
 	wIssue := httptest.NewRecorder()
-	if err := sess.IssueSession(ctx, wIssue, a.ID, "10.0.0.1", "ua"); err != nil {
+	if _, err := sess.IssueSession(ctx, wIssue, a.ID, "10.0.0.1", "ua"); err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
 	sessCookie := recorderCookie(t, wIssue, sess.cookieName(sessionCookieName))

@@ -669,16 +669,26 @@ func (s *Store) PruneWebSessionsKeepingRecent(ctx context.Context, adminID int64
 	}
 	// 子查询选出「按 created_at 新→旧的前 keep 条」的 id,删掉不在其中的本 admin 会话。
 	// created_at 并列时以 id 二级排序,保证 OFFSET 边界确定、不会漏删/多删。
+	//
+	// 第十五轮深扫 MED:keep-set 子查询额外**排除已过期 / 已超绝对上限**的 session(与 GetWebSession /
+	// PruneExpiredWebSessions 同判定)。此前 keep-set 只按 created_at 取前 keep 条,不看有效性 —— 一条较新但已
+	// 过期(或越 30 天绝对上限)的死会话会占住 keep 名额、被本函数「保护」不删,反而挤掉一条**仍有效**的较旧会话
+	// (违背「封顶有效并发」的本意);且死行滞留到后台 GC 才清。改为只在有效会话里取最近 keep 条,其余(超额有效 +
+	// 全部失效)一并删除:cap 精确作用于有效会话,顺带即时回收死行。刚建的会话 created_at=now、expires_at 在未来,
+	// 必在有效集且最新 → 永远被保留。
+	now := nowUnix()
 	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM web_sessions
 		  WHERE admin_id = ?
 		    AND id NOT IN (
 		        SELECT id FROM web_sessions
 		         WHERE admin_id = ?
+		           AND expires_at > ?
+		           AND NOT (created_at > 0 AND ? - created_at >= ?)
 		         ORDER BY created_at DESC, id DESC
 		         LIMIT ?
 		    )`,
-		adminID, adminID, keep)
+		adminID, adminID, now, now, WebSessionAbsoluteMaxAge, keep)
 	if err != nil {
 		return 0, fmt.Errorf("store: prune web sessions keeping recent: %w", err)
 	}

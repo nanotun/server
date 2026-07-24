@@ -213,6 +213,7 @@ var catZH = map[string]string{
 	"init.noop":            "（setup 已完成，用户 %q 存在；未做任何修改。如需重置 PSK 请加 --reset-psk。）",
 	"init.promptPSK":       "管理员 PSK（回车自动生成）",
 	"init.confirmResetPSK": "确认重置已存在管理员 %q 的 PSK？旧 PSK 立即失效,该用户的会话会被踢下线。",
+	"init.confirmAddAdmin": "已存在其它用户但 setup 未标记完成；确认新建**另一个**管理员 %q？(新增管理员建议走 `user create`)",
 	"init.refuseReset":     "拒绝重置已 setup 的用户 %q：请加 --reset-psk",
 	"init.resetNoUser":     "无法 --reset-psk：用户 %q 不存在（请检查是否打错）；请先用 `user create %s --admin` 创建",
 	"init.resetRaced":      "另一管理员已先一步重置 admin %q 的 PSK;请刷新或重跑 init",

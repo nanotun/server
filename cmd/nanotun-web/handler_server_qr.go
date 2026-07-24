@@ -256,6 +256,11 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if terr := s.verifyAndConsumeStepUpTOTP(r.Context(), admin.ID, fresh.TOTPSecret, code); terr != nil {
+			if errors.Is(terr, ErrTOTPStepUnavailable) {
+				// 第十五轮深扫 MED:消费时间步的 DB 瞬时错误非码错 —— 不计冷却,回 503(与登录对齐)。
+				s.renderServerQRPasswordPage(w, r, tr(r, "auth.tryAgainLater"), http.StatusServiceUnavailable)
+				return
+			}
 			newCount := s.stepUpFailures.Inc(ip)
 			s.audit.WriteFromRequest(r, "server_profile_qr_totp_fail",
 				FormatTarget("web_admin", admin.ID),

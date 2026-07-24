@@ -258,6 +258,11 @@ func (s *Server) handleMeTOTPEnable(w http.ResponseWriter, r *http.Request) {
 	// 第七轮深扫 MED:enable 也消费该时间步(与登录共享计数),防止这枚确认码被重放到登录。
 	// enable 前 SetWebAdminTOTPSecret 已把 last_used_step 归零,故此处消费不会与旧 secret 的登录抢占。
 	if err := s.verifyAndConsumeStepUpTOTP(r.Context(), admin.ID, cur.TOTPSecret, code); err != nil {
+		if errors.Is(err, ErrTOTPStepUnavailable) {
+			// 第十五轮深扫 MED:消费时间步的 DB 瞬时错误非码错 —— 不计冷却,回 503(与登录对齐)。
+			s.renderError(w, r, http.StatusServiceUnavailable, tr(r, "auth.tryAgainLater"))
+			return
+		}
 		newCount := s.stepUpFailures.Inc(ip)
 		s.audit.WriteFromRequest(r, "totp_enable_code_fail",
 			FormatTarget("web_admin", admin.ID),
@@ -496,6 +501,11 @@ func (s *Server) handleMeTOTPRegen(w http.ResponseWriter, r *http.Request) {
 	}
 	// 第七轮深扫 MED:regen 消费该时间步(与登录共享计数),防止该码被重放到登录 / 其它 step-up。
 	if err := s.verifyAndConsumeStepUpTOTP(r.Context(), admin.ID, cur.TOTPSecret, code); err != nil {
+		if errors.Is(err, ErrTOTPStepUnavailable) {
+			// 第十五轮深扫 MED:消费时间步的 DB 瞬时错误非码错 —— 不计冷却,回 503(与登录对齐)。
+			s.renderError(w, r, http.StatusServiceUnavailable, tr(r, "auth.tryAgainLater"))
+			return
+		}
 		s.stepUpFailures.Inc(ip)
 		s.audit.WriteFromRequest(r, "totp_regen_fail",
 			FormatTarget("web_admin", admin.ID),

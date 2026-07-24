@@ -768,3 +768,64 @@ func TestParseUserIDStr(t *testing.T) {
 		}
 	}
 }
+
+// TestConnSourceSpoofed_GatewaySrcBlockedEvenApproved 覆盖第十五轮深扫 MED:
+// 源 == server 自身网关地址时,即便是**已批准出口/子网**转发者也必须判伪造(否则可伪造客户端信任锚
+// server 网关:53 的 MagicDNS / ICMP,向任意 mesh 对端投毒)。合法外网源仍豁免。
+func TestConnSourceSpoofed_GatewaySrcBlockedEvenApproved(t *testing.T) {
+	setServerGatewayAddrs("10.201.0.1/16", "fd00:201::1/64")
+	t.Cleanup(func() { serverGatewayAddrs.Store(nil) })
+
+	mkPkt := func(src [4]byte) []byte {
+		dst := [4]byte{8, 8, 8, 8}
+		return []byte{
+			0x45, 0x00, 0x00, 0x1c,
+			0x00, 0x00, 0x00, 0x00,
+			0x40, 0x11, 0x00, 0x00,
+			src[0], src[1], src[2], src[3],
+			dst[0], dst[1], dst[2], dst[3],
+			0x12, 0x34, 0x00, 0x35,
+			0x00, 0x08, 0x00, 0x00,
+		}
+	}
+	mkApprovedExit := func() *Connection {
+		c := &Connection{}
+		ips := []util.VirtualIPAssignment{{VirtualIP: "10.9.0.5"}}
+		c.clientIPs.Store(&ips)
+		c.advertisedExit.Store(true)
+		c.advertisedExitApproved.Store(true)
+		return c
+	}
+	gw := [4]byte{10, 201, 0, 1}
+	if !connSourceSpoofed(mkApprovedExit(), mkPkt(gw)) {
+		t.Fatal("已批准出口转发者以 server 网关为源必须判伪造 (M6)")
+	}
+	// 合法外网源仍豁免(不回归 M6 前的正常中继)。
+	ext := [4]byte{203, 0, 113, 8}
+	if connSourceSpoofed(mkApprovedExit(), mkPkt(ext)) {
+		t.Fatal("已批准出口转发者携真实外网源应仍豁免")
+	}
+}
+
+// TestParsePacketTuple_IPv6AHUnresolvedESPResolved 覆盖第十五轮深扫 LOW:
+// IPv6 AH(51)/未知 next-header 停解 → l4Unresolved=true(端口 deny 在 default-allow 下 fail-closed);
+// ESP(50)载荷加密无明文端口 → resolved(l4Unresolved=false,避免对合法 ESP 误 fail-closed)。
+func TestParsePacketTuple_IPv6AHUnresolvedESPResolved(t *testing.T) {
+	mkV6 := func(nh byte) []byte {
+		p := make([]byte, 40)
+		p[0] = 0x60
+		p[6] = nh
+		p[24] = 0xfd // 任意非零 dst 前缀,使 dst.Is6()
+		p[39] = 0x01
+		return p
+	}
+	if tu, ok := parsePacketTuple(mkV6(51)); !ok || !tu.l4Unresolved {
+		t.Fatalf("ipv6 AH(51) got %+v ok=%v, want l4Unresolved=true", tu, ok)
+	}
+	if tu, ok := parsePacketTuple(mkV6(253)); !ok || !tu.l4Unresolved {
+		t.Fatalf("ipv6 unknown-nh(253) got %+v ok=%v, want l4Unresolved=true", tu, ok)
+	}
+	if tu, ok := parsePacketTuple(mkV6(50)); !ok || tu.l4Unresolved {
+		t.Fatalf("ipv6 ESP(50) got %+v ok=%v, want l4Unresolved=false", tu, ok)
+	}
+}

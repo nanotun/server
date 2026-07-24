@@ -5,6 +5,25 @@ import (
 	"time"
 )
 
+// TestCanonicalVIP_Unmap 第十五轮深扫 MED:canonicalVIP 归一 IPv4-mapped IPv6 到点分形(Unmap),
+// 并折叠大小写 / 压缩零段;空串与非法值原样返回。保证写路径 / AllUsedVIPs 读侧 / 冲突守卫处于同一文本域。
+func TestCanonicalVIP_Unmap(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"::ffff:10.0.0.1", "10.0.0.1"}, // v4-mapped → 点分形
+		{"::ffff:a0a:a0a", "10.10.10.10"},
+		{"10.0.0.1", "10.0.0.1"},
+		{"FD00::2", "fd00::2"},                    // 大写折叠
+		{"2001:DB8:0:0:0:0:0:AB", "2001:db8::ab"}, // 零段压缩
+		{"", ""},
+		{"not-an-ip", "not-an-ip"}, // 非法值原样返回(不 panic)
+	}
+	for _, c := range cases {
+		if got := canonicalVIP(c.in); got != c.want {
+			t.Errorf("canonicalVIP(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // TestGcOrphanLeases_FixedVIPGuard 验证 GC 纵深守卫:即便某条 lease 的 manual 漂移成 0(模拟历史行 / 外部
 // 直接写库),只要它的 vip 仍等于该 device 的 fixed_vip,GcOrphanLeases 就不得回收它;普通空闲 lease 则正常回收。
 func TestGcOrphanLeases_FixedVIPGuard(t *testing.T) {

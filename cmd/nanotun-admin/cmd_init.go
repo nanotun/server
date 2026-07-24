@@ -135,6 +135,18 @@ func cmdInit(ctx context.Context, st *store.Store, opts *globalOpts, args []stri
 		if *resetPSK {
 			return errors.New(opts.T("init.resetNoUser", username, username))
 		}
+		// 第十五轮深扫 HIGH:仅当 users 表**为空**(n==0)才是「首次部署向导」无声创建首位 admin。若 n>0(线上已有
+		// 用户)却因 setup_completed 未置/被 `setting set setup_completed 0` 清掉而落到这条新建分支,再输入一个**新
+		// 用户名**会静默造出**第二个** admin —— init 号称幂等首部署,却成了「换个名字就多一个管理员」的旁路(新增管理员
+		// 本应走带确认的 `user create`)。这里在 n>0 时要求二次确认(--yes / -y 跳过供脚本);n==0 首装向导不受影响。
+		if n > 0 && !opts.yes {
+			fmt.Fprintf(opts.stdout, "%s [y/N]: ", opts.T("init.confirmAddAdmin", username))
+			line, _ := r.ReadString('\n')
+			if s := strings.ToLower(strings.TrimSpace(line)); s != "y" && s != "yes" {
+				fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
+				return nil
+			}
+		}
 		// 0013(2026-05-25):新建 user 时同步分配 UUID v4 + now 作为 credential_id /
 		// credential_created_at,免去后续首次 `credentials show` 的 lazy backfill,
 		// admin 一开始就能直接出完整 credentials QR。

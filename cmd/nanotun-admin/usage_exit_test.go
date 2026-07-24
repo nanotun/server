@@ -37,6 +37,13 @@ func TestUsageError_ExitCode2(t *testing.T) {
 		{"device unknown-verb", []string{"device", "bogus"}},
 		{"acl unknown-verb", []string{"acl", "bogus"}},
 		{"lease unknown-verb", []string{"lease", "bogus"}},
+		// 第十五轮深扫 MED:audit/route/device list 曾用裸 fs.Parse(未知 flag 恒 exit 1)。锁死为 2。
+		{"audit list bogus-flag", []string{"audit", "list", "--bogus"}},
+		{"route list bogus-flag", []string{"route", "list", "--bogus"}},
+		{"device list bogus-flag", []string{"device", "list", "--bogus"}},
+		// 第十五轮深扫 LOW:非法 --format / 多余位置参 / 缺 flag 取值同属用法错误 → exit 2。
+		{"profile show bad-format", []string{"profile", "show", "alice", "--host", "h", "--format", "xml"}},
+		{"setting rate unexpected-pos", []string{"setting", "rate", "bogus-pos"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

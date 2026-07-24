@@ -43,10 +43,13 @@ func cmdAuditList(ctx context.Context, st *store.Store, opts *globalOpts, args [
 	// 前缀)— 想要 prefix 匹配请走 SQL 直查或 future --action-prefix flag。
 	action := fs.String("action", "", opts.T("audit.flag.action"))
 	if err := fs.Parse(args); err != nil {
-		return err
+		// 第十五轮深扫 MED:flag 解析错误(未知 flag / 非法取值 / -h)属**用法错误** → exit 2,与顶层 dispatch /
+		// parseInterspersed / 其它 usageError 一致(此前经 runWithStore 恒 exit 1)。
+		return usageErrorWrap(err.Error(), err)
 	}
 	if fs.NArg() != 0 {
-		return errors.New(opts.T("audit.noPositional", fmt.Sprint(fs.Args())))
+		// 第十五轮深扫 LOW:多余位置参数属用法错误 → exit 2。
+		return usageError(opts.T("audit.noPositional", fmt.Sprint(fs.Args())))
 	}
 	if *since <= 0 {
 		return errors.New(opts.T("audit.sinceMustPositive"))
