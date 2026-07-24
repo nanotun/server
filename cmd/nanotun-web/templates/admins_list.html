@@ -33,7 +33,7 @@
                 {{if .Enabled}}
                 <form method="post" action="/admins/{{.ID}}/disable" class="inline">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                    <button class="btn small secondary" onclick="return confirm('{{T "admins.disableConfirm"}}')">{{T "common.disable"}}</button>
+                    <button class="btn small secondary" data-confirm="{{T "admins.disableConfirm"}}">{{T "common.disable"}}</button>
                 </form>
                 {{else}}
                 <form method="post" action="/admins/{{.ID}}/enable" class="inline">
@@ -43,7 +43,7 @@
                 {{end}}
                 <form method="post" action="/admins/{{.ID}}/delete" class="inline">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                    <button class="btn small danger" onclick="return confirm('{{T "admins.deleteConfirm"}}')">{{T "common.delete"}}</button>
+                    <button class="btn small danger" data-confirm="{{T "admins.deleteConfirm"}}">{{T "common.delete"}}</button>
                 </form>
                 {{end}}
                 {{if and .LockedUntil (gt .LockedUntil (int64 0))}}

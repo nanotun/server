@@ -79,9 +79,9 @@
         <textarea id="serverProfileURL" readonly
                   rows="6"
                   style="width:100%;font-family:'SF Mono','Menlo','Consolas',monospace;font-size:11px;line-height:1.5;word-break:break-all;background:#1a1a1a;color:#e0e0e0;border:1px solid #444;border-radius:6px;padding:10px;box-sizing:border-box"
-                  onclick="this.select()">{{.Data.URLText}}</textarea>
+                  data-select-on-click>{{.Data.URLText}}</textarea>
         <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-            <button class="btn secondary" type="button" onclick="copyServerProfileURL()">
+            <button class="btn secondary" type="button" id="copy-server-url-btn">
                 {{T "qrShow.copyClipboard"}}
             </button>
             <span class="muted" style="font-size:12px">
@@ -91,7 +91,9 @@
     </details>
 </div>
 
-<script>
+<script nonce="{{.Nonce}}">
+// 复制到剪贴板:i18n 文案 + 长度 + alert/降级选中,逻辑留在带 nonce 的内联脚本;
+// 事件绑定改 addEventListener(内联 onclick 已随 CSP 去 'unsafe-inline' 一并移除)。
 function copyServerProfileURL() {
     var t = document.getElementById('serverProfileURL');
     if (!t) return;
@@ -108,6 +110,10 @@ function copyServerProfileURL() {
         alert('{{T "qrShow.jsNoClipApi"}}');
     }
 }
+(function () {
+    var btn = document.getElementById('copy-server-url-btn');
+    if (btn) btn.addEventListener('click', copyServerProfileURL);
+})();
 </script>
 
 {{template "footer" .}}

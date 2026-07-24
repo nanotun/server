@@ -12,13 +12,15 @@
     {{/* 2026-07-19 易用性:一键复制(与 server QR 页 URL 复制同款模式)。
          剪贴板 API 不可用时降级为全选文本 + 提示手动复制。 */}}
     <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
-        <button class="btn secondary" type="button" onclick="copyPSK()">{{T "psk.copy"}}</button>
+        <button class="btn secondary" type="button" id="copy-psk-btn">{{T "psk.copy"}}</button>
         <span id="psk-copy-status" class="muted" style="font-size:12px"></span>
     </div>
     <p class="hint">{{T "userCreated.pskLoginHintPre"}}<code>{{.Data.User.Username}}</code>{{T "userCreated.pskLoginHintPost"}}</p>
 </div>
 
-<script>
+<script nonce="{{.Nonce}}">
+// 复制 PSK:i18n 状态文案 + 降级选中,逻辑留在带 nonce 的内联脚本;绑定改 addEventListener
+// (内联 onclick 已随 CSP 去 'unsafe-inline' 一并移除)。
 function copyPSK() {
     var el = document.getElementById('psk-value');
     var status = document.getElementById('psk-copy-status');
@@ -40,6 +42,10 @@ function copyPSK() {
         fail();
     }
 }
+(function () {
+    var btn = document.getElementById('copy-psk-btn');
+    if (btn) btn.addEventListener('click', copyPSK);
+})();
 </script>
 
 {{if .Data.CredQRImage}}

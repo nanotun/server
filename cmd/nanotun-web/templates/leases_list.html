@@ -26,7 +26,7 @@
                 <form method="post" action="/leases/{{.DeviceID}}/release" class="inline">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <button class="btn danger small"
-                        onclick="return confirm('{{T "leases.releaseConfirm"}}')">{{T "leases.release"}}</button>
+                        data-confirm="{{T "leases.releaseConfirm"}}">{{T "leases.release"}}</button>
                 </form>
                 {{end}}
             </td>

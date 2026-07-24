@@ -107,7 +107,7 @@ func cmdRouteApprove(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	}
 	deviceID, cidr, err := parseRouteTarget(opts, pos)
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.usage("nanotun-admin route approve <device_id> <cidr> [--force]"), err)
+		return usageErrorWrap(opts.usage("nanotun-admin route approve <device_id> <cidr> [--force]"), err)
 	}
 	// 出口默认路由与 exit designate 同口径的平台闸口(第十五轮深扫):route approve
 	// 是逐条批 0/0 的**旁门**,漏掉它等于闸口只焊了一半。--force 语义同 designate。
@@ -161,7 +161,7 @@ func cmdRouteReject(ctx context.Context, st *store.Store, opts *globalOpts, args
 	}
 	deviceID, cidr, err := parseRouteTarget(opts, pos)
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.usage("nanotun-admin route reject <device_id> <cidr> [--reason ...] [--force]"), err)
+		return usageErrorWrap(opts.usage("nanotun-admin route reject <device_id> <cidr> [--reason ...] [--force]"), err)
 	}
 	// 深扫第八轮 MED:与 web(handler_routes.go reject 仅限 pending)对齐 —— reject 只作用于
 	// 待审批声明。此前 CLI 无守卫,`route reject` 会把一条 **已 approved** 的路由静默降级为
@@ -203,7 +203,7 @@ func cmdRouteReject(ctx context.Context, st *store.Store, opts *globalOpts, args
 func cmdRouteDelete(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	deviceID, cidr, err := parseRouteTarget(opts, args)
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.usage("nanotun-admin route delete <device_id> <cidr>"), err)
+		return usageErrorWrap(opts.usage("nanotun-admin route delete <device_id> <cidr>"), err)
 	}
 	if !opts.yes {
 		ok, err := confirm(opts, opts.T("route.confirmDelete", deviceID, cidr))

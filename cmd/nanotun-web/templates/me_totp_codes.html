@@ -36,13 +36,16 @@
     </div>
 
     <div style="margin-top:16px;display:flex;gap:8px">
-        <button class="btn secondary" type="button" onclick="copyAllCodes()">{{T "totpCodes.copyAll"}}</button>
-        <button class="btn secondary" type="button" onclick="window.print()">{{T "totpCodes.print"}}</button>
+        <button class="btn secondary" type="button" id="copy-all-codes-btn">{{T "totpCodes.copyAll"}}</button>
+        <button class="btn secondary" type="button" data-print>{{T "totpCodes.print"}}</button>
         <a href="/me" class="btn">{{T "totpCodes.savedReturn"}}</a>
     </div>
 </div>
 
-<script>
+<script nonce="{{.Nonce}}">
+// 复制全部恢复码:i18n 文案 + count + alert/prompt 降级,逻辑留在带 nonce 的内联脚本;
+// 绑定改 addEventListener(打印按钮改 data-print,由 app.js 委托;内联 onclick 已随 CSP
+// 去 'unsafe-inline' 一并移除)。
 function copyAllCodes() {
     var codes = Array.from(document.querySelectorAll('.recovery-codes code'))
                     .map(function(el){ return el.textContent.trim(); });
@@ -57,6 +60,10 @@ function copyAllCodes() {
         prompt('{{T "totpCodes.jsManualCopy"}}', text);
     }
 }
+(function () {
+    var btn = document.getElementById('copy-all-codes-btn');
+    if (btn) btn.addEventListener('click', copyAllCodes);
+})();
 </script>
 
 {{template "footer" .}}

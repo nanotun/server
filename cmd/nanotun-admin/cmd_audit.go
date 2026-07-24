@@ -17,7 +17,7 @@ import (
 // 不提供 admin CLI 删除路径(运维需要清理时直接走 SQLite,且应当备份)。
 func cmdAudit(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) == 0 {
-		return errors.New(opts.usage("nanotun-admin audit <list> [...]"))
+		return usageError(opts.usage("nanotun-admin audit <list> [...]"))
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {

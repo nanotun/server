@@ -10,7 +10,7 @@ import (
 
 func cmdACL(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) == 0 {
-		return errors.New(opts.usage("nanotun-admin acl <list|allow|deny|del> [...]"))
+		return usageError(opts.usage("nanotun-admin acl <list|allow|deny|del> [...]"))
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -131,7 +131,7 @@ func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args 
 		return err
 	}
 	if len(positional) != 2 {
-		return errors.New(opts.usage(fmt.Sprintf("nanotun-admin acl %s <src_user|*> <dst_user|*> [--proto X --port N --port-range LO-HI --exit]", action)))
+		return usageError(opts.usage(fmt.Sprintf("nanotun-admin acl %s <src_user|*> <dst_user|*> [--proto X --port N --port-range LO-HI --exit]", action)))
 	}
 	src, err := resolveUserOrWildcard(ctx, st, opts, positional[0])
 	if err != nil {
@@ -276,7 +276,7 @@ func resolveUserOrWildcard(ctx context.Context, st *store.Store, opts *globalOpt
 
 func cmdACLDelete(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) != 1 {
-		return errors.New(opts.usage("nanotun-admin acl del <id>"))
+		return usageError(opts.usage("nanotun-admin acl del <id>"))
 	}
 	id, err := parseInt64(args[0])
 	if err != nil {

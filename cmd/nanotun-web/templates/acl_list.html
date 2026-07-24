@@ -9,7 +9,7 @@
         {{/* Referrer-Policy: no-referrer — 重载完回 ACL 页要靠显式 return_to。 */}}
         <input type="hidden" name="return_to" value="/acl">
         <button class="btn secondary" type="submit"
-            onclick="return confirm('{{T "acl.reloadConfirm"}}')">{{T "dashboard.reloadAcl"}}</button>
+            data-confirm="{{T "acl.reloadConfirm"}}">{{T "dashboard.reloadAcl"}}</button>
     </form>
     <a href="/acl/new" class="btn">{{T "acl.newRule"}}</a>
     {{end}}
@@ -33,7 +33,7 @@
                 {{if eq $.Admin.Role "admin"}}
                 <form method="post" action="/acl/{{.ID}}/delete" class="inline">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                    <button class="btn danger small" onclick="return confirm('{{T "acl.deleteConfirm"}}')">{{T "common.delete"}}</button>
+                    <button class="btn danger small" data-confirm="{{T "acl.deleteConfirm"}}">{{T "common.delete"}}</button>
                 </form>
                 {{end}}
             </td>

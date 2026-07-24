@@ -86,7 +86,7 @@ func canonicalizeValidatedSetting(key, value string) string {
 
 func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) == 0 {
-		return errors.New(opts.usage("nanotun-admin setting <get|set|list|rate|probe-dial-host> [...]"))
+		return usageError(opts.usage("nanotun-admin setting <get|set|list|rate|probe-dial-host> [...]"))
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -96,7 +96,7 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 		return cmdSettingProbeDialHost(ctx, opts, rest)
 	case "get":
 		if len(rest) != 1 {
-			return errors.New(opts.usage("nanotun-admin setting get <key>"))
+			return usageError(opts.usage("nanotun-admin setting get <key>"))
 		}
 		v, ok, err := st.SettingsGet(ctx, rest[0])
 		if err != nil {
@@ -109,7 +109,7 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 		return nil
 	case "set":
 		if len(rest) != 2 {
-			return errors.New(opts.usage("nanotun-admin setting set <key> <value>"))
+			return usageError(opts.usage("nanotun-admin setting set <key> <value>"))
 		}
 		key, value := rest[0], rest[1]
 		// 层 1:系统管 key → 硬拒。
@@ -301,7 +301,7 @@ func cmdSettingProbeDialHost(ctx context.Context, opts *globalOpts, args []strin
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New(opts.usage("nanotun-admin setting probe-dial-host <host> [--skip-icmp] [--timeout 20s]"))
+		return usageError(opts.usage("nanotun-admin setting probe-dial-host <host> [--skip-icmp] [--timeout 20s]"))
 	}
 	host := strings.TrimSpace(pos[0])
 	if host == "" {

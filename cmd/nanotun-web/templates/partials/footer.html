@@ -13,6 +13,10 @@
 {{else}}
 <footer class="foot">nanotun-web {{.Nav.Version}} — {{T "footer.tagline"}}</footer>
 {{end}}
+{{/* 全站通用行为脚本(委托 confirm / select / print / 表单进度);外链走 script-src 'self',
+     无需 nonce。承接从模板里移除的内联 on*= 处理器 —— 详见 static/app.js 顶注。defer 保证
+     DOM 就绪后再跑,委托监听挂在 document 上,不受元素渲染顺序影响。 */}}
+<script src="/static/app.js?v={{.Nav.Version}}" defer></script>
 </body>
 </html>
 {{end}}

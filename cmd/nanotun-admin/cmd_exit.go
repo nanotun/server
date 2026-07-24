@@ -41,7 +41,7 @@ import (
 //	    撤销出口:删除该 device 的 0.0.0.0/0 + ::/0 approved 路由;--clear-vip 同时清掉固定 vIP。
 func cmdExit(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) == 0 {
-		return errors.New(opts.usage("nanotun-admin exit <designate|list|revoke> [...]"))
+		return usageError(opts.usage("nanotun-admin exit <designate|list|revoke> [...]"))
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -84,7 +84,7 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New(opts.usage("nanotun-admin exit designate <device_id> [--v4 IP] [--v6 IP] [--no-vip] [--force]"))
+		return usageError(opts.usage("nanotun-admin exit designate <device_id> [--v4 IP] [--v6 IP] [--no-vip] [--force]"))
 	}
 	id, err := parseInt64(pos[0])
 	if err != nil {
@@ -291,7 +291,7 @@ func cmdExitRevoke(ctx context.Context, st *store.Store, opts *globalOpts, args 
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New(opts.usage("nanotun-admin exit revoke <device_id> [--clear-vip] [--yes]"))
+		return usageError(opts.usage("nanotun-admin exit revoke <device_id> [--clear-vip] [--yes]"))
 	}
 	id, err := parseInt64(pos[0])
 	if err != nil {

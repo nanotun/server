@@ -35,7 +35,7 @@ func cmdInit(ctx context.Context, st *store.Store, opts *globalOpts, args []stri
 		return err
 	}
 	if len(pos) > 0 {
-		return errors.New(opts.usage("nanotun-admin init [--reset-psk]"))
+		return usageError(opts.usage("nanotun-admin init [--reset-psk]"))
 	}
 
 	n, err := st.CountUsers(ctx)

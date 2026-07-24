@@ -91,7 +91,7 @@
             {{end}}
             <form method="post" action="/port-forwards/{{.ID}}/delete" class="inline">
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                <button class="btn small danger" onclick="return confirm('{{T "portForward.deleteConfirm"}}')">{{T "common.delete"}}</button>
+                <button class="btn small danger" data-confirm="{{T "portForward.deleteConfirm"}}">{{T "common.delete"}}</button>
             </form>
         </div>
         {{end}}

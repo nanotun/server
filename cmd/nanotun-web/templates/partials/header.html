@@ -58,7 +58,7 @@
                 <input type="hidden" name="return_to" value="{{.Path}}">
                 <button type="submit"
                         class="mesh-toggle {{if .Nav.MeshEnabled}}on{{else}}off{{end}}"
-                        onclick="return confirm('{{if .Nav.MeshEnabled}}{{T "nav.meshConfirmOff"}}{{else}}{{T "nav.meshConfirmOn"}}{{end}}');">
+                        data-confirm="{{if .Nav.MeshEnabled}}{{T "nav.meshConfirmOff"}}{{else}}{{T "nav.meshConfirmOn"}}{{end}}">
                     <span class="dot"></span>
                     {{T "nav.mesh"}} {{if .Nav.MeshEnabled}}ON{{else}}OFF{{end}}
                 </button>

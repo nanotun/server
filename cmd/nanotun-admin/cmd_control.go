@@ -60,7 +60,7 @@ func cmdReload(_ context.Context, _ any, opts *globalOpts, args []string) error 
 // 以便它 UI 能区分「被踢」与「网络异常」)。
 func cmdKick(_ context.Context, _ any, opts *globalOpts, args []string) error {
 	if len(args) < 2 {
-		return errors.New(opts.usage("nanotun-admin kick <session|device|user> <id> [--reason TEXT]"))
+		return usageError(opts.usage("nanotun-admin kick <session|device|user> <id> [--reason TEXT]"))
 	}
 	kind, id := args[0], args[1]
 	reason := ""

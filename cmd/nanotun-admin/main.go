@@ -101,7 +101,7 @@ func runRoot(args []string, opts *globalOpts) int {
 			defer cancel()
 			if err := cmdSettingProbeDialHost(ctx, opts, rest[1:]); err != nil {
 				fmt.Fprintln(opts.stderr, opts.errText(err))
-				return 1
+				return exitCodeForErr(err)
 			}
 			return 0
 		}
@@ -129,13 +129,13 @@ func runRoot(args []string, opts *globalOpts) int {
 		// reload 不需要打开 SQLite,直接走 control socket。
 		if err := cmdReload(context.Background(), nil, opts, rest); err != nil {
 			fmt.Fprintln(opts.stderr, opts.errText(err))
-			return 1
+			return exitCodeForErr(err)
 		}
 		return 0
 	case "kick":
 		if err := cmdKick(context.Background(), nil, opts, rest); err != nil {
 			fmt.Fprintln(opts.stderr, opts.errText(err))
-			return 1
+			return exitCodeForErr(err)
 		}
 		return 0
 	case "connection", "conn":
@@ -254,7 +254,9 @@ func runWithStore(opts *globalOpts, readOnly bool, fn func(ctx context.Context, 
 
 	if err := fn(ctx, st); err != nil {
 		fmt.Fprintln(opts.stderr, opts.errText(err))
-		return 1
+		// 第十一轮深扫 LOW:usage/参数错误 → exit 2(与 restore / config lint / 顶层 dispatch 一致),
+		// 其余运行期错误 → exit 1。
+		return exitCodeForErr(err)
 	}
 	return 0
 }
