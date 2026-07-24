@@ -45,10 +45,14 @@ func (s *Store) SetWebAdminTOTPSecret(ctx context.Context, id int64, secretBase3
 	// 一并清 totp_last_used_step:写入的是**新** secret,其重放步计数器应从零开始。否则「禁用→立即
 	// 用新 secret 重新绑定」若落在同一 30s 时间步内,ConsumeTOTPStep 会因残留的旧 step 把新 secret 的
 	// 首次登录判为重放而拒绝(需干等一个时间步)。新凭据 = 新计数器。
+	// 第十四轮深扫 LOW(防御纵深):加 `AND totp_enabled=0` 守卫 —— **绝不**覆盖一个已启用 TOTP 账号的 secret。
+	// 换新 secret 会把 enabled 清 0、即把已生效的第二因子解绑;唯一合法路径是「先 disable 再 setup」。handler 侧
+	// (handleMeTOTPSetup)已在锁内查 cur.TOTPEnabled 拦截,这里在 DAL 再兜一层:未来任何新调用方都无法用一条 UPDATE
+	// 静默重置已启用账号的 TOTP(劫持会话 rebind / 误操作)。命中 0 行(账号不存在**或**已启用)统一回 ErrNotFound。
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE web_admins
 		    SET totp_secret=?, totp_enabled=0, totp_enabled_at=0, totp_last_used_step=0
-		  WHERE id=?`,
+		  WHERE id=? AND totp_enabled=0`,
 		secretBase32, id)
 	if err != nil {
 		return fmt.Errorf("store: set totp secret: %w", err)
@@ -90,8 +94,8 @@ func (s *Store) EnableWebAdminTOTP(ctx context.Context, id int64,
 	// 若此刻另一标签页 / 并发请求 SetWebAdminTOTPSecret 把 secret 换成 S2(setup 重开),旧逻辑
 	// 只要 `totp_secret <> ''` 就把 **S2** 启用 —— 用户手机绑的是 S1 → 启用后立刻 TOTP 锁死;
 	// 同会话攻击者亦可在受害者验过自己二维码后,抢先把 secret 换成攻击者可控值再 enable。
-    // CAS `AND totp_secret=?` 保证:只有当库里仍是被验过的那个 secret 时才翻 enabled,否则 0 行
-    // → ErrNotFound(handler 引导重走 setup)。
+	// CAS `AND totp_secret=?` 保证:只有当库里仍是被验过的那个 secret 时才翻 enabled,否则 0 行
+	// → ErrNotFound(handler 引导重走 setup)。
 	res, err := tx.ExecContext(ctx,
 		`UPDATE web_admins
 		    SET totp_enabled=1, totp_enabled_at=?

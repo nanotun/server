@@ -123,7 +123,13 @@ func (s *Server) handleMeTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.enrollPasswordRequired"))
 		return
 	}
-	if ok, verr := VerifyWebPassword(r.Context(), password, cur.PasswordHash); verr != nil || !ok {
+	ok, verr := VerifyWebPassword(r.Context(), password, cur.PasswordHash)
+	if isVerifyUnavailable(verr) {
+		// 第十四轮深扫 MED:容量/ctx 超时非密码错 —— 不计冷却,回 503(与登录对齐)。
+		s.renderError(w, r, http.StatusServiceUnavailable, tr(r, "auth.tryAgainLater"))
+		return
+	}
+	if verr != nil || !ok {
 		newCount := s.stepUpFailures.Inc(ip)
 		s.audit.WriteFromRequest(r, "totp_setup_password_fail",
 			FormatTarget("web_admin", admin.ID),
@@ -366,22 +372,30 @@ func (s *Server) handleMeTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
+	// 第九轮深扫 MED:step-up 冷却是「先 Recent() 读计数、晚点才 Inc()」的 check-then-act,
+	// 与已在第八轮修掉的 /login/totp 同类竞态 —— 并发请求都在任一 Inc 落地前读到低于阈值的
+	// 计数,即可越过「5 次/5min」冷却,对 6 位码提速爆破(劫持会话即可关 2FA)。按 adminID
+	// 串行化「读冷却 + verify + 记账」临界区(复用登录用的 totpVerifyLocks),使冷却与 verify
+	// 在并发下也按账号顺序生效。
+	//
+	// 第十四轮深扫 HIGH:GetWebAdmin **移到锁内**,验 TOTP/恢复码用锁内重读的 cur —— 抹掉「锁外读 → verify」
+	// 间受害者轮换 2FA(disable→setup→enable)的 TOCTOU:攻击者持旧 secret 的会话可在受害者换成新 secret 后仍
+	// 用旧码关掉 2FA。与 setup/enable/server-qr/self-reset 同源(此前 disable/regen 漏改)。停用即拒。
+	unlock := s.lockTOTPVerify(admin.ID)
+	defer unlock()
 	cur, err := s.store.GetWebAdmin(r.Context(), admin.ID)
 	if err != nil || cur == nil {
 		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryAccountFailed"))
+		return
+	}
+	if !cur.Enabled {
+		s.renderError(w, r, http.StatusForbidden, tr(r, "err.stepUpAccountDisabled"))
 		return
 	}
 	if !cur.TOTPEnabled {
 		flashRedirect(w, r, "/me", tr(r, "flash.totpNotEnabled"), "")
 		return
 	}
-	// 第九轮深扫 MED:step-up 冷却是「先 Recent() 读计数、晚点才 Inc()」的 check-then-act,
-	// 与已在第八轮修掉的 /login/totp 同类竞态 —— 并发请求都在任一 Inc 落地前读到低于阈值的
-	// 计数,即可越过「5 次/5min」冷却,对 6 位码提速爆破(劫持会话即可关 2FA)。按 adminID
-	// 串行化「读冷却 + verify + 记账」临界区(复用登录用的 totpVerifyLocks),使冷却与 verify
-	// 在并发下也按账号顺序生效。
-	unlock := s.lockTOTPVerify(admin.ID)
-	defer unlock()
 	// 深扫第八轮 MED:关 2FA 是「输一个 6 位码即生效」的敏感操作,此前无任何限流 ——
 	// 密码泄露 + cookie 劫持后可对 6 位码无限爆破直到关掉 2FA。复用 step-up 的 IP 冷却
 	// (滑窗 5min,5 次锁),与 /server-qr/reveal 同款,失败即计数、锁定即 429、成功清零。
@@ -401,7 +415,12 @@ func (s *Server) handleMeTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpCodeRequired"))
 		return
 	}
-	ok, usedRecovery, recoveryID, _ := s.verifyTOTPOrRecovery(r.Context(), cur, code, recovery)
+	ok, usedRecovery, recoveryID, dreason := s.verifyTOTPOrRecovery(r.Context(), cur, code, recovery)
+	if dreason == reasonVerifyUnavailable {
+		// 第十四轮深扫 MED:恢复码 argon2 容量/ctx 超时非码错 —— 不计冷却,回 503(与登录对齐)。
+		s.renderError(w, r, http.StatusServiceUnavailable, tr(r, "auth.tryAgainLater"))
+		return
+	}
 	if !ok {
 		s.stepUpFailures.Inc(ip)
 		s.audit.WriteFromRequest(r, "totp_disable_fail",
@@ -444,15 +463,21 @@ func (s *Server) handleMeTOTPRegen(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
+	// 第九轮深扫 MED:同 disable —— 按 adminID 串行化「读冷却 + verify + 记账」临界区,
+	// 关闭 step-up 冷却的 check-then-act 竞态(见 handleMeTOTPDisable 注释)。
+	// 第十四轮深扫 HIGH:GetWebAdmin **移到锁内**,验 TOTP 用锁内重读的 cur —— 抹掉受害者轮换 2FA 时攻击者用
+	// 旧 secret 刷新恢复码的 TOCTOU(与 disable 同源;此前漏改)。停用即拒。
+	unlock := s.lockTOTPVerify(admin.ID)
+	defer unlock()
 	cur, err := s.store.GetWebAdmin(r.Context(), admin.ID)
 	if err != nil || cur == nil || !cur.TOTPEnabled {
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpNotEnabledRegen"))
 		return
 	}
-	// 第九轮深扫 MED:同 disable —— 按 adminID 串行化「读冷却 + verify + 记账」临界区,
-	// 关闭 step-up 冷却的 check-then-act 竞态(见 handleMeTOTPDisable 注释)。
-	unlock := s.lockTOTPVerify(admin.ID)
-	defer unlock()
+	if !cur.Enabled {
+		s.renderError(w, r, http.StatusForbidden, tr(r, "err.stepUpAccountDisabled"))
+		return
+	}
 	// 深扫第八轮 MED:重刷恢复码同样是「输一个 6 位码即作废旧码、刷出新码」的敏感操作,
 	// 与 disable 同等防护 —— 复用 step-up IP 冷却,防止劫持会话后爆破 6 位码刷恢复码。
 	ip := clientIP(r)

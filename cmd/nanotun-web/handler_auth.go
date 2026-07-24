@@ -560,6 +560,14 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 
 		// 优先按 6 位 TOTP 码校验;失败再尝试当作恢复码。两种都不行返回 401。
 		ok, usedRecovery, recoveryID, verr := s.verifyTOTPOrRecovery(ctx, admin, code, recoveryCode)
+		if verr == reasonVerifyUnavailable {
+			// 第十四轮深扫 MED:恢复码 argon2 容量/ctx 超时属「暂时不可用」,非码错 —— 不计 ipFailures / 账号锁定,
+			// 不消费 pending(用户可重试),回 503(与 AttemptLogin 密码步一致)。
+			s.audit.Write(ctx, admin, "web.totp.unavailable",
+				FormatTarget("web_admin", admin.ID), FormatDetail("ip", ip))
+			s.renderError(w, r, http.StatusServiceUnavailable, tr(r, "auth.tryAgainLater"))
+			return
+		}
 		if !ok {
 			s.sess.ipFailures.Inc(ip)
 			// TOTP/恢复码失败与密码失败共用账号锁定计数器(原子事务),
@@ -621,6 +629,10 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// reasonVerifyUnavailable:verifyTOTPOrRecovery 在恢复码 argon2 校验遇容量/ctx 超时时冒泡的专属 reason,
+// 调用方据此回 503(暂时不可用)而非当作码错计入失败/锁定(第十四轮深扫 MED)。
+const reasonVerifyUnavailable = "verify_unavailable"
+
 // verifyTOTPOrRecovery 二选一校验,简化 handler 逻辑。
 // 返回 (ok, usedRecovery, recoveryID, errReason)。
 // errReason 仅用于 audit 写 reason 字段,不展示给用户(避免提示"是 TOTP 错还是
@@ -654,7 +666,12 @@ func (s *Server) verifyTOTPOrRecovery(ctx context.Context, admin *store.WebAdmin
 			return false, false, 0, "recovery_list:" + err.Error()
 		}
 		for _, c := range codes {
-			match, _ := VerifyWebPassword(ctx, norm, c.CodeHash)
+			match, verr := VerifyWebPassword(ctx, norm, c.CodeHash)
+			if isVerifyUnavailable(verr) {
+				// 第十四轮深扫 MED:argon2 容量/ctx 超时不能当「码不匹配」,否则宿主压力下**合法**恢复码被判失败 +
+				// 累加 ipFailures/账号锁定(与登录密码步同类 DoS)。用专属 reason 冒泡,调用方回 503、不计失败。
+				return false, false, 0, reasonVerifyUnavailable
+			}
 			if match {
 				return true, true, c.ID, ""
 			}

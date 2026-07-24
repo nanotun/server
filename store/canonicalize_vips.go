@@ -63,15 +63,20 @@ func (s *Store) canonicalizeStoredVIPs(ctx context.Context) error {
 	// 取快照:若首条是 SELECT(read snapshot),而另一连接(如滚动升级期仍在服务的旧实例:写 audit /
 	// touch lease / session GC,或第二个进程)在本 tx 首次写之前 commit,则本 tx 的写会以
 	// SQLITE_BUSY_SNAPSHOT 失败,而 busy_timeout **不重试**该错 —— 导致 Migrate/启动非可重试地失败。
-	// Migrate 的 flock + s.mu 只串行化「其它 Migrate」,拦不住旧实例的常规写。故这里把一次性完成标记的
-	// 写**前置为 tx 首条语句**:立即拿到 reserved 写锁 / 写级快照,后续 SELECT/UPDATE 不再被并发 commit
-	// 打断。标记与实际改写仍在同一 tx —— commit 一起生效、rollback(中途崩溃)一起回滚,幂等不变。
+	// Migrate 的 flock + s.mu 只串行化「其它 Migrate」,拦不住旧实例的常规写。故这里把标记的写
+	// **前置为 tx 首条语句**:立即拿到 reserved 写锁 / 写级快照,后续 SELECT/UPDATE 不再被并发 commit 打断。
+	//
+	// 第十四轮深扫 MED:首条**只写 '0'(进行中)**,不再直接写 '1'。真正的完成标记 '1' 留到循环结束、且
+	// **skipped==0**(无碰撞跳过)时再 UPDATE(见下方 finalize)。此前无条件写 '1':一旦某行因规范形已被占用
+	// 被跳过,也照样落 '1' → 下次 Migrate 永久 no-op,残留非规范 VIP 再不被处理 → AllUsedVIPs 去重失配 / 双占。
+	// 现在有跳过就把标记留在 '0',下次启动重跑本 hook(已规范行 no-op,冲突行继续告警),直到运维释放冲突方后
+	// 自动收尾。'0' 与 '1' 都在同一 tx,commit 一起生效、rollback(中途崩溃)一起回滚,幂等不变。
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO app_settings(key,value) VALUES(?, '1')
-		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		`INSERT INTO app_settings(key,value) VALUES(?, '0')
+		 ON CONFLICT(key) DO UPDATE SET value='0'`,
 		vipCanonicalizedKey,
 	); err != nil {
-		return fmt.Errorf("store: canonicalize vips: write done flag: %w", err)
+		return fmt.Errorf("store: canonicalize vips: reserve done flag: %w", err)
 	}
 
 	rewritten, skipped := 0, 0
@@ -140,7 +145,14 @@ func (s *Store) canonicalizeStoredVIPs(ctx context.Context) error {
 		}
 	}
 
-	// 一次性完成标记已在 tx 首条语句写入(见上方 write-first 说明),此处只需 commit。
+	// 第十四轮深扫 MED:只有**全部**规范化成功(skipped==0)才把标记落到最终态 '1';否则留 '0',下次启动重跑。
+	// finalize 是本 tx 的又一次写(前面已有 '0' 写 + 可能的 UPDATE),不影响 write-first 语义。
+	if skipped == 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE app_settings SET value='1' WHERE key=?`, vipCanonicalizedKey); err != nil {
+			return fmt.Errorf("store: canonicalize vips: finalize done flag: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: canonicalize vips: commit: %w", err)
 	}

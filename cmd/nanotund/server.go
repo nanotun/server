@@ -844,7 +844,10 @@ func main() {
 					}
 					var addr16 [16]byte
 					copy(addr16[:], pkt.Buf[24:40])
-					destKey = netip.AddrFrom16(addr16)
+					// 第十四轮深扫 LOW:.Unmap() 与 TunChan 注册侧 ipToKey 保持同一键域 —— IPv4-mapped IPv6 目的
+					// (::ffff:a.b.c.d)归一为 IPv4 形式,否则 AddrFrom16 产出的 Is4In6 键与注册的 4 字节键失配 →
+					// demux 未命中、下行黑洞。纯 IPv6 地址上 Unmap 是 no-op。
+					destKey = netip.AddrFrom16(addr16).Unmap()
 				default:
 					tunReadBufPool.Put(pkt.Buf)
 					tunPacketPool.Put(pkt)
@@ -1223,7 +1226,9 @@ func main() {
 	gw.powService = powSvc
 	// PoW 服务 GC goroutine:每 60s 扫一遍已过期 challenge_id + IP 失败窗口。
 	// stop chan 用 globalContext.Done(),进程退出时跟随 cleanup。
-	go powSvc.RunGC(globalContext.Done())
+	// 第十四轮深扫 MED:包 safeGlobalGoroutine —— 常驻后台 goroutine,panic 若不捕获会以 Go 默认处理直接崩进程、
+	// 绕过优雅关停(iptables 清理 / TUN 关闭 / WAL checkpoint)。与 leaseGC / auditGC 同款。
+	go safeGlobalGoroutine("powSvcRunGC", globalContextCancel, func() { powSvc.RunGC(globalContext.Done()) })
 
 	// exit-node:探测 **server 自身** v6 公网出网能力(后台 goroutine,启动即探一次、之后定期重探)。
 	// server 无 v6 时,数据面对「走 server 自出口的公网 v6」回 ICMPv6 unreachable 使使用方秒回落 v4
@@ -1423,7 +1428,10 @@ func main() {
 		// 让 systemctl status 看到 deactivating 状态而不是「卡住几秒」。
 		defer sdNotifyStopping()
 	}
-	go func() {
+	// 第十四轮深扫 MED:信号 / SIGHUP hot-reload handler 是常驻全局 goroutine,包 safeGlobalGoroutine ——
+	// applyConfigReload / triggerShutdown 里的 panic 若不捕获会以 Go 默认处理直接崩进程、绕过优雅关停。
+	// defer signal.Stop(sigCh) 在传入的 fn 内,panic 时先跑再冒泡到 recover,行为不变。
+	go safeGlobalGoroutine("signalHandler", globalContextCancel, func() {
 		// G1(2026-05-22):graceful shutdown 触发后 return 之前必须 signal.Stop,
 		// 否则后续信号继续投递到 sigCh,而 chan cap=1 且没人 read,导致:
 		//   - 运维急不可耐二次 ^C / kill -TERM 时,信号被 runtime 拦截入 sigCh
@@ -1443,7 +1451,7 @@ func main() {
 				return
 			}
 		}
-	}()
+	})
 	if hySrv != nil {
 		// 深扫第十二轮 MED:defer 关闭保持在早处(与 realityClose / jumpFW.Teardown 的 LIFO
 		// teardown 次序对齐);真正的 hySrv.Serve() 推迟到环回 WS 服务就绪之后再起(见 main 末尾),
@@ -3723,7 +3731,8 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// 的 revalidateExitBindings 可能只扫到尚未 takenOver 的 oldConn、把 CAS 落在已死的 oldConn 而漏掉 newConn,这里
 	// 补扫把 newConn 重置回 server 自出口 + 通知客户端。幂等且不误撤销(approved/DB 查不动都保留),仅有出口绑定才触发。
 	if newConn.egressDeviceID.Load() != 0 {
-		go revalidateExitBindings(context.Background())
+		// 第十四轮深扫 MED:异步补扫包 safeGoroutine —— 一次性任务,panic 只 log 不应拖垮整进程(不触发关停)。
+		go safeGoroutine("revalidateExitBindings/takeover", func() { revalidateExitBindings(context.Background()) })
 	}
 
 	tunnelCtx := globalContext

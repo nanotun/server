@@ -75,14 +75,62 @@ func TestCanonicalizeStoredVIPs(t *testing.T) {
 		t.Fatalf("dB vip_v6 = %q, want 不变 fd00::2", got)
 	}
 
-	// 标记应被重新置 1,且重跑幂等。
-	if v, ok, err := s.SettingsGet(ctx, vipCanonicalizedKey); err != nil || !ok || v != "1" {
-		t.Fatalf("vip_canonicalized = %q ok=%v err=%v, want \"1\"", v, ok, err)
+	// 第十四轮深扫 MED:本轮存在碰撞跳过(dA),故标记**不**应落终态 "1",而是留 "0"(进行中)→ 下次启动重跑,
+	// 直到运维释放冲突方。此前无条件置 "1" 会「假完成」并永久残留非规范 VIP(去重失配 / 双占)。
+	if v, ok, err := s.SettingsGet(ctx, vipCanonicalizedKey); err != nil || !ok || v != "0" {
+		t.Fatalf("有碰撞跳过时 vip_canonicalized = %q ok=%v err=%v, want \"0\"(不落终态、下次重跑)", v, ok, err)
 	}
+	// 重跑仍幂等:dC 保持规范式,dA 仍撞车被跳过,标记仍留 "0"。
 	if err := s.canonicalizeStoredVIPs(ctx); err != nil {
 		t.Fatalf("canonicalizeStoredVIPs re-run: %v", err)
 	}
 	if got := get(dC.ID); got != "2001:db8::ab" {
 		t.Fatalf("重跑后 dC vip_v6 = %q, 应幂等保持规范式", got)
+	}
+	if got := get(dA.ID); got != "FD00::2" {
+		t.Fatalf("重跑后 dA vip_v6 = %q, 仍应撞车跳过保持原值", got)
+	}
+	if v, _, _ := s.SettingsGet(ctx, vipCanonicalizedKey); v != "0" {
+		t.Fatalf("重跑后仍有碰撞,标记应仍为 \"0\",got %q", v)
+	}
+}
+
+// TestCanonicalizeStoredVIPs_NoCollisionFinalizes 验证第十四轮深扫 MED:**无碰撞**时全部重写成功,
+// 标记落终态 "1",重跑早退(幂等 no-op)。
+func TestCanonicalizeStoredVIPs_NoCollisionFinalizes(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	u, err := s.CreateUser(ctx, NewUser{Username: "alice", PSKHash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.UpsertDevice(ctx, u.ID, "uuid-a", "m-a", "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 非规范、无碰撞的存量。
+	if _, err := s.DB().ExecContext(ctx,
+		`INSERT INTO leases(device_id, vip_v4, vip_v6, manual, assigned_at) VALUES(?, NULL, ?, 0, 0)`,
+		d.ID, "2001:DB8::AB"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE app_settings SET value='0' WHERE key=?`, vipCanonicalizedKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.canonicalizeStoredVIPs(ctx); err != nil {
+		t.Fatalf("canonicalizeStoredVIPs: %v", err)
+	}
+	// 无碰撞 → 标记落终态 "1"。
+	if v, ok, err := s.SettingsGet(ctx, vipCanonicalizedKey); err != nil || !ok || v != "1" {
+		t.Fatalf("无碰撞时 vip_canonicalized = %q ok=%v err=%v, want \"1\"", v, ok, err)
+	}
+	var got string
+	if err := s.DB().QueryRowContext(ctx, `SELECT vip_v6 FROM leases WHERE device_id=?`, d.ID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "2001:db8::ab" {
+		t.Fatalf("vip_v6 = %q, want 规范式 2001:db8::ab", got)
 	}
 }

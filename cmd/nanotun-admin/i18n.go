@@ -146,6 +146,10 @@ func exitCodeForErr(err error) int {
 		switch le.key {
 		case "cli.unknownSubcommand", "cli.unknownSubcommandBare":
 			return 2
+		// 第十四轮深扫 LOW:未知 flag(如 `backup --bogus`)与多余参数同属**用法错误** → exit 2,与未知子命令 /
+		// flag 解析错(usageErrorWrap)一致(此前经 runWithStore 恒 exit 1)。
+		case "cli.unknownFlag", "cli.unexpectedArgs":
+			return 2
 		}
 	}
 	return 1

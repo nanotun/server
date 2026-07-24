@@ -239,6 +239,11 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			okCur, verr := VerifyWebPassword(r.Context(), curPwd, fresh.PasswordHash)
+			if isVerifyUnavailable(verr) {
+				// 第十四轮深扫 MED:容量/ctx 超时非密码错 —— 不计冷却,回 503(与登录对齐)。
+				s.renderError(w, r, http.StatusServiceUnavailable, tr(r, "auth.tryAgainLater"))
+				return
+			}
 			if verr != nil || !okCur {
 				s.stepUpFailures.Inc(ip)
 				s.audit.WriteFromRequest(r, "webadmin_reset_pwd_stepup_fail",

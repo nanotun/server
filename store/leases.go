@@ -120,6 +120,65 @@ func (s *Store) UpsertLease(ctx context.Context, deviceID int64, vipV4, vipV6 st
 	return s.GetLeaseByDevice(ctx, deviceID)
 }
 
+// UpsertManualLeasePreservingEmpty 与 UpsertLease 类似,但**空族表示保留 lease 现值**(而非清空该族)。
+//
+// 第十四轮深扫 LOW:供 admin CLI `lease set --v4 X`(不带 --v6)在**单事务内原子**保留已有 v6 —— 用
+// ON CONFLICT 的 COALESCE(excluded.vip_x, leases.vip_x) 就地保留,消除此前「先 GetLeaseByDevice 读、再
+// UpsertLease 写」的非原子 RMW:读写之间设备恰好登录被分配另一族时,旧 RMW 会把刚分配的族又抹掉。
+// 登录分配路径仍用 UpsertLease(空族=清族语义),不受影响。跨表守卫只校验本次**显式提供**的族
+// (保留下来的旧族此前已校验且未变,不会新增冲突)。
+func (s *Store) UpsertManualLeasePreservingEmpty(ctx context.Context, deviceID int64, vipV4, vipV6 string, manual bool) (*Lease, error) {
+	now := nowUnix()
+	vipV4 = canonicalVIP(vipV4)
+	vipV6 = canonicalVIP(vipV6)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("store: upsert lease(preserve) begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO leases(device_id, vip_v4, vip_v6, manual, assigned_at)
+		 VALUES(?,?,?,?,?)
+		 ON CONFLICT(device_id) DO UPDATE SET
+		   vip_v4=COALESCE(excluded.vip_v4, leases.vip_v4),
+		   vip_v6=COALESCE(excluded.vip_v6, leases.vip_v6),
+		   manual=excluded.manual,
+		   assigned_at=excluded.assigned_at`,
+		deviceID, nullableString(vipV4), nullableString(vipV6), boolToInt(manual), now,
+	); err != nil {
+		if isUniqueConstraintErr(err) {
+			return nil, i18nErrWrap("store.lease.vipConflict",
+				fmt.Sprintf("store: upsert lease(preserve) vIP 冲突 (device=%d v4=%q v6=%q): %s", deviceID, vipV4, vipV6, ErrDuplicate.Error()),
+				ErrDuplicate, deviceID, vipV4, vipV6, ErrDuplicate.Error())
+		}
+		return nil, fmt.Errorf("store: upsert lease(preserve): %w", err)
+	}
+
+	if vipV4 != "" || vipV6 != "" {
+		var dummy int
+		qerr := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM devices
+			  WHERE id != ?
+			    AND ( (fixed_vip_v4 IS NOT NULL AND fixed_vip_v4 = ?)
+			       OR (fixed_vip_v6 IS NOT NULL AND fixed_vip_v6 = ?) )
+			  LIMIT 1`,
+			deviceID, nullableString(vipV4), nullableString(vipV6)).Scan(&dummy)
+		if qerr == nil {
+			return nil, i18nErrWrap("store.lease.vipConflict",
+				fmt.Sprintf("store: upsert lease(preserve) vIP 与他设备 fixed_vip 冲突 (device=%d v4=%q v6=%q): %s", deviceID, vipV4, vipV6, ErrDuplicate.Error()),
+				ErrDuplicate, deviceID, vipV4, vipV6, ErrDuplicate.Error())
+		} else if !errors.Is(qerr, sql.ErrNoRows) {
+			return nil, fmt.Errorf("store: upsert lease(preserve) cross-table check: %w", qerr)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: upsert lease(preserve) commit: %w", err)
+	}
+	return s.GetLeaseByDevice(ctx, deviceID)
+}
+
 // DeleteLease 删除一台设备的租约（在管理员手动释放时调用）。
 //
 // 若该 device_id 当前没有租约,返回 ErrNotFound —— 让 admin CLI 能区分
@@ -163,11 +222,14 @@ func (s *Store) AllUsedVIPs(ctx context.Context) (v4 map[string]bool, v6 map[str
 		if err := rows.Scan(&s4, &s6); err != nil {
 			return nil, nil, err
 		}
+		// 第十四轮深扫 MED(防御纵深):读侧也 canonicalVIP —— 万一 canonicalizeStoredVIPs 因碰撞跳过、留了
+		// 非规范存量,这里仍以规范文本入去重集,与分配器用 netip.Addr.String() 生成的规范候选同域比较,
+		// 不因字面差(如 "FD00::2" vs "fd00::2")把已占地址判为可用而双分配。
 		if s4.Valid && s4.String != "" {
-			v4[s4.String] = true
+			v4[canonicalVIP(s4.String)] = true
 		}
 		if s6.Valid && s6.String != "" {
-			v6[s6.String] = true
+			v6[canonicalVIP(s6.String)] = true
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -188,10 +250,10 @@ func (s *Store) AllUsedVIPs(ctx context.Context) (v4 map[string]bool, v6 map[str
 			return nil, nil, err
 		}
 		if f4 != "" {
-			v4[f4] = true
+			v4[canonicalVIP(f4)] = true
 		}
 		if f6 != "" {
-			v6[f6] = true
+			v6[canonicalVIP(f6)] = true
 		}
 	}
 	return v4, v6, drows.Err()

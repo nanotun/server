@@ -152,6 +152,35 @@ jump_host_firewall = true
 jump_host_allowed_ips = ["10.0.0.1"]
 jump_host_protected_ports = ["tc/8443", "udp/443"]
 `,
+		// 第十四轮深扫 LOW(为第十三轮 ValidateJumpHostFirewall 逐条 IPv4 校验补 lint 回归):
+		// allowed_ips 含非法条目(runtime sanitizeJumpHostIPv4s 会静默丢弃 → 预期跳板机被挡死)。
+		"jump_host_allowed_ips_not_ip": `
+[server]
+listen_addr = "0.0.0.0:443"
+jump_host_firewall = true
+jump_host_allowed_ips = ["10.0.0.1", "not-an-ip"]
+`,
+		// allowed_ips 只支持纯 IPv4:CIDR 不认(runtime 会丢)。
+		"jump_host_allowed_ips_cidr": `
+[server]
+listen_addr = "0.0.0.0:443"
+jump_host_firewall = true
+jump_host_allowed_ips = ["10.0.0.0/24"]
+`,
+		// allowed_ips 只支持 IPv4:IPv6 不认(runtime 会丢)。
+		"jump_host_allowed_ips_ipv6": `
+[server]
+listen_addr = "0.0.0.0:443"
+jump_host_firewall = true
+jump_host_allowed_ips = ["fd00::1"]
+`,
+		// allowed_ips 全空白项 → 有效项为 0,等于只允许 127.0.0.1 → 预期跳板机被挡死。
+		"jump_host_allowed_ips_all_blank": `
+[server]
+listen_addr = "0.0.0.0:443"
+jump_host_firewall = true
+jump_host_allowed_ips = ["  ", ""]
+`,
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -198,6 +227,19 @@ tls_key_file = "/tmp/k.pem"
 listen_addr = "0.0.0.0:443"
 jump_host_firewall = true
 jump_host_allowed_ips = ["10.0.0.1", "10.0.0.2"]
+`,
+		// 第十四轮深扫 LOW:空白项被容忍(与 runtime skip 空串一致),只要至少留一个合法 IPv4 就放行。
+		"jump_host_allowed_ips_blank_tolerated": `
+[server]
+listen_addr = "0.0.0.0:443"
+jump_host_firewall = true
+jump_host_allowed_ips = ["10.0.0.1", "  "]
+`,
+		// 第十四轮深扫 LOW:firewall 关闭时 allowed_ips 非法也不该拦(死配置不报错,与 protected_ports 同口径)。
+		"jump_host_allowed_ips_ignored_when_off": `
+[server]
+listen_addr = "0.0.0.0:443"
+jump_host_allowed_ips = ["not-an-ip"]
 `,
 		// 第七轮:合法的 protected_ports(单端口 + 范围两种写法)应放行。
 		"jump_host_protected_ports_valid": `

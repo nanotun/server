@@ -11,7 +11,10 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	var pos []string
 	for {
 		if err := fs.Parse(args); err != nil {
-			return nil, err
+			// 第十四轮深扫 LOW:flag 解析错误(未知 flag 如 `backup --bogus`、非法取值、缺参、`-h`)属**用法错误**
+			// → exit 2,与顶层 dispatch / restore / 其它 usageError 退出码一致(此前经 runWithStore 恒 exit 1)。
+			// fs 已把详情 + usage 打到 stderr;这里包成 usageErr(携带 inner)让 exitCodeForErr 归 2。
+			return nil, usageErrorWrap(err.Error(), err)
 		}
 		if fs.NArg() == 0 {
 			return pos, nil
