@@ -81,13 +81,18 @@ func (t *IPFailureTracker) MarkFailure(ip string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// I3: 超 map 上限时,先尝试 prune 一遍,只保留窗口内仍有记录的 IP。
-	// 如果 prune 后仍超上限,直接丢这条新 record;调用方不感知 — 失败计数会偏少
-	// 但 attacker 灌跨 IP 攻击场景才有意义,正常用户不会触发。
-	if len(t.entries) >= maxTrackedIPs {
+	// 第十九轮深扫 MED(fail-closed,对齐 nanotun-web 的 evictOne):map 上限只约束**新** IP —— 已在表内的 IP
+	// 直接累加(合法用户重试 / 真实攻击 IP 一旦进表就不受灌表影响)。新 IP 触顶时先 prune 陈旧项,仍满则**驱逐
+	// 任意一个**旧 entry 腾位,而**不是**静默丢弃本条失败。
+	//
+	// 旧实现「满了直接 return」是 fail-open:攻击者先用上万个不同源 IP 把 map 灌满,之后真实攻击 IP 的失败会
+	// 连同一起被丢 → Count 冻结在 0 → ComputeDifficulty 停在 base(~8bit),自适应 PoW 失效。默认
+	// login_rate_limit_per_min=0 时自适应 PoW 是主要的 per-IP 代价升级器,故这是实打实的暴破成本削减。
+	// nanotun-web 的孪生已用 evictOne 修成 fail-closed(cmd/nanotun-web/ip_failures.go),此处补齐 nanotund 侧。
+	if _, exists := t.entries[ip]; !exists && len(t.entries) >= maxTrackedIPs {
 		t.pruneLocked(now)
 		if len(t.entries) >= maxTrackedIPs {
-			return
+			t.evictOneLocked()
 		}
 	}
 
@@ -98,6 +103,16 @@ func (t *IPFailureTracker) MarkFailure(ip string) {
 		list = list[len(list)-maxFailuresPerIP:]
 	}
 	t.entries[ip] = list
+}
+
+// evictOneLocked 删掉 map 里**任意一个** entry(Go map 迭代无序,取首个即可)给新 IP 腾位。
+// 仅在 map 触顶且 prune 无效时由 MarkFailure 调用(fail-closed:保证新失败仍被记录,而非静默丢弃)。
+// 调用方须已持 t.mu。
+func (t *IPFailureTracker) evictOneLocked() {
+	for k := range t.entries {
+		delete(t.entries, k)
+		return
+	}
 }
 
 // MarkSuccess 该 IP 登录成功 → 把失败列表减半(不再直接清空)。

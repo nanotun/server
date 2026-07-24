@@ -115,7 +115,7 @@ func TestInterceptExitDNSCorrelation(t *testing.T) {
 	gw := netip.AddrFrom4([4]byte{10, 201, 0, 1})
 
 	ch := make(chan []byte, 1)
-	port, ok := registerExitDNSWaiter(ch, nil, 0)
+	port, ok := registerExitDNSWaiter(ch, nil, 0, false)
 	if !ok {
 		t.Fatal("registerExitDNSWaiter 失败")
 	}
@@ -155,7 +155,7 @@ func TestInterceptExitDNSRejectsForeignConn(t *testing.T) {
 	exitConn := &Connection{}
 	other := &Connection{}
 	ch := make(chan []byte, 1)
-	port, ok := registerExitDNSWaiter(ch, exitConn, 0xabcd) // qid=0xabcd 与下方 answer 首两字节一致
+	port, ok := registerExitDNSWaiter(ch, exitConn, 0xabcd, true) // qid=0xabcd 与下方 answer 首两字节一致,qidSet=true 启用校验
 	if !ok {
 		t.Fatal("registerExitDNSWaiter 失败")
 	}
@@ -194,11 +194,46 @@ func TestInterceptExitDNSRejectsForeignConn(t *testing.T) {
 	}
 }
 
+// TestInterceptExitDNS_QIDZeroEnforced(第十九轮深扫 LOW):qid==0 是**合法**事务 id,不再被当「不约束」跳过校验。
+// qidSet=true 且 qid=0 时:TXID≠0 的应答必须被拒(旧代码会误收);唯有 TXID=0 的应答与之匹配才被接受。
+func TestInterceptExitDNS_QIDZeroEnforced(t *testing.T) {
+	setServerGatewayAddrs("10.201.0.1/16", "")
+	t.Cleanup(func() { serverGatewayAddrs.Store(nil) })
+	gw := netip.AddrFrom4([4]byte{10, 201, 0, 1})
+
+	exitConn := &Connection{}
+	ch := make(chan []byte, 1)
+	port, ok := registerExitDNSWaiter(ch, exitConn, 0, true) // qid=0 且 qidSet=true:启用校验
+	if !ok {
+		t.Fatal("registerExitDNSWaiter 失败")
+	}
+	defer unregisterExitDNSWaiter(port)
+
+	// TXID != 0 的应答:旧实现因 qid==0 跳过校验会误收;修复后必须被拒,且不消费等待者。
+	nonZero := []byte("\x12\x34\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00answer")
+	respNonZero, _ := buildIPv4UDP(netip.AddrFrom4([4]byte{8, 8, 8, 8}), 53, gw, port, nonZero)
+	if interceptExitDNSResponseIfPending(exitConn, respNonZero) {
+		t.Fatal("qid=0 现应被校验:TXID!=0 的应答不应被截获")
+	}
+	if exitDNSInflight.Load() == 0 {
+		t.Fatal("拒收后等待者应仍在")
+	}
+	// TXID == 0 的应答:与 qid 一致 → 接受。
+	zero := []byte("\x00\x00\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00answer")
+	respZero, _ := buildIPv4UDP(netip.AddrFrom4([4]byte{8, 8, 8, 8}), 53, gw, port, zero)
+	if !interceptExitDNSResponseIfPending(exitConn, respZero) {
+		t.Fatal("TXID=0 且 qid=0 应被截获")
+	}
+	if exitDNSInflight.Load() != 0 {
+		t.Fatalf("截获后 in-flight 应归零, 实际 %d", exitDNSInflight.Load())
+	}
+}
+
 func TestInterceptExitDNSRejectsNon53Source(t *testing.T) {
 	setServerGatewayAddrs("10.201.0.1/16", "")
 	gw := netip.AddrFrom4([4]byte{10, 201, 0, 1})
 	ch := make(chan []byte, 1)
-	port, ok := registerExitDNSWaiter(ch, nil, 0)
+	port, ok := registerExitDNSWaiter(ch, nil, 0, false)
 	if !ok {
 		t.Fatal("registerExitDNSWaiter 失败")
 	}

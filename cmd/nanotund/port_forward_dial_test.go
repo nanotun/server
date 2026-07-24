@@ -77,6 +77,28 @@ func TestResolveDialTarget_NodeDriftUsesCurrent(t *testing.T) {
 	}
 }
 
+// node 目标、fixed≠lease(split-brain:如 `set-fixed-vip --force` 撞在线旧持有者 / fixed 掉出网段被迫分到别的):
+// FRP 反向拨号应打到设备**实际所在**的 lease vIP,而非 admin 意图但当下不可达的 fixed。第十九轮深扫 MED。
+func TestResolveDialTarget_PrefersLeaseOverFixed(t *testing.T) {
+	setGlobalContextForTest(t)
+	gw := newRouteTestGateway(t)
+	_, deviceID := mustCreateUserAndDevice(t, gw, "alice")
+	if err := gw.store.SetDeviceFixedVIP(t.Context(), deviceID, "10.201.0.6", "", false); err != nil { // fixed=.6
+		t.Fatal(err)
+	}
+	if _, err := gw.store.UpsertLease(t.Context(), deviceID, "10.201.0.9", "", false); err != nil { // 实际 lease=.9
+		t.Fatal(err)
+	}
+	const uuid = "11111111-1111-4111-8111-111111111111"
+	m := newDialTestManager(t, gw)
+
+	pf := store.PortForward{PublicPort: 2222, TargetDeviceUUID: uuid, TargetIP: "10.201.0.6", TargetPort: 22}
+	target, ok := m.resolveDialTarget(pf)
+	if !ok || target != "10.201.0.9:22" {
+		t.Fatalf("fixed≠lease 时应拨设备实际 lease .9(而非 fixed .6), got %q ok=%v", target, ok)
+	}
+}
+
 // node 目标、设备已删除（UUID 解析不到）：fail-close（ok=false），绝不盲拨陈旧配置 vIP。
 func TestResolveDialTarget_NodeDeletedFailClose(t *testing.T) {
 	setGlobalContextForTest(t)

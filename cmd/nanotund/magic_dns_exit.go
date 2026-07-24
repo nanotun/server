@@ -57,11 +57,17 @@ const (
 //     其它会话（含攻击者自己的）投递的伪造应答一律拒收。
 //   - qid：该查询的 DNS 事务 id，应答须回显同值（纵深防御，防出口会话被攻破后乱注入在途查询）。
 //
-// exitConn==nil / qid==0 表示「不约束」（仅单测旧桩会这样注册；生产路径两者恒非零）。
+// exitConn==nil / qidSet==false 表示对应维度「不约束」（仅单测旧桩会这样注册；生产路径 exitConn 恒非零、
+// qidSet 恒 true）。
+//
+// 第十九轮深扫 LOW:此前用 qid==0 表示「不约束」,但 0 是**合法**的 DNS 事务 id(约 1/65536 的查询命中),
+// 那些查询会**跳过** TXID 校验 → 同出口会话晚到 / 错乱且 TXID 恰为 0 的 UDP 回包可被误收。改用独立
+// qidSet 布尔标记「是否需要校验 TXID」,与 qid 值解耦,任何合法 qid(含 0)都被正常约束。
 type exitDNSWaiter struct {
 	ch       chan []byte
 	exitConn *Connection
 	qid      uint16
+	qidSet   bool
 }
 
 // exitDNS 关联表：关联端口 → 等待者。零 in-flight 时 readLoop 的截获检查仅一次 atomic load。
@@ -265,12 +271,14 @@ func resolveExitDNS(exitConn *Connection, query []byte) ([]byte, bool) {
 		return nil, false // 无 v4 网关（纯 v6 部署等）→ 回退本地上游
 	}
 	// H1：登记等待者时绑定出口会话 + 查询事务 id，截获路径据此拒收其它会话的伪造应答。
+	// qidSet=len(query)>=12:正常 DNS 查询恒有 12 字节头 → qidSet 恒 true、qid 为真实事务 id(含合法的 0)。
 	var qid uint16
-	if len(query) >= 12 {
+	qidSet := len(query) >= 12
+	if qidSet {
 		qid = binary.BigEndian.Uint16(query[0:2])
 	}
 	ch := make(chan []byte, 1)
-	port, ok := registerExitDNSWaiter(ch, exitConn, qid)
+	port, ok := registerExitDNSWaiter(ch, exitConn, qid, qidSet)
 	if !ok {
 		return nil, false // 关联端口耗尽（极端并发）→ 回退
 	}
@@ -292,8 +300,8 @@ func resolveExitDNS(exitConn *Connection, query []byte) ([]byte, bool) {
 }
 
 // registerExitDNSWaiter 分配一个未占用的关联端口并登记等待者（绑定出口会话 + 查询 qid，见 exitDNSWaiter）。
-// 返回 (port, true)；无空闲端口时 (0,false)。exitConn==nil / qid==0 表示不约束（仅单测旧桩）。
-func registerExitDNSWaiter(ch chan []byte, exitConn *Connection, qid uint16) (uint16, bool) {
+// 返回 (port, true)；无空闲端口时 (0,false)。exitConn==nil / qidSet==false 表示对应维度不约束（仅单测旧桩）。
+func registerExitDNSWaiter(ch chan []byte, exitConn *Connection, qid uint16, qidSet bool) (uint16, bool) {
 	span := uint32(exitDNSPortHi-exitDNSPortLo) + 1
 	exitDNSMu.Lock()
 	defer exitDNSMu.Unlock()
@@ -302,7 +310,7 @@ func registerExitDNSWaiter(ch chan []byte, exitConn *Connection, qid uint16) (ui
 		if _, used := exitDNSWaiters[p]; used {
 			continue
 		}
-		exitDNSWaiters[p] = &exitDNSWaiter{ch: ch, exitConn: exitConn, qid: qid}
+		exitDNSWaiters[p] = &exitDNSWaiter{ch: ch, exitConn: exitConn, qid: qid, qidSet: qidSet}
 		exitDNSInflight.Add(1)
 		return p, true
 	}
@@ -354,8 +362,8 @@ func interceptExitDNSResponseIfPending(c *Connection, payload []byte) bool {
 		exitDNSForeignConnRejectCount.Add(1)
 		return false
 	}
-	// 纵深防御：DNS 事务 id 须与在途查询一致（qid==0 表示旧单测桩不约束）。
-	if w.qid != 0 && (len(udp) < 12 || binary.BigEndian.Uint16(udp[0:2]) != w.qid) {
+	// 纵深防御：DNS 事务 id 须与在途查询一致（qidSet==false 表示旧单测桩不约束;合法 qid 含 0 都会校验）。
+	if w.qidSet && (len(udp) < 12 || binary.BigEndian.Uint16(udp[0:2]) != w.qid) {
 		exitDNSMu.Unlock()
 		return false
 	}

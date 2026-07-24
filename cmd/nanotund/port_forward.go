@@ -797,16 +797,18 @@ func (m *portForwardManager) resolveDeviceVIP(uuid string) (v4, v6 string, ok bo
 	if err != nil || dev == nil {
 		return "", "", false
 	}
-	v4, v6 = dev.FixedVIPv4, dev.FixedVIPv6
-	if v4 == "" || v6 == "" {
-		if l, lerr := m.gw.store.GetLeaseByDevice(ctx, dev.ID); lerr == nil && l != nil {
-			if v4 == "" {
-				v4 = l.VIPv4
-			}
-			if v6 == "" {
-				v6 = l.VIPv6
-			}
-		}
+	// 第十九轮深扫 MED:FRP 反向拨号要打到设备**当前实际**所在的 vIP。lease 是每次登录由 persistDeviceLease
+	// 写入的真实分配值(设备在线时即其当前 vIP);fixed_vip 是 admin 意图,在 split-brain(fixed 地址不可用、被迫
+	// 分到别的)时与现实不符。故**优先用 lease**,fixed 仅在该族无 lease(设备从未登录 / 该族未分配)时兜底 ——
+	// 拨到设备实际地址而非拨空。稳态下 lease==fixed,行为不变;仅在 fixed≠lease 时改拨到可达的 lease。
+	if l, lerr := m.gw.store.GetLeaseByDevice(ctx, dev.ID); lerr == nil && l != nil {
+		v4, v6 = l.VIPv4, l.VIPv6
+	}
+	if v4 == "" {
+		v4 = dev.FixedVIPv4
+	}
+	if v6 == "" {
+		v6 = dev.FixedVIPv6
 	}
 	m.vipCacheMu.Lock()
 	m.vipCache[uuid] = vipCacheEntry{v4: v4, v6: v6, at: time.Now()}

@@ -2946,10 +2946,13 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	// PSK + device 模式下，登录时尝试沿用之前的 vIP 租约（含 user.fixed_vip_*）。
 	// 这里仅查询，不写入，写入留到 firstAllocCfg 真正用上之后由 AllocOrLeaseVIP 完成。
 	leasedV4, leasedV6 := preferredLeasedVIPs(gw, authResult)
+	// 第十九轮深扫 MED:except 集必须涵盖本设备**自身**的 fixed + lease **两者**(见 deviceReservedVIPExceptions),
+	// 不能只传 preferredLeasedVIPs 的 fixed-优先合并值 —— 否则 fixed≠lease 时漏剔本设备实际 lease → 白烧地址。
+	exceptV4, exceptV6 := deviceReservedVIPExceptions(gw, authResult)
 	// 把 db 里其他 device 的 lease 也算进「已占用」，避免新 device 撞 UNIQUE 写不进去。
 	// 这一步在 connectionsMu 之外做(避免持有大锁等 SQLite),但 P1-10 下面进入临界区
 	// 后还会再刷一遍快照消除 TOCTOU 窗口。
-	dbResvV4, dbResvV6 := dbReservedVIPs(gw, leasedV4, leasedV6)
+	dbResvV4, dbResvV6 := dbReservedVIPs(gw, exceptV4, exceptV6)
 
 	connectionsMu.Lock()
 	// P1-10: 锁内再刷一次 dbReservedVIPs 快照,消除「锁外读 + 锁内分配」之间
@@ -2958,7 +2961,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	//
 	// 失败(dbReservedVIPs 内部已经 Warn 并返回 nil/nil)时不影响:沿用锁外读的 dbResvV4/V6;
 	// 同时也不破坏「DB 故障降级」语义。
-	if freshV4, freshV6 := dbReservedVIPs(gw, leasedV4, leasedV6); freshV4 != nil || freshV6 != nil {
+	if freshV4, freshV6 := dbReservedVIPs(gw, exceptV4, exceptV6); freshV4 != nil || freshV6 != nil {
 		dbResvV4, dbResvV6 = freshV4, freshV6
 	}
 	for {
@@ -3618,6 +3621,13 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	newConn.rlConn.Store(rwc) // 0011 /rate/refresh 用
 	newConn.linkWrMu.Unlock()
 
+	// 第十九轮深扫 MED:给**新链路**的 LoginResp + ConvSalt 写钉有界写超时。PoW 通过后 raw 的 pre-login
+	// deadline 已被清(见 SetDeadline(time.Time{})),而这两次写**全程持 oldConn.takeoverMu** —— 停读 / 卡死的
+	// 新客户端会让写无限阻塞 → takeoverMu 永久挂住 → cleanupConnection(oldConn) 阻塞 → 该会话 vIP / connIDMap
+	// 条目永久占用(僵尸)。下方给**老链路**的 best-effort TakenOver 通知早已因同一隐患钉了 1s;新链路这两次
+	// **必要**写此前漏了。10s 对健康链路的小帧绰绰有余,又把恶意/异常停读的挂住时长封在有界区间。成功后清掉,
+	// 使后续数据面写不受此握手超时约束。
+	_ = rwc.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := writeLinkLoginRespFull(rwc, 0, "takeover ok", newConn.userID, newConn.connIDStr, newConn.takeoverSecret); err != nil {
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).WithError(err).Warn("[takeover] 写 LoginResp 失败，回滚")
 		unlockTakeover()
@@ -3648,6 +3658,8 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		unlockTakeover()
 		return
 	}
+	// 握手两次写已完成:清掉上面钉的有界写超时,后续数据面写走各自的超时/无超时语义,不受此约束。
+	_ = rwc.SetWriteDeadline(time.Time{})
 
 	// best-effort 通知老链路：发 LinkTypeTakenOver 后客户端将不会触发 on_disconnected。
 	takenOverBody, mErr := util.MarshalTakenOverJSON(oldConn.connIDStr, loginReq.Transport)
@@ -3669,8 +3681,15 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 
 	// 关键时刻：set takenOver=true 后老 conn 的 cleanupConnection 跳过 vip / SessionRelease 清理；
 	// 同时覆盖 connIDMap，让任何后续 takeover 都看到 newConn。
-	oldConn.takenOver.Store(true)
+	//
+	// 第十九轮深扫 MED:takenOver.Store 必须与「连表切换」在**同一 connIDMapMu 锁段内**原子完成。此前它在锁**外**
+	// 先置位,与紧随的连表写之间存在极窄窗口:此刻并发的**同设备 primary 登录**在 connIDMapMu 下跑
+	// findSupersededByDeviceLocked —— 它会跳过 oldConn(takenOver 已 true)、又看不到 newConn(尚未 connByUserAdd)
+	// → 判定「本设备无旧会话可踢」→ 不 supersede 任何会话就插入自己 → 同设备双会话 / 绕过会话上限。移进锁内后,
+	// connIDMapMu 的读者只会观察到「takenOver=false 且 oldConn 在索引」或「takenOver=true 且 newConn 在索引」两种
+	// 自洽状态,消除该子窗口。(锁序不变:takeoverMu → connIDMapMu;takenOver 是 atomic 写,不引入新锁。)
 	connIDMapMu.Lock()
+	oldConn.takenOver.Store(true)
 	connIDMap[newConn.connIDStr] = newConn
 	// P3-a:by-user 索引同步切换 —— 先移除 oldConn(它已 takenOver,不会再被 evict),
 	// 再加 newConn。两步在同一锁段内,evict/扫描不会观察到中间态。

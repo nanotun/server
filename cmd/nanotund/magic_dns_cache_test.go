@@ -489,3 +489,44 @@ func TestTryResolvePublicViaExit_SingleflightCollapsesConcurrent(t *testing.T) {
 	default:
 	}
 }
+
+// TestBuildRawDNSResponseFor_QuestionLenMismatch(第十九轮深扫 LOW):就地改写缓存原始应答前,必须确认
+// cachedRaw 的 question 段与当前查询**线格等长**。若坏/恶意出口回了一份 question 段更短的应答且被以本 query
+// 的 key 缓存,原位 copy(out[12:qEnd], query[12:qEnd]) 会越过 cachedRaw 真实 question 末尾覆写进答复区、污染答案。
+// 修复后:长度不一致 → 返回 nil(调用方回 SERVFAIL);等长 → 正常改写。
+func TestBuildRawDNSResponseFor_QuestionLenMismatch(t *testing.T) {
+	hdr := make([]byte, 12) // 12B DNS 头(全零,内容无关)
+	// question 线格:len 前缀标签 + root(0) + qtype(A) + qclass(IN)。
+	qA := []byte{0x01, 'a', 0x00, 0x00, 0x01, 0x00, 0x01}       // qname "a" → question 末尾偏移 19
+	qAA := []byte{0x02, 'a', 'a', 0x00, 0x00, 0x01, 0x00, 0x01} // qname "aa" → question 末尾偏移 20
+	ans := []byte{0xC0, 0x0C}                                   // 2 字节「答复区」填充(指向偏移 12 的压缩指针形态)
+
+	catBytes := func(parts ...[]byte) []byte {
+		out := []byte{}
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
+
+	query := catBytes(hdr, qAA) // 当前查询 question = "aa",qEnd=20
+
+	// cachedRaw 的 question 是 "a"(末尾 19)但整包 len=21 ≥ qEnd(20):旧「仅 len 检查」会放行并污染答复区。
+	cachedShorter := catBytes(hdr, qA, ans)
+	if out := buildRawDNSResponseFor(query, 0x1234, cachedShorter); out != nil {
+		t.Fatal("cachedRaw question 段与 query 不等长应返回 nil(SERVFAIL)")
+	}
+
+	// question 等长("aa" vs "aa")→ 正常改写:txn id 覆写为当前 qid,长度与 cachedRaw 一致。
+	cachedMatch := catBytes(hdr, qAA, ans)
+	out := buildRawDNSResponseFor(query, 0x1234, cachedMatch)
+	if out == nil {
+		t.Fatal("question 段等长应成功改写,不应返回 nil")
+	}
+	if len(out) != len(cachedMatch) {
+		t.Fatalf("改写后长度应与 cachedRaw 一致:got %d want %d", len(out), len(cachedMatch))
+	}
+	if out[0] != 0x12 || out[1] != 0x34 {
+		t.Fatalf("改写后 txn id 应为当前 qid 0x1234,实际 %#x%02x", out[0], out[1])
+	}
+}
