@@ -44,6 +44,12 @@ func (o *vpnLocalOutbound) UDP(string) (hyserver.UDPConn, error) {
 	return nil, fmt.Errorf("udp relay disabled")
 }
 
+// CheckUDP:hysteria v2.9 起 Outbound 接口新增的 UDP 准入钩子(ACL 用)。本 outbound 只做 VPN TCP 环回,
+// UDP 一律拒(与 UDP() 返回 disabled 一致);服务端侧 DisableUDP 已兜底,这里返回错误使语义闭合。
+func (o *vpnLocalOutbound) CheckUDP(string) error {
+	return fmt.Errorf("udp relay disabled")
+}
+
 // vpnSmuxStreamOutbound 经 loopbackSmuxPool 在单条环回 WebSocket 上 OpenStream，与 REALITY 共用 smux 会话。
 type vpnSmuxStreamOutbound struct {
 	pool *loopbackSmuxPool
@@ -69,6 +75,11 @@ func (o *vpnSmuxStreamOutbound) TCP(_ string) (net.Conn, error) {
 
 func (o *vpnSmuxStreamOutbound) UDP(string) (hyserver.UDPConn, error) {
 	return nil, fmt.Errorf("udp relay disabled")
+}
+
+// CheckUDP:同 vpnLocalOutbound —— smux 多路复用出口只承载 VPN TCP,UDP 一律拒。
+func (o *vpnSmuxStreamOutbound) CheckUDP(string) error {
+	return fmt.Errorf("udp relay disabled")
 }
 
 // hysteriaUDPProxyConn 与 hysteria core defaultUDPConn 行为一致（全锥 UDP），供启用 udp_relay 时使用。
@@ -108,6 +119,12 @@ func (o *vpnHybridOutbound) UDP(reqAddr string) (hyserver.UDPConn, error) {
 		return nil, err
 	}
 	return &hysteriaUDPProxyConn{UDPConn: conn}, nil
+}
+
+// CheckUDP:仅在 udp_relay_enabled=true 时启用本 outbound,行为对齐 hysteria defaultOutbound 的全锥放行(nil)。
+// 目的地准入不在此层做(与升级前一致,不改变现网语义);运维若要限制 UDP 目的应关掉 udp_relay。
+func (o *vpnHybridOutbound) CheckUDP(string) error {
+	return nil
 }
 
 // validateHysteriaUserConfig 现委托到 config 包的共享实现(e_config_lint):启动期与
@@ -245,7 +262,10 @@ func startEmbeddedHysteria(cfg *config.Config, vpnListenAddr string, loopbackWSU
 		return nil, 0, nil, err
 	}
 	if obfsPW := strings.TrimSpace(hc.ObfsSalamanderPassword); obfsPW != "" {
-		ob, errO := hyobfs.NewSalamanderObfuscator([]byte(obfsPW))
+		// hysteria v2.9 起将 NewSalamanderObfuscator/WrapPacketConn 私有化,合并为一个公开助手
+		// WrapPacketConnSalamander(conn, psk):内部仍是「建 Salamander 混淆器 → 包裹 PacketConn」两步,
+		// 行为与升级前逐字节一致(每包 XOR BLAKE2b(PSK||salt)、前置 8 字节 salt)。
+		wrapped, errO := hyobfs.WrapPacketConnSalamander(packetConn, []byte(obfsPW))
 		if errO != nil {
 			_ = packetConn.Close()
 			if hopCleanup != nil {
@@ -253,7 +273,7 @@ func startEmbeddedHysteria(cfg *config.Config, vpnListenAddr string, loopbackWSU
 			}
 			return nil, 0, nil, fmt.Errorf("hysteria Salamander obfs: %w", errO)
 		}
-		packetConn = hyobfs.WrapPacketConn(packetConn, ob)
+		packetConn = wrapped
 	}
 	dialTimeout := time.Duration(hc.ForwardDialTimeoutSec) * time.Second
 	if hc.ForwardDialTimeoutSec == 0 {
