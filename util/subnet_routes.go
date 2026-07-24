@@ -167,11 +167,21 @@ func IsExitDefaultRoute(cidr string) bool {
 	return c == ExitDefaultRouteV4 || c == ExitDefaultRouteV6
 }
 
-// NormalizeExitAdvertisedCIDR 是 [NormalizeAdvertisedCIDR] 的出口语境变体：**允许** 0/0 与 ::/0
-// （出口节点声明「我能 forward 全网」），其余规则一致（须可解析、网络地址 mask 化）。
+// NormalizeExitAdvertisedCIDR 是 [NormalizeAdvertisedCIDR] 的出口语境变体：**唯一**放宽处是
+// 允许 0.0.0.0/0 与 ::/0（出口节点声明「我能 forward 全网」）。**任何非默认路由的具体 CIDR
+// 仍走与非出口帧完全一致的私有/保留段收敛**。
 //
-// 仅在 RouteAdvertise.Exit=true 的帧里对每条 CIDR 调用；非出口帧仍走 [NormalizeAdvertisedCIDR]
+// 仅在 RouteAdvertise.Exit=true 的帧里对每条 CIDR 调用；非出口帧走 [NormalizeAdvertisedCIDR]
 // 拒绝 /0，防普通设备误声明全网代理。
+//
+// 第九轮深扫 MED（confused deputy）：此前本函数对任意可解析前缀只做 mask 化即放行，出口帧遂成
+// 「夹带公网/宽段 CIDR」的旁路 —— 因为出口帧里携带的**非** 0/0 具体 CIDR 与普通子网路由同权：
+// 落 subnet_routes、经 forwardPacketToSubnetRoute 在**出口闸(exit_allowed)之前**转发，且**不过
+// 出口 ACL**。于是无 exit_allowed 的设备只要在 Exit=true 帧里塞 `8.8.8.0/24`（或 `0.0.0.0/1`+
+// `128.0.0.0/1` 覆盖近乎全网），管理员一旦审批即被当子网路由转发，绕过 [NormalizeAdvertisedCIDR]
+// 刚收敛掉的公网/宽段限制。修法：默认路由原样放行，其余一律委托 [NormalizeAdvertisedCIDR]，与
+// 非出口路径同门槛（仅私有/保留段）。合法的「既做出口又宣告内网段」客户端仍可用：0/0 走本放行、
+// 内网段走私有校验，二者都过。
 func NormalizeExitAdvertisedCIDR(in string) (string, error) {
 	in = strings.TrimSpace(in)
 	if in == "" {
@@ -181,5 +191,11 @@ func NormalizeExitAdvertisedCIDR(in string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid cidr %q: %w", in, err)
 	}
-	return p.Masked().String(), nil
+	masked := p.Masked()
+	// 出口全网路由(0/0、::/0)是出口帧里唯一合法的「非私有」CIDR。
+	if IsExitDefaultRoute(masked.String()) {
+		return masked.String(), nil
+	}
+	// 其余具体 CIDR 与普通子网路由同权，必须过与非出口帧一致的私有/保留段收敛。
+	return NormalizeAdvertisedCIDR(in)
 }

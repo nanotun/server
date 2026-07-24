@@ -139,6 +139,33 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 		}
 	}
 
+	// 2026-05-26 wire 扩展:credentials QR 携带 host + server_id。
+	//
+	//  - host = app_settings.advertised_host(原 public_host;0015 migrate 改名)。
+	//    未配则空字符串 — wire 允许(util.CredentialsSchema Host 是普通 string,
+	//    空就空),client 收到回 "" 由 UI 显示「未指定」。
+	//  - server_id = app_settings.server_id(0014 migrate 写入)。理论上 Migrate 已确保
+	//    存在,这里读到空只可能是「db 跑过 migrate 但 server_id 写失败的极端故障」,
+	//    fail-fast 不动 — 拿到啥就发啥,client 不会因此拒解 wire format。
+	//
+	// 这两个 read 都走 app_settings 表,与 cmd_setting.go 走同一套 KV 接口;读不到 key
+	// 时返回 ("", nil),不报错 — 与 store/server_id.go::GetServerID 的契约一致。
+	//
+	// 第九轮深扫 MED:这两个 read 必须在 resolveCredentialsPSK(rotate 会**先把新 PSK
+	// 写库**、旧 hash 即刻失效)**之前**完成。它们是**确定性**的 db io,若拖到 rotate
+	// 之后才执行,一旦硬报错(io / ctx 取消)就会「PSK 已轮换、明文从未交付」—— 与本轮
+	// preflightCredentialsOutput 前移同一动机(把所有能在落库前判定的失败统一前置)。
+	// 二者与 rotate 无数据依赖,前移安全。
+	advertisedHost, hostErr := st.GetAdvertisedHost(ctx)
+	if hostErr != nil {
+		// 不是预期的 not-found(那种会回 "",nil),是真正的 db io 错误 — 严格 fail。
+		return fmt.Errorf("%s: %w", opts.T("credentials.readAdvertisedHost"), hostErr)
+	}
+	serverID, sidErr := st.GetServerID(ctx)
+	if sidErr != nil {
+		return fmt.Errorf("%s: %w", opts.T("credentials.readServerID"), sidErr)
+	}
+
 	pskOut, credID, createdAt, err := resolveCredentialsPSK(ctx, st, u, *pskPlain, *rotatePSK)
 	if err != nil {
 		return err
@@ -155,27 +182,6 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 		}
 		_ = st.Audit(ctx, "admin-cli", "credentials_rotate_psk",
 			fmt.Sprintf("user:%d", u.ID), detail)
-	}
-
-	// 2026-05-26 wire 扩展:credentials QR 携带 host + server_id。
-	//
-	//  - host = app_settings.advertised_host(原 public_host;0015 migrate 改名)。
-	//    未配则空字符串 — wire 允许(util.CredentialsSchema Host 是普通 string,
-	//    空就空),client 收到回 "" 由 UI 显示「未指定」。
-	//  - server_id = app_settings.server_id(0014 migrate 写入)。理论上 Migrate 已确保
-	//    存在,这里读到空只可能是「db 跑过 migrate 但 server_id 写失败的极端故障」,
-	//    fail-fast 不动 — 拿到啥就发啥,client 不会因此拒解 wire format。
-	//
-	// 这两个 read 都走 app_settings 表,与 cmd_setting.go 走同一套 KV 接口;读不到 key
-	// 时返回 ("", nil),不报错 — 与 store/server_id.go::GetServerID 的契约一致。
-	advertisedHost, hostErr := st.GetAdvertisedHost(ctx)
-	if hostErr != nil {
-		// 不是预期的 not-found(那种会回 "",nil),是真正的 db io 错误 — 严格 fail。
-		return fmt.Errorf("%s: %w", opts.T("credentials.readAdvertisedHost"), hostErr)
-	}
-	serverID, sidErr := st.GetServerID(ctx)
-	if sidErr != nil {
-		return fmt.Errorf("%s: %w", opts.T("credentials.readServerID"), sidErr)
 	}
 
 	cred := credentialsSchema{

@@ -88,6 +88,13 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := s.ensureServerID(ctx); err != nil {
 		return fmt.Errorf("store: ensure server_id after migrate: %w", err)
 	}
+
+	// 运行时初始化 hook(第九轮深扫 MED):一次性把存量非规范 VIP 归一,补齐第七轮 canonicalVIP
+	// 只改写路径、漏了存量的另一半。纯 SQL 无法折叠 IPv6,故与 ensureServerID 同款 Go hook;
+	// 幂等 + 碰撞安全,详见 canonicalizeStoredVIPs。
+	if err := s.canonicalizeStoredVIPs(ctx); err != nil {
+		return fmt.Errorf("store: canonicalize stored vips after migrate: %w", err)
+	}
 	return nil
 }
 

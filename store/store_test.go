@@ -39,8 +39,8 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SettingsGet: %v", err)
 	}
-	if !ok || v != "28" {
-		t.Fatalf("schema_version = %q ok=%v, want \"28\" true", v, ok)
+	if !ok || v != "29" {
+		t.Fatalf("schema_version = %q ok=%v, want \"29\" true", v, ok)
 	}
 
 	// P2#7(2026-05-26):0014 把 dead table revoked_profiles 删了。这里直接走

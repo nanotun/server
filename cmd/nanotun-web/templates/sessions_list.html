@@ -4,7 +4,7 @@
 <h1>{{T "sessions.title"}}</h1>
 
 {{if .Data.RuntimeErr}}
-<div class="flash warn">{{T "sessions.dataplaneUnavailable"}}{{.Data.RuntimeErr}}<br>
+<div class="flash warn">{{T "sessions.dataplaneUnavailable"}}{{if .Data.RuntimeErrDetail}}{{.Data.RuntimeErrDetail}}{{end}}<br>
     <span class="muted">{{T "dashboard.checkServer"}}</span></div>
 {{end}}
 

@@ -109,19 +109,17 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 		return errors.New(opts.T("exit.ownerDisabled", owner.Username))
 	}
 
-	// 1) 批准 0.0.0.0/0 + ::/0：upsert(创建 pending,幂等) 再 approve —— 即便该设备尚未 advertise 出口
-	//    也能**预先焊死**,设备之后跑 --exit-node 连上即已批准。
-	for _, cidr := range []string{util.ExitDefaultRouteV4, util.ExitDefaultRouteV6} {
-		if _, err := st.UpsertAdvertisedRoute(ctx, id, cidr); err != nil {
-			return fmt.Errorf("upsert route %s: %w", cidr, err)
-		}
-		if err := st.SetRouteStatus(ctx, id, cidr, util.RouteStatusApproved, ""); err != nil {
-			return fmt.Errorf("approve route %s: %w", cidr, err)
-		}
-	}
-
-	// 2) 钉死固定 vIP（默认把当前 lease 焊死；--v4/--v6 指定；--no-vip 跳过）。
+	// 0) 固定 vIP 的**计算 + 冲突预检**(全部只读)。
+	//
+	// 第九轮深扫 MED:此前先 approve 0/0+::/0(持久化),再查 vIP 冲突;冲突且无 --force
+	// 时返回 error,但设备已被**持久化批准为出口** —— 半完成态:一纸批准焊死进所有客户端
+	// 出口下拉,vIP 却没钉上,且命令以 exit 1 收场让运维以为「什么都没发生」。修法:把所有
+	// **确定性**的只读校验(平台/owner 已在上面、这里加 vIP 冲突)统一前移到任何持久化写入
+	// 之前,冲突即 fail-fast、不留残状态。真正的写入(approve routes / SetDeviceFixedVIP)
+	// 挪到预检全过之后。
 	pinnedV4, pinnedV6 := d.FixedVIPv4, d.FixedVIPv6
+	newV4, newV6 := d.FixedVIPv4, d.FixedVIPv6
+	applyVIP := false
 	if !*noVip {
 		var lease *store.Lease
 		if *v4 == exitVIPAutoSentinel || *v6 == exitVIPAutoSentinel {
@@ -129,7 +127,6 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 				lease = l
 			}
 		}
-		newV4 := d.FixedVIPv4
 		switch *v4 {
 		case exitVIPAutoSentinel:
 			if lease != nil && lease.VIPv4 != "" {
@@ -140,7 +137,6 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 		default:
 			newV4 = strings.TrimSpace(*v4)
 		}
-		newV6 := d.FixedVIPv6
 		switch *v6 {
 		case exitVIPAutoSentinel:
 			if lease != nil && lease.VIPv6 != "" {
@@ -165,12 +161,28 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 				return errors.New(opts.T("exit.conflictV6", newV6, c))
 			}
 		}
-		if newV4 != d.FixedVIPv4 || newV6 != d.FixedVIPv6 {
+		applyVIP = newV4 != d.FixedVIPv4 || newV6 != d.FixedVIPv6
+		pinnedV4, pinnedV6 = newV4, newV6
+	}
+
+	// 1) 批准 0.0.0.0/0 + ::/0：upsert(创建 pending,幂等) 再 approve —— 即便该设备尚未 advertise 出口
+	//    也能**预先焊死**,设备之后跑 --exit-node 连上即已批准。
+	for _, cidr := range []string{util.ExitDefaultRouteV4, util.ExitDefaultRouteV6} {
+		if _, err := st.UpsertAdvertisedRoute(ctx, id, cidr); err != nil {
+			return fmt.Errorf("upsert route %s: %w", cidr, err)
+		}
+		if err := st.SetRouteStatus(ctx, id, cidr, util.RouteStatusApproved, ""); err != nil {
+			return fmt.Errorf("approve route %s: %w", cidr, err)
+		}
+	}
+
+	// 2) 钉死固定 vIP（默认把当前 lease 焊死；--v4/--v6 指定；--no-vip 跳过）。
+	if !*noVip {
+		if applyVIP {
 			if err := st.SetDeviceFixedVIP(ctx, id, newV4, newV6, *force); err != nil {
 				return fmt.Errorf("set fixed vip: %w", err)
 			}
 		}
-		pinnedV4, pinnedV6 = newV4, newV6
 		if pinnedV4 == "" && pinnedV6 == "" {
 			fmt.Fprintln(opts.stderr, opts.T("exit.warnNoVIP"))
 		}
