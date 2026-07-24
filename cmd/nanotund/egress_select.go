@@ -495,7 +495,10 @@ func runV6SetupRetryIfArmed() {
 // serverV6EgressProbeInterval 重探,结果写 atomic 供数据面 serverSelfEgressV6FastFail 读。stop 关闭即退出。
 // main 在启动阶段调用一次(与 powSvc.RunGC 同处);探测在数据面之外做,数据面只读 atomic(零阻塞)。
 func startServerV6EgressProbe(stop <-chan struct{}) {
-	go func() {
+	// 第十二轮深扫 LOW:此前是唯一未走 safeGlobalGoroutine 的常驻后台 goroutine。其 probe 循环做 net 拨测,
+	// 一旦 panic 会以 Go 默认处理直接崩进程、绕过优雅关停(iptables 清理 / TUN 关闭 / WAL checkpoint)。
+	// 与 leaseGC / auditGC / tunReadLoop 同款包裹:panic → globalContextCancel → main defer 链跑完 → systemd 拉起。
+	go safeGlobalGoroutine("serverV6EgressProbe", globalContextCancel, func() {
 		t := time.NewTicker(serverV6EgressProbeInterval)
 		defer t.Stop()
 		for {
@@ -530,7 +533,7 @@ func startServerV6EgressProbe(stop <-chan struct{}) {
 			case <-t.C:
 			}
 		}
-	}()
+	})
 }
 
 // shouldStripAAAAForServerSelf 纯决策(便于单测):server 自出口路径(会话未绑 peer 出口)的 MagicDNS 公网查询

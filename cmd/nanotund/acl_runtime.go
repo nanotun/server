@@ -297,6 +297,12 @@ type pktTuple struct {
 	// 截断头亦然。此时 hasL4Ports=false,带端口的规则一律视为不命中(见 ruleMatchesPacket),避免:
 	//   ① 净荷碰巧等于某放行端口 → 绕过 default-deny;② 把随机净荷当端口做出错误 allow/deny 判定。
 	hasL4Ports bool
+	// l4Unresolved 表示解析器**放弃**在本报文里定位上层 L4(IPv6 扩展头链超过跳数上限,或链在中途被截断),
+	// 而**非**明确判定为无端口的 proto(ICMPv6 / ESP / AH / 未知 next-header —— 那些我们与目的端看法一致)。
+	// 第十二轮深扫 MED:仅凭 proto=="" 无法区分「已确定无端口」与「我们没解到、但目的端可能仍投递到某 tcp/udp 端口」。
+	// 后者是解析分歧:攻击者用 8 个扩展头把 22 端口流量藏在链后,我们解不到 → proto=""、hasL4Ports=false → 端口 deny
+	// 被判「不命中」→ default=allow 下绕过(与已修的分片绕过同类)。故对这种「放弃解析」显式打标,让端口 deny fail-closed。
+	l4Unresolved bool
 }
 
 // aclDropPacketDirected 是 demux 热路径上的入口:
@@ -408,8 +414,38 @@ func aclAllows(src, dst int64) bool {
 	if !snap.hasUserRules {
 		return snap.defaultAction != store.ACLDeny
 	}
-	tuple := pktTuple{} // 无 proto/port → 仅匹配「任意 proto + 任意 port」规则
-	return evaluateUser(snap, src, dst, tuple) != store.ACLDeny
+	// 第十二轮深扫 MED:粗粒度可达性必须**真正忽略 proto/port**(本函数与 magicNameDeniedByACL 的契约:
+	// 「存在任何 allow 例外——哪怕仅某端口——则视为可达」)。此前用空 pktTuple{} 走 evaluateUser,反而让
+	// **任何带 proto/port 的规则都不命中** → default=deny + 仅端口级 allow(如 `A→B allow tcp 443`)被误判
+	// 为不可达,MagicDNS 对本可连通的对端返回 NXDOMAIN(破坏受支持的白名单配置)。
+	//
+	// 改为在 (src,dst) 维度扫规则、忽略 proto/port,只提取两个粗粒度事实:
+	//   - hasAllow:是否存在**任意 allow 规则**(含端口级)——即「存在放行例外」;
+	//   - hasBlanketDeny:是否存在**通配 deny**(proto 空且无端口 → 覆盖 src→dst 全部流量,等价「显式 A→B deny」)。
+	// deny-first 只有对**通配 deny** 才等于「掐断一切放行路径」;端口级 deny 只挡子集,不消灭可达性(其它端口仍可通)。
+	// 裁决:default=allow → 无通配 deny 即可达;default=deny → 有 allow 例外且无通配 deny 才可达。
+	// 与 evaluateUser 的逐包 deny-first 在通配规则上一致(TestACLAllows_DenyPriority / WildSrcDeny 等仍通过),
+	// 仅对「端口级 allow 无对应 deny」这一被误判子集放宽为可达——正是本 MED 要修的方向。
+	var hasAllow, hasBlanketDeny bool
+	scan := func(entries []ruleEntry) {
+		for _, e := range entries {
+			if e.action == store.ACLDeny {
+				if e.proto == "" && !e.hasPorts {
+					hasBlanketDeny = true
+				}
+				continue
+			}
+			hasAllow = true
+		}
+	}
+	scan(snap.userExact[aclPair{src: src, dst: dst}])
+	scan(snap.userBySrc[src])
+	scan(snap.userByDst[dst])
+	scan(snap.userAll)
+	if snap.defaultAction == store.ACLDeny {
+		return hasAllow && !hasBlanketDeny
+	}
+	return !hasBlanketDeny
 }
 
 // aclDeniesSubnetRoute（SR-M4）：子网路由数据面 ACL —— 请求方经宣告方访问其 LAN 子网时，按「请求方 user × 宣告方
@@ -561,6 +597,13 @@ func rulePortIndeterminate(r ruleEntry, t pktTuple) bool {
 	if r.action != store.ACLDeny || !r.hasPorts {
 		return false
 	}
+	// 第十二轮深扫 MED:报文 L4 **无法解析**(IPv6 扩展头封顶 / 链截断,见 pktTuple.l4Unresolved)时,
+	// 我们既定位不到 proto 也定位不到端口,但目的端仍可能投递到某 tcp/udp 端口 —— 任何**端口 deny** 都可能适用,
+	// 一律 fail-closed(不受规则的 proto scope 约束,因为连 proto 都没解出来)。这与下方「非首片/截断头」同源:
+	// 都是「端口维度不可判定的 tcp/udp-可能流量」,对端口 deny 采取更严格的丢弃姿态。
+	if t.l4Unresolved {
+		return true
+	}
 	if r.proto != "" && r.proto != t.proto {
 		return false
 	}
@@ -635,11 +678,15 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 		nh := p[6]
 		off := 40
 		nonFirstFrag := false
+		// resolved:是否走到一个**确定的上层分类**(tcp/udp/icmpv6/esp/ah/未知 —— 后三者与目的端看法一致地「无 tcp/udp 端口」)。
+		// 若循环因**跳数封顶**或**链中途截断**退出而未确定分类,则 !resolved → 标记 l4Unresolved(见 pktTuple 注释)。
+		resolved := false
 	walk:
 		for i := 0; i < 8; i++ {
 			switch nh {
 			case 6: // TCP
 				out.proto = "tcp"
+				resolved = true
 				if !nonFirstFrag && len(p) >= off+4 {
 					out.dstPort = binary.BigEndian.Uint16(p[off+2 : off+4])
 					out.hasL4Ports = true
@@ -647,6 +694,7 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 				break walk
 			case 17: // UDP
 				out.proto = "udp"
+				resolved = true
 				if !nonFirstFrag && len(p) >= off+4 {
 					out.dstPort = binary.BigEndian.Uint16(p[off+2 : off+4])
 					out.hasL4Ports = true
@@ -654,29 +702,37 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 				break walk
 			case 58: // ICMPv6
 				out.proto = "icmpv6"
+				resolved = true
 				break walk
 			case 0, 43, 60: // Hop-by-Hop / Routing / Dest-Opts:前 8B 必存,Hdr-Ext-Len 以 8B 为单位且不含首 8B
 				if len(p) < off+2 {
-					break walk
+					break walk // 链被截断,未解到 L4 → resolved 保持 false
 				}
 				extLen := (int(p[off+1]) + 1) * 8
 				nh = p[off]
 				off += extLen
 				if off > len(p) {
-					break walk
+					break walk // 越界,未解到 L4 → resolved 保持 false
 				}
 			case 44: // Fragment 头:定长 8B;p[off+2:off+4] 高 13 位是 fragment offset
 				if len(p) < off+8 {
-					break walk
+					break walk // 截断,未解到 L4 → resolved 保持 false
 				}
 				if (binary.BigEndian.Uint16(p[off+2:off+4]) >> 3) != 0 {
 					nonFirstFrag = true
 				}
 				nh = p[off]
 				off += 8
-			default: // ESP(50) / AH(51) / 未知 → 无法可靠定位 L4 头
+			default: // ESP(50) / AH(51) / 未知 → 无法可靠定位 L4 头,但与目的端看法一致(它也无 tcp/udp 端口)
+				resolved = true
 				break walk
 			}
+		}
+		// 第十二轮深扫 MED:循环因**跳数封顶(≥8 个扩展头)**或**链中途截断**退出而未确定上层分类时,
+		// 我们放弃了解析,但目的端仍可能把包投递到某 tcp/udp 端口 → 打标 l4Unresolved,让端口 deny 在
+		// evaluate*(经 rulePortIndeterminate)fail-closed,堵住「扩展头耗尽绕过端口封锁」(与分片绕过同类)。
+		if !resolved {
+			out.l4Unresolved = true
 		}
 		return out, true
 	default:

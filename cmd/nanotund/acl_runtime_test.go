@@ -221,6 +221,129 @@ func TestACLAllows_AllowAllWildcard(t *testing.T) {
 	}
 }
 
+// 第十二轮深扫 MED:aclAllows 必须**忽略 proto/port** 做粗粒度可达性判定。
+// 回归旧缺口:default=deny + 仅端口级 allow(A→B allow tcp 443)时,src→dst 明明有放行例外,
+// 旧实现却用空 pktTuple 走 evaluateUser → 端口规则不命中 → 判不可达 → MagicDNS 对本可连通对端回 NXDOMAIN。
+func TestACLAllows_PortScopedAllow_IsReachable(t *testing.T) {
+	// default=deny + 端口级 allow:存在放行例外 → 可达。
+	loadACLForTest([]*store.ACLPair{
+		{SrcUserID: 1, DstUserID: 2, Action: store.ACLAllow, DstKind: store.ACLDstKindUser,
+			Proto: "tcp", DstPortLo: 443, DstPortHi: 443},
+	}, store.ACLDeny)
+	if !aclAllows(1, 2) {
+		t.Fatal("default=deny + port-scoped allow (tcp 443): src→dst has an allow path, must be reachable")
+	}
+	// 无关对端仍回落 default=deny → 不可达。
+	if aclAllows(1, 3) {
+		t.Fatal("non-matching (1,3) under default=deny must stay unreachable")
+	}
+}
+
+// default=allow + **端口级** deny 只挡子集,其它端口仍可达 → aclAllows 视为可达。
+func TestACLAllows_PortScopedDenyUnderDefaultAllow_StillReachable(t *testing.T) {
+	loadACLForTest([]*store.ACLPair{
+		{SrcUserID: 1, DstUserID: 2, Action: store.ACLDeny, DstKind: store.ACLDstKindUser,
+			Proto: "tcp", DstPortLo: 22, DstPortHi: 22},
+	}, store.ACLAllow)
+	if !aclAllows(1, 2) {
+		t.Fatal("default=allow + port-scoped deny (tcp 22): other ports still reachable")
+	}
+}
+
+// default=allow + **通配** deny(proto 空、无端口)= 显式 A→B deny → 掐断一切放行路径 → 不可达。
+func TestACLAllows_BlanketDenyUnderDefaultAllow_Unreachable(t *testing.T) {
+	loadACLForTest([]*store.ACLPair{
+		{SrcUserID: 1, DstUserID: 2, Action: store.ACLDeny, DstKind: store.ACLDstKindUser},
+	}, store.ACLAllow)
+	if aclAllows(1, 2) {
+		t.Fatal("default=allow + blanket A→B deny should be unreachable")
+	}
+}
+
+// 端口级 allow 若被**通配 deny** 盖住(deny-first),则无放行路径 → 不可达(与逐包 deny-first 一致)。
+func TestACLAllows_PortAllowShadowedByBlanketDeny_Unreachable(t *testing.T) {
+	loadACLForTest([]*store.ACLPair{
+		{SrcUserID: 1, DstUserID: 2, Action: store.ACLAllow, DstKind: store.ACLDstKindUser,
+			Proto: "tcp", DstPortLo: 443, DstPortHi: 443},
+		{SrcUserID: 1, DstUserID: 2, Action: store.ACLDeny, DstKind: store.ACLDstKindUser},
+	}, store.ACLDeny)
+	if aclAllows(1, 2) {
+		t.Fatal("blanket deny shadows the port-scoped allow → no allow path → unreachable")
+	}
+}
+
+// 第十二轮深扫 MED:IPv6 扩展头链**超过跳数上限(≥8)**时,解析器放弃定位 L4 → l4Unresolved=true,
+// proto/端口均未解出。这是「解析分歧」:目的端可能仍把包投递到某 tcp/udp 端口。
+func TestParsePacketTuple_IPv6ExtHeaderExhaustion_Unresolved(t *testing.T) {
+	pkt := ipv6WithDestOptChain(9) // 9 个 Dest-Options 头,8 跳封顶后仍未到 L4
+	got, ok := parsePacketTuple(pkt)
+	if !ok {
+		t.Fatal("parsePacketTuple should accept a well-formed IPv6 packet")
+	}
+	if !got.l4Unresolved {
+		t.Fatalf("ext-header exhaustion must set l4Unresolved=true, got %+v", got)
+	}
+	if got.proto != "" || got.hasL4Ports {
+		t.Fatalf("exhausted chain must leave proto empty / no L4 ports, got %+v", got)
+	}
+}
+
+// l4Unresolved 的报文遇**端口 deny** 规则必须 fail-closed(判 indeterminate → 上层 evaluate 丢弃),
+// 堵住「扩展头耗尽绕过端口封锁」。非端口规则 / 已解析的正常 tcp 报文不受影响。
+func TestRulePortIndeterminate_L4Unresolved_FailsClosed(t *testing.T) {
+	portDeny := ruleEntry{action: store.ACLDeny, hasPorts: true, portLo: 22, portHi: 22}
+	blanketDeny := ruleEntry{action: store.ACLDeny}
+	portAllow := ruleEntry{action: store.ACLAllow, hasPorts: true, portLo: 22, portHi: 22}
+
+	unresolved := pktTuple{l4Unresolved: true}
+	if !rulePortIndeterminate(portDeny, unresolved) {
+		t.Fatal("unresolved L4 + port deny must be indeterminate (fail-closed)")
+	}
+	// proto scope 也不该救它——连 proto 都没解出来。
+	protoScopedDeny := ruleEntry{action: store.ACLDeny, proto: "tcp", hasPorts: true, portLo: 22, portHi: 22}
+	if !rulePortIndeterminate(protoScopedDeny, unresolved) {
+		t.Fatal("unresolved L4 + proto-scoped port deny must still fail-closed")
+	}
+	// 非端口 deny / allow 规则不触发 indeterminate。
+	if rulePortIndeterminate(blanketDeny, unresolved) {
+		t.Fatal("blanket (portless) deny is not port-indeterminate")
+	}
+	if rulePortIndeterminate(portAllow, unresolved) {
+		t.Fatal("port ALLOW is never indeterminate (only deny fails closed)")
+	}
+	// 已解析的正常 tcp:22 报文命中端口 deny → 走正常 ruleMatchesPacket,不是 indeterminate。
+	resolved := pktTuple{proto: "tcp", dstPort: 22, hasL4Ports: true}
+	if rulePortIndeterminate(portDeny, resolved) {
+		t.Fatal("resolved tcp:22 with L4 ports must not be indeterminate")
+	}
+}
+
+// ipv6WithDestOptChain 造一个 IPv6 报文:40B 定长头 + n 个 8B Dest-Options(60)扩展头,
+// 每个 next-header 仍指向 60(永不到 L4)。n≥9 时可让 8 跳封顶的解析器耗尽跳数而放弃(l4Unresolved)。
+func ipv6WithDestOptChain(n int) []byte {
+	const ipv6HdrLen = 40
+	payload := n * 8
+	p := make([]byte, ipv6HdrLen+payload)
+	p[0] = 0x60                 // version=6
+	p[4] = byte(payload >> 8)   // payload length hi
+	p[5] = byte(payload & 0xff) // payload length lo
+	p[6] = 60                   // next header = Dest-Options
+	p[7] = 64                   // hop limit
+	// src/dst 随便填一对全局单播,避免 Unmap 影响;这里用 2001:db8::1 / ::2。
+	p[8], p[9] = 0x20, 0x01
+	p[10], p[11] = 0x0d, 0xb8
+	p[23] = 0x01
+	p[24], p[25] = 0x20, 0x01
+	p[26], p[27] = 0x0d, 0xb8
+	p[39] = 0x02
+	for i := 0; i < n; i++ {
+		off := ipv6HdrLen + i*8
+		p[off] = 60  // 下一头仍是 Dest-Options
+		p[off+1] = 0 // Hdr-Ext-Len=0 → 本头 8 字节
+	}
+	return p
+}
+
 // vipOwner register/unregister/lookup 配套。
 func TestVIPOwner_RoundTrip(t *testing.T) {
 	a := netip.MustParseAddr("10.200.0.5")
@@ -301,9 +424,9 @@ func TestParsePacketTuple(t *testing.T) {
 	ipv6frag[0] = 0x60
 	ipv6frag[6] = 44 // Next Header = Fragment
 	// Fragment 头 @40:next header=6(TCP),offset=0(首片,MF 可为 1)
-	ipv6frag[40] = 6      // fragment.NextHeader = TCP
-	ipv6frag[42] = 0x00   // offset high
-	ipv6frag[43] = 0x01   // offset=0, M(more)=1 → 首片
+	ipv6frag[40] = 6    // fragment.NextHeader = TCP
+	ipv6frag[42] = 0x00 // offset high
+	ipv6frag[43] = 0x01 // offset=0, M(more)=1 → 首片
 	// TCP 头 @48:dst port = 22
 	ipv6frag[48+2] = 0x00
 	ipv6frag[48+3] = 0x16
@@ -327,9 +450,9 @@ func TestParsePacketTuple(t *testing.T) {
 	// Hop-by-Hop 扩展头(nh=0,ExtLen=0 → 8B)后接 UDP dst 53。
 	ipv6hbh := make([]byte, 40+8+4)
 	ipv6hbh[0] = 0x60
-	ipv6hbh[6] = 0     // Hop-by-Hop
-	ipv6hbh[40] = 17   // hbh.NextHeader = UDP
-	ipv6hbh[41] = 0    // Hdr-Ext-Len=0 → 8 字节
+	ipv6hbh[6] = 0   // Hop-by-Hop
+	ipv6hbh[40] = 17 // hbh.NextHeader = UDP
+	ipv6hbh[41] = 0  // Hdr-Ext-Len=0 → 8 字节
 	ipv6hbh[48+2] = 0x00
 	ipv6hbh[48+3] = 0x35 // dst 53
 	tu, ok = parsePacketTuple(ipv6hbh)

@@ -25,6 +25,12 @@ func TestUsageError_ExitCode2(t *testing.T) {
 		{"device no-verb", []string{"device"}},
 		{"acl no-verb", []string{"acl"}},
 		{"lease no-verb", []string{"lease"}},
+		// 第十二轮深扫 MED:route 无 verb 曾是漏网之鱼(仍返回 exit 1)。锁死为 2。
+		{"route no-verb", []string{"route"}},
+		{"exit no-verb", []string{"exit"}},
+		{"setting no-verb", []string{"setting"}},
+		{"audit no-verb", []string{"audit"}},
+		{"credentials no-verb", []string{"credentials"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
