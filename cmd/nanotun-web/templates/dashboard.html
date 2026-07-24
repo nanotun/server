@@ -81,7 +81,7 @@
 </div>
 
 {{if .Data.RuntimeErr}}
-<div class="flash warn">{{T "dashboard.runtimeUnavailable"}}{{.Data.RuntimeErr}}<br>
+<div class="flash warn">{{T "dashboard.runtimeUnavailable"}}{{if .Data.RuntimeErrDetail}}{{.Data.RuntimeErrDetail}}{{end}}<br>
     <span class="muted">{{T "dashboard.checkServer"}}</span></div>
 {{end}}
 

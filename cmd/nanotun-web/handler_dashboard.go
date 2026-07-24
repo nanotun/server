@@ -95,7 +95,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Data: map[string]any{
 			"DB":                       dbStats,
 			"Runtime":                  runtime,
-			"RuntimeErr":               runtimeErrToText(runtimeErr),
+			"RuntimeErr":               runtimeErr != nil,
+			"RuntimeErrDetail":         runtimeErrDetail(runtimeErr, isAdminRole),
 			"Sessions":                 sessions,
 			"SessionsTotal":            totalSessions,
 			"Audit":                    recentAudit,
@@ -170,8 +171,16 @@ func (s *Server) collectRuntime(ctx context.Context) (map[string]any, error) {
 	return m, nil
 }
 
-func runtimeErrToText(err error) string {
-	if err == nil {
+// runtimeErrDetail 返回运行态错误(control socket 不可达等)的**明文细节**,仅对 admin
+// 角色返回。
+//
+// 第九轮深扫 LOW:此前 dashboard / sessions 页无差别把 err.Error() 塞进横幅,而 controlClient
+// 的错误(newLocErr("control.socketReqFail", c.socketPath, ...))**带控制面 socket 的文件系统
+// 路径**;这两页对 viewer 只读开放,于是只读用户能看到 socket 路径 + 底层 net 错误(基础设施
+// 信息泄露)。修法:banner 的**存在性**照常提示所有角色「数据面不可用」,但**明文细节**只发给
+// admin,viewer 拿到空串 → 模板不渲染细节。
+func runtimeErrDetail(err error, isAdmin bool) string {
+	if err == nil || !isAdmin {
 		return ""
 	}
 	return err.Error()

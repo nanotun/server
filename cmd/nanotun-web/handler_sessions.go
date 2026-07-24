@@ -38,13 +38,19 @@ func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
 	case "1", "true", "yes", "on":
 		autoRefresh = true
 	}
+	// 第九轮深扫 LOW:控制面错误细节(含 socket 路径)只对 admin 展示,viewer 只看通用横幅。
+	isAdminRole := false
+	if a := adminFromCtx(r.Context()); a != nil && a.Role == "admin" {
+		isAdminRole = true
+	}
 	s.renderPage(w, r, "sessions_list.html", PageData{
 		Title: tr(r, "page.sessions.title"),
 		Flash: flashFromQuery(r), // 第七轮 P2:统一到 helper,去重 dashboard / me / sessions 的手写解析
 		Data: map[string]any{
-			"Sessions":    sessions,
-			"RuntimeErr":  runtimeErrToText(err),
-			"AutoRefresh": autoRefresh,
+			"Sessions":         sessions,
+			"RuntimeErr":       err != nil,
+			"RuntimeErrDetail": runtimeErrDetail(err, isAdminRole),
+			"AutoRefresh":      autoRefresh,
 		},
 		Nav: NavContext{Active: "sessions"},
 	})

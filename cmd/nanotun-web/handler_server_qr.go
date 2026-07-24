@@ -138,6 +138,11 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := clientIP(r)
 
+	// 第九轮深扫 MED:按 adminID 串行化「读冷却 + 密码/TOTP verify + 记账」临界区,关闭
+	// step-up 冷却的 check-then-act 竞态(与 handleMeTOTPDisable 同源,复用 totpVerifyLocks)。
+	unlock := s.lockTOTPVerify(admin.ID)
+	defer unlock()
+
 	// (3) IP cooldown
 	if s.stepUpFailures.Recent(ip) >= stepUpMaxFailures {
 		s.audit.WriteFromRequest(r, "server_profile_qr_locked",

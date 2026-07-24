@@ -941,6 +941,7 @@ var catZH = map[string]string{
 	// 管理员保护:
 	"admins.cannotActOnSelf": "不允许对自己执行此操作(避免锁死自己)",
 	"admins.lastAdmin":       "拒绝:这是最后一个 enabled admin,不能禁用 / 删除 / 降级 —— 否则将无人能登录",
+	"admins.invalidRole":     "非法角色:只能是 \"admin\" 或 \"viewer\"。",
 	// 用户 / 凭证:
 	"users.pskResetUserDisabled": "用户已被禁用,无法重置 PSK。请先启用(/users/%s/enable)再重置。",
 	"users.pskResetRaced":        "另一管理员已先一步重置该用户的 PSK。请刷新此页面查看最新凭证状态,如需再次重置请重新发起。",
@@ -976,7 +977,7 @@ var catZH = map[string]string{
 	"pf.queryDevicesFailed":   "查询设备失败,请重试。",
 	"pf.deviceNotFound":       "目标设备不存在(device_uuid 未注册)",
 	"pf.targetNotVipOrSubnet": "target_ip 既不是该设备的 vIP,也不在其已批准的宣告网段内;LAN 目标需先在「路由」页批准该设备的对应网段",
-	"pf.queryExistingFailed":  "查询现有端口转发失败: %s",
+	"pf.queryExistingFailed":  "查询现有端口转发失败,请重试;若持续失败请联系管理员查看服务端日志",
 	"pf.targetIpConflict":     "目标 IP %s 已被指向另一台设备的映射占用(:%d);同一目标 IP 不能同时转发到不同设备(数据面无法区分),请删除冲突映射或改用其它目标",
 	"pf.createFailed":         "创建端口转发失败: ",
 	"pf.needPathVerb":         "需要 /port-forwards/{id}/{verb}",

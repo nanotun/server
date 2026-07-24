@@ -936,6 +936,7 @@ var catEN = map[string]string{
 	// Admin protection:
 	"admins.cannotActOnSelf": "You cannot perform this operation on yourself (to avoid locking yourself out)",
 	"admins.lastAdmin":       "Denied: this is the last enabled admin and cannot be disabled / deleted / demoted — otherwise no one could log in",
+	"admins.invalidRole":     "Invalid role: must be \"admin\" or \"viewer\".",
 	// Users / credentials:
 	"users.pskResetUserDisabled": "User is disabled, cannot reset PSK. Please enable it first (/users/%s/enable), then reset.",
 	"users.pskResetRaced":        "Another admin already reset this user's PSK first. Please refresh this page for the latest credential status; re-initiate if you need to reset again.",
@@ -971,7 +972,7 @@ var catEN = map[string]string{
 	"pf.queryDevicesFailed":   "Failed to query devices; please retry.",
 	"pf.deviceNotFound":       "Target device not found (device_uuid not registered)",
 	"pf.targetNotVipOrSubnet": "target_ip is neither the device's vIP nor within its approved advertised subnet; a LAN target requires approving the device's corresponding subnet on the \"Routes\" page first",
-	"pf.queryExistingFailed":  "Failed to query existing port forwards: %s",
+	"pf.queryExistingFailed":  "Failed to query existing port forwards. Please retry; if it persists, ask an administrator to check the server logs.",
 	"pf.targetIpConflict":     "Target IP %s is already taken by a mapping pointing to another device (:%d); the same target IP cannot be forwarded to different devices (the data plane cannot disambiguate), please delete the conflicting mapping or use a different target",
 	"pf.createFailed":         "Failed to create port forward: ",
 	"pf.needPathVerb":         "requires /port-forwards/{id}/{verb}",

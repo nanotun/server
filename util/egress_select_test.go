@@ -29,6 +29,27 @@ func TestNormalizeExitAdvertisedCIDR(t *testing.T) {
 	if _, err := NormalizeExitAdvertisedCIDR("not-a-cidr"); err == nil {
 		t.Fatal("非法 CIDR 应报错")
 	}
+
+	// 第九轮深扫 MED(confused deputy):出口帧里的**非** 0/0 具体 CIDR 与普通子网路由同权,
+	// 会被 forwardPacketToSubnetRoute 在出口闸之前转发、绕过 exit_allowed + 出口 ACL。故公网/
+	// 宽段具体 CIDR 必须与非出口路径同门槛被拒;仅 0/0、::/0 与私有/保留段放行。
+	for _, in := range []string{
+		"0.0.0.0/1",      // 半个 IPv4:绕 /0 守卫的经典手法
+		"128.0.0.0/1",    // 另半个 IPv4
+		"8.8.8.0/24",     // 公网具体段
+		"203.0.113.0/24", // 公网(文档用)段
+		"2001:db8::/32",  // 公网 IPv6 文档段
+	} {
+		if _, err := NormalizeExitAdvertisedCIDR(in); err == nil {
+			t.Fatalf("NormalizeExitAdvertisedCIDR(%q) 应拒绝(公网/宽段绕过出口闸)", in)
+		}
+	}
+	// 出口帧里的私有/保留段仍允许(既做出口又宣告内网段的合法客户端)。
+	for _, in := range []string{"192.168.1.0/24", "10.0.0.0/8", "fd12:3456::/32"} {
+		if _, err := NormalizeExitAdvertisedCIDR(in); err != nil {
+			t.Fatalf("NormalizeExitAdvertisedCIDR(%q) 私有段应放行,却报错: %v", in, err)
+		}
+	}
 }
 
 func TestRouteAdvertiseExitRoundtrip(t *testing.T) {

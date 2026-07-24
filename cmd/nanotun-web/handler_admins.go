@@ -211,6 +211,10 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		// 密码 → 持久接管 / 反锁真正的管理员。改**他人**密码属管理操作,已由 requireAdminRole 把关,不在此加。
 		// 复用 stepUpFailures(与 QR-reveal / TOTP disable 同套 IP 冷却),防止对当前密码/TOTP 暴破。
 		if isSelf {
+			// 第九轮深扫 MED:按 adminID 串行化「读冷却 + 密码/TOTP verify + 记账」临界区,关闭
+			// step-up 冷却的 check-then-act 竞态(与 handleMeTOTPDisable 同源,复用 totpVerifyLocks)。
+			unlock := s.lockTOTPVerify(me.ID)
+			defer unlock()
 			ip := clientIP(r)
 			if s.stepUpFailures.Recent(ip) >= stepUpMaxFailures {
 				s.audit.WriteFromRequest(r, "webadmin_reset_pwd_locked",
@@ -326,6 +330,13 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 
 	case "set-role":
 		newRole := strings.TrimSpace(r.FormValue("role"))
+		// 第九轮深扫 LOW:先在 handler 侧校验角色枚举,非法值回本地化 400 —— 此前直接把
+		// store 的内部错误串("store: set web admin role: store: invalid web admin role \"x\"")
+		// 经 err.Error() 原样渲染给页面,与本仓其它写路径统一遮蔽内部错误的做法不一致。
+		if newRole != "admin" && newRole != "viewer" {
+			s.renderError(w, r, http.StatusBadRequest, tr(r, "admins.invalidRole"))
+			return
+		}
 		if target.Role == "admin" && newRole == "viewer" {
 			if err := s.ensureNotLastAdmin(r); err != nil {
 				s.renderError(w, r, http.StatusBadRequest, err.Error())
@@ -337,7 +348,8 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 				s.renderError(w, r, http.StatusBadRequest, tr(r, "admins.lastAdmin"))
 				return
 			}
-			s.renderError(w, r, http.StatusBadRequest, err.Error())
+			// 已在上面挡掉非法角色,走到这里的都是意外内部错误 → 统一遮蔽。
+			s.renderInternalError(w, r, "admins:set_role", err)
 			return
 		}
 		s.audit.WriteFromRequest(r, "webadmin_set_role",

@@ -300,6 +300,13 @@ func (s *Server) handleMeTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		flashRedirect(w, r, "/me", tr(r, "flash.totpNotEnabled"), "")
 		return
 	}
+	// 第九轮深扫 MED:step-up 冷却是「先 Recent() 读计数、晚点才 Inc()」的 check-then-act,
+	// 与已在第八轮修掉的 /login/totp 同类竞态 —— 并发请求都在任一 Inc 落地前读到低于阈值的
+	// 计数,即可越过「5 次/5min」冷却,对 6 位码提速爆破(劫持会话即可关 2FA)。按 adminID
+	// 串行化「读冷却 + verify + 记账」临界区(复用登录用的 totpVerifyLocks),使冷却与 verify
+	// 在并发下也按账号顺序生效。
+	unlock := s.lockTOTPVerify(admin.ID)
+	defer unlock()
 	// 深扫第八轮 MED:关 2FA 是「输一个 6 位码即生效」的敏感操作,此前无任何限流 ——
 	// 密码泄露 + cookie 劫持后可对 6 位码无限爆破直到关掉 2FA。复用 step-up 的 IP 冷却
 	// (滑窗 5min,5 次锁),与 /server-qr/reveal 同款,失败即计数、锁定即 429、成功清零。
@@ -367,6 +374,10 @@ func (s *Server) handleMeTOTPRegen(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpNotEnabledRegen"))
 		return
 	}
+	// 第九轮深扫 MED:同 disable —— 按 adminID 串行化「读冷却 + verify + 记账」临界区,
+	// 关闭 step-up 冷却的 check-then-act 竞态(见 handleMeTOTPDisable 注释)。
+	unlock := s.lockTOTPVerify(admin.ID)
+	defer unlock()
 	// 深扫第八轮 MED:重刷恢复码同样是「输一个 6 位码即作废旧码、刷出新码」的敏感操作,
 	// 与 disable 同等防护 —— 复用 step-up IP 冷却,防止劫持会话后爆破 6 位码刷恢复码。
 	ip := clientIP(r)
