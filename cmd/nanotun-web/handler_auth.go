@@ -610,11 +610,14 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if usedRecovery && recoveryID > 0 {
-			if merr := s.store.MarkRecoveryCodeUsed(ctx, recoveryID, ip, time.Now().Unix()); merr != nil {
+			if merr := s.store.MarkRecoveryCodeUsed(ctx, admin.ID, recoveryID, ip, time.Now().Unix()); merr != nil {
 				// 恢复码可能并发被用了 / DB 抖动 —— 回滚刚发的 session(删库 + 清 cookie)并拒绝本次登录,
 				// 避免会话已发而恢复码未标记 used(否则该码可被重放,破坏一码一用)。
+				// 第十六轮深扫 LOW:一并清 pending cookie —— nonce 已在上面 MarkPendingConsumed 消费,留着死 nonce
+				// 只会让重试撞 pending_replay 再跳登录,直接清掉更干净。
 				_ = s.store.DeleteWebSession(ctx, sid)
 				s.sess.clearSessionCookie(w)
+				s.sess.ClearTOTPPending(w)
 				s.loginTOTPRetry(w, r, tr(r, "auth.recoveryCodeError"), admin.Username, next)
 				return
 			}

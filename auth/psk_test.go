@@ -11,6 +11,32 @@ import (
 	"github.com/nanotun/server/store"
 )
 
+// TestVerifyPSK_RejectsDuplicateArgonParams 第十六轮深扫 LOW:PHC 参数段重复键(如 m=<强>,m=<弱>)必须拒绝,
+// 杜绝「后者静默覆盖前者、把强参数藏在被覆盖项」的审计欺骗。
+func TestVerifyPSK_RejectsDuplicateArgonParams(t *testing.T) {
+	bad := []string{
+		"argon2id$v=19$m=65536,m=8192,t=2,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"argon2id$v=19$m=65536,t=2,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"argon2id$v=19$m=65536,t=2,p=4,p=8$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+	}
+	for i, enc := range bad {
+		if _, err := VerifyPSK("any-pass", enc); err == nil {
+			t.Fatalf("case %d: 重复 argon 参数应报错", i)
+		}
+	}
+}
+
+// TestHashPSK_RejectsOversizedPlaintext 第十六轮深扫 LOW:HashPSK 拒绝超长明文(> 1024 字节)。
+func TestHashPSK_RejectsOversizedPlaintext(t *testing.T) {
+	if _, err := HashPSK(strings.Repeat("x", maxPSKPlaintextBytes+1)); err == nil {
+		t.Fatal("超长明文应被 HashPSK 拒绝")
+	}
+	// 边界内仍应成功。
+	if _, err := HashPSK(strings.Repeat("x", 64)); err != nil {
+		t.Fatalf("正常长度明文应成功: %v", err)
+	}
+}
+
 func TestHashAndVerifyRoundTrip(t *testing.T) {
 	encoded, err := HashPSK("super-secret")
 	if err != nil {

@@ -604,13 +604,29 @@ func (s *Store) EnableUser(ctx context.Context, id int64) error {
 
 // DeleteUser 物理删除一个用户。其下设备 / 租约 / ACL 通过 ON DELETE CASCADE 一并清理。
 func (s *Store) DeleteUser(ctx context.Context, id int64) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id=?`, id)
+	// 第十六轮深扫 HIGH:同事务内**先清掉本用户所有设备 UUID 引用的 port_forwards**,再删用户(设备经 CASCADE
+	// 随之删除)。理由同 DeleteDevice —— port_forwards 无 FK,残留孤儿转发行会被后来注册同一 UUID 的账号静默继承。
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: delete user begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM port_forwards
+		  WHERE LOWER(target_device_uuid) IN (SELECT LOWER(device_uuid) FROM devices WHERE user_id=?)`, id); err != nil {
+		return fmt.Errorf("store: delete user port_forwards: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id=?`, id)
 	if err != nil {
 		return fmt.Errorf("store: delete user: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: delete user commit: %w", err)
 	}
 	return nil
 }

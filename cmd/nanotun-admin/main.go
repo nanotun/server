@@ -141,7 +141,8 @@ func runRoot(args []string, opts *globalOpts) int {
 	case "connection", "conn":
 		return cmdConnection(opts, rest)
 	case "backup":
-		return runWithStore(opts, false, func(ctx context.Context, st *store.Store) error {
+		// 第十六轮深扫 MED:backup 需 RW 连接跑 VACUUM INTO,但**不**跑 Migrate,避免热备份推进 schema。
+		return runWithStoreNoMigrate(opts, func(ctx context.Context, st *store.Store) error {
 			return cmdBackup(ctx, st, opts, rest)
 		})
 	case "vacuum":
@@ -266,6 +267,22 @@ func credentialsIsReadOnly(rest []string) bool {
 // 也走 WAL 共享锁,与写并行不互阻。误调写 SQL 会被 SQLite 拒(SQLITE_READONLY),
 // 起到守门作用。
 func runWithStore(opts *globalOpts, readOnly bool, fn func(ctx context.Context, st *store.Store) error) int {
+	// 默认:非只读路径跑 migration(写路径负责推进 schema);只读路径不跑(query_only 拒 CREATE TABLE)。
+	return runWithStoreOpts(opts, readOnly, !readOnly, fn)
+}
+
+// runWithStoreNoMigrate 打开 read-write 连接但**不跑 Migrate**。用于 backup:
+//
+// 第十六轮深扫 MED:backup 走 VACUUM INTO,而 VACUUM INTO 在 query_only(只读)连接下被 SQLite 拒
+// ("attempt to write a readonly database"),故必须开 read-write。但默认 read-write 路径会顺带 st.Migrate ——
+// 一次「热备份」就可能在旧版 nanotund 仍在运行时**推进 schema**(加列 / 建索引),让线上 server 撞上它不认识的
+// 新 schema(尤其升级窗口期先跑 backup 再重启 server 的常见运维顺序)。备份的语义是「照原样拍快照」,绝不应有
+// 任何 DDL 副作用。这里开 RW 连接但跳过 Migrate:VACUUM INTO 拿到需要的写连接,又不碰 schema。
+func runWithStoreNoMigrate(opts *globalOpts, fn func(ctx context.Context, st *store.Store) error) int {
+	return runWithStoreOpts(opts, false, false, fn)
+}
+
+func runWithStoreOpts(opts *globalOpts, readOnly, migrate bool, fn func(ctx context.Context, st *store.Store) error) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -279,8 +296,8 @@ func runWithStore(opts *globalOpts, readOnly bool, fn func(ctx context.Context, 
 	// 只读模式禁止跑 migration(会触发 CREATE TABLE,被 query_only 拒)。
 	// migration 由写路径(init / 各 write 子命令)负责,只读路径假设 server
 	// 已经把 schema 迁好;如果 admin 在 schema 不全的状态下跑只读命令,
-	// 报 "no such table" 会立即让运维察觉。
-	if !readOnly {
+	// 报 "no such table" 会立即让运维察觉。backup 显式传 migrate=false(见 runWithStoreNoMigrate)。
+	if migrate {
 		if err := st.Migrate(ctx); err != nil {
 			fmt.Fprintf(opts.stderr, "migrate: %v\n", err)
 			return 1

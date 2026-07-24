@@ -10,7 +10,13 @@ import (
 )
 
 // vipCanonicalizedKey 是 canonicalizeStoredVIPs 的一次性完成标记(app_settings)。
-const vipCanonicalizedKey = "vip_canonicalized"
+//
+// 第十六轮深扫 MED:键名从 "vip_canonicalized" 升到 "..._v2",强制**已跑过旧版规范化的部署再跑一次**。
+// 第十五轮把 canonicalVIP 加了 .Unmap()(::ffff:a.b.c.d → a.b.c.d),但旧部署的完成标记已是 "1" →
+// 升级后本 hook 直接 return,存量里的 IPv4-mapped IPv6(如导入 / 历史写入的 "::ffff:10.0.0.1")永不被
+// 归一 → 与点分形失配(去重漏判 / 跨表守卫绕过 / 双占黑洞)。一次性标记的语义是「当前规范化规则已应用」,
+// 规则一旦改变就应换 key 重跑。旧键仍留在 reservedSettingKeys 里禁手改(见 migrations.go)。
+const vipCanonicalizedKey = "vip_canonicalized_v2"
 
 // canonicalizeStoredVIPs 是一次性 Go 迁移兜底:把 leases.vip_v4/v6 与 devices.fixed_vip_v4/v6
 // 里**非规范**的历史值(第七轮 canonicalVIP 写路径修复**之前**落库的、如大写 / 未压缩 IPv6,

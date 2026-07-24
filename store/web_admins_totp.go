@@ -217,11 +217,14 @@ func (s *Store) ListUnusedRecoveryCodes(ctx context.Context, adminID int64) ([]*
 // 的单条 UPDATE ... WHERE 是原子的,即便连接池已放大到 MaxOpenConns=4、多请求
 // 真并发也只会有一条 UPDATE 命中 used_at=0(其余 RowsAffected=0 → ErrNotFound),
 // 不出双花。不依赖任何「单连接串行」假设。
-func (s *Store) MarkRecoveryCodeUsed(ctx context.Context, codeID int64, ip string, now int64) error {
+// 第十六轮深扫 LOW:入参加 adminID,WHERE 加 `AND admin_id=?` —— 恢复码只能被**其归属 admin** 标记消费。
+// 正常路径 codeID 本就来自「在该 admin 名下匹配」的查询,但把归属约束下沉到 DAL 是纵深防御:杜绝未来任何
+// 调用方误传/被诱导传入他人 codeID 而消费掉别人的恢复码(codeID 是自增整数,可枚举)。
+func (s *Store) MarkRecoveryCodeUsed(ctx context.Context, adminID, codeID int64, ip string, now int64) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE web_admin_recovery_codes
 		    SET used_at=?, used_ip=?
-		  WHERE id=? AND used_at=0`, now, ip, codeID)
+		  WHERE id=? AND admin_id=? AND used_at=0`, now, ip, codeID, adminID)
 	if err != nil {
 		return fmt.Errorf("store: mark recovery code used: %w", err)
 	}

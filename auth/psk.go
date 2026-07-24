@@ -71,9 +71,14 @@ const (
 	maxHashBytes = 1024
 	maxSaltBytes = 1024
 
-	// DecodePSK 接受 argon2id 参数的上限：防止管理员 / 迁移脚本写入超大 m=
-	// 让验证路径 OOM。m=1GB 比 OWASP 推荐高 16 倍，是「显然不正常」的兜底门槛。
-	maxArgonMemoryKiB uint32 = 1 * 1024 * 1024 // 1 GiB in KiB
+	// DecodePSK 接受 argon2id 参数的上限：防止管理员 / 迁移脚本写入超大 m= 让验证路径 OOM。
+	//
+	// 第十六轮深扫 MED:上限从 1 GiB 收到 256 MiB。nanotun **唯一**的哈希产出方是 HashPSK,恒用 argonMemory=64 MiB
+	// (见常量),线上任何合法条目都是 64 MiB,不会触及此上限;而 verify 路径每次按 m= 申请等量内存,1 GiB 的上限
+	// 意味着一条手改 / 恶意导入 / DB 损坏的 m=1048576 PHC 会让**每次**登录尝试吃 ~1 GiB,配合 argon2Sema 容量
+	// (最多 64)即 64 GiB → OOM(与超长 hash 同类放大 DoS)。256 MiB = 标准档 4×,给「未来调强 argonMemory」留足
+	// 余量,又把单次 verify 的内存钉在远低于 OOM 的水位。收紧只会拒掉「显然异常」的条目,不影响任何 nanotun 自产哈希。
+	maxArgonMemoryKiB uint32 = 256 * 1024 // 256 MiB in KiB
 	maxArgonTime      uint32 = 100
 	maxArgonThreads   uint8  = 64
 
@@ -84,6 +89,10 @@ const (
 	minArgonMemoryKiB uint32 = 8 * 1024 // 8 MiB;低于此视为不安全的弱 argon2
 	minArgonTime      uint32 = 1
 	minArgonThreads   uint8  = 1
+
+	// maxPSKPlaintextBytes 第十六轮深扫 LOW:HashPSK 接受的明文上限(见 HashPSK 注释)。合法 PSK 至多几十字符,
+	// 1024 字节是「显然异常」的兜底,拒掉误传整文件 / 恶意超长 --psk。
+	maxPSKPlaintextBytes = 1024
 )
 
 // HashPSK 接受明文 PSK，返回 PHC 风格编码后的字符串：
@@ -94,6 +103,13 @@ const (
 func HashPSK(plaintext string) (string, error) {
 	if plaintext == "" {
 		return "", errors.New("auth: empty psk")
+	}
+	// 第十六轮深扫 LOW:PSK 明文长度上限。argon2.IDKey 的耗时与内存由 m/t/p 决定、与明文长度无关,但巨型明文
+	// (管理员脚本误传整文件 / 恶意 --psk)仍会在进入 argon2 前吃内存并放大每次 verify 的拷贝。合法 PSK 至多几十
+	// 字符,给到 1024 字节已远超任何真实用法;超长直接拒。VerifyPSK 侧不设明文上限(登录明文由协议层帧长约束,
+	// 且拒绝会变成对错误密码的可探测差异),只在**产生**哈希这一侧收口。
+	if len(plaintext) > maxPSKPlaintextBytes {
+		return "", fmt.Errorf("auth: psk too long: %d bytes (max %d)", len(plaintext), maxPSKPlaintextBytes)
 	}
 	salt := make([]byte, argonSaltLen)
 	if _, err := rand.Read(salt); err != nil {
@@ -250,6 +266,10 @@ func DecodePSK(encoded string) (salt, hash []byte, memory, time uint32, threads 
 }
 
 func parseArgonParams(s string) (memory, time uint32, threads uint8, err error) {
+	// 第十六轮深扫 LOW:拒绝重复键(如 "m=65536,m=8")。此前重复键静默后者覆盖前者 —— 一条 PHC 可写
+	// "m=<强>,m=<弱>" 让人肉/日志审计以为强档,实际按弱档 verify(把强参数「藏」在被覆盖的前一项里)。
+	// 三个键各只允许出现一次。
+	var seenM, seenT, seenP bool
 	for _, kv := range strings.Split(s, ",") {
 		k, v, ok := strings.Cut(kv, "=")
 		if !ok {
@@ -264,16 +284,28 @@ func parseArgonParams(s string) (memory, time uint32, threads uint8, err error) 
 		// 兜底(如回绕到 m=65536),让畸形条目照跑 verify。以 int 域比较,不受回绕影响。
 		switch k {
 		case "m":
+			if seenM {
+				return 0, 0, 0, errors.New("auth: duplicate argon param m")
+			}
+			seenM = true
 			if n > int(maxArgonMemoryKiB) {
 				return 0, 0, 0, fmt.Errorf("auth: argon m=%d exceeds cap %d", n, maxArgonMemoryKiB)
 			}
 			memory = uint32(n)
 		case "t":
+			if seenT {
+				return 0, 0, 0, errors.New("auth: duplicate argon param t")
+			}
+			seenT = true
 			if n > int(maxArgonTime) {
 				return 0, 0, 0, fmt.Errorf("auth: argon t=%d exceeds cap %d", n, maxArgonTime)
 			}
 			time = uint32(n)
 		case "p":
+			if seenP {
+				return 0, 0, 0, errors.New("auth: duplicate argon param p")
+			}
+			seenP = true
 			if n > int(maxArgonThreads) {
 				return 0, 0, 0, fmt.Errorf("auth: argon p=%d exceeds cap %d", n, maxArgonThreads)
 			}

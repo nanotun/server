@@ -141,7 +141,9 @@ func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	dstKind := store.ACLDstKindUser
 	if flags.exit {
 		if dstRaw != "*" {
-			return errors.New(opts.T("acl.exitRequiresWildcard"))
+			// 第十六轮深扫 LOW:`--exit` 要求 dst 传 `*` 属**用法错误** → exit 2(与本仓 usageError 约定一致;
+			// 此前 errors.New 恒 exit 1)。
+			return usageError(opts.T("acl.exitRequiresWildcard"))
 		}
 		dstKind = store.ACLDstKindExit
 	}
@@ -280,7 +282,8 @@ func cmdACLDelete(ctx context.Context, st *store.Store, opts *globalOpts, args [
 	}
 	id, err := parseInt64(args[0])
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.T("cli.invalidACLID", args[0]), err)
+		// 第十六轮深扫 LOW:非法 <id> 参数属用法错误 → exit 2(与 acl del 缺参 / 顶层 dispatch 一致)。
+		return usageErrorWrap(fmt.Sprintf("%s: %v", opts.T("cli.invalidACLID", args[0]), err), err)
 	}
 	if err := st.DeleteACLPair(ctx, id); err != nil {
 		// 深扫第十轮 LOW:本地化 ErrNotFound(与 route 各 verb 同款,此前裸抛 store 英文错误)。

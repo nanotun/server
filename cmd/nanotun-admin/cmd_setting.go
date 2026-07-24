@@ -28,7 +28,8 @@ var systemManagedSettingKeys = map[string]string{
 	// 第十二轮深扫 HIGH:一次性 VIP 规范化的完成标记,由 store 的 canonicalizeStoredVIPs 迁移 hook 专管。
 	// 手改会让下次 Migrate 跳过规范化,残留非规范 VIP → 去重失配 / 双占。DAL 的 reservedSettingKeys 已兜底,
 	// 这里在 CLI 入口再拦一层并给出清晰 hint。
-	"vip_canonicalized": "setting.sysHint.vipCanonicalized",
+	"vip_canonicalized":    "setting.sysHint.vipCanonicalized",
+	"vip_canonicalized_v2": "setting.sysHint.vipCanonicalized", // 第十六轮:当前版本键,同样系统托管
 }
 
 // validatedSettingKeys 列出可通过 `setting set` 修改、但**必须先走 schema 校验**的 key。

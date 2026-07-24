@@ -70,3 +70,57 @@ func TestConfigValidate(t *testing.T) {
 		t.Fatalf("合法 smux 配置不应报错: %v", err)
 	}
 }
+
+// TestValidateTUNSubnets 第十六轮深扫 MED:两者皆空 → 报错;族错配(v6 in subnets / v4 in subnets_v6)→ 报错;
+// 正确分族 + 仅 v4 / 仅 v6 / 空白项容忍 → 通过。
+func TestValidateTUNSubnets(t *testing.T) {
+	// 两者皆空(含仅空白项)。
+	if err := (TUNConfig{}).ValidateTUNSubnets(); err == nil {
+		t.Fatal("subnets 与 subnets_v6 皆空应报错")
+	}
+	if err := (TUNConfig{Subnets: []string{"  "}}).ValidateTUNSubnets(); err == nil {
+		t.Fatal("仅空白项等同皆空,应报错")
+	}
+	// 族错配。
+	if err := (TUNConfig{Subnets: []string{"fd00::/64"}}).ValidateTUNSubnets(); err == nil {
+		t.Fatal("IPv6 CIDR 放进 subnets 应报错")
+	}
+	if err := (TUNConfig{SubnetsV6: []string{"10.0.0.0/8"}}).ValidateTUNSubnets(); err == nil {
+		t.Fatal("IPv4 CIDR 放进 subnets_v6 应报错")
+	}
+	// 合法组合。
+	for _, c := range []TUNConfig{
+		{Subnets: []string{"10.201.0.0/16"}},
+		{SubnetsV6: []string{"fd00:201::/64"}},
+		{Subnets: []string{"10.201.0.0/16", "  "}, SubnetsV6: []string{"fd00:201::/64"}},
+	} {
+		if err := c.ValidateTUNSubnets(); err != nil {
+			t.Fatalf("合法网段组合不应报错: %+v -> %v", c, err)
+		}
+	}
+}
+
+// TestReality_ValidateListenAddrFormat 第十六轮深扫 MED:REALITY 启用(listen_addr 非空)时 listen_addr 须是
+// 合法 host:port;格式非法应报错。
+func TestReality_ValidateListenAddrFormat(t *testing.T) {
+	base := func(la string) *RealityConfig {
+		return &RealityConfig{
+			ListenAddr:  la,
+			Dest:        "www.microsoft.com:443",
+			PrivateKey:  "",
+			ServerNames: []string{"www.microsoft.com"},
+			ShortIds:    []string{""},
+		}
+	}
+	// 缺冒号 → 报错(且应先于 dest/key 校验命中 listen_addr)。
+	if err := base("443").Validate(); err == nil {
+		t.Fatal("REALITY listen_addr 缺端口分隔应报错")
+	}
+	if err := base("0.0.0.0:99999").Validate(); err == nil {
+		t.Fatal("REALITY listen_addr 端口越界应报错")
+	}
+	// 空 listen_addr = 未启用 → 直接放行。
+	if err := base("").Validate(); err != nil {
+		t.Fatalf("空 listen_addr 应视为未启用直接放行: %v", err)
+	}
+}
