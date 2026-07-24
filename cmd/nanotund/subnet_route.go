@@ -127,6 +127,18 @@ func rebuildSubnetRouteTable(ctx context.Context) {
 			}).Warn("[subnet-route] 跳过非私有/保留段的历史 approved 子网路由(绕过出口闸风险):请重新审批为出口节点或删除")
 			continue
 		}
+		// 第十八轮深扫 MED:拦掉与 server 自身 mesh 网段(TUN v4/v6 CIDR)交叠的 approved 子网路由。批准了一条
+		// 覆盖 / 落入 mesh 网段的 CIDR(admin 误批、或该特性上线前的历史批准)会造成:发往「当前离线的 mesh
+		// 地址」的包在子网路由查表(优先于 forwardPacketToExitNode 的离线-mesh fail-closed)命中该条 → 被中继给
+		// 宣告方会话 → 泄漏进对端 LAN(跨信任域)。批准期(CLI/web)已用 mesh_cidrs 快照拒批,这里是数据面兜底,
+		// 兜住「特性上线前的历史批准」与「绕过 CLI/web 直写 DB」。不删库(admin 可重新处置),仅 warn。
+		if meshPrefixOverlaps(masked) {
+			logrus.WithFields(logrus.Fields{
+				"cidr":      r.CIDR,
+				"device_id": r.DeviceID,
+			}).Warn("[subnet-route] 跳过与本 mesh 网段交叠的 approved 子网路由(跨信任域泄漏风险):请删除或改用不重叠网段")
+			continue
+		}
 		tbl = append(tbl, subnetRouteEntry{prefix: masked, deviceID: r.DeviceID})
 		// SR-VIA6：确保该 approved 子网宣告方设备已分配稳定 siteID（幂等；供 4via6 消歧数据面 + routes-list 下发）。
 		// 集中在此分配：不论 approve 来自 admin CLI 还是 web，都经 /reload?what=routes 触发本 rebuild。0/0 出口已在

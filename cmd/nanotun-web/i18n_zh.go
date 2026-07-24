@@ -922,6 +922,7 @@ var catZH = map[string]string{
 	"err.adminNotFound":           "管理员不存在",
 	"err.missingLeaseAction":      "缺 lease 操作",
 	"err.routeNotFound":           "路由记录不存在(可能已被删除)",
+	"err.routeOverlapsMesh":       "cidr %s 与 server 自身的 mesh 网段(TUN 网关子网)交叠;批准它会把发往「离线 mesh 地址」的流量中继进宣告方的 LAN(跨信任域泄漏)。请改用不重叠的网段,或用出口节点做公网转发。",
 	"err.routeNotPending":         "该路由当前状态为 %s,仅待审(pending)可被拒绝;撤销已批准的路由请用删除",
 	"err.leaseNotFound":           "该设备当前没有租约(可能已被释放)",
 	"err.pfNotFound":              "端口转发不存在(可能已被删除)",

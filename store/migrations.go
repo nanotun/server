@@ -208,6 +208,10 @@ var reservedSettingKeys = map[string]bool{
 	// hook 自身走 tx.ExecContext,不经过 SettingsSet,加此守卫不影响正常迁移。
 	vipCanonicalizedKey: true, // "vip_canonicalized_v2"(当前版本)
 	"vip_canonicalized": true, // 第十六轮深扫:旧版一次性标记,仍禁手改(升级后成死键,但不给绕过面)
+	// 第十八轮深扫 MED:mesh_cidrs 是 server 启动落库的本 mesh 网段快照,供 CLI/web 在「批准子网路由」时
+	// 判交叠。只由 server 经 SetMeshCIDRs 直写(不经本函数),手改会让批准期重叠检查读到伪造网段 → 误拦
+	// 合法路由 / 漏掉真正重叠。禁经 SettingsSet 写。
+	MeshCIDRsKey: true, // "mesh_cidrs"
 }
 
 func (s *Store) SettingsSet(ctx context.Context, key, value string) error {

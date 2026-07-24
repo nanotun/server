@@ -477,6 +477,20 @@ func (s *Server) handleRouteAction(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// 第十八轮深扫 MED:与 CLI `route approve` 同口径 —— 批准期拒绝与 server 自身 mesh 网段交叠的**具体**
+		// 子网路由(0/0 / ::/0 出口是特例,交给出口路径、不进子网路由表)。交叠会让发往「离线 mesh 地址」的包被
+		// 中继进宣告方 LAN(跨信任域泄漏)。mesh 网段快照由 server 启动落库(mesh_cidrs);读不到则跳过,由数据面兜底。
+		if !util.IsExitDefaultRoute(cidr) {
+			meshCIDRs, merr := s.store.GetMeshCIDRs(r.Context())
+			if merr != nil {
+				s.renderInternalError(w, r, "routes:approve_mesh_cidrs", merr)
+				return
+			}
+			if util.CIDROverlapsAny(cidr, meshCIDRs) {
+				s.renderError(w, r, http.StatusBadRequest, tr(r, "err.routeOverlapsMesh", cidr))
+				return
+			}
+		}
 		if err := s.store.SetRouteStatus(r.Context(), deviceID, cidr, store.RouteStatusApproved, ""); err != nil {
 			// 双击 / 陈旧列表页重提交 → 干净 404,而不是 500 + 裸 store 错误。
 			if errors.Is(err, store.ErrNotFound) {

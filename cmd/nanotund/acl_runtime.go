@@ -981,6 +981,21 @@ func isMeshCIDRAddr(a netip.Addr) bool {
 	return g.v6Net.IsValid() && g.v6Net.Contains(a)
 }
 
+// meshPrefixOverlaps 报告前缀 p 是否与 server 自身 mesh 网段(TUN v4/v6 CIDR)有交叠(任一方向包含)。
+// 未设置(测试 / 无 TUN)时恒 false。第十八轮深扫 MED:供 rebuildSubnetRouteTable 把「批准的子网路由覆盖/落入
+// mesh 网段」这类越权路由挡在转发表外——否则发往离线 mesh 地址的包会被子网路由中继进宣告方 LAN(跨信任域泄漏)。
+// lock-free 读,与 isMeshCIDRAddr 同快照。
+func meshPrefixOverlaps(p netip.Prefix) bool {
+	g := serverGatewayAddrs.Load()
+	if g == nil {
+		return false
+	}
+	if g.v4Net.IsValid() && g.v4Net.Overlaps(p) {
+		return true
+	}
+	return g.v6Net.IsValid() && g.v6Net.Overlaps(p)
+}
+
 // isServerGatewayAddr 判断 a 是否为 server 自身 TUN 网关地址（v4 或 v6）。未设置（测试 / 无 TUN）时恒 false。
 func isServerGatewayAddr(a netip.Addr) bool {
 	g := serverGatewayAddrs.Load()

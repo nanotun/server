@@ -52,6 +52,8 @@ var catZH = map[string]string{
 		"误改后回退:用 sqlite3 把 value 改回真实跑过的迁移编号。",
 	"setting.sysHint.vipCanonicalized": "VIP 规范化的一次性完成标记,由 Migrate 的 canonicalizeStoredVIPs 兜底专管。" +
 		"手改成 1 会让下次升级跳过规范化,残留非规范 VIP → 去重失配 / 双占。请勿手动设置。",
+	"setting.sysHint.meshCidrs": "本 mesh 网段(TUN 网关 CIDR)的快照,由 nanotun server 启动时写入,供 admin/web 在批准子网路由时拒绝与之交叠的网段。" +
+		"手改会让批准期的重叠检查信任一个伪造的网段。每次 server 启动都会刷新,请勿手动设置。",
 	"setting.validateFailed":      "%q 校验失败:%s",
 	"setting.written":             "已写入：%s=%s",
 	"setting.notFound":            "未找到设置项 %q",
@@ -369,6 +371,7 @@ var catZH = map[string]string{
 	"route.rejected":          "已拒绝 device=%d cidr=%s reason=%q",
 	"route.notPending":        "路由 device=%d cidr=%s 不是 pending(当前状态=%s);reject 仅作用于待审批声明。要撤销已批准的路由请用 `route delete`,或加 --force 越过。",
 	"route.notFound":          "路由不存在:device=%d cidr=%s",
+	"route.overlapsMesh":      "cidr %s 与 server 自身的 mesh 网段(TUN 网关子网)交叠;批准它会把发往「离线 mesh 地址」的流量中继进宣告方的 LAN(跨信任域泄漏)。请改用不重叠的网段,或用出口节点做公网转发。(--force 不越过此配置错误。)",
 	"route.confirmDelete":     "确认删除 device=%d cidr=%s 的路由声明?",
 	"route.deleted":           "已删除 device=%d cidr=%s",
 	"route.needTwoArgs":       "需要 <device_id> 与 <cidr> 两个参数",

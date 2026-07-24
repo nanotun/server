@@ -55,6 +55,8 @@ var catEN = map[string]string{
 		"To recover after a mistaken edit: use sqlite3 to set value back to the migration number that actually ran.",
 	"setting.sysHint.vipCanonicalized": "one-shot completion flag for VIP canonicalization, managed solely by the canonicalizeStoredVIPs migration hook. " +
 		"Setting it to 1 by hand makes the next upgrade skip canonicalization, leaving non-canonical VIPs that break dedup and can double-allocate. Do not set it manually.",
+	"setting.sysHint.meshCidrs": "snapshot of the server's own mesh network (TUN gateway CIDRs), written by the nanotun server at startup so that admin/web can reject subnet-route approvals that overlap it. " +
+		"Editing it by hand would make the approval-time overlap check trust a forged network. It is refreshed on every server start; do not set it manually.",
 	"setting.validateFailed":      "%q validation failed: %s",
 	"setting.written":             "written: %s=%s",
 	"setting.notFound":            "setting %q not found",
@@ -372,6 +374,7 @@ var catEN = map[string]string{
 	"route.rejected":          "rejected device=%d cidr=%s reason=%q",
 	"route.notPending":        "route device=%d cidr=%s is not pending (current status=%s); reject only acts on pending advertisements. To revoke an already-approved route use `route delete`, or re-run with --force to override.",
 	"route.notFound":          "route not found: device=%d cidr=%s",
+	"route.overlapsMesh":      "cidr %s overlaps the server's own mesh network (TUN gateway subnet); approving it would relay traffic for offline mesh addresses into the advertising peer's LAN (cross-trust-domain leak). Pick a non-overlapping subnet, or use an exit node for public egress. (--force does not override this misconfiguration.)",
 	"route.confirmDelete":     "confirm deleting the route advertisement for device=%d cidr=%s?",
 	"route.deleted":           "deleted device=%d cidr=%s",
 	"route.needTwoArgs":       "need two arguments: <device_id> and <cidr>",
