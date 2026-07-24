@@ -299,6 +299,19 @@ func (s *Server) handleMeTOTPEnable(w http.ResponseWriter, r *http.Request) {
 		FormatTarget("web_admin", admin.ID),
 		FormatDetail("recovery_codes", n))
 
+	// 第十六轮深扫 MED:启用 2FA 后**吊销该 admin 的其余会话**并给当前会话换发新 token —— 与「改密原子吊销」
+	// (handler_admins UpdateWebAdminPasswordHash + DeleteWebSessionsByAdmin)对称。否则:启用 2FA **之前**若 cookie
+	// 已被盗(那时只需密码即可用),启用 2FA 后旧 cookie 仍有效 —— 攻击者绕过刚加的第二因子,2FA 形同虚设。先删该
+	// admin 全部会话,再给**当前操作者** IssueSession:旧(疑似被盗)cookie 全失效,当前会话无缝换发新 sid 续用。
+	// 删/发失败不阻断本次启用(2FA 已落库,退化为「下次登录才彻底生效」),仅审计留痕。
+	if _, derr := s.store.DeleteWebSessionsByAdmin(r.Context(), admin.ID); derr != nil {
+		s.audit.WriteFromRequest(r, "totp_enable_revoke_failed",
+			FormatTarget("web_admin", admin.ID), FormatDetail("err", derr.Error()))
+	} else if _, ierr := s.sess.IssueSession(r.Context(), w, admin.ID, ip, r.UserAgent()); ierr != nil {
+		s.audit.WriteFromRequest(r, "totp_enable_reissue_failed",
+			FormatTarget("web_admin", admin.ID), FormatDetail("err", ierr.Error()))
+	}
+
 	// 第四轮深扫 MED(d_recovery_prg):不再在本 POST 响应里直接渲染明文码。stash 进一次性 flash(绑定当前
 	// admin)后 303 到 GET /me/totp/codes?token=... —— 刷新 / 后退只 GET,不会重发 POST;明文码只在一次 GET
 	// 里出现,不落浏览器 POST 历史。stash 失败(crypto/rand 故障,极罕见)时 TOTP 已启用,引导用户去 regen。
@@ -437,7 +450,7 @@ func (s *Server) handleMeTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	s.stepUpFailures.Reset(ip)
 	if usedRecovery && recoveryID > 0 {
 		// disable 路径用了恢复码,标记 used 主要是审计完整,实际马上要全删了。
-		_ = s.store.MarkRecoveryCodeUsed(r.Context(), recoveryID, clientIP(r), time.Now().Unix())
+		_ = s.store.MarkRecoveryCodeUsed(r.Context(), admin.ID, recoveryID, clientIP(r), time.Now().Unix())
 	}
 	if err := s.store.DisableWebAdminTOTP(r.Context(), admin.ID); err != nil {
 		s.renderInternalError(w, r, "me:totp_disable", err)

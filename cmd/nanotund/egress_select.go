@@ -46,6 +46,7 @@ var (
 	exitForwardDroppedOversize atomic.Uint64 // 包超过 tunBufSize 丢弃(防截断损坏)
 	exitForwardDroppedRate     atomic.Uint64 // 超过本会话出口转发速率帽丢弃的包数(M6 带宽帽)
 	exitForwardDroppedNoV6     atomic.Uint64 // 目的是公网 v6 但所选出口无 v6 出网:回 ICMPv6 unreachable 后丢弃的包数
+	exitForwardDroppedMeshDst  atomic.Uint64 // 第十六轮:目的落在本 mesh 网段但无在线归属(对端离线),不外泄给出口,就地丢
 
 	// server 自出口(egress=server/默认)对公网 v6 的兜底:server 本机无 v6 公网出网时,把使用方发来的公网全局
 	// 单播 v6 回 ICMPv6 unreachable 使其秒回落 v4(与 peer 出口的 exitForwardDroppedNoV6 同理,补 egress==0 路径)。
@@ -87,6 +88,7 @@ type ExitNodeStats struct {
 	DroppedOversize uint64 `json:"dropped_oversize"`
 	DroppedRate     uint64 `json:"dropped_rate"`
 	DroppedNoV6     uint64 `json:"dropped_no_v6"`
+	DroppedMeshDst  uint64 `json:"dropped_mesh_dst"`
 	// ServerEgressDroppedNoV6:走 server 自出口、因 server 本机无 v6 而回 ICMPv6 unreachable 的公网 v6 包数。
 	ServerEgressDroppedNoV6 uint64 `json:"server_egress_dropped_no_v6"`
 	// RateCapBPS:当前生效的 per-session 出口转发速率帽(字节/秒);0 = 不限。
@@ -106,6 +108,7 @@ func snapshotExitNodeStats() ExitNodeStats {
 		DroppedOversize:         exitForwardDroppedOversize.Load(),
 		DroppedRate:             exitForwardDroppedRate.Load(),
 		DroppedNoV6:             exitForwardDroppedNoV6.Load(),
+		DroppedMeshDst:          exitForwardDroppedMeshDst.Load(),
 		ServerEgressDroppedNoV6: serverEgressDroppedNoV6.Load(),
 		RateCapBPS:              exitForwardRateBPS.Load(),
 	}
@@ -148,6 +151,15 @@ func forwardPacketToExitNode(c *Connection, payload []byte) bool {
 	}
 	if isLocalMeshDst(t.dst) {
 		return false
+	}
+	// 第十六轮深扫 MED:目的落在 server 自身 mesh 网段(TUN CIDR)内、但当前**无在线归属**(对端离线 / 未登录)——
+	// isLocalMeshDst 只认「在线 vIP + 网关」,这类地址会漏到此处被当公网转发给 peer 出口 → 把**内部 mesh 地址**
+	// 泄漏给出口节点、且在出口侧注定黑洞。mesh 网段内地址绝非公网出口流量:fail-closed 就地丢弃(不转发、不回退
+	// server 自出口),对端上线后经正常 mesh 投递即可。只收口 exit 路径,不动 subnet-route(其 per-CIDR 门控自有
+	// 语义,避免误伤与 mesh 段重叠的合法内网宣告)。
+	if isMeshCIDRAddr(t.dst) {
+		exitForwardDroppedMeshDst.Add(1)
+		return true
 	}
 	// 按 device 取「真在跑出口」会话(advertisedExit && !takenOver),与选择侧同口径。
 	// 不用 lookupActiveConnByDevice 的「首个 !takenOver」:接管/重连窗口该 device 可能并存非出口会话,选中后转发会被

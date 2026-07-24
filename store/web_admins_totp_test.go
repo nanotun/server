@@ -61,15 +61,25 @@ func TestWebAdminTOTP_EnableDisableRoundTrip(t *testing.T) {
 	if len(codes) != 10 {
 		t.Fatalf("List 长度 = %d, want 10", len(codes))
 	}
-	if err := s.MarkRecoveryCodeUsed(ctx, codes[0].ID, "1.2.3.4", now+10); err != nil {
+	if err := s.MarkRecoveryCodeUsed(ctx, a.ID, codes[0].ID, "1.2.3.4", now+10); err != nil {
 		t.Fatalf("MarkRecoveryCodeUsed: %v", err)
 	}
 	if cnt, _ := s.CountUnusedRecoveryCodes(ctx, a.ID); cnt != 9 {
 		t.Fatalf("使用 1 条后 Count = %d, want 9", cnt)
 	}
 	// 再用同一条 → 应该 ErrNotFound(WHERE used_at=0 防双花)
-	if err := s.MarkRecoveryCodeUsed(ctx, codes[0].ID, "1.2.3.4", now+20); err == nil {
+	if err := s.MarkRecoveryCodeUsed(ctx, a.ID, codes[0].ID, "1.2.3.4", now+20); err == nil {
 		t.Fatal("同一条恢复码重复 mark 应当返回 error")
+	}
+	// 第十六轮深扫 LOW:用**错误的 adminID** 标记他人 codeID 应 ErrNotFound(admin 归属约束)。
+	{
+		other, _ := s.CreateWebAdmin(ctx, NewWebAdmin{Username: "rc_other", PasswordHash: dummyPwdHash, Role: "admin"})
+		if err := s.MarkRecoveryCodeUsed(ctx, other.ID, codes[1].ID, "1.2.3.4", now+30); err != ErrNotFound {
+			t.Fatalf("跨 admin 标记恢复码应 ErrNotFound, got %v", err)
+		}
+		if cnt, _ := s.CountUnusedRecoveryCodes(ctx, a.ID); cnt != 9 {
+			t.Fatalf("跨 admin 标记失败后原 admin 恢复码数不应变, got %d want 9", cnt)
+		}
 	}
 
 	// disable → secret 清,恢复码全删
@@ -98,8 +108,8 @@ func TestWebAdminTOTP_Regenerate(t *testing.T) {
 
 	// 用掉两条
 	codes, _ := s.ListUnusedRecoveryCodes(ctx, a.ID)
-	_ = s.MarkRecoveryCodeUsed(ctx, codes[0].ID, "ip", 110)
-	_ = s.MarkRecoveryCodeUsed(ctx, codes[1].ID, "ip", 120)
+	_ = s.MarkRecoveryCodeUsed(ctx, a.ID, codes[0].ID, "ip", 110)
+	_ = s.MarkRecoveryCodeUsed(ctx, a.ID, codes[1].ID, "ip", 120)
 	if c, _ := s.CountUnusedRecoveryCodes(ctx, a.ID); c != 8 {
 		t.Fatalf("用掉 2 条后 = %d, want 8", c)
 	}

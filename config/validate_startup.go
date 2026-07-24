@@ -171,6 +171,61 @@ func (s ServerConfig) ValidateJumpHostProtectedPorts() error {
 	return nil
 }
 
+// ValidateTUNSubnets 预演 cmd/nanotund 启动期两处 TUN 网段 fail-fast:
+//   - [tun].subnets 与 subnets_v6 **同时为空**(去空白后)→ server.go 直接 FatalExit「至少配置一项」;
+//   - **族错配**:IPv6 CIDR 落进 [tun].subnets、或 IPv4 CIDR 落进 [tun].subnets_v6。runtime 按列表分别喂给
+//     v4 / v6 地址池:放错族的条目要么解析进错误池、要么被跳过 → 该族「无可用网段」,最终撞上 server.go 的
+//     「IPv4 和 IPv6 均无可用网段」FatalExit。此前 Config.Validate 的 checkCIDRs 只校验「是不是合法 CIDR」,
+//     不看族,故一份把 v4/v6 写反的配置能过 lint 却开机 Fatal。
+//
+// CIDR 语法本身仍由 Config.Validate 的 checkCIDRs 负责;这里解析失败就跳过(交给它报),只补「族」这一维。
+func (t TUNConfig) ValidateTUNSubnets() error {
+	countNonBlank := func(list []string) int {
+		n := 0
+		for _, s := range list {
+			if strings.TrimSpace(s) != "" {
+				n++
+			}
+		}
+		return n
+	}
+	if countNonBlank(t.Subnets) == 0 && countNonBlank(t.SubnetsV6) == 0 {
+		return fmt.Errorf("[tun] subnets 与 subnets_v6 至少配置一项(两者皆空 → 数据面无地址池,server 启动即 Fatal)")
+	}
+	var errs []string
+	for i, s := range t.Subnets {
+		e := strings.TrimSpace(s)
+		if e == "" {
+			continue
+		}
+		ip, _, err := net.ParseCIDR(e)
+		if err != nil {
+			continue // CIDR 语法错交给 Config.Validate.checkCIDRs
+		}
+		if ip.To4() == nil {
+			errs = append(errs, fmt.Sprintf("[tun].subnets[%d]=%q 是 IPv6 CIDR,应放到 [tun].subnets_v6", i, s))
+		}
+	}
+	for i, s := range t.SubnetsV6 {
+		e := strings.TrimSpace(s)
+		if e == "" {
+			continue
+		}
+		ip, _, err := net.ParseCIDR(e)
+		if err != nil {
+			continue
+		}
+		if ip.To4() != nil {
+			errs = append(errs, fmt.Sprintf("[tun].subnets_v6[%d]=%q 是 IPv4 CIDR,应放到 [tun].subnets", i, s))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("[tun] 网段族错配(runtime 会放进错误的地址池 → 该族无可用网段 → 启动 Fatal):\n  - %s",
+			strings.Join(errs, "\n  - "))
+	}
+	return nil
+}
+
 // jumpHostPortSpecError 返回单条 protected-port 规格的语法错误描述(合法则空串)。语法与
 // cmd/nanotund parseJumpHostProtectedPorts 的接受集精确对齐:非法条目正是 runtime 会静默跳过的那些。
 func jumpHostPortSpecError(s string) string {

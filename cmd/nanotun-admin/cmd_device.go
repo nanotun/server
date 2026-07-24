@@ -323,36 +323,41 @@ func cmdDeviceSetFixedVIP(ctx context.Context, st *store.Store, opts *globalOpts
 	if err != nil {
 		return opts.notFoundErr(err, "device.notFound", id)
 	}
-	newV4 := d.FixedVIPv4
-	if *v4 != "<keep>" {
-		newV4 = *v4
-	}
-	newV6 := d.FixedVIPv6
-	if *v6 != "<keep>" {
-		newV6 = *v6
-	}
+	// 第十六轮深扫 MED:未指定的族传 store.KeepFixedVIP,让 store 在**事务内**读当前值 —— 不再在 CLI 事务外
+	// GetDevice 读旧值后合并写回,消除两个只改单族(一个 --v4、一个 --v6)的并发 set-fixed-vip 互相覆盖的丢更新
+	// 竞态。仅对**本次改动**的族做族校验 + 冲突预检 + audit 展示;未改动的族保持不变。
+	changedV4 := *v4 != "<keep>"
+	changedV6 := *v6 != "<keep>"
+	storeV4, storeV6 := store.KeepFixedVIP, store.KeepFixedVIP
+	newV4, newV6 := *v4, *v6 // 仅在对应 changed 为真时才有意义
 	// 地址族校验(空串 = 清除,豁免):--v4 必须是 IPv4,--v6 必须是 IPv6。
 	// ParseAddr 两族都收,不查族会把 IPv6 字面量写进 fixed_vip_v4(反之亦然),
 	// 分配时静默失效。与 web 端 set-fixed-vip 同口径。
 	// 第七轮深扫 HIGH:校验通过后立即规范化为 netip.Addr.String()(小写 / 压缩),让下面的冲突预检、
 	// audit 记录与 store 落库处在同一文本域。store.SetDeviceFixedVIP 也会再规范化一次(纵深),但这里
 	// 先做能让 findFixedVIPConflict 的字符串比较与最终存储一致,避免「预检说无冲突、落库才 ErrDuplicate」。
-	if newV4 != "" {
-		a, aerr := netip.ParseAddr(newV4)
-		if aerr != nil || !a.Unmap().Is4() {
-			return errors.New(opts.T("device.badFixedV4", newV4))
+	if changedV4 {
+		if newV4 != "" {
+			a, aerr := netip.ParseAddr(newV4)
+			if aerr != nil || !a.Unmap().Is4() {
+				return errors.New(opts.T("device.badFixedV4", newV4))
+			}
+			newV4 = a.String()
 		}
-		newV4 = a.String()
+		storeV4 = newV4
 	}
-	if newV6 != "" {
-		a, aerr := netip.ParseAddr(newV6)
-		if aerr != nil || !a.Is6() || a.Is4In6() {
-			return errors.New(opts.T("device.badFixedV6", newV6))
+	if changedV6 {
+		if newV6 != "" {
+			a, aerr := netip.ParseAddr(newV6)
+			if aerr != nil || !a.Is6() || a.Is4In6() {
+				return errors.New(opts.T("device.badFixedV6", newV6))
+			}
+			newV6 = a.String()
 		}
-		newV6 = a.String()
+		storeV6 = newV6
 	}
 	// 仅在「真的变了」时才查冲突,避免 noop 触发全表扫描。
-	if newV4 != d.FixedVIPv4 {
+	if changedV4 && newV4 != d.FixedVIPv4 {
 		if conflict, err := findFixedVIPConflict(ctx, st, opts, newV4, d.ID); err != nil {
 			return err
 		} else if conflict != "" {
@@ -362,7 +367,7 @@ func cmdDeviceSetFixedVIP(ctx context.Context, st *store.Store, opts *globalOpts
 			fmt.Fprintln(opts.stderr, opts.T("device.forceOverrideV4", conflict))
 		}
 	}
-	if newV6 != d.FixedVIPv6 {
+	if changedV6 && newV6 != d.FixedVIPv6 {
 		if conflict, err := findFixedVIPConflict(ctx, st, opts, newV6, d.ID); err != nil {
 			return err
 		} else if conflict != "" {
@@ -375,15 +380,23 @@ func cmdDeviceSetFixedVIP(ctx context.Context, st *store.Store, opts *globalOpts
 	oldV4, oldV6 := d.FixedVIPv4, d.FixedVIPv6
 	// --force 传到 store 层:让它在跨表 lease 冲突时释放他设备占用后再钉(而非 ErrDuplicate 拒绝),
 	// 与 CLI 侧「--force 跳过预检」的语义一致(见 SetDeviceFixedVIP)。
-	if err := st.SetDeviceFixedVIP(ctx, d.ID, newV4, newV6, *force); err != nil {
+	if err := st.SetDeviceFixedVIP(ctx, d.ID, storeV4, storeV6, *force); err != nil {
 		return err
+	}
+	// 展示值:改动的族用新值,未改动的族沿用读到的旧值(仅用于审计/回显)。
+	dispV4, dispV6 := oldV4, oldV6
+	if changedV4 {
+		dispV4 = newV4
+	}
+	if changedV6 {
+		dispV6 = newV6
 	}
 	_ = st.Audit(ctx, "admin-cli", "device_set_fixed_vip",
 		fmt.Sprintf("device:%d", d.ID),
 		fmt.Sprintf("uuid=%s old_v4=%s new_v4=%s old_v6=%s new_v6=%s",
-			d.DeviceUUID, oldV4, newV4, oldV6, newV6))
+			d.DeviceUUID, oldV4, dispV4, oldV6, dispV6))
 	fmt.Fprintln(opts.stdout, opts.T("device.fixedUpdated",
-		d.ID, d.DeviceUUID, dashIfEmpty(newV4), dashIfEmpty(newV6)))
+		d.ID, d.DeviceUUID, dashIfEmpty(dispV4), dashIfEmpty(dispV6)))
 	return nil
 }
 

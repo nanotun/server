@@ -39,6 +39,9 @@ level = "info"
 
 [server]
 listen_addr = "0.0.0.0:443"
+
+[tun]
+subnets = ["10.201.0.0/16"]
 `
 	code, out, errMsg := runConfigLint(t, writeTOML(t, valid))
 	if code != 0 {
@@ -258,6 +261,9 @@ jump_host_protected_ports = ["garbage"]
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
+			// 这些 fixture 只关心 [server] 语义、均不含 [tun];补一段合法 subnets 以满足第十六轮新增的
+			// ValidateTUNSubnets(「两者皆空 → 启动 Fatal」),使它们仍是**整体合法**的配置。
+			cfg += "\n[tun]\nsubnets = [\"10.201.0.0/16\"]\n"
 			code, out, errMsg := runConfigLint(t, writeTOML(t, cfg))
 			if code != 0 {
 				t.Fatalf("合法配置应 exit 0, got %d, stderr=%q", code, errMsg)

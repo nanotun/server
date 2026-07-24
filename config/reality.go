@@ -38,6 +38,12 @@ func (r *RealityConfig) Validate() error {
 	if strings.TrimSpace(r.ListenAddr) == "" {
 		return nil
 	}
+	// 第十六轮深扫 MED:listen_addr 非空(= 启用)时须是合法 host:port —— 此前只判「非空即启用」,格式非法
+	// (如 "443" 缺冒号 / "host:99999" 越界)过 lint 却在真正 bind REALITY 监听时失败 → 启动 Fatal。与
+	// [server].listen_addr 同口径提前到启动/ lint 期拦截。
+	if err := validateListenAddrFormat(strings.TrimSpace(r.ListenAddr)); err != nil {
+		return fmt.Errorf("listen_addr=%q %w", r.ListenAddr, err)
+	}
 	if err := validateRealityDest(r.Dest); err != nil {
 		return fmt.Errorf("dest: %w", err)
 	}

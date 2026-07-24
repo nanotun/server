@@ -2,6 +2,7 @@
 package certs
 
 import (
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -84,6 +85,18 @@ func IssueClientCert(caCertPEM, caKeyPEM, commonName string, validDays int) (*Is
 	caKey, err := parsePrivateKeyPEM(caKeyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("解析 CA 私钥: %w", err)
+	}
+
+	// 第十六轮深扫 LOW:校验 CA 私钥与 CA 证书**成对**(私钥公钥 == 证书公钥)。此前证书与私钥各自独立解析,
+	// 若运维把 cert 与 key 文件配错(换过其一 / bundle 顺序问题),x509.CreateCertificate 会**照签不误**——用错误
+	// 私钥签出的叶子证书,其签名无法被 caCert 公钥验证 → 客户端建链失败,却要到部署连不上时才暴露。这里在签名前
+	// 就地比对公钥,配错立即 fail-fast,报「密钥对错配」而非签出一张废证。stdlib 各类公钥都实现 Equal(crypto.PublicKey)。
+	signer, ok := caKey.(crypto.Signer)
+	if !ok {
+		return nil, errors.New("CA 私钥不支持签名(非 crypto.Signer)")
+	}
+	if eq, ok := signer.Public().(interface{ Equal(crypto.PublicKey) bool }); !ok || !eq.Equal(caCert.PublicKey) {
+		return nil, errors.New("CA 私钥与 CA 证书不匹配(公钥不一致,请核对 cert 与 key 文件是否配对)")
 	}
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)

@@ -951,8 +951,16 @@ func clampDNSResponseTTLs(raw []byte, maxTTL uint32) ([]byte, bool) {
 	return out, true
 }
 
-// dialAndQueryUDP 同步发一个 UDP DNS 报文到 addr,等待一次响应。
+// dialAndQueryUDP 同步发一个 UDP DNS 报文到 addr,等待一次**与查询匹配**的响应。
+//
+// 第十六轮深扫 MED:此前收到第一个 UDP 包即原样返回,不校验 TXID / question。连接态 UDP(DialContext)已由内核
+// 按 upstream 5-tuple 过滤入包,off-path 盲注还需猜中本地临时端口;但**on-path 或能伪 upstream 源地址**者可在真
+// 应答前抢注一包,污染 server 自解析缓存 / 回给客户端错误记录。这里叠加 DNS 层校验:只接受 Response 位置位、TXID
+// 与查询一致、且首个 question(名称大小写不敏感 + type/class)相符的应答;不符则丢弃继续等到 deadline。防御纵深,
+// 与 stub resolver 的最基本反投毒一致。
 func dialAndQueryUDP(ctx context.Context, addr string, query []byte, timeout time.Duration) ([]byte, error) {
+	wantID, wantQ, haveKey := parseDNSQueryKey(query)
+
 	d := net.Dialer{Timeout: timeout}
 	c, err := d.DialContext(ctx, "udp", addr)
 	if err != nil {
@@ -964,11 +972,58 @@ func dialAndQueryUDP(ctx context.Context, addr string, query []byte, timeout tim
 		return nil, err
 	}
 	buf := make([]byte, 1500)
-	n, err := c.Read(buf)
-	if err != nil {
-		return nil, err
+	for {
+		n, err := c.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+		resp := buf[:n]
+		if !haveKey {
+			// 查询本身解析不出 key(异常报文)→ 退回旧行为(收第一包即返回),不改变可用性。
+			return append([]byte(nil), resp...), nil
+		}
+		if dnsReplyMatches(resp, wantID, wantQ) {
+			return append([]byte(nil), resp...), nil
+		}
+		// 不匹配 = 迟到的旧应答 / 伪造包 → 丢弃继续读,直到匹配或 deadline(Read 超时 → err 退出)。
 	}
-	return buf[:n], nil
+}
+
+// parseDNSQueryKey 从 DNS 查询报文取出 TXID 与首个 question,供 dnsReplyMatches 校验应答。
+// 解析失败 → ok=false(调用方退回「收第一包即返回」);无 question 的查询 → q 名长为 0(只校验 TXID)。
+func parseDNSQueryKey(query []byte) (id uint16, q dnsmessage.Question, ok bool) {
+	var p dnsmessage.Parser
+	hdr, err := p.Start(query)
+	if err != nil {
+		return 0, dnsmessage.Question{}, false
+	}
+	qq, err := p.Question()
+	if err != nil {
+		return hdr.ID, dnsmessage.Question{}, true // 无 question:仅按 ID 校验
+	}
+	return hdr.ID, qq, true
+}
+
+// dnsReplyMatches 判断一份应答是否匹配本次查询:Response 位置位、TXID 一致、首个 question(名称大小写不敏感 +
+// 同 type/class)相符。wantQ 名长为 0(查询无 question)时只校验 ID。
+func dnsReplyMatches(resp []byte, wantID uint16, wantQ dnsmessage.Question) bool {
+	var p dnsmessage.Parser
+	hdr, err := p.Start(resp)
+	if err != nil {
+		return false
+	}
+	if !hdr.Response || hdr.ID != wantID {
+		return false
+	}
+	if wantQ.Name.Length == 0 {
+		return true
+	}
+	rq, err := p.Question()
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(rq.Name.String(), wantQ.Name.String()) &&
+		rq.Type == wantQ.Type && rq.Class == wantQ.Class
 }
 
 // magicDNSExtraDNS 给 server.go 登录路径用:启用时返回应当 prepend 到客户端 DNS 列表的

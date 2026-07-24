@@ -813,6 +813,15 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 
 	// (3) 已批准的出口 / 子网转发者:合法中继非 vIP 源的外网 / LAN 回程 → 豁免。
 	if c.advertisedExitApproved.Load() || c.advertisedSubnetApproved.Load() {
+		// 第十六轮深扫 MED:豁免**不含**「目的 == server 自身网关」的包。合法的出口/子网回程只会指向对端 vIP 或
+		// 外网/LAN,绝不会以网关自身为目的;而 MagicDNS resolver 监听 gateway:53、mesh 服务也在网关。若在此放过一个
+		// **非 vIP 源、目的网关**的包,它会以「未知源」抵达 MagicDNS → 触发解析层 fail-open(magicNameDeniedByMeshOff/
+		// ACL 查不到源归属即放行)→ 绕过 mesh-off / 跨用户 ACL 枚举全 mesh 名字→vIP。故对目的网关的包仍要求合法 vIP
+		// 源(落到 (4):本会话有 vIP 则源必为自身 vIP,否则判伪造)。这样 MagicDNS 永远只见到已知归属的 peer,解析层
+		// 的 fail-open 只对真正的 server 自查 / 测试生效,不再成为已批准转发者的枚举旁路。
+		if t.dst.IsValid() && isServerGatewayAddr(t.dst.Unmap()) {
+			return hasAnyVIP
+		}
 		return false
 	}
 
@@ -923,8 +932,13 @@ func lookupVIPOwner(a netip.Addr) (int64, bool) {
 	return e.userID, true
 }
 
-// serverGatewayAddrsT 是 server 自身 TUN 网关地址（v4/v6）的快照。
-type serverGatewayAddrsT struct{ v4, v6 netip.Addr }
+// serverGatewayAddrsT 是 server 自身 TUN 网关地址（v4/v6）与 mesh 网段前缀的快照。
+// v4Net/v6Net 第十六轮深扫 MED 加入:供 isMeshCIDRAddr 判「目的落在本 mesh 网段但无在线归属」——
+// forwardPacketToExitNode 据此对离线对端的 mesh 地址 fail-closed,不外泄给出口节点。
+type serverGatewayAddrsT struct {
+	v4, v6       netip.Addr
+	v4Net, v6Net netip.Prefix
+}
 
 // serverGatewayAddrs 存 server 自身 TUN 网关地址，启动配置 TUN 后由 setServerGatewayAddrs 设一次（之后不变）。
 // lock-free（atomic.Pointer，与 vipOwnerCur 同风格），供数据面热路径 isServerGatewayAddr 无锁读。
@@ -937,13 +951,34 @@ func setServerGatewayAddrs(v4CIDR, v6CIDR string) {
 		if a, err := netip.ParseAddr(gatewayAddrFromCIDR(v4CIDR)); err == nil {
 			g.v4 = a
 		}
+		if p, err := netip.ParsePrefix(v4CIDR); err == nil {
+			g.v4Net = p.Masked()
+		}
 	}
 	if v6CIDR != "" {
 		if a, err := netip.ParseAddr(gatewayAddrFromCIDR(v6CIDR)); err == nil {
 			g.v6 = a
 		}
+		if p, err := netip.ParsePrefix(v6CIDR); err == nil {
+			g.v6Net = p.Masked()
+		}
 	}
 	serverGatewayAddrs.Store(&g)
+}
+
+// isMeshCIDRAddr 判断 a 是否落在 server 自身 mesh 网段（TUN v4/v6 CIDR）内，无论该地址当前是否有在线归属。
+// 未设置（测试 / 无 TUN）时恒 false。第十六轮深扫 MED:供 forwardPacketToExitNode 对「本网段但对端离线」的
+// 目的 fail-closed（不外泄给出口节点）。lock-free 读，与 isServerGatewayAddr 同快照。
+func isMeshCIDRAddr(a netip.Addr) bool {
+	g := serverGatewayAddrs.Load()
+	if g == nil {
+		return false
+	}
+	a = a.Unmap()
+	if g.v4Net.IsValid() && g.v4Net.Contains(a) {
+		return true
+	}
+	return g.v6Net.IsValid() && g.v6Net.Contains(a)
 }
 
 // isServerGatewayAddr 判断 a 是否为 server 自身 TUN 网关地址（v4 或 v6）。未设置（测试 / 无 TUN）时恒 false。

@@ -315,14 +315,35 @@ func (s *Store) BatchTouchDevices(ctx context.Context, ids []int64) error {
 }
 
 // DeleteDevice 删除设备（其租约通过 CASCADE 一起清掉）。
+//
+// 第十六轮深扫 HIGH:同事务内**先清掉引用本设备 UUID 的 port_forwards**,再删设备。port_forwards 无 FK
+// (migration 0018 有意为之,兼容离线设备),运行期按 target_device_uuid 经 GetDeviceByUUIDAny 解析。若删设备后
+// 残留孤儿转发行,谁再注册同一(客户端自选)UUID —— 同一台机重装,或知道该 UUID 的攻击者用另一有效账号注册 ——
+// 就**静默继承该公网入口**(未经管理员批准把公网流量引到自己节点/LAN)。这是已修「多行歧义 fail-closed」的另一半
+// 「孤儿→单行重占」。UUID 两侧都是小写存储(GetDeviceByUUIDAny / CreatePortForward 均 ToLower),仍加 LOWER() 兜底。
 func (s *Store) DeleteDevice(ctx context.Context, id int64) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM devices WHERE id=?`, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: delete device begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 写在先(write-first,与本包纪律一致):清孤儿转发。
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM port_forwards
+		  WHERE LOWER(target_device_uuid) = (SELECT LOWER(device_uuid) FROM devices WHERE id=?)`, id); err != nil {
+		return fmt.Errorf("store: delete device port_forwards: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM devices WHERE id=?`, id)
 	if err != nil {
 		return fmt.Errorf("store: delete device: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: delete device commit: %w", err)
 	}
 	return nil
 }
@@ -363,7 +384,12 @@ func (s *Store) SetDeviceAlias(ctx context.Context, id int64, alias string) erro
 	return nil
 }
 
-// SetDeviceFixedVIP 修改 device 的固定 vIP(v4 / v6)。空字符串表示清除。
+// KeepFixedVIP 是 SetDeviceFixedVIP 的 v4/v6 入参哨兵:表示「此族保持当前值不变」(区别于 ""=清除)。
+// 第十六轮深扫 MED:CLI `device set-fixed-vip` 只传 --v4 或只传 --v6 时,对未指定的族传本哨兵,让 store
+// 在事务内读当前值,避免事务外 read-modify-write 的丢更新竞态。取不可能作为 vIP 出现的值(含 NUL 字节)。
+const KeepFixedVIP = "\x00keep-fixed-vip"
+
+// SetDeviceFixedVIP 修改 device 的固定 vIP(v4 / v6)。空字符串表示清除;KeepFixedVIP 表示该族保持不变。
 //
 // 唯一性保证的**准确**范围(深扫第八轮 LOW 勘误):devices 表上的 UNIQUE 索引只保证
 // fixed_vip_v4 / fixed_vip_v6 在 **devices↔devices** 之间不重复,撞到时返回
@@ -402,10 +428,6 @@ func (s *Store) SetDeviceAlias(ctx context.Context, id int64, alias string) erro
 // CLI `--force` / exit designate `--force` 走 true,web(无 force,冲突时 409 前置拦截)与其它
 // 内部调用走 false。
 func (s *Store) SetDeviceFixedVIP(ctx context.Context, id int64, fixedV4, fixedV6 string, force bool) error {
-	// 第七轮深扫 HIGH:与 UpsertLease 同源规范化 —— fixed_vip 也走 netip 标准文本,才能让 UNIQUE 索引、
-	// 跨表守卫、AllUsedVIPs 已用集与登录分配路径处在同一文本域,杜绝 "FD00::2" vs "fd00::2" 双占。
-	fixedV4 = canonicalVIP(fixedV4)
-	fixedV6 = canonicalVIP(fixedV6)
 	// **事务包住两条 UPDATE**:devices.fixed_vip_* 与 leases.manual 必须同生同死。此前是两条独立
 	// ExecContext——若 devices 更新成功、leases 同步失败(锁 / IO),会留下「fixed_vip 已设但 leases.manual=0」
 	// 的错位:GC 会把这个手钉 vIP 的 lease 当空闲回收,下次登录该设备可能拿不回固定地址(前一句注释说的
@@ -415,6 +437,32 @@ func (s *Store) SetDeviceFixedVIP(ctx context.Context, id int64, fixedV4, fixedV
 		return fmt.Errorf("store: set fixed vip begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// 第十六轮深扫 MED:KeepFixedVIP 哨兵 → 在**事务内**读当前值填充「本次不改动的族」,消除 CLI 侧「事务外
+	// GetDevice 读旧值 → 合并 → 写两列」的丢更新竞态:两个只改单族(一个 --v4、一个 --v6)的并发 set-fixed-vip
+	// 此前各自把另一族的旧值一起写回,后提交者覆盖前者对另一族的修改。改由 store 在同一 tx 内读当前值,SQLite
+	// 串行化两 tx → 后者读到前者已提交的另一族值,两族更新都保留。空串仍表示「清除」,与 Keep 语义区分。
+	if fixedV4 == KeepFixedVIP || fixedV6 == KeepFixedVIP {
+		var curV4, curV6 sql.NullString
+		if serr := tx.QueryRowContext(ctx,
+			`SELECT fixed_vip_v4, fixed_vip_v6 FROM devices WHERE id=?`, id).Scan(&curV4, &curV6); serr != nil {
+			if errors.Is(serr, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("store: set fixed vip read current: %w", serr)
+		}
+		if fixedV4 == KeepFixedVIP {
+			fixedV4 = curV4.String
+		}
+		if fixedV6 == KeepFixedVIP {
+			fixedV6 = curV6.String
+		}
+	}
+
+	// 第七轮深扫 HIGH:与 UpsertLease 同源规范化 —— fixed_vip 也走 netip 标准文本,才能让 UNIQUE 索引、
+	// 跨表守卫、AllUsedVIPs 已用集与登录分配路径处在同一文本域,杜绝 "FD00::2" vs "fd00::2" 双占。
+	fixedV4 = canonicalVIP(fixedV4)
+	fixedV6 = canonicalVIP(fixedV6)
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE devices SET fixed_vip_v4=?, fixed_vip_v6=? WHERE id=?`,

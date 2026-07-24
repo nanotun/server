@@ -195,7 +195,8 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 		return err
 	}
 	if len(pos) > 1 {
-		return errors.New(opts.T("profile.usageTooMany"))
+		// 第十六轮深扫 LOW:参数/flag 用法错误统一 → exit 2(与 --format / 顶层 dispatch 一致)。
+		return usageError(opts.T("profile.usageTooMany"))
 	}
 	// --dial-host 优先,--host 作 deprecated 别名(2026-05-26 第六轮拆字段)。
 	// 二者均空 → fail。
@@ -207,18 +208,18 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 		}
 	}
 	if effectiveDial == "" {
-		return errors.New(opts.T("profile.dialHostRequired"))
+		return usageError(opts.T("profile.dialHostRequired"))
 	}
 	// strict 校验:本字段是客户端 PacketTunnel `tunnelRemoteAddress`,
 	// 配错(test-203.0.113.10 / 含中文 / 含端口)→ 客户端隧道挂掉。
 	if err := store.ValidateServerDialHost(effectiveDial); err != nil {
-		return errors.New(opts.T("profile.dialHostInvalid", opts.errText(err)))
+		return usageError(opts.T("profile.dialHostInvalid", opts.errText(err)))
 	}
 	advertisedHost := strings.TrimSpace(*advertisedHostFlag)
 	if advertisedHost != "" {
 		// label 校验放宽:允许中文 / emoji,只拒 scheme/path/port/控制字符。
 		if err := store.ValidateAdvertisedHost(advertisedHost); err != nil {
-			return errors.New(opts.T("profile.advertisedHostInvalid", opts.errText(err)))
+			return usageError(opts.T("profile.advertisedHostInvalid", opts.errText(err)))
 		}
 	}
 	if !validFormat(*format) {
@@ -238,7 +239,7 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 		{"--hy2-udp-port", *hy2UDPPort},
 	} {
 		if pf.val > 65535 {
-			return errors.New(opts.T("profile.portOutOfRange", pf.flag, pf.val))
+			return usageError(opts.T("profile.portOutOfRange", pf.flag, pf.val))
 		}
 	}
 
@@ -259,7 +260,7 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 	if len(pos) == 1 {
 		username := strings.TrimSpace(pos[0])
 		if username == "" {
-			return errors.New(opts.T("profile.usernameEmpty"))
+			return usageError(opts.T("profile.usernameEmpty"))
 		}
 		user, uerr := st.GetUserByUsername(ctx, username)
 		if uerr != nil {
@@ -372,7 +373,7 @@ func emitProfile(p *profileSchema, format, outputPath string, force bool, opts *
 	switch f {
 	case "qr-png":
 		if strings.TrimSpace(outputPath) == "" {
-			return errors.New(opts.T("profile.qrPngNeedsOutput"))
+			return usageError(opts.T("profile.qrPngNeedsOutput"))
 		}
 		url, err := profileToURL(p)
 		if err != nil {
