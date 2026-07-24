@@ -500,8 +500,19 @@ func IPPacketTotalLen(p []byte) (total int, ok bool) {
 		if len(p) < 20 {
 			return 0, false
 		}
+		// 第十四轮深扫 LOW:校验 IHL(首字节低 4 位,单位 32-bit word)。合法范围 20..60 字节。IHL<20 头长非法;
+		// ihl 超过声明总长则头本身越界 —— 这类畸形包此前能过 ValidIPPacket,让下游 parsePacketTuple 从错误偏移
+		// 解 L4 端口(解不出 → 端口 deny 误判不命中 → default=allow 下绕过封锁,与已修的分片 / IPv6 扩展头绕过同类)。
+		// 在入口(所有数据面 readLoop / ACL / 出口都先过 ValidIPPacket)一并 fail-closed。
+		ihl := int(p[0]&0x0f) * 4
+		if ihl < 20 {
+			return 0, false
+		}
 		t := int(binary.BigEndian.Uint16(p[2:4]))
 		if t < 20 || t > len(p) {
+			return 0, false
+		}
+		if ihl > t {
 			return 0, false
 		}
 		return t, true

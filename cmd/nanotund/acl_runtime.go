@@ -323,7 +323,12 @@ func aclDropPacketDirected(srcUserID int64, packet []byte) bool {
 	}
 	t, ok := parsePacketTuple(packet)
 	if !ok {
-		return false
+		// 第十四轮深扫 LOW:改 fail-closed(丢)。到这里的包已过 readLoop 的 util.ValidIPPacket(含本轮新增 IHL 校验),
+		// 正常不会解析失败;真出现「过了 ValidIPPacket 却仍解不出 tuple」的畸形包,宁丢不放(与端口不可判定 fail-closed、
+		// 分片绕过修复同向)。srcUserID==0 的无上下文路径已在上面提前 return,不受影响。
+		aclDropCount.Add(1)
+		recordACLDrop("unparsable", srcUserID, 0, "", 0)
+		return true
 	}
 	dstUserID, isVIP := lookupVIPOwner(t.dst)
 
@@ -467,7 +472,8 @@ func aclDeniesSubnetRoute(srcUserID, dstUserID int64, packet []byte) bool {
 	}
 	t, ok := parsePacketTuple(packet)
 	if !ok {
-		return false
+		// 第十四轮深扫 LOW:改 fail-closed(拒)。同 aclDropPacketDirected —— 已过 ValidIPPacket 仍解不出的畸形包宁拒不放。
+		return true
 	}
 	if !snap.hasUserRules {
 		return snap.defaultAction == store.ACLDeny

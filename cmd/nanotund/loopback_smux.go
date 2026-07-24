@@ -128,7 +128,9 @@ func (p *loopbackSmuxPool) ensureSessionLocked() error {
 		return err
 	}
 	p.sess = sess
-	go p.clearOnClose(conn, sess)
+	// 第十四轮深扫 MED:包 safeGoroutine —— clearOnClose 阻塞在 sess.CloseChan() 等会话关闭,panic 只应 log、
+	// 不拖垮整进程(与全站「无裸 go」不变量一致)。
+	go safeGoroutine("loopbackSmux/clearOnClose", func() { p.clearOnClose(conn, sess) })
 	return nil
 }
 

@@ -63,6 +63,14 @@ func cmdKick(_ context.Context, _ any, opts *globalOpts, args []string) error {
 		return usageError(opts.usage("nanotun-admin kick <session|device|user> <id> [--reason TEXT]"))
 	}
 	kind, id := args[0], args[1]
+	// 第十四轮深扫 MED:先校验 kind,再拨控制 socket。否则 `kick <bogus> <id>` 会先执行 controlDo,server 不可达时
+	// 返回 dial 错误(exit 1)、掩盖「未知 kind」本应的 exit 2 —— 退出码随服务端可达性漂移(与已修的 connection 同类)。
+	switch kind {
+	case "session", "device", "user":
+		// 合法 kind,继续。
+	default:
+		return usageError(opts.usage("nanotun-admin kick <session|device|user> <id> [--reason TEXT]"))
+	}
 	reason := ""
 	for i := 2; i < len(args); i++ {
 		switch args[i] {

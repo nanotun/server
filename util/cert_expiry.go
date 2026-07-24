@@ -30,6 +30,11 @@ const KeyFilePermMax = 0o077
 // 给运维一个充足的续签窗口。
 const CertExpiryWarnWindow = 30 * 24 * time.Hour
 
+// tlsNotBeforeSkew 是校验证书 NotBefore(生效时间)时容忍的跨机时钟漂移。
+// 第十四轮深扫 MED:签发端与本机时钟小幅不同步(或多数 CA 主动回退签发时间几分钟)属常态,
+// 留 5min 余量避免刚签发即部署时误判「尚未生效」;超出该余量才在启动期 fail-closed。
+const tlsNotBeforeSkew = 5 * time.Minute
+
 // LoadAndCheckTLSKeyPair 包装 tls.LoadX509KeyPair,在加载后:
 //
 //   - 立刻拒绝已过期证书 (NotAfter <= now);
@@ -56,11 +61,18 @@ func LoadAndCheckTLSKeyPair(certPath, keyPath, role string) (tls.Certificate, er
 	}
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
-		// Cert 解析失败但 tls.LoadX509KeyPair 已经成功 —— 不阻塞,只 Warn。
-		logrus.WithError(err).Warnf("[cert:%s] 解析 leaf 证书失败,跳过到期检查", role)
-		return cert, nil
+		// 第十四轮深扫 MED:此前是「Warn + 返回 cert,nil」→ 跳过有效期检查,等于 fail-open:一份我们**无法解析**
+		// 的 leaf(损坏 / 非标准 X.509)会「成功」启动、把错误推迟到 TLS 握手期才炸,且分散难查。既然连 NotBefore/
+		// NotAfter 都验不了,就在启动期直接拒(fail-closed),与「空链」「已过期」同等对待。
+		return cert, fmt.Errorf("util: tls cert %s parse leaf failed (cannot verify validity): %w", role, err)
 	}
 	now := time.Now()
+	// 第十四轮深扫 MED:除 NotAfter 外也验 NotBefore —— 未生效证书(提前部署 / 时钟偏)此前能「成功」启动,
+	// 直到握手才被对端(或自身 verify)拒 → 难排查。启动期一并 fail-closed(留 tlsNotBeforeSkew 容忍小幅漂移)。
+	if leaf.NotBefore.After(now.Add(tlsNotBeforeSkew)) {
+		return cert, fmt.Errorf("util: tls cert %s 尚未生效 (NotBefore=%s, now=%s)",
+			role, leaf.NotBefore.Format(time.RFC3339), now.Format(time.RFC3339))
+	}
 	if !leaf.NotAfter.After(now) {
 		return cert, fmt.Errorf("util: tls cert %s 已过期 (NotAfter=%s, now=%s)",
 			role, leaf.NotAfter.Format(time.RFC3339), now.Format(time.RFC3339))

@@ -57,6 +57,24 @@ func cmdLeaseGc(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 		fmt.Fprintln(opts.stdout, opts.T("lease.gcDryRun", n, (*idle).String()))
 		return nil
 	}
+	// 第十四轮深扫 MED:非 --dry-run 的 gc 会批量删除孤儿 lease、释放粘性 vIP,属破坏性操作。与 restore /
+	// vacuum / user delete 等一致要求二次确认(--yes / -y 跳过供 cron/脚本)。先算将删多少条,给运维决策依据。
+	if !opts.yes {
+		var n int64
+		cutoff := time.Now().Add(-*idle).Unix()
+		row := st.DB().QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM leases l
+			 WHERE l.manual = 0
+			   AND l.device_id IN (SELECT id FROM devices WHERE last_seen_at < ?)`, cutoff)
+		if err := row.Scan(&n); err != nil {
+			return err
+		}
+		ok, _ := confirm(opts, opts.T("lease.confirmGc", n, (*idle).String()))
+		if !ok {
+			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
+			return nil
+		}
+	}
 	n, err := st.GcOrphanLeases(ctx, int64(idle.Seconds()))
 	if err != nil {
 		return err
@@ -173,22 +191,12 @@ func cmdLeaseSet(ctx context.Context, st *store.Store, opts *globalOpts, args []
 			return errors.New(opts.T("lease.badV6", *v6))
 		}
 	}
-	// 第七轮深扫 MED:读改写,命令行未指定的族保留 lease 现值。
-	// 背景:UpsertLease 的 ON CONFLICT 无条件覆盖 vip_v4 与 vip_v6,只传 --v4 时 vip_v6 被写成 NULL,
-	// 静默抹掉设备已有的 sticky v6(反之亦然)——下次登录才重分配,期间 MagicDNS / 端口转发目标可能失效。
-	// UpsertLease 本身语义不变(登录分配路径需要「空族=清该族」);只在 CLI 这层做保留。整条释放用 `lease release`。
-	newV4, newV6 := *v4, *v6
-	if cur, gerr := st.GetLeaseByDevice(ctx, deviceID); gerr == nil {
-		if *v4 == "" {
-			newV4 = cur.VIPv4
-		}
-		if *v6 == "" {
-			newV6 = cur.VIPv6
-		}
-	} else if !errors.Is(gerr, store.ErrNotFound) {
-		return gerr
-	}
-	l, err := st.UpsertLease(ctx, deviceID, newV4, newV6, *manual)
+	// 第七轮深扫 MED:命令行未指定的族保留 lease 现值(UpsertLease 的 ON CONFLICT 无条件覆盖两族,只传 --v4
+	// 时 vip_v6 被写成 NULL,静默抹掉设备已有 sticky v6,反之亦然)。
+	// 第十四轮深扫 LOW:把「读现值 + 保留 + 写」下沉到 UpsertManualLeasePreservingEmpty 的**单事务**内
+	// (COALESCE(excluded, 现值)),消除此前「先 GetLeaseByDevice 读、再 UpsertLease 写」的非原子 RMW ——
+	// 读写之间设备恰好登录被分配另一族时,旧写会把刚分配的族又抹掉。整条释放用 `lease release`。
+	l, err := st.UpsertManualLeasePreservingEmpty(ctx, deviceID, *v4, *v6, *manual)
 	if err != nil {
 		return err
 	}

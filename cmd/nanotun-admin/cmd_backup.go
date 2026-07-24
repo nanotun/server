@@ -36,7 +36,8 @@ func cmdBackup(ctx context.Context, st *store.Store, opts *globalOpts, args []st
 		switch args[i] {
 		case "--out", "-o":
 			if i+1 >= len(args) {
-				return errors.New(opts.T("backup.outNeedsPath"))
+				// 第十四轮深扫 LOW:缺 flag 取值属用法错误 → exit 2。
+				return usageError(opts.T("backup.outNeedsPath"))
 			}
 			out = args[i+1]
 			i++

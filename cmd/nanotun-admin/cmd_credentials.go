@@ -109,7 +109,9 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 		opts.warnPSKOnArgv()
 	}
 	if !validFormat(*format) {
-		return errors.New(opts.T("credentials.formatInvalid", *format))
+		// 第十四轮深扫 LOW:非法 --format 值属**用法错误** → exit 2(与本命令的其它 usageError、顶层 dispatch 一致;
+		// 此前 errors.New 恒 exit 1)。
+		return usageError(opts.T("credentials.formatInvalid", *format))
 	}
 
 	u, err := st.GetUserByUsername(ctx, username)

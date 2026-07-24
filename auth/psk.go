@@ -347,7 +347,10 @@ func (v *Verifier) VerifyLogin(ctx context.Context, username, plaintext string) 
 	//     看到 CodeServerError → "服务器内部错误,请稍后再试",运维 / 监控通过日志计数定位。
 	//   - 上下文压根没截止时间:这里不会发生(authenticateLogin 用 5s WithTimeout)。
 	if err := argon2Sema.Acquire(ctx, 1); err != nil {
-		return nil, fmt.Errorf("auth: argon2 capacity exhausted: %w", err)
+		// 第十四轮深扫 LOW(API 一致性):与 VerifyPSKLimited/OrDecoy 一样用 ErrVerifyUnavailable 包裹容量/ctx
+		// 超时,让调用方可 errors.Is 统一识别「暂时不可用」而非当作认证失败。VPN 侧 authenticateLogin 目前把
+		// 非哨兵错归到 CodeServerError(不计失败),语义已一致;此处补上可判定的哨兵不改变现有映射。
+		return nil, fmt.Errorf("%w: argon2 capacity/ctx: %v", ErrVerifyUnavailable, err)
 	}
 	defer argon2Sema.Release(1)
 

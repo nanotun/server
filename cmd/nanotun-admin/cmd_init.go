@@ -99,11 +99,15 @@ func cmdInit(ctx context.Context, st *store.Store, opts *globalOpts, args []stri
 			// 兜底守门（理论上前面已 return 不会到这里）
 			return errors.New(opts.T("init.refuseReset", username))
 		}
-		// 第十二轮深扫 MED:`init --reset-psk` 轮换**已存在**管理员的 PSK 属破坏性操作(旧 PSK 立即作废),
-		// 与 `user reset-psk` / `credentials --rotate-psk` 一致要求二次确认。仅在显式 --reset-psk 时提示
-		// (首次向导 / 未完成 setup 的补建路径不提示)。复用上面的 bufio.Reader r(避免 confirm() 另起一个
-		// reader 与 r 抢 stdin 缓冲);--yes / -y 跳过供脚本化(非交互且未 --yes → 读到 EOF/空 → 保守取消)。
-		if *resetPSK && !opts.yes {
+		// 第十二轮深扫 MED:轮换**已存在**管理员的 PSK 属破坏性操作(旧 PSK 立即作废),与 `user reset-psk` /
+		// `credentials --rotate-psk` 一致要求二次确认。复用上面的 bufio.Reader r(避免 confirm() 另起 reader
+		// 与 r 抢 stdin 缓冲);--yes / -y 跳过供脚本化(非交互且未 --yes → 读到 EOF/空 → 保守取消)。
+		//
+		// 第十四轮深扫 MED:确认条件由 `*resetPSK` 放宽为**只要到达轮换分支就确认**。到这里意味着「同名用户已存在」
+		// 且不是幂等 noop(alreadySetup && !resetPSK 已在上面 return),即必然要改现网 admin 的 PSK。此前只在
+		// `--reset-psk` 时确认:若 `setup_completed != "1"`(可被 `setting set setup_completed 0` 清掉)、用户又已存在,
+		// 不带 --reset-psk 的 `init` 会**无确认**轮换现网 admin PSK —— 一步锁死。放宽后这条路径也必须确认。
+		if !opts.yes {
 			fmt.Fprintf(opts.stdout, "%s [y/N]: ", opts.T("init.confirmResetPSK", username))
 			line, _ := r.ReadString('\n')
 			if s := strings.ToLower(strings.TrimSpace(line)); s != "y" && s != "yes" {

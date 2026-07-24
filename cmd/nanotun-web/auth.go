@@ -39,6 +39,11 @@ func VerifyWebPassword(ctx context.Context, plaintext, encoded string) (bool, er
 	return auth.VerifyPSKLimited(ctx, plaintext, encoded)
 }
 
+// isVerifyUnavailable 报告 err 是否为 argon2 verify **暂时不可用**(容量耗尽 / ctx 超时,auth.ErrVerifyUnavailable)。
+// 第十四轮深扫 MED:供各 step-up / 登录 / 恢复码 handler 统一判定「非密码错 → 不计失败配额 → 回 503」,
+// 避免每个 handler 都 import auth 包。
+func isVerifyUnavailable(err error) bool { return errors.Is(err, auth.ErrVerifyUnavailable) }
+
 // VerifyWebPasswordOrDecoy 同 VerifyWebPassword,但在**同一次** argon2 slot 内完成「真实 verify + 畸形 hash 的
 // decoy」(auth.VerifyPSKLimitedOrDecoy)。第十二轮深扫 MED:合并 decoy 到单次 Acquire,消除「畸形 hash 的第二次
 // Acquire 高并发下被跳过 → 时序泄漏 hash 损坏」的窗口。容量/ctx 超时返回的 err 会 errors.Is(auth.ErrVerifyUnavailable)。
@@ -137,7 +142,12 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 	a, err := st.GetWebAdminByUsername(ctx, username)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			_, _ = VerifyWebPassword(ctx, password, decoyWebHash())
+			// 第十四轮深扫 MED:decoy 遇 argon2 容量/ctx 超时,统一回 ErrAuthUnavailable(503),与「已存在用户」
+			// 路径同款 —— 消除「已存在=503 vs 不存在/禁用/锁定=401」的用户名/状态枚举 oracle(round-12 只把已存在
+			// 路径改成 503,漏了这三条 decoy 分支)。非容量错才走原「等时序 decoy 写事务 + 统一 badCredentials」。
+			if _, derr := VerifyWebPassword(ctx, password, decoyWebHash()); isVerifyUnavailable(derr) {
+				return AuthResult{Err: ErrAuthUnavailable}
+			}
 			// 第八轮深扫 LOW:与「密码错」分支一样跑一次等价写事务,抹平「不存在→零 DB」的时序差(枚举旁路)。
 			st.DecoyWebAdminLoginFailure(ctx)
 			return AuthResult{Err: ErrAuthBadCredentials}
@@ -147,13 +157,17 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 		return AuthResult{Err: newLocErr("err.queryFailed")}
 	}
 	if !a.Enabled {
-		_, _ = VerifyWebPassword(ctx, password, decoyWebHash())
+		if _, derr := VerifyWebPassword(ctx, password, decoyWebHash()); isVerifyUnavailable(derr) {
+			return AuthResult{Admin: a, Err: ErrAuthUnavailable}
+		}
 		// 禁用账号故意不累加失败计数(见下),但跑 decoy 写事务对齐时序,避免「存在且禁用」被时序识别。
 		st.DecoyWebAdminLoginFailure(ctx)
 		return AuthResult{Admin: a, Err: ErrAuthDisabled}
 	}
 	if a.LockedUntil > 0 && a.LockedUntil > nowUnix() {
-		_, _ = VerifyWebPassword(ctx, password, decoyWebHash())
+		if _, derr := VerifyWebPassword(ctx, password, decoyWebHash()); isVerifyUnavailable(derr) {
+			return AuthResult{Admin: a, Err: ErrAuthUnavailable}
+		}
 		st.DecoyWebAdminLoginFailure(ctx)
 		return AuthResult{Admin: a, Err: ErrAuthLocked, LockedUntil: a.LockedUntil}
 	}

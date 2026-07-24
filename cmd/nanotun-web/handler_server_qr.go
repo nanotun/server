@@ -206,6 +206,12 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok, verr := VerifyWebPassword(r.Context(), password, fresh.PasswordHash)
+	if isVerifyUnavailable(verr) {
+		// 第十四轮深扫 MED:argon2 容量/ctx 超时属「暂时不可用」,非密码错 —— 不计 step-up 冷却,回 503
+		// (与登录 AttemptLogin 对齐),避免宿主压力下把合法 admin 推进冷却。
+		s.renderServerQRPasswordPage(w, r, tr(r, "auth.tryAgainLater"), http.StatusServiceUnavailable)
+		return
+	}
 	if verr != nil || !ok {
 		newCount := s.stepUpFailures.Inc(ip)
 		reason := "wrong_password"

@@ -384,6 +384,7 @@ var catZH = map[string]string{
 	"lease.flag.dryRun":      "只统计不真删,用于先评估影响",
 	"lease.idleMustPositive": "--idle 必须 > 0",
 	"lease.gcDryRun":         "[dry-run] 将回收 %d 条 idle > %s 的非手动 lease(devices 行保留)",
+	"lease.confirmGc":        "将回收 %d 条 idle > %s 的非手动 lease 并释放其 vIP(不可撤销;--dry-run 可先预览),确认继续?",
 	"lease.gcDone":           "已回收 %d 条 idle > %s 的非手动 lease(devices 行保留;再次同 device_uuid 上线会重新分配)",
 	"lease.noLease":          "设备 %d 当前没有 vIP 租约(可能已被释放,或 device_id 传错)",
 	"lease.released":         "已释放设备 %d 的 vIP 租约",

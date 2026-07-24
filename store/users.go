@@ -248,7 +248,10 @@ func (s *Store) CreateUser(ctx context.Context, in NewUser) (*User, error) {
 	// 第十二轮深扫 LOW:两字段先 **TrimSpace 再入库**(此前判空用 trim、写库却用原始值,不对称)。
 	// idx_users_sso 是 BINARY 唯一索引,若把 " okta "(带空白)原样落库,与 "okta" 视作不同值 → 逃过唯一性,
 	// 埋下 SSO 上线后同一身份多行的歧义/重复隐患(与第 4 轮给 username 修的同类问题对齐)。任一为空即整对清空。
-	ssoProvider := strings.TrimSpace(in.SSOProvider)
+	// 第十四轮深扫 LOW:provider 名再 **ToLower** 归一。idx_users_sso 是 BINARY 索引,trim 后 "Okta" 与 "okta"
+	// 仍被视作不同值 → 同一 IdP 的同一身份可落多行(逃唯一性)。provider 是有限、大小写无关的枚举(okta/google/…),
+	// 折成小写安全;**subject 保持原样**——它是 IdP 下发的不透明标识,大小写可能承载语义,折叠会误并不同身份。
+	ssoProvider := strings.ToLower(strings.TrimSpace(in.SSOProvider))
 	ssoSubject := strings.TrimSpace(in.SSOSubject)
 	if ssoProvider == "" || ssoSubject == "" {
 		ssoProvider, ssoSubject = "", ""

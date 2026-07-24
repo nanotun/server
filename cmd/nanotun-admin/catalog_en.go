@@ -387,6 +387,7 @@ var catEN = map[string]string{
 	"lease.flag.dryRun":      "only count, don't actually delete; use to assess impact first",
 	"lease.idleMustPositive": "--idle must be > 0",
 	"lease.gcDryRun":         "[dry-run] would reclaim %d non-manual lease(s) idle > %s (device rows kept)",
+	"lease.confirmGc":        "This will reclaim %d non-manual lease(s) idle > %s and release their vIPs (irreversible; use --dry-run to preview). Continue?",
 	"lease.gcDone":           "reclaimed %d non-manual lease(s) idle > %s (device rows kept; reconnecting with the same device_uuid reassigns)",
 	"lease.noLease":          "device %d currently has no vIP lease (it may have been released, or the device_id is wrong)",
 	"lease.released":         "released device %d's vIP lease",

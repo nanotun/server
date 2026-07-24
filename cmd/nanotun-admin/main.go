@@ -105,7 +105,7 @@ func runRoot(args []string, opts *globalOpts) int {
 			}
 			return 0
 		}
-		return runWithStore(opts, subIsReadOnly(subcmd, rest), func(ctx context.Context, st *store.Store) error {
+		return runWithStore(opts, settingIsReadOnly(rest), func(ctx context.Context, st *store.Store) error {
 			return cmdSetting(ctx, st, opts, rest)
 		})
 	case "profile":
@@ -186,6 +186,41 @@ func subIsReadOnly(subcmd string, rest []string) bool {
 	switch verb {
 	case "list", "show", "get", "":
 		return true
+	}
+	return false
+}
+
+// settingIsReadOnly:`setting` 子命令是否只读。list/show/get/裸(用法)只读;`setting rate` **无速率变更 flag**
+// 时仅展示(只读),带 --up-*/--down-*/--burst-* 才写;其余(set)按写处理。
+//
+// 第十四轮深扫 LOW:此前 setting rate 恒走 subIsReadOnly=false → 即便只展示也开 read-write 连接 + 跑 Migrate,
+// 与 list/show/get 只读口径不一致,且无谓地和 server 的写连接抢 WAL 写锁。展示态改只读,与其它只读子命令对齐。
+// 注:只读 Open 要求库文件已存在——展示 setting 本就依赖已 init 的库,符合预期(与 probe-dial-host 的零 DB 不同)。
+func settingIsReadOnly(rest []string) bool {
+	if len(rest) == 0 {
+		return true
+	}
+	switch rest[0] {
+	case "list", "show", "get":
+		return true
+	case "rate":
+		return !settingRateHasMutation(rest[1:])
+	}
+	return false
+}
+
+// settingRateHasMutation 报告 `setting rate` 的参数里是否出现任一**速率变更** flag(不看取值,`--up-mibs 0`
+// 这类清零也算变更意图)。识别 -x / --x / --x=v 三种写法;--no-refresh 不改库不算变更。
+func settingRateHasMutation(args []string) bool {
+	mut := map[string]bool{"up-mibs": true, "up-bps": true, "down-mibs": true, "down-bps": true, "burst-kib": true}
+	for _, a := range args {
+		name := strings.TrimLeft(a, "-")
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		if mut[name] {
+			return true
+		}
 	}
 	return false
 }

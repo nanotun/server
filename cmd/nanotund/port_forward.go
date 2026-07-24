@@ -620,13 +620,14 @@ func acceptPortForward(ctx context.Context, ln net.Listener, m *portForwardManag
 	// 永久性非 ctx Accept 错误）时也一并退出，避免它一直 park 在 <-ctx.Done() 直到该映射被停（goroutine 悬挂）。
 	done := make(chan struct{})
 	defer close(done)
-	go func() {
+	// 第十四轮深扫 MED:包 safeGoroutine(全站「无裸 go」不变量)—— 仅做 listener 关闭 watch,panic 只 log。
+	go safeGoroutine("portForwardAcceptWatch:"+strconv.Itoa(publicPort), func() {
 		select {
 		case <-ctx.Done():
 			_ = ln.Close()
 		case <-done:
 		}
-	}()
+	})
 	var tempDelay time.Duration
 	for {
 		conn, err := ln.Accept()
@@ -695,18 +696,20 @@ func handlePortForwardConn(ctx context.Context, in net.Conn, target string) {
 	// ctx 取消（停映射 / shutdown）时立即关两端，打断 io.Copy。
 	stop := make(chan struct{})
 	defer close(stop)
-	go func() {
+	// 第十四轮深扫 MED:三处包 safeGoroutine(全站「无裸 go」不变量)。pump 里 defer wg.Done() 在 fn 内,
+	// panic 时先跑再冒泡到 recover → wg.Wait() 不会死锁;panic 只 log、不拖垮整进程。
+	go safeGoroutine("portForwardConnWatch", func() {
 		select {
 		case <-ctx.Done():
 			_ = in.Close()
 			_ = out.Close()
 		case <-stop:
 		}
-	}()
+	})
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() {
+	go safeGoroutine("portForwardPump/out", func() {
 		defer wg.Done()
 		_, _ = io.Copy(out, in)
 		if cw, ok := out.(interface{ CloseWrite() error }); ok {
@@ -714,8 +717,8 @@ func handlePortForwardConn(ctx context.Context, in net.Conn, target string) {
 		} else {
 			_ = out.Close()
 		}
-	}()
-	go func() {
+	})
+	go safeGoroutine("portForwardPump/in", func() {
 		defer wg.Done()
 		_, _ = io.Copy(in, out)
 		if cw, ok := in.(interface{ CloseWrite() error }); ok {
@@ -723,7 +726,7 @@ func handlePortForwardConn(ctx context.Context, in net.Conn, target string) {
 		} else {
 			_ = in.Close()
 		}
-	}()
+	})
 	wg.Wait()
 }
 
