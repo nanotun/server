@@ -239,6 +239,17 @@ func (s *Store) CreateUser(ctx context.Context, in NewUser) (*User, error) {
 	}
 	now := nowUnix()
 
+	// 第十一轮深扫 LOW:SSO 身份两字段必须**同在或同缺**(0029 迁移对存量强制的不变量:
+	// "SSO 身份两字段要么都在、要么都不在")。此前 provider / subject 各自独立走 nullableString,
+	// 传入「provider 有值 / subject 空」会落成 (provider, NULL) —— 既违反该不变量,又因 idx_users_sso
+	// 要求两列都非 NULL 非 '' 而**逃过唯一索引**,埋下 SSO 上线后多行半绑定身份的歧义/重复隐患。
+	// 修法:任一为空即整对清空(→ 两列都 NULL),与 0029 的归一口径一致。SSO 在 M0 未接线,当前无实害,
+	// 但把写路径与 schema 不变量对齐,避免未来接线时踩坑。
+	ssoProvider, ssoSubject := in.SSOProvider, in.SSOSubject
+	if strings.TrimSpace(ssoProvider) == "" || strings.TrimSpace(ssoSubject) == "" {
+		ssoProvider, ssoSubject = "", ""
+	}
+
 	// credential_id 留空 → NULL(老路径兼容);非空 → 入库(0013 之后的新 user)。
 	// credential_created_at 同理:0 → NULL,非 0 → 入库。两者通常成对填或都缺。
 	res, err := s.db.ExecContext(ctx,
@@ -252,7 +263,7 @@ func (s *Store) CreateUser(ctx context.Context, in NewUser) (*User, error) {
 		in.Username, in.PSKHash, boolToInt(in.IsAdmin),
 		in.BandwidthUpBPS, in.BandwidthDownBPS,
 		boolToInt(in.ExitAllowed), nullableString(in.AllowedPlatforms), role,
-		nullableString(in.SSOProvider), nullableString(in.SSOSubject),
+		nullableString(ssoProvider), nullableString(ssoSubject),
 		now,
 		nullableString(in.CredentialID), nullableInt64(in.CredentialCreatedAt),
 	)

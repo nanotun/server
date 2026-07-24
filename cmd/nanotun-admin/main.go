@@ -92,6 +92,19 @@ func runRoot(args []string, opts *globalOpts) int {
 			return cmdACL(ctx, st, opts, rest)
 		})
 	case "setting":
+		// 第十一轮深扫 LOW:`setting probe-dial-host` 只做 DNS/ICMP 探测,cmdSettingProbeDialHost
+		// 根本不接收 *store.Store。此前它落入 subIsReadOnly=false 分支,为一条纯网络命令白开
+		// read-write 连接并触发 st.Migrate(ctx) 写 —— DB 被 server 占写 / 磁盘只读 / 库尚未 init 时,
+		// 探测会以完全无关的原因先行失败。这里在**打开 store 之前**直接短路到探测,零 DB 依赖。
+		if len(rest) > 0 && rest[0] == "probe-dial-host" {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if err := cmdSettingProbeDialHost(ctx, opts, rest[1:]); err != nil {
+				fmt.Fprintln(opts.stderr, opts.errText(err))
+				return 1
+			}
+			return 0
+		}
 		return runWithStore(opts, subIsReadOnly(subcmd, rest), func(ctx context.Context, st *store.Store) error {
 			return cmdSetting(ctx, st, opts, rest)
 		})

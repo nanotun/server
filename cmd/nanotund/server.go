@@ -2405,7 +2405,7 @@ func cleanupConnection(c *Connection) {
 		// 下拉实时去项。放 goroutine + background ctx(不阻塞 cleanup、不用已取消的会话 ctx);此时已移出 connIDMap,
 		// 故 buildExitsList 不会再把它算进去。
 		if c.advertisedExit.Load() {
-			go broadcastExitsList(context.Background())
+			go safeGoroutine("broadcastExitsList", func() { broadcastExitsList(context.Background()) })
 		}
 		// subnet route:若下线的是**已批准子网路由**宣告方,它下线后 routes-list 里该设备应变 online=false。但 online
 		// 仅在「客户端连入 / admin 改路由」时重算,宣告方下线不重算 → 已连接请求方手里停在旧的 online=true(陈旧)。
@@ -2413,7 +2413,7 @@ func cleanupConnection(c *Connection) {
 		// (该设备若无其它活跃会话则 false;仍有会话则保持 true)。放 goroutine + background ctx,与出口下线广播对齐;
 		// deviceInSubnetRouteTable 门控使普通客户端下线不触发(仅已批准宣告方)。仅刷新展示,请求方保留已装路由不抖数据面。
 		if deviceInSubnetRouteTable(c.deviceID) {
-			go broadcastRoutesList(context.Background())
+			go safeGoroutine("broadcastRoutesList", func() { broadcastRoutesList(context.Background()) })
 		}
 	}
 

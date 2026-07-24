@@ -94,6 +94,44 @@ func (s *Server) handleMeTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 第十一轮深扫 MED:首次启用 TOTP 也要求**密码 step-up** —— 与 disable/regen(TOTP 码)、
+	// server-qr/self-reset(密码)同等级保护。绑定新 secret + 发恢复码是把「第二因子」焊到本账号的
+	// 敏感写操作:此前只凭 session+CSRF,未开 2FA 的会话一旦被劫持 / 借用,攻击者即可绑定**自己的**
+	// TOTP secret 并领走恢复码,把合法 admin 锁死(本系统无「admin 侧清他人 TOTP」的动作,只能删号重建)。
+	// 此刻账号尚无 secret 可验,故 step-up 用**密码**;复用 step-up IP 冷却 + 按 adminID 串行化「读冷却+
+	// verify+记账」临界区(与 disable/regen 同款,复用 totpVerifyLocks)。
+	unlock := s.lockTOTPVerify(admin.ID)
+	defer unlock()
+	ip := clientIP(r)
+	if s.stepUpFailures.Recent(ip) >= stepUpMaxFailures {
+		s.audit.WriteFromRequest(r, "totp_setup_locked",
+			FormatTarget("web_admin", admin.ID),
+			FormatDetail("ip", ip, "reason", "ip_cooldown"))
+		s.renderError(w, r, http.StatusTooManyRequests, tr(r, "me.totpTooManyAttempts"))
+		return
+	}
+	password := r.FormValue("password")
+	if strings.TrimSpace(password) == "" {
+		// 空密码不计失败配额(与其它 step-up 空输入一致),回渲提示补填。
+		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.enrollPasswordRequired"))
+		return
+	}
+	if ok, verr := VerifyWebPassword(r.Context(), password, cur.PasswordHash); verr != nil || !ok {
+		newCount := s.stepUpFailures.Inc(ip)
+		s.audit.WriteFromRequest(r, "totp_setup_password_fail",
+			FormatTarget("web_admin", admin.ID),
+			FormatDetail("ip", ip, "reason", "wrong_password", "fail_count", newCount))
+		msg := tr(r, "adminPwd.currentWrong")
+		status := http.StatusUnauthorized
+		if newCount >= stepUpMaxFailures {
+			msg = tr(r, "me.totpTooManyAttempts")
+			status = http.StatusTooManyRequests
+		}
+		s.renderError(w, r, status, msg)
+		return
+	}
+	s.stepUpFailures.Reset(ip)
+
 	secret, err := GenerateTOTPSecret()
 	if err != nil {
 		// 第四轮深扫 MED(d_err_mask):内部错误详情只进服务端日志,页面回通用文案,不向(已登录但可能是

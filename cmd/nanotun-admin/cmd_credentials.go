@@ -137,6 +137,17 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 		if err := preflightCredentialsOutput(*format, *output, *forceOverwrite, opts); err != nil {
 			return err
 		}
+		// 第十一轮深扫 MED:--rotate-psk 会**立即**改写库里 PSK 并踢线该用户所有会话,是破坏性操作;
+		// 且子命令 verb 是「show」(读感强),尤需显式确认防误触。与 user reset-psk / main.go 顶部
+		// 「危险操作需 --yes 二次确认」契约一致。--yes / -y 跳过(供 provisioning 脚本)。确认放在
+		// preflight 之后:确定性的输出前置失败仍先于交互提示短路,不让用户白确认一场。
+		if !opts.yes {
+			ok, _ := confirm(opts, opts.T("credentials.confirmRotate", u.Username))
+			if !ok {
+				fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
+				return nil
+			}
+		}
 	}
 
 	// 2026-05-26 wire 扩展:credentials QR 携带 host + server_id。

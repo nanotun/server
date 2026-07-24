@@ -101,7 +101,9 @@ func ParseRouteApproveStatus(data []byte) (*RouteApproveStatus, error) {
 // 公网子网路由就成了**绕过 exit_allowed + 出口 ACL 的隐形出口**(confused-deputy);而 `0.0.0.0/1`+`128.0.0.0/1`
 // 这两段 /1 更能在不触发旧「拒 /0」守卫的前提下覆盖整个 IPv4。公网出网有**专门且受出口闸 + 出口 ACL 管控**的
 // 出口节点通道(Exit=true / NormalizeExitAdvertisedCIDR),故这里把子网路由收敛到私有/保留范围,让它与其名义
-// (内网段)和 ACL 模型一致。已在库里的历史 approved 条目不因本校验回溯失效(仅约束新上报的宣告)。
+// (内网段)和 ACL 模型一致。本 Normalize 只约束新上报的宣告、不回溯改写库里的历史 approved 条目;第十一轮
+// 深扫 MED 起,数据面 rebuildSubnetRouteTable 载入时会用 [PrefixWithinAdvertisable] 把历史遗留的公网/宽段
+// approved 条目挡在转发表外(不删库),补齐「载入端也执行同门槛」的另一半。
 var advertisableSubnetRanges = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),     // RFC1918
 	netip.MustParsePrefix("172.16.0.0/12"),  // RFC1918
@@ -124,6 +126,17 @@ func prefixWithinAdvertisable(p netip.Prefix) bool {
 	}
 	return false
 }
+
+// PrefixWithinAdvertisable 是 [prefixWithinAdvertisable] 的导出封装,供数据面在**载入** approved
+// 子网路由到转发表时,对每条(非出口默认路由的)CIDR 做与写路径同门槛的私有/保留段复核。
+//
+// 第十一轮深扫 MED:NormalizeAdvertisedCIDR 的私有段收敛只约束**新上报**的宣告,故意不回溯存量
+// (见 advertisableSubnetRanges 注释)。但 rebuildSubnetRouteTable 直接从 ListRoutesByStatus(approved)
+// 建表,只滤 0/0+::/0 与坏 CIDR,**不复核**私有段 —— 于是旧代码期批准过的公网/宽段(如 8.8.8.0/24、
+// 0.0.0.0/1+128.0.0.0/1)仍留在转发表,而子网路由路径排在出口闸 + 出口 ACL 之前,构成绕过出口管控的
+// confused-deputy。载入时用本函数把这类历史条目挡在转发表外(不删库、可由 admin 重新处置),补上写路径
+// 不回溯的另一半。
+func PrefixWithinAdvertisable(p netip.Prefix) bool { return prefixWithinAdvertisable(p) }
 
 // NormalizeAdvertisedCIDR 把客户端送上来的**子网路由** CIDR 文本归一化:
 //   - 必须 parse 成有效的 netip.Prefix;

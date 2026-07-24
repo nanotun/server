@@ -933,6 +933,7 @@ var catEN = map[string]string{
 	"me.totpCodeWrong":          "Wrong code: %s",
 	"me.totpTooManyAttempts":    "Too many failed code attempts from your IP. Please wait a few minutes and try again.",
 	"me.totpCodeRequired":       "Please enter the verification code.",
+	"me.enrollPasswordRequired": "Enter your current password to enable two-factor authentication.",
 	// Admin protection:
 	"admins.cannotActOnSelf": "You cannot perform this operation on yourself (to avoid locking yourself out)",
 	"admins.lastAdmin":       "Denied: this is the last enabled admin and cannot be disabled / deleted / demoted — otherwise no one could log in",

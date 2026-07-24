@@ -132,7 +132,7 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 		// 撤回所有声明 = 本会话不再「真在跑出口」→ 清 advertisedExit;若之前在跑,广播让它从出口下拉消失,
 		// 避免「已撤回声明却仍被当在跑出口、转发到它导致黑洞」(否则只能等下线才修)。
 		if c.advertisedExit.Swap(false) {
-			go broadcastExitsList(context.Background())
+			go safeGoroutine("broadcastExitsList", func() { broadcastExitsList(context.Background()) })
 		}
 		// 撤回出口 = 不再是出口 → 清 v6 能力标(避免残留 true 使数据面误判)。
 		c.advertisedExitV6.Store(false)
@@ -225,7 +225,7 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 			c.advertisedExitApproved.Store(approved)
 		}
 		if approved && q {
-			go broadcastExitsList(context.Background())
+			go safeGoroutine("broadcastExitsList", func() { broadcastExitsList(context.Background()) })
 		}
 	}
 	// subnet route(SR-M4 深扫):本帧声明了具体(非 0/0)CIDR → 本会话「真在跑子网路由器」(已装 dst 限定 NAT——客户端
@@ -253,7 +253,7 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 			c.advertisedSubnetApproved.Store(inTable)
 		}
 		if inTable {
-			go broadcastRoutesList(context.Background())
+			go safeGoroutine("broadcastRoutesList", func() { broadcastRoutesList(context.Background()) })
 		}
 	}
 	// 注意:**不**在「非出口帧 / 无 /0 的帧」里清 advertisedExit,亦**不**在「纯出口帧 / 无具体 CIDR 的帧」里清

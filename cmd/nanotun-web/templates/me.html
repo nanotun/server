@@ -63,10 +63,15 @@
             {{T "me.enableDescPre"}}<strong>Google Authenticator</strong> / <strong>Microsoft Authenticator</strong> / <strong>Authy</strong> /
             <strong>1Password</strong>{{T "me.enableDescPost"}}
         </p>
-        <form method="post" action="/me/totp/setup">
+        <form method="post" action="/me/totp/setup" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="field">
+                <label for="setup_pwd">{{T "adminPwd.currentPwd"}}</label>
+                <input id="setup_pwd" name="password" type="password" autocomplete="current-password" required>
+            </div>
             <button class="btn" type="submit">{{T "me.enableTotp"}}</button>
         </form>
+        <p class="muted" style="font-size:12px">{{T "adminPwd.currentHint"}}</p>
     {{end}}
 </div>
 
