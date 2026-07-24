@@ -1861,6 +1861,20 @@ readLoop:
 				srcSpoofDropCount.Add(1)
 				continue
 			}
+			// P0-1 身份反解 + fail-closed:userID 是 store.users.id(int64),从 c.userID 反解("u<id>")。
+			// 会话**有** userID 却解析不出(身份损坏/异常)——不放行未知身份流量,直接丢。
+			// c.userID=="" 是测试 / 无 user 上下文的合法情形,仍走下方 srcUserID==0 的 no-op 语义。
+			//
+			// 第十轮深扫 LOW(fail-closed 顺序一致性):此 guard 原先落在 aclDropPacketDirected 之前、却在
+			// forwardPacketToSubnetRoute **之后**,而子网路由的 per-user ACL(aclDeniesSubnetRoute)在
+			// srcUserID==0 时返回「放行」—— 身份损坏会话的子网流量会绕过 per-user ACL 被转发到 LAN 宣告方。
+			// 现将 uid 反解与 guard 前移到**任何** per-user 转发决策(子网路由 / 出口闸 / ACL)之前,统一 fail-closed。
+			// 当前 c.userID 恒为 "u"+id(id>0),该分支不可达,属纵深加固(防未来 userID 赋值/格式变更把它变成真绕过)。
+			uid := parseUserIDStr(c.userID)
+			if uid == 0 && c.userID != "" {
+				aclMalformedUserDropCount.Add(1)
+				continue
+			}
 			// subnet route(SR-M1):dst 命中某「已批准的内网网段」→ 投递给该网段的宣告方会话,由其本机转发进 LAN
 			// (而非走 server 自出口把内网包误发公网)。优先级:vIP(mesh) > 具体子网路由 > 0/0 出口 > server
 			// (vIP 优先在 forwardPacketToSubnetRoute 内排除)。**放在 user-level 出口闸之前**:访问已批准内网网段
@@ -1884,14 +1898,7 @@ readLoop:
 			}
 			// P0-1: ACL 数据面 enforcement。fast-path:无规则 / src==dst / dst 非 vIP 时
 			// 内部直接放行,只多两次 map lookup;有规则且命中 deny 时丢包,不写 tunWriteChan。
-			// userID 是 store.users.id(int64),从 c.userID 反解("u<id>")。
-			uid := parseUserIDStr(c.userID)
-			// fail-closed 加固:会话**有** userID 却解析不出(身份损坏/异常)——不放行未知身份流量,直接丢。
-			// c.userID=="" 是测试 / 无 user 上下文的合法情形,仍走下方 srcUserID==0 的 no-op 语义。
-			if uid == 0 && c.userID != "" {
-				aclMalformedUserDropCount.Add(1)
-				continue
-			}
+			// uid 已在上方(connSourceSpoofed 之后)反解并做过 fail-closed guard。
 			if aclDropPacketDirected(uid, payload) {
 				continue
 			}

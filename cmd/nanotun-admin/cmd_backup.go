@@ -85,7 +85,15 @@ func cmdBackup(ctx context.Context, st *store.Store, opts *globalOpts, args []st
 	if err := os.Chmod(tmpPath, backupFileMode); err != nil {
 		return fmt.Errorf("%s: %w", opts.T("backup.vacuumIntoFail"), err)
 	}
-	if err := os.Rename(tmpPath, abs); err != nil {
+	// 第十轮深扫 LOW:发布用 os.Link(硬链接)而非 os.Rename。Rename 会**覆盖**已存在的目标,
+	// 令上面 os.Stat 的「不存在才继续」no-clobber 检查形同虚设 —— Stat→publish 之间他人(或并发的
+	// 第二次 backup)抢建同名文件时会被静默覆盖。os.Link 在目标已存在时返回 EEXIST(原子 no-clobber),
+	// 与 writeFileTight 同口径。tmpPath 与 abs 同文件系统(tmpDir 建在 abs 父目录下),硬链接可用;
+	// 链接成功后 tmpPath 仍由 defer 的 os.RemoveAll(tmpDir) 清掉,只留最终 abs。
+	if err := os.Link(tmpPath, abs); err != nil {
+		if os.IsExist(err) {
+			return errors.New(opts.T("backup.targetExists", abs))
+		}
 		return fmt.Errorf("%s: %w", opts.T("backup.vacuumIntoFail"), err)
 	}
 	fmt.Fprintln(opts.stdout, opts.T("backup.written", abs))
