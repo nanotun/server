@@ -66,6 +66,13 @@ func TestGcOrphanLeases_FixedVIPGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 第二十轮深扫 MED:预览计数必须与实删谓词**完全一致** —— 同样排除 fixed_vip 守卫命中的那条,只数 dPlain 的 1 条。
+	if cnt, err := s.CountOrphanLeases(ctx, 60); err != nil {
+		t.Fatal(err)
+	} else if cnt != 1 {
+		t.Fatalf("CountOrphanLeases 预览应为 1(与实删一致,排除 fixed_vip 那条),got %d", cnt)
+	}
+
 	n, err := s.GcOrphanLeases(ctx, 60)
 	if err != nil {
 		t.Fatal(err)

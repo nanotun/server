@@ -195,8 +195,13 @@ func (t *IPFailureTracker) Prune() {
 		stale := rec.lastFail > 0 && rec.lastFail < cutoff
 		rec.mu.Unlock()
 		if stale {
-			t.m.Delete(k)
-			t.size.Add(-1)
+			// 第二十轮深扫 MED:用 LoadAndDelete 且仅在**确实删除**时 size--,与 evictOne 同款。旧写法 Delete + 无条件
+			// size.Add(-1) 在并发 Prune(main.go 定时 60s + MarkFailure 触顶时各跑一次)或 Prune 与 evictOne 撞同一 key 时
+			// 会**双减** size → size 被低估 → `size >= maxTrackedIPs` 提前判假 → 触顶不再驱逐 → map 无界增长,重开
+			// 第四轮修掉的 fail-open(灌表免 PoW)。sync.Map.Delete 幂等,配 LoadAndDelete 的 loaded 才是"本 goroutine 真删了"。
+			if _, loaded := t.m.LoadAndDelete(k); loaded {
+				t.size.Add(-1)
+			}
 		}
 		return true
 	})

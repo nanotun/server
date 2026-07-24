@@ -276,11 +276,11 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// step-up 全部因子(密码 + 若启用则 TOTP)验证成功 → 清零本 IP 的失败计数,与登录 /
-	// handler_me(disable/regen TOTP)成功即 Reset 一致。否则「几次手误 + 一次成功」的失败
-	// 计数会一直累加,穿插几次误操作即可把自己推到 stepUpMaxFailures 冷却阈值(且连累同样用
-	// step-up 的 TOTP disable/regen),形成管理员自锁。
-	s.stepUpFailures.Reset(ip)
+	// step-up 全部因子(密码 + 若启用则 TOTP)验证成功 → 衰减本 IP 的失败计数,与登录 /
+	// handler_me(disable/regen TOTP)成功侧同口径。第二十轮深扫 MED:改 Decay 减半、不再 Reset 清零 ——
+	// NAT/CGNAT 下一次合法 step-up 若把整段共享 IP 清零,同 IP 攻击者即重获满额爆破窗口。Decay 保留近期失败信号
+	// (爆破被新失败迅速重累、维持冷却),而管理员偶发几次手误 count 很小,减半后仍远低于 stepUpMaxFailures,不自锁。
+	s.stepUpFailures.Decay(ip)
 
 	// (6) fork nanotun-admin profile show
 	//

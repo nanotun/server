@@ -185,7 +185,10 @@ func subIsReadOnly(subcmd string, rest []string) bool {
 		verb = rest[0]
 	}
 	switch verb {
-	case "list", "show", "get", "":
+	case "list", "ls", "show", "get", "":
+		// 第二十轮深扫 MED:补上 "ls"(user/device/lease/acl 的 list 别名,见各 cmd_*.go `case "list", "ls"`)。
+		// 此前只读集漏了它 → `user ls` / `device ls` / `lease ls` / `acl ls` 被当写命令,开可写连接 + 跑 Migrate、
+		// 抢 WAL 写锁,与 `list` 只读口径不一致(exit 命令的 ls 已豁免,这里补齐其余)。
 		return true
 	}
 	return false
@@ -202,7 +205,7 @@ func settingIsReadOnly(rest []string) bool {
 		return true
 	}
 	switch rest[0] {
-	case "list", "show", "get":
+	case "list", "ls", "show", "get": // 第二十轮深扫 MED:补 "ls" 别名(见 cmd_setting.go `case "list", "ls"`)
 		return true
 	case "rate":
 		return !settingRateHasMutation(rest[1:])
@@ -232,7 +235,7 @@ func routeIsReadOnly(rest []string) bool {
 		return true
 	}
 	switch rest[0] {
-	case "list":
+	case "list", "ls": // 第二十轮深扫 MED:补 "ls" 别名(见 cmd_route.go `case "list", "ls"`)
 		return true
 	case "approve", "reject", "delete":
 		return false

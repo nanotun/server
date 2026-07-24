@@ -741,6 +741,11 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 				// 规则时误 fail-closed 丢弃)。
 				resolved = true
 				break walk
+			case 59: // No Next Header(RFC 8200 §4.7):本头之后**确定没有**任何上层协议 —— 无可藏的 tcp/udp 端口、
+				// 无绕过面。与 ESP(50)同口径判 resolved(proto=""),避免对无害的 NH=59 包在存在端口 deny 规则时被误标
+				// l4Unresolved → fail-closed 丢弃(纯可用性 over-drop,与 ESP 的处理不对称)。第二十轮深扫 LOW。
+				resolved = true
+				break walk
 			default: // AH(51) / 未知 next-header → 其后可能仍有**明文** L4(AH 不加密载荷,只在其后拼真正的 L4)。
 				// 第十五轮深扫 LOW:不再当 resolved(空 proto)—— 那样「AH + TCP:22」在 default=allow 下能绕过 `deny tcp
 				// port 22`(规则不命中 → 放行)。改为保持 !resolved → 循环外标 l4Unresolved,让 proto/port deny fail-closed
@@ -821,6 +826,14 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 		// 的 fail-open 只对真正的 server 自查 / 测试生效,不再成为已批准转发者的枚举旁路。
 		if t.dst.IsValid() && isServerGatewayAddr(t.dst.Unmap()) {
 			return hasAnyVIP
+		}
+		// 第二十轮深扫 MED:豁免只该覆盖「非 vIP 源的外网 / LAN 回程」。源若落在本 mesh 网段(TUN v4/v6 CIDR)或 4via6
+		// 专用段(fdbc:4a60::/64),绝不是合法中继回程源 —— 合法回程源只会是外网 / LAN 地址,或对端 vIP(对端在线则
+		// 已在 (2) lookupVIPOwner 命中判伪造)。若在此放过一个「落在 mesh 网段内、但非任何在线 vIP」的源,已批准的
+		// 出口 / 子网中继方就能把源伪造成任一**当前离线**的 mesh 对端,向在线对端注包(跨设备冒充;default-allow 部署
+		// 下跨信任域)。isMeshCIDRAddr 已含网关(上面 dst 网关分支是另一维度),此处按**源**再拦一道。
+		if isMeshCIDRAddr(src) || is4via6(src) {
+			return true
 		}
 		return false
 	}

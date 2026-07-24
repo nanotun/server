@@ -270,8 +270,9 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			// step-up 全过 → 清 IP 冷却计数(与 QR-reveal / login 成功即 Reset 对齐)。
-			s.stepUpFailures.Reset(ip)
+			// step-up 全过 → 衰减 IP 冷却计数(第二十轮深扫 MED:与 login 成功侧同口径,改 Decay 减半、不再 Reset 清零,
+			// 避免 NAT/CGNAT 下一次合法 step-up 把整段共享 IP 的失败信号清零、让同 IP 攻击者重获满额爆破窗口)。
+			s.stepUpFailures.Decay(ip)
 		}
 		pwd := r.FormValue("password")
 		confirm := r.FormValue("password_confirm")

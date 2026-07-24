@@ -807,6 +807,67 @@ func TestConnSourceSpoofed_GatewaySrcBlockedEvenApproved(t *testing.T) {
 	}
 }
 
+// TestConnSourceSpoofed_OfflineMeshSrcBlockedEvenApproved 覆盖第二十轮深扫 MED:已批准出口/子网中继方以任一
+// **落在 mesh 网段(TUN CIDR)或 4via6 专用段、但非任何在线 vIP** 的地址为源 → 一律判伪造(冒充离线 mesh 对端)。
+// 同时确认:① 会话**自身** vIP(恰在 mesh 内)作源仍合法(证明新检查排在 (1) 自身 vIP 判定之后);② 真实外网源仍豁免。
+func TestConnSourceSpoofed_OfflineMeshSrcBlockedEvenApproved(t *testing.T) {
+	setServerGatewayAddrs("10.201.0.1/16", "fd00:201::1/64")
+	t.Cleanup(func() { serverGatewayAddrs.Store(nil) })
+
+	mkPkt := func(src [4]byte) []byte {
+		dst := [4]byte{8, 8, 8, 8}
+		return []byte{
+			0x45, 0x00, 0x00, 0x1c,
+			0x00, 0x00, 0x00, 0x00,
+			0x40, 0x11, 0x00, 0x00,
+			src[0], src[1], src[2], src[3],
+			dst[0], dst[1], dst[2], dst[3],
+			0x12, 0x34, 0x00, 0x35,
+			0x00, 0x08, 0x00, 0x00,
+		}
+	}
+	// 最小 IPv6/UDP 包(src 可控;dst=公网 v6),用于 4via6 源。
+	mkV6 := func(src [16]byte) []byte {
+		p := make([]byte, 48)
+		p[0] = 0x60
+		p[5] = 0x08 // payload length = 8(UDP 头)
+		p[6] = 17   // next header = UDP
+		p[7] = 64   // hop limit
+		copy(p[8:24], src[:])
+		dst := [16]byte{0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0x88} // 2001:4860:4860::8888
+		copy(p[24:40], dst[:])
+		p[40], p[41], p[42], p[43] = 0x12, 0x34, 0x00, 0x35
+		p[44], p[45] = 0x00, 0x08
+		return p
+	}
+	mkApprovedExit := func() *Connection {
+		c := &Connection{}
+		ips := []util.VirtualIPAssignment{{VirtualIP: "10.201.0.9"}} // 自身 vIP,恰在 mesh /16 内
+		c.clientIPs.Store(&ips)
+		c.advertisedExit.Store(true)
+		c.advertisedExitApproved.Store(true)
+		return c
+	}
+
+	// 离线 mesh 源(10.201/16 内、非网关、无在线归属)→ 已批准出口中继也必须判伪造。
+	if !connSourceSpoofed(mkApprovedExit(), mkPkt([4]byte{10, 201, 5, 5})) {
+		t.Fatal("已批准出口中继以离线 mesh 地址为源必须判伪造")
+	}
+	// 4via6 源(fdbc:4a60::/64)→ 同样判伪造。
+	via6 := [16]byte{0xfd, 0xbc, 0x4a, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x05}
+	if !connSourceSpoofed(mkApprovedExit(), mkV6(via6)) {
+		t.Fatal("已批准出口中继以 4via6 地址为源必须判伪造")
+	}
+	// 会话**自身** vIP 作源(恰在 mesh 内)→ 合法,不得误伤。
+	if connSourceSpoofed(mkApprovedExit(), mkPkt([4]byte{10, 201, 0, 9})) {
+		t.Fatal("会话自身 vIP 作源不应判伪造")
+	}
+	// 真实外网源仍豁免。
+	if connSourceSpoofed(mkApprovedExit(), mkPkt([4]byte{203, 0, 113, 8})) {
+		t.Fatal("已批准出口中继携真实外网源应仍豁免")
+	}
+}
+
 // TestParsePacketTuple_IPv6AHUnresolvedESPResolved 覆盖第十五轮深扫 LOW:
 // IPv6 AH(51)/未知 next-header 停解 → l4Unresolved=true(端口 deny 在 default-allow 下 fail-closed);
 // ESP(50)载荷加密无明文端口 → resolved(l4Unresolved=false,避免对合法 ESP 误 fail-closed)。
@@ -827,5 +888,10 @@ func TestParsePacketTuple_IPv6AHUnresolvedESPResolved(t *testing.T) {
 	}
 	if tu, ok := parsePacketTuple(mkV6(50)); !ok || tu.l4Unresolved {
 		t.Fatalf("ipv6 ESP(50) got %+v ok=%v, want l4Unresolved=false", tu, ok)
+	}
+	// 第二十轮深扫 LOW:No Next Header(59)后确定无 L4 → resolved(l4Unresolved=false),与 ESP 同口径,
+	// 避免对无害 NH=59 包在有端口 deny 规则时误 fail-closed。
+	if tu, ok := parsePacketTuple(mkV6(59)); !ok || tu.l4Unresolved {
+		t.Fatalf("ipv6 no-next-header(59) got %+v ok=%v, want l4Unresolved=false", tu, ok)
 	}
 }

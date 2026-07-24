@@ -455,3 +455,30 @@ func TestUnknownCommand(t *testing.T) {
 // 那边是 single source of truth。此处不再保留 admin 本地副本测试 —— 之前的副本是
 // admin / web 各自一份 `generatePSK()` 的产物,统一到 util 后没有必要再 admin 里
 // 跑一遍同样的断言。
+
+// TestReadOnlyVerbSets_IncludeLS 覆盖第二十轮深扫 MED:`ls` 是 `list` 的别名(见各 cmd_*.go),必须与 `list` 同归
+// 只读集,否则 `user ls` / `device ls` / `lease ls` / `acl ls` / `setting ls` / `route ls` 会被当写命令,开可写连接 +
+// 跑 Migrate、抢 WAL 写锁。同时确认真正的写动作仍判为写。
+func TestReadOnlyVerbSets_IncludeLS(t *testing.T) {
+	for _, sub := range []string{"user", "device", "lease", "acl"} {
+		if !subIsReadOnly(sub, []string{"ls"}) {
+			t.Errorf("subIsReadOnly(%q, ls) 应为只读", sub)
+		}
+	}
+	if !settingIsReadOnly([]string{"ls"}) {
+		t.Error("settingIsReadOnly(ls) 应为只读")
+	}
+	if !routeIsReadOnly([]string{"ls"}) {
+		t.Error("routeIsReadOnly(ls) 应为只读")
+	}
+	// 写动作仍为写(不因加了 ls 而误放宽)。
+	if subIsReadOnly("user", []string{"create"}) {
+		t.Error("subIsReadOnly(user create) 应为写")
+	}
+	if routeIsReadOnly([]string{"approve"}) {
+		t.Error("routeIsReadOnly(approve) 应为写")
+	}
+	if settingIsReadOnly([]string{"set", "foo", "bar"}) {
+		t.Error("settingIsReadOnly(set ...) 应为写")
+	}
+}

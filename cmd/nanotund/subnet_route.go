@@ -41,6 +41,10 @@ var (
 	subnetRouteDroppedNotAdvertised atomic.Uint64 // dst 属已批准 CIDR 但宣告方**当前不再宣告**该网段（收窄+陈旧批准）→ 丢弃（第 7 轮深扫）
 	subnetRouteDroppedNoSite        atomic.Uint64 // SR-VIA6：4via6 dst 的 siteID 未知（陈旧/未分配站点）→ 丢弃（不回退 server 误发公网）
 	subnetRouteDroppedNotApproved   atomic.Uint64 // dst 不在宣告方**管理员已批准**网段 → 丢弃（防审批绕过/SSRF）。两处：① SR-VIA6 4via6 解出的 v4；② FRP server 自发 LAN 包（deliverServerOriginatedToDevice，防撤销审批后 FRP 仍能打进 LAN）
+	// 第二十轮深扫 MED:egress==server(未选 peer 出口)路径上,**自指**的 4via6 / 已批准子网 LAN 目的落到 TUN 写
+	// 前被 fail-closed 丢弃的包数。round-19 只在 forwardPacketToExitNode(egress!=0)堵了这类内部 dst;egress==0 时
+	// 它们本会被写进 server TUN → 内核 MASQUERADE 推向 WAN 上行口(私网/4via6 dst 上游注定丢弃前已在链路可见 + 误路由)。
+	subnetRouteDroppedSelfRefEgress atomic.Uint64
 )
 
 // SubnetRouteStats 暴露在 /status JSON 的子结构：子网路由数据面（SR-M1）转发计数 + 当前生效路由条数。

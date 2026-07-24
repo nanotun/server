@@ -49,19 +49,37 @@ type RateDefaults struct {
 // 容错:value 解不出 int64 时按 0 处理但不报错 —— migration 已经 INSERT OR IGNORE 写入
 // 字符串 '0',只有运维手抠 DB 写歪才会触发,稳态运行不应丢弃健康 server 的请求。
 func (s *Store) GetRateDefaults(ctx context.Context) (RateDefaults, error) {
-	up, err := s.settingsGetInt64(ctx, settingRateDefaultUploadBPS)
+	// 第二十轮深扫:三个键用**单条 SELECT** 取点一致快照。此前是三次独立 settingsGetInt64,WAL 下与
+	// SetRateDefaults 的单事务写并发时,读者可能观察到撕裂组合(旧 up + 新 down/burst)。单条查询在一次语句里
+	// 读到同一快照,消除撕裂。容错沿旧义(见 settingsGetInt64):缺键 / 值解不出 int64 → 该字段按 0(不限/默认),
+	// 不因运维手抠 DB 而拒服务。
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT key, value FROM app_settings WHERE key IN (?,?,?)`,
+		settingRateDefaultUploadBPS, settingRateDefaultDownloadBPS, settingRateBurstBytes)
 	if err != nil {
-		return RateDefaults{}, fmt.Errorf("store: read %s: %w", settingRateDefaultUploadBPS, err)
+		return RateDefaults{}, fmt.Errorf("store: read rate defaults: %w", err)
 	}
-	down, err := s.settingsGetInt64(ctx, settingRateDefaultDownloadBPS)
-	if err != nil {
-		return RateDefaults{}, fmt.Errorf("store: read %s: %w", settingRateDefaultDownloadBPS, err)
+	defer rows.Close()
+	var d RateDefaults
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return RateDefaults{}, fmt.Errorf("store: scan rate defaults: %w", err)
+		}
+		n, perr := strconv.ParseInt(v, 10, 64)
+		if perr != nil { // 解不出 → 0(与 settingsGetInt64 一致的容错)
+			n = 0
+		}
+		switch k {
+		case settingRateDefaultUploadBPS:
+			d.UploadBPS = n
+		case settingRateDefaultDownloadBPS:
+			d.DownloadBPS = n
+		case settingRateBurstBytes:
+			d.BurstBytes = n
+		}
 	}
-	burst, err := s.settingsGetInt64(ctx, settingRateBurstBytes)
-	if err != nil {
-		return RateDefaults{}, fmt.Errorf("store: read %s: %w", settingRateBurstBytes, err)
-	}
-	return RateDefaults{UploadBPS: up, DownloadBPS: down, BurstBytes: burst}, nil
+	return d, rows.Err()
 }
 
 // SetRateDefaults 持久化全局默认限速 + burst。三个字段必须同时给值,语义清晰:

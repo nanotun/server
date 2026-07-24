@@ -44,14 +44,12 @@ func cmdLeaseGc(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 	if *idle <= 0 {
 		return usageError(opts.T("lease.idleMustPositive"))
 	}
+	// 第二十轮深扫 MED:预览 / 确认的计数走 CountOrphanLeases —— 与 GcOrphanLeases 的删除谓词**完全一致**
+	// (含「vip==该 device fixed_vip 的行永不回收」)。此前这里内联一条只查 manual+idle 的 COUNT,漏了 fixed_vip
+	// 保留 → 显示的数比实删偏大,运维据此误判。
 	if *dry {
-		var n int64
-		cutoff := time.Now().Add(-*idle).Unix()
-		row := st.DB().QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM leases l
-			 WHERE l.manual = 0
-			   AND l.device_id IN (SELECT id FROM devices WHERE last_seen_at < ?)`, cutoff)
-		if err := row.Scan(&n); err != nil {
+		n, err := st.CountOrphanLeases(ctx, int64(idle.Seconds()))
+		if err != nil {
 			return err
 		}
 		fmt.Fprintln(opts.stdout, opts.T("lease.gcDryRun", n, (*idle).String()))
@@ -60,13 +58,8 @@ func cmdLeaseGc(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 	// 第十四轮深扫 MED:非 --dry-run 的 gc 会批量删除孤儿 lease、释放粘性 vIP,属破坏性操作。与 restore /
 	// vacuum / user delete 等一致要求二次确认(--yes / -y 跳过供 cron/脚本)。先算将删多少条,给运维决策依据。
 	if !opts.yes {
-		var n int64
-		cutoff := time.Now().Add(-*idle).Unix()
-		row := st.DB().QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM leases l
-			 WHERE l.manual = 0
-			   AND l.device_id IN (SELECT id FROM devices WHERE last_seen_at < ?)`, cutoff)
-		if err := row.Scan(&n); err != nil {
+		n, err := st.CountOrphanLeases(ctx, int64(idle.Seconds()))
+		if err != nil {
 			return err
 		}
 		ok, _ := confirm(opts, opts.T("lease.confirmGc", n, (*idle).String()))

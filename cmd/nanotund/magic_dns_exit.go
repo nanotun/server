@@ -79,6 +79,9 @@ var (
 	// exitDNSForeignConnRejectCount：截获时因「应答来自非投递出口会话」而被拒的次数（H1 观测：
 	// 持续增长 = 有会话在尝试向关联端口注入伪造 DNS 应答）。
 	exitDNSForeignConnRejectCount atomic.Uint64
+	// exitDNSReplyMismatchCount：出口回来的应答**通过了 port+conn+TXID 关联**但 Response 标志未置位 / question 与
+	// 查询不符而被判无效的次数（第二十轮深扫 MED 观测:持续增长 = 出口在 echo 查询或回不匹配应答,潜在缓存投毒尝试）。
+	exitDNSReplyMismatchCount atomic.Uint64
 	// magicDNSViaExitCount：成功经出口解析的公网查询数（观测用，供 /status 汇总）。
 	magicDNSViaExitCount atomic.Uint64
 	// magicDNSAAAAStripCount：所选出口**无 v6 出网**时，被就地回 NODATA（不绕出口、省一个 in-flight 占位）
@@ -277,6 +280,21 @@ func resolveExitDNS(exitConn *Connection, query []byte) ([]byte, bool) {
 	if qidSet {
 		qid = binary.BigEndian.Uint16(query[0:2])
 	}
+	// 第二十轮深扫 MED:预解析本次查询的首个 question,回包时连同 Response 标志一并校验(见下方 select)。
+	// 出口路径此前只按 port+conn+TXID 关联,未校 Response / question —— 受损或恶意出口可回一份 TXID 相符、但
+	// question 是**另一个域名**(或 QR=0 的查询回显)的包,被 parseExitDNSResult/parseRawDNSMeta 当作本查询结果
+	// 缓存进**全 egress 共享**的 exitDNSCache,污染该出口上所有客户端对该名字的解析(缓存投毒)。上游 UDP 路径
+	// (dialAndQueryUDP)早有 dnsReplyMatches 兜底,出口路径缺这道,这里补齐。解析失败 → wantQ 名长 0,dnsReplyMatches
+	// 退化为仅校 TXID(与旧行为一致,不更严也不更松)。
+	var wantQ dnsmessage.Question
+	if qidSet {
+		var qp dnsmessage.Parser
+		if _, perr := qp.Start(query); perr == nil {
+			if q, qerr := qp.Question(); qerr == nil {
+				wantQ = q
+			}
+		}
+	}
 	ch := make(chan []byte, 1)
 	port, ok := registerExitDNSWaiter(ch, exitConn, qid, qidSet)
 	if !ok {
@@ -293,6 +311,13 @@ func resolveExitDNS(exitConn *Connection, query []byte) ([]byte, bool) {
 	}
 	select {
 	case resp := <-ch:
+		// 缓存前把「TXID 相符」升级为「Response 置位 + question 相符」的完整绑定(与上游 UDP 路径同口径),
+		// 挡住出口回显查询 / 张冠李戴应答污染全 egress 共享缓存。判负即当解析失败(nil,false)→ 不缓存、
+		// fail-open 回退 server 本地上游(比缓存一份被投毒的答案安全)。
+		if !dnsReplyMatches(resp, qid, wantQ) {
+			exitDNSReplyMismatchCount.Add(1)
+			return nil, false
+		}
 		return resp, len(resp) > 0
 	case <-time.After(exitDNSWaitTimeout):
 		return nil, false

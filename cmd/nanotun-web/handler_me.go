@@ -143,7 +143,7 @@ func (s *Server) handleMeTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, status, msg)
 		return
 	}
-	s.stepUpFailures.Reset(ip)
+	s.stepUpFailures.Decay(ip)
 
 	secret, err := GenerateTOTPSecret()
 	if err != nil {
@@ -277,8 +277,8 @@ func (s *Server) handleMeTOTPEnable(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, status, msg)
 		return
 	}
-	// step-up 全过 → 清 IP 冷却计数(与 disable/regen/server-qr 成功即 Reset 对齐)。
-	s.stepUpFailures.Reset(ip)
+	// step-up 全过 → 衰减 IP 冷却计数(第二十轮深扫 MED:改 Decay 减半、不再 Reset 清零)。
+	s.stepUpFailures.Decay(ip)
 	plain, hashes, err := GenerateRecoveryCodes()
 	if err != nil {
 		s.renderInternalError(w, r, "me:totp_gen_recovery", err)
@@ -447,7 +447,7 @@ func (s *Server) handleMeTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpCodeWrongCloseFail"))
 		return
 	}
-	s.stepUpFailures.Reset(ip)
+	s.stepUpFailures.Decay(ip)
 	if usedRecovery && recoveryID > 0 {
 		// disable 路径用了恢复码,标记 used 主要是审计完整,实际马上要全删了。
 		_ = s.store.MarkRecoveryCodeUsed(r.Context(), admin.ID, recoveryID, clientIP(r), time.Now().Unix())
@@ -536,7 +536,7 @@ func (s *Server) handleMeTOTPRegen(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpCodeWrong", trErr(r, err)))
 		return
 	}
-	s.stepUpFailures.Reset(ip)
+	s.stepUpFailures.Decay(ip)
 	plain, hashes, err := GenerateRecoveryCodes()
 	if err != nil {
 		s.renderInternalError(w, r, "me:totp_regen_gen", err)

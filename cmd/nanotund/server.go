@@ -1951,6 +1951,22 @@ readLoop:
 			if serverSelfEgressV6FastFail(c, payload) {
 				continue
 			}
+			// 第二十轮深扫 MED:egress==server 路径补齐**自指内部 dst** 的 fail-closed。仅当本会话自己是**已批准子网
+			// 宣告方**时才检查(自指必然是访问自己宣告的网段 / 自己的 4via6 site;普通客户端无宣告、恒跳过,公网出口
+			// 热路径零额外开销)。forwardPacketToSubnetRoute 对自指返回 false 把包交回本链路,但 server 上这类 dst 无本地
+			// 投递语义:直落 tunWriteChan 会被内核 FORWARD+MASQUERADE 把 4via6 / 私网 LAN 目的推向 WAN 上行口(私网 dst
+			// 上游注定丢弃前已在链路可见 + 误路由)。到此处 lookupSubnetRoute(dst) 命中 = dst 属某已批准网段却未被
+			// forwardPacketToSubnetRoute 转发,只可能是自指(他人网段会被转发、提前 continue);is4via6 同理。**不含**
+			// isMeshCIDRAddr —— 那含 peer vIP,mesh 互通要经 TUN demux 正常投递,绝不能在此丢。客户端访问自己宣告的
+			// 网段本地有直连路由,无需经 server;round-19 仅堵了 peer-exit(egress!=0)路径,这里闭合 egress==0。
+			if c.advertisedSubnetApproved.Load() {
+				if t, ok := parsePacketTuple(payload); ok {
+					if _, hit := lookupSubnetRoute(t.dst); is4via6(t.dst) || hit {
+						subnetRouteDroppedSelfRefEgress.Add(1)
+						continue
+					}
+				}
+			}
 			pkt := tunPktBufPool.Get().([]byte)
 			n := copy(pkt, payload)
 			select {
@@ -3119,6 +3135,13 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	// 深扫第十二轮 MED:到这里 VIP 分配 + lease 持久化 + vIP→user 映射都已成功,此刻才发
 	// 登录成功帧(code=0)。仍在 c.linkConn 被赋值(下方)之前,无并发写者,直接写 raw;
 	// 且成功帧仍先于 ConvSaltLite,线序不变。发送失败即放弃(defer cleanupConnection 兜底)。
+	//
+	// 第二十轮深扫 MED:给 primary 登录的 LoginResp + ConvSalt 写钉有界写超时。PoW 通过后 raw 的 pre-login
+	// deadline 已被清(见上方 SetDeadline(time.Time{})),这两次**必要**写此前无超时;ConvSalt 尤其在 c.linkConn
+	// 已被赋值后、全程持 linkWrMu —— 停读 / 卡死客户端会让写无限阻塞 → linkWrMu 永久挂住 → kick / supersede /
+	// 优雅停机拿不到锁去 Close 该会话,VIP/connIDMap 条目滞留。与 round-19 给 takeover 两次写钉 10s 同款(见
+	// handleTakeoverLogin)。10s 对健康链路小帧绰绰有余,又把异常停读封在有界区间;成功后清掉,数据面写不受此约束。
+	_ = raw.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := writeLinkLoginRespFull(raw, 0, "登录成功", userID, connIDStr, takeoverSecret); err != nil {
 		logrus.WithField("remote", remote).WithError(err).Warn("发送登录响应失败")
 		return
@@ -3176,6 +3199,8 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		logrus.WithField("remote", remote).WithError(err).Warn("构造 ConvSaltLite 失败")
 		return
 	}
+	// 刷新写超时(GetRateDefaults 等本地 DB 读理论上耗时可忽略,但重设避免其吃掉 LoginResp 时设的预算)。
+	_ = rwc.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	c.linkWrMu.Lock()
 	err = util.WriteLinkFrame(rwc, util.LinkTypeConvSaltMsg, saltBody)
 	c.linkWrMu.Unlock()
@@ -3183,6 +3208,8 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		logrus.WithField("remote", remote).WithError(err).Warn("下发 ConvSaltLite 失败")
 		return
 	}
+	// 握手两次写已完成:清掉有界写超时,后续数据面写走各自的超时/无超时语义,不受此约束。
+	_ = rwc.SetWriteDeadline(time.Time{})
 	logrus.WithField("remote", remote).WithField("conv_id", convID).Info("已下发 ConvSaltLite，进入链路隧道")
 
 	tunnelCtx := globalContext

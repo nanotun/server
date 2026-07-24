@@ -282,13 +282,39 @@ func (s *Store) GcOrphanLeases(ctx context.Context, idle int64) (int64, error) {
 		return 0, i18nErr("store.lease.gcIdlePositive", "store: GcOrphanLeases idle 必须 > 0 秒")
 	}
 	cutoff := nowUnix() - idle
-	// GC 守卫(纵深防御):除了 manual=0,再显式排除「lease 的 vip 正是该 device 的 fixed_vip」的行。
-	// 正常路径下 SetDeviceFixedVIP 已在同一事务里把 fixed_vip 与 leases.manual 同步,manual=1 本就挡住回收;
-	// 但历史行 / 老迁移 / 外部直接写库可能造成 manual 漂移成 0 而 fixed_vip 仍在 —— 只靠 manual 会把管理员手钉的
-	// 固定地址当空闲回收,设备再上线拿不回固定 vIP。这里以 fixed_vip 实值兜底,任何与 fixed_vip 匹配的 lease 永不回收。
-	res, err := s.db.ExecContext(ctx, `
-		DELETE FROM leases
-		WHERE manual = 0
+	res, err := s.db.ExecContext(ctx, `DELETE FROM leases WHERE`+orphanLeaseWhereSQL, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("store: gc orphan leases: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// CountOrphanLeases 返回 GcOrphanLeases 在同一 idle 下**将删除**的 lease 条数,谓词与删除**完全一致**
+// (共用 orphanLeaseWhereSQL)。第二十轮深扫 MED:CLI `lease gc` 的 --dry-run 预览与确认提示此前各自内联一条
+// **只查 manual+idle** 的 COUNT,漏了删除侧对「vip==该 device fixed_vip」行的保留 → 预览/确认的数比实删偏大,
+// 运维据此误判。改为共用本方法,保证「看到的数 == 实删的数」。idle<=0 → 0(与 Gc 的 no-op 语义一致)。
+func (s *Store) CountOrphanLeases(ctx context.Context, idle int64) (int64, error) {
+	if idle <= 0 {
+		return 0, nil
+	}
+	cutoff := nowUnix() - idle
+	var n int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM leases WHERE`+orphanLeaseWhereSQL, cutoff).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: count orphan leases: %w", err)
+	}
+	return n, nil
+}
+
+// orphanLeaseWhereSQL 是「孤儿 lease」的判定条件,GcOrphanLeases(DELETE)与 CountOrphanLeases(COUNT)共用,
+// 杜绝预览计数与实删谓词漂移。占位符:idle cutoff(last_seen_at < ?)。所有列名均指向单一 FROM 表 leases。
+//
+// GC 守卫(纵深防御):除了 manual=0,再显式排除「lease 的 vip 正是该 device 的 fixed_vip」的行。
+// 正常路径下 SetDeviceFixedVIP 已在同一事务里把 fixed_vip 与 leases.manual 同步,manual=1 本就挡住回收;
+// 但历史行 / 老迁移 / 外部直接写库可能造成 manual 漂移成 0 而 fixed_vip 仍在 —— 只靠 manual 会把管理员手钉的
+// 固定地址当空闲回收,设备再上线拿不回固定 vIP。这里以 fixed_vip 实值兜底,任何与 fixed_vip 匹配的 lease 永不回收。
+const orphanLeaseWhereSQL = `
+		  manual = 0
 		  AND device_id IN (
 		      SELECT id FROM devices WHERE last_seen_at < ?
 		  )
@@ -297,13 +323,7 @@ func (s *Store) GcOrphanLeases(ctx context.Context, idle int64) (int64, error) {
 		      JOIN devices d ON d.id = l.device_id
 		      WHERE (COALESCE(d.fixed_vip_v4,'') <> '' AND d.fixed_vip_v4 = l.vip_v4)
 		         OR (COALESCE(d.fixed_vip_v6,'') <> '' AND d.fixed_vip_v6 = l.vip_v6)
-		  )`, cutoff)
-	if err != nil {
-		return 0, fmt.Errorf("store: gc orphan leases: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
-}
+		  )`
 
 const leaseSelectSQL = `SELECT id, device_id, COALESCE(vip_v4,''), COALESCE(vip_v6,''), manual, assigned_at FROM leases`
 
