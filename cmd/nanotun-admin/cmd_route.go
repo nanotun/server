@@ -24,7 +24,7 @@ import (
 
 func cmdRoute(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) == 0 {
-		return errors.New(opts.usage("nanotun-admin route <list|approve|reject|delete> [...]"))
+		return usageError(opts.usage("nanotun-admin route <list|approve|reject|delete> [...]"))
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {

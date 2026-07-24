@@ -245,8 +245,12 @@ func (s *Store) CreateUser(ctx context.Context, in NewUser) (*User, error) {
 	// 要求两列都非 NULL 非 '' 而**逃过唯一索引**,埋下 SSO 上线后多行半绑定身份的歧义/重复隐患。
 	// 修法:任一为空即整对清空(→ 两列都 NULL),与 0029 的归一口径一致。SSO 在 M0 未接线,当前无实害,
 	// 但把写路径与 schema 不变量对齐,避免未来接线时踩坑。
-	ssoProvider, ssoSubject := in.SSOProvider, in.SSOSubject
-	if strings.TrimSpace(ssoProvider) == "" || strings.TrimSpace(ssoSubject) == "" {
+	// 第十二轮深扫 LOW:两字段先 **TrimSpace 再入库**(此前判空用 trim、写库却用原始值,不对称)。
+	// idx_users_sso 是 BINARY 唯一索引,若把 " okta "(带空白)原样落库,与 "okta" 视作不同值 → 逃过唯一性,
+	// 埋下 SSO 上线后同一身份多行的歧义/重复隐患(与第 4 轮给 username 修的同类问题对齐)。任一为空即整对清空。
+	ssoProvider := strings.TrimSpace(in.SSOProvider)
+	ssoSubject := strings.TrimSpace(in.SSOSubject)
+	if ssoProvider == "" || ssoSubject == "" {
 		ssoProvider, ssoSubject = "", ""
 	}
 

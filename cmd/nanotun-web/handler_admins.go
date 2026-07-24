@@ -283,7 +283,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		// 不同 admin 时后者会拿到 ErrLastAdmin 并回滚,绝不会把系统推入零可登录管理员。
 		if target.Role == "admin" {
 			if err := s.ensureNotLastAdmin(r); err != nil {
-				s.renderError(w, r, http.StatusBadRequest, err.Error())
+				s.renderEnsureAdminErr(w, r, err)
 				return
 			}
 		}
@@ -312,7 +312,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 	case "delete":
 		if target.Role == "admin" {
 			if err := s.ensureNotLastAdmin(r); err != nil {
-				s.renderError(w, r, http.StatusBadRequest, err.Error())
+				s.renderEnsureAdminErr(w, r, err)
 				return
 			}
 		}
@@ -339,7 +339,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		}
 		if target.Role == "admin" && newRole == "viewer" {
 			if err := s.ensureNotLastAdmin(r); err != nil {
-				s.renderError(w, r, http.StatusBadRequest, err.Error())
+				s.renderEnsureAdminErr(w, r, err)
 				return
 			}
 		}
@@ -371,14 +371,32 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// errLastEnabledAdmin 是 ensureNotLastAdmin 的 floor 守卫 sentinel(「这是最后一个 enabled admin」),
+// 与「读计数时的 DB 故障」区分开:前者对外给本地化文案,后者走 renderInternalError 遮蔽内部细节。
+var errLastEnabledAdmin = errors.New("last enabled admin")
+
 // ensureNotLastAdmin:禁用 / 删除 / 降级 admin 角色前的保护。
+//
+// 第十二轮深扫 LOW:DB 故障路径此前 `return err`,调用方直接 `renderError(..., err.Error())` 把
+// 原始 store 错误串(可能含 SQL / 约束 / 库路径)回显到页面 —— 与本仓其它写路径统一遮蔽内部错误的
+// 做法不一致。现改为返回 sentinel(floor 守卫)vs 原始 err(DB 故障),由 renderEnsureAdminErr 分流。
 func (s *Server) ensureNotLastAdmin(r *http.Request) error {
 	n, err := s.store.CountEnabledWebAdminsByRole(r.Context(), "admin")
 	if err != nil {
 		return err
 	}
 	if n <= 1 {
-		return errors.New(tr(r, "admins.lastAdmin"))
+		return errLastEnabledAdmin
 	}
 	return nil
+}
+
+// renderEnsureAdminErr 渲染 ensureNotLastAdmin 的错误:floor 守卫 → 本地化 400;
+// 其余(CountEnabledWebAdminsByRole 的 DB 故障)→ 遮蔽内部细节的 500。
+func (s *Server) renderEnsureAdminErr(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errLastEnabledAdmin) {
+		s.renderError(w, r, http.StatusBadRequest, tr(r, "admins.lastAdmin"))
+		return
+	}
+	s.renderInternalError(w, r, "admins:count_enabled_admins", err)
 }
