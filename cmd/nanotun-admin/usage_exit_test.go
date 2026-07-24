@@ -31,6 +31,12 @@ func TestUsageError_ExitCode2(t *testing.T) {
 		{"setting no-verb", []string{"setting"}},
 		{"audit no-verb", []string{"audit"}},
 		{"credentials no-verb", []string{"credentials"}},
+		// 第十二轮深扫 MED:**未知子命令**同样属用法错误 → exit 2(此前经 runWithStore 恒 exit 1)。
+		{"user unknown-verb", []string{"user", "bogus"}},
+		{"route unknown-verb", []string{"route", "bogus"}},
+		{"device unknown-verb", []string{"device", "bogus"}},
+		{"acl unknown-verb", []string{"acl", "bogus"}},
+		{"lease unknown-verb", []string{"lease", "bogus"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

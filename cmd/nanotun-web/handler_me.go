@@ -81,10 +81,26 @@ func (s *Server) handleMeTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
+	// 第十一轮深扫 MED:首次启用 TOTP 也要求**密码 step-up** —— 与 disable/regen(TOTP 码)、
+	// server-qr/self-reset(密码)同等级保护。绑定新 secret + 发恢复码是把「第二因子」焊到本账号的
+	// 敏感写操作:此前只凭 session+CSRF,未开 2FA 的会话一旦被劫持 / 借用,攻击者即可绑定**自己的**
+	// TOTP secret 并领走恢复码,把合法 admin 锁死(本系统无「admin 侧清他人 TOTP」的动作,只能删号重建)。
+	// 此刻账号尚无 secret 可验,故 step-up 用**密码**;复用 step-up IP 冷却 + 按 adminID 串行化「读冷却+
+	// verify+记账」临界区(与 disable/regen 同款,复用 totpVerifyLocks)。
+	//
+	// 第十二轮深扫 MED:锁**先于**下面的 GetWebAdmin —— cur 在锁内读到最新 hash/enabled/secret,验密码用它,
+	// 抹掉「requireAuth 请求初快照 → step-up 执行」间紧急改密+吊销会话的 TOCTOU 窗口(与 /login/totp 同源)。
+	unlock := s.lockTOTPVerify(admin.ID)
+	defer unlock()
+
 	// 如果已经 enabled,先要求输入当前 6 位码(走 disable+re-setup 才合理)。
 	cur, err := s.store.GetWebAdmin(r.Context(), admin.ID)
 	if err != nil || cur == nil {
 		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryAccountFailed"))
+		return
+	}
+	if !cur.Enabled {
+		s.renderError(w, r, http.StatusForbidden, tr(r, "err.stepUpAccountDisabled"))
 		return
 	}
 	if cur.TOTPEnabled {
@@ -93,15 +109,6 @@ func (s *Server) handleMeTOTPSetup(w http.ResponseWriter, r *http.Request) {
 			tr(r, "me.totpAlreadyEnabled"))
 		return
 	}
-
-	// 第十一轮深扫 MED:首次启用 TOTP 也要求**密码 step-up** —— 与 disable/regen(TOTP 码)、
-	// server-qr/self-reset(密码)同等级保护。绑定新 secret + 发恢复码是把「第二因子」焊到本账号的
-	// 敏感写操作:此前只凭 session+CSRF,未开 2FA 的会话一旦被劫持 / 借用,攻击者即可绑定**自己的**
-	// TOTP secret 并领走恢复码,把合法 admin 锁死(本系统无「admin 侧清他人 TOTP」的动作,只能删号重建)。
-	// 此刻账号尚无 secret 可验,故 step-up 用**密码**;复用 step-up IP 冷却 + 按 adminID 串行化「读冷却+
-	// verify+记账」临界区(与 disable/regen 同款,复用 totpVerifyLocks)。
-	unlock := s.lockTOTPVerify(admin.ID)
-	defer unlock()
 	ip := clientIP(r)
 	if s.stepUpFailures.Recent(ip) >= stepUpMaxFailures {
 		s.audit.WriteFromRequest(r, "totp_setup_locked",
@@ -210,6 +217,20 @@ func (s *Server) handleMeTOTPEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	code := strings.TrimSpace(r.FormValue("code"))
 
+	// 第十二轮深扫 MED:enable 也要 per-IP 冷却 + 按 adminID 串行化(与 disable/regen/setup 同套 stepUpFailures +
+	// totpVerifyLocks)。否则被劫持的会话可**无锁定**地暴破这枚 6 位确认码(HMAC 廉价、不过 argon2),成功即启用
+	// TOTP 并领走一次性恢复码 → 拿到长期第二因子。锁也让下面 GetWebAdmin 在临界区内读到最新 secret/enabled。
+	unlock := s.lockTOTPVerify(admin.ID)
+	defer unlock()
+	ip := clientIP(r)
+	if s.stepUpFailures.Recent(ip) >= stepUpMaxFailures {
+		s.audit.WriteFromRequest(r, "totp_enable_locked",
+			FormatTarget("web_admin", admin.ID),
+			FormatDetail("ip", ip, "reason", "ip_cooldown"))
+		s.renderError(w, r, http.StatusTooManyRequests, tr(r, "me.totpTooManyAttempts"))
+		return
+	}
+
 	cur, err := s.store.GetWebAdmin(r.Context(), admin.ID)
 	if err != nil || cur == nil {
 		s.renderError(w, r, http.StatusInternalServerError, tr(r, "err.queryAccountFailed"))
@@ -223,14 +244,30 @@ func (s *Server) handleMeTOTPEnable(w http.ResponseWriter, r *http.Request) {
 		flashRedirect(w, r, "/me", tr(r, "flash.totpEnabled"), "")
 		return
 	}
+	if code == "" {
+		// 空码不计失败配额(与 setup/server-qr 空输入一致,避免误提交自锁),回渲提示补填。
+		s.renderError(w, r, http.StatusBadRequest, tr(r, "me.totpCodeRequired"))
+		return
+	}
 	// 第七轮深扫 MED:enable 也消费该时间步(与登录共享计数),防止这枚确认码被重放到登录。
 	// enable 前 SetWebAdminTOTPSecret 已把 last_used_step 归零,故此处消费不会与旧 secret 的登录抢占。
 	if err := s.verifyAndConsumeStepUpTOTP(r.Context(), admin.ID, cur.TOTPSecret, code); err != nil {
+		newCount := s.stepUpFailures.Inc(ip)
+		s.audit.WriteFromRequest(r, "totp_enable_code_fail",
+			FormatTarget("web_admin", admin.ID),
+			FormatDetail("ip", ip, "reason", "wrong_code", "fail_count", newCount))
 		// 不清 secret,让用户能重输一次(Authenticator 显示的码 30s 滚)。
-		s.renderError(w, r, http.StatusBadRequest,
-			tr(r, "me.totpCodeWrongCheckTime", trErr(r, err)))
+		msg := tr(r, "me.totpCodeWrongCheckTime", trErr(r, err))
+		status := http.StatusBadRequest
+		if newCount >= stepUpMaxFailures {
+			msg = tr(r, "me.totpTooManyAttempts")
+			status = http.StatusTooManyRequests
+		}
+		s.renderError(w, r, status, msg)
 		return
 	}
+	// step-up 全过 → 清 IP 冷却计数(与 disable/regen/server-qr 成功即 Reset 对齐)。
+	s.stepUpFailures.Reset(ip)
 	plain, hashes, err := GenerateRecoveryCodes()
 	if err != nil {
 		s.renderInternalError(w, r, "me:totp_gen_recovery", err)

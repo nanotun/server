@@ -43,7 +43,8 @@ func TestSettingsSet_RejectsReservedKeys(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()
 
-	for _, k := range []string{ServerIDKey, "schema_version"} {
+	// 第十二轮深扫 HIGH:vip_canonicalized 也是系统托管键——手改会让下次 Migrate 跳过 VIP 规范化(去重失配 / 双占)。
+	for _, k := range []string{ServerIDKey, "schema_version", vipCanonicalizedKey} {
 		if err := s.SettingsSet(ctx, k, "x"); err == nil {
 			t.Errorf("SettingsSet(%q) 应被拒绝", k)
 		} else if !errors.Is(err, ErrInvalid) {

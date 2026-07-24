@@ -904,14 +904,22 @@ func TestSettingsServerDialHostSet_ICMPSoftFail(t *testing.T) {
 //     server profile QR(含 REALITY / hy2 凭据)。见 handleServerQRReveal (5b)。
 // =============================================================================
 
-// enableTestTOTP 给内存态 admin 打开 TOTP 并返回 secret。
-// reveal handler 直接读 ctx admin 的 TOTPEnabled / TOTPSecret(不回查 store),
-// 因此测试只需在注入 ctx 前把这两个字段填上即可,无需落库。
-func enableTestTOTP(t *testing.T, a *store.WebAdmin) string {
+// enableTestTOTP 给 admin 打开 TOTP,**落库**并返回 secret。
+// 第十二轮深扫 MED:reveal handler 现在锁内**回查 store** 取最新 TOTPEnabled / TOTPSecret(消除紧急改密/改
+// secret 的 TOCTOU),不再信 ctx 快照 —— 故测试必须把 TOTP 真正写入 store(与 auth_test.go 同款),而不能
+// 只改内存态 admin。同时回填内存态两个字段,保持 ctx 快照与 DB 一致。
+func enableTestTOTP(t *testing.T, s *Server, a *store.WebAdmin) string {
 	t.Helper()
 	secret, err := GenerateTOTPSecret()
 	if err != nil {
 		t.Fatalf("GenerateTOTPSecret: %v", err)
+	}
+	ctx := t.Context()
+	if err := s.store.SetWebAdminTOTPSecret(ctx, a.ID, secret); err != nil {
+		t.Fatalf("SetWebAdminTOTPSecret: %v", err)
+	}
+	if _, err := s.store.EnableWebAdminTOTP(ctx, a.ID, secret, []string{"h1", "h2"}, time.Now().Unix()); err != nil {
+		t.Fatalf("EnableWebAdminTOTP: %v", err)
 	}
 	a.TOTPSecret = secret
 	a.TOTPEnabled = true
@@ -933,7 +941,7 @@ func currentTOTPCode(t *testing.T, secret string) string {
 func TestServerQRReveal_TOTPRequiredWhenEnabled(t *testing.T) {
 	s := newServerQRTestServer(t)
 	admin := createTestAdmin(t, s, "root", "GoodStrong1!Pass")
-	enableTestTOTP(t, admin)
+	enableTestTOTP(t, s, admin)
 	_ = s.store.SetServerDialHost(t.Context(), "vpn.example.com")
 	_ = s.store.SetAdvertisedHost(t.Context(), "vpn.example.com")
 
@@ -963,7 +971,7 @@ func TestServerQRReveal_TOTPRequiredWhenEnabled(t *testing.T) {
 func TestServerQRReveal_TOTPWrongCounts(t *testing.T) {
 	s := newServerQRTestServer(t)
 	admin := createTestAdmin(t, s, "root", "GoodStrong1!Pass")
-	enableTestTOTP(t, admin)
+	enableTestTOTP(t, s, admin)
 	_ = s.store.SetServerDialHost(t.Context(), "vpn.example.com")
 	_ = s.store.SetAdvertisedHost(t.Context(), "vpn.example.com")
 
@@ -997,7 +1005,7 @@ func TestServerQRReveal_TOTPCorrectProceeds(t *testing.T) {
 	s.cfg.VPNPortAdminPath = "/nonexistent/path/to/nanotun-admin"
 	s.cfg.ServerConfigPath = "/nonexistent/path/to/config.toml"
 	admin := createTestAdmin(t, s, "root", "GoodStrong1!Pass")
-	secret := enableTestTOTP(t, admin)
+	secret := enableTestTOTP(t, s, admin)
 	_ = s.store.SetServerDialHost(t.Context(), "vpn.example.com")
 	_ = s.store.SetAdvertisedHost(t.Context(), "vpn.example.com")
 

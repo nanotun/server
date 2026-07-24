@@ -215,6 +215,17 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 			// step-up 冷却的 check-then-act 竞态(与 handleMeTOTPDisable 同源,复用 totpVerifyLocks)。
 			unlock := s.lockTOTPVerify(me.ID)
 			defer unlock()
+			// 第十二轮深扫 MED:锁内**重读**最新账号,用它(而非 requireAuth 请求初快照 me)验当前密码/TOTP ——
+			// 抹掉「快照 → step-up 执行」间紧急改密+吊销会话的 TOCTOU 窗口(与 /login/totp 同源)。停用即拒。
+			fresh, ferr := s.store.GetWebAdmin(r.Context(), me.ID)
+			if ferr != nil || fresh == nil {
+				s.renderInternalError(w, r, "admins:reload_self", ferr)
+				return
+			}
+			if !fresh.Enabled {
+				s.renderError(w, r, http.StatusForbidden, tr(r, "err.stepUpAccountDisabled"))
+				return
+			}
 			ip := clientIP(r)
 			if s.stepUpFailures.Recent(ip) >= stepUpMaxFailures {
 				s.audit.WriteFromRequest(r, "webadmin_reset_pwd_locked",
@@ -227,7 +238,7 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 				retryForm(tr(r, "adminPwd.currentRequired"))
 				return
 			}
-			okCur, verr := VerifyWebPassword(r.Context(), curPwd, me.PasswordHash)
+			okCur, verr := VerifyWebPassword(r.Context(), curPwd, fresh.PasswordHash)
 			if verr != nil || !okCur {
 				s.stepUpFailures.Inc(ip)
 				s.audit.WriteFromRequest(r, "webadmin_reset_pwd_stepup_fail",
@@ -235,13 +246,13 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 				retryForm(tr(r, "adminPwd.currentWrong"))
 				return
 			}
-			if me.TOTPEnabled {
+			if fresh.TOTPEnabled {
 				code := strings.TrimSpace(r.FormValue("totp_code"))
 				if code == "" {
 					retryForm(tr(r, "adminPwd.totpRequired"))
 					return
 				}
-				if terr := s.verifyAndConsumeStepUpTOTP(r.Context(), me.ID, me.TOTPSecret, code); terr != nil {
+				if terr := s.verifyAndConsumeStepUpTOTP(r.Context(), me.ID, fresh.TOTPSecret, code); terr != nil {
 					s.stepUpFailures.Inc(ip)
 					s.audit.WriteFromRequest(r, "webadmin_reset_pwd_stepup_fail",
 						FormatTarget("web_admin", id), FormatDetail("ip", ip, "reason", "wrong_totp"))

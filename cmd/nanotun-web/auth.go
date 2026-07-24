@@ -39,6 +39,13 @@ func VerifyWebPassword(ctx context.Context, plaintext, encoded string) (bool, er
 	return auth.VerifyPSKLimited(ctx, plaintext, encoded)
 }
 
+// VerifyWebPasswordOrDecoy 同 VerifyWebPassword,但在**同一次** argon2 slot 内完成「真实 verify + 畸形 hash 的
+// decoy」(auth.VerifyPSKLimitedOrDecoy)。第十二轮深扫 MED:合并 decoy 到单次 Acquire,消除「畸形 hash 的第二次
+// Acquire 高并发下被跳过 → 时序泄漏 hash 损坏」的窗口。容量/ctx 超时返回的 err 会 errors.Is(auth.ErrVerifyUnavailable)。
+func VerifyWebPasswordOrDecoy(ctx context.Context, plaintext, encoded, decoy string) (bool, error) {
+	return auth.VerifyPSKLimitedOrDecoy(ctx, plaintext, encoded, decoy)
+}
+
 // ValidatePasswordStrength 在 setup / create / reset 时给一道基础门槛。
 //
 // 不上 zxcvbn 之类的强密度检测,理由:nanotun-web 是给运维管理员用的,
@@ -104,6 +111,9 @@ var (
 	ErrAuthBadCredentials = errors.New("用户名或密码错误")
 	ErrAuthLocked         = errors.New("账号已暂时锁定")
 	ErrAuthDisabled       = errors.New("账号已被禁用")
+	// ErrAuthUnavailable:argon2 verify 因容量/ctx 超时未能执行(auth.ErrVerifyUnavailable)。第十二轮深扫 MED:
+	// 属「暂时不可用」而非「密码错」——handler 据此**不**累加 ipFailures / 账号锁定,回 503 让用户重试。
+	ErrAuthUnavailable = errors.New("登录暂时不可用,请稍后重试")
 )
 
 // AttemptLogin 是登录的统一入口。
@@ -148,12 +158,15 @@ func AttemptLogin(ctx context.Context, st *store.Store, cfg Config,
 		return AuthResult{Admin: a, Err: ErrAuthLocked, LockedUntil: a.LockedUntil}
 	}
 
-	ok, verr := VerifyWebPassword(ctx, password, a.PasswordHash)
-	if verr != nil {
-		// 第四轮深扫 MED:存储 password_hash 畸形(手改库 / 老迁移 / 损坏)时,VerifyPSK 在 DecodePSK 阶段就
-		// 快速返错(**不跑 argon2**),时序明显快于正常「密码错」路径 → 泄漏「此账号 hash 异常」。补跑一次 decoy
-		// verify 对齐耗时,再按普通登录失败处理(与 VPN 侧 auth.VerifyLogin 的畸形 hash 分支一致)。
-		_, _ = VerifyWebPassword(ctx, password, decoyWebHash())
+	// 第四轮深扫 MED:存储 password_hash 畸形(手改库 / 老迁移 / 损坏)时,VerifyPSK 在 DecodePSK 阶段就
+	// 快速返错(**不跑 argon2**),时序明显快于正常「密码错」路径 → 泄漏「此账号 hash 异常」。
+	// 第十二轮深扫 MED:decoy 合并进**同一次** argon2 slot(VerifyWebPasswordOrDecoy),消除「畸形 hash 的
+	// 第二次 Acquire 高并发下被跳过 → 时序泄漏」窗口(与 VPN 侧 auth.VerifyLogin 单 slot 内跑 decoy 对齐)。
+	ok, verr := VerifyWebPasswordOrDecoy(ctx, password, a.PasswordHash, decoyWebHash())
+	if errors.Is(verr, auth.ErrVerifyUnavailable) {
+		// 第十二轮深扫 MED:argon2 容量/ctx 超时属「暂时不可用」,非密码错 —— **不**累加账号锁定计数
+		// (handler 也会跳过 ipFailures.Inc 并回 503),避免容量抖动被放大成对合法管理员的锁定 DoS。
+		return AuthResult{Admin: a, Err: ErrAuthUnavailable}
 	}
 	if verr != nil || !ok {
 		_, lockUntil, _ := st.RecordWebAdminLoginFailure(ctx, a.ID,

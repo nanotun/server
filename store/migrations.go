@@ -202,6 +202,11 @@ func (s *Store) SettingsGet(ctx context.Context, key string) (string, bool, erro
 var reservedSettingKeys = map[string]bool{
 	ServerIDKey:      true, // "server_id"
 	"schema_version": true,
+	// 第十二轮深扫 HIGH:vip_canonicalized 是 canonicalizeStoredVIPs 的一次性「已归一」标记,由该 Go 迁移
+	// hook 用直连 SQL(非本函数)专管。若允许经 SettingsSet 手改成 "1",会伪造「已完成」→ 下次 Migrate 跳过
+	// VIP 规范化,残留非规范 vip_v4/v6 与 fixed_vip_v4/v6 → AllUsedVIPs 去重按字面比对失配 → 双占 / 路由黑洞。
+	// hook 自身走 tx.ExecContext,不经过 SettingsSet,加此守卫不影响正常迁移。
+	vipCanonicalizedKey: true, // "vip_canonicalized"
 }
 
 func (s *Store) SettingsSet(ctx context.Context, key, value string) error {

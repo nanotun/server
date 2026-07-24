@@ -1345,9 +1345,14 @@ func main() {
 		// 一次性灌入 ipset;名单空 + 开启 firewall → Fatal,强迫运维做选择
 		// (关掉 firewall 或填名单),避免「以为开了限制实际全网开放」陷阱。
 		// ensureLoopbackIPv4Allowlist 会自动加 127.0.0.1,运维不必显式列。
+		//
+		// 第十二轮深扫 MED:改走 cfg.Server.ValidateJumpHostFirewall() 作单一事实来源 —— 除「名单空 = 全网开放」外,
+		// 它还拒「条目全非法 / 全空白」(否则 sanitizeJumpHostIPv4s 全丢 → 只剩 127.0.0.1 → 预期跳板机被静默挡死)。
+		// 与 `config lint` 完全同款校验,启动前后一致。
 		allowed := cfg.Server.JumpHostAllowedIPs
-		if len(allowed) == 0 {
-			util.FatalExit(util.ExitConfigSemantic, nil, "[server] 启用 jump_host_firewall 必须在 [server].jump_host_allowed_ips 提供跳板机 IPv4 名单(留空等于全网开放,这通常不是你想要的)。要么填名单,要么把 jump_host_firewall 设为 false。")
+		if err := cfg.Server.ValidateJumpHostFirewall(); err != nil {
+			// %s 占位:err 文案含用户配置片段(如非法 IP),不能当格式串直接传(vet: non-constant format)。
+			util.FatalExit(util.ExitConfigSemantic, nil, "%s", err.Error())
 		}
 		logrus.WithField("count", len(allowed)).Info("[server] 从 jump_host_allowed_ips 静态注入跳板机名单")
 		jumpFW.Replace(allowed)
@@ -1701,13 +1706,15 @@ func tunDemuxToLink(ch <-chan *util.TunPacket, w io.Writer, mu *sync.Mutex, ctx 
 	done := make(chan struct{})
 	defer close(done)
 	if dl != nil {
-		go func() {
+		// 第十二轮深扫 LOW:与全站 goroutine 一致包 safeGoroutine —— 即便这里只做 SetWriteDeadline,
+		// panic-recovery 不变量要求「无裸 go」。这是 per-connection 短生命 watchdog,panic 只 log 不关进程。
+		go safeGoroutine("tunDemuxToLink/writeDeadlineWatch", func() {
 			select {
 			case <-ctx.Done():
 				_ = dl.SetWriteDeadline(time.Unix(1, 0))
 			case <-done:
 			}
-		}()
+		})
 	}
 
 	for {
@@ -1798,11 +1805,13 @@ func runLinkTunnel(ctx context.Context, rw io.ReadWriteCloser, c *Connection, re
 	if c.exitAllowed {
 		// 用 context.Background()(非可取消的 tunCtx):buildExitsList 自带 5s 超时,初始推送不应被「连上瞬间又断开」
 		// 取消 tunCtx 而漏推(深扫 #5);写失败(链路已关)在 sendExitsListTo 内吞掉,无副作用。与 broadcastExitsList 同口径。
-		go pushInitialExitsList(context.Background(), c)
+		// 第十二轮深扫 LOW:与 broadcastExitsList/broadcastRoutesList 一致包 safeGoroutine —— build/send 里的 panic
+		// 不应拖垮整进程(此前是仅剩的两处裸 go 初始推送)。per-connection 短生命,panic 只 log。
+		go safeGoroutine("pushInitialExitsList/"+remote, func() { pushInitialExitsList(context.Background(), c) })
 	}
 	// subnet route(SR-M3):给**所有**连上的客户端推一帧当前可用子网路由列表(任意用户都可能要访问内网资源,不限
 	// exit_allowed;细粒度授权留 SR-M4 ACL)。context.Background() 同 exits——不被连上瞬断的 tunCtx 取消而漏推。
-	go pushInitialRoutesList(context.Background(), c)
+	go safeGoroutine("pushInitialRoutesList/"+remote, func() { pushInitialRoutesList(context.Background(), c) })
 
 	// G_wss_ping:server→client 应用层 Ping/Pong 主动心跳。
 	// 仅在 [server].data_plane_ping_interval > 0 时启动。详见 wss_keepalive.go。

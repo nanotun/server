@@ -53,6 +53,8 @@ var catEN = map[string]string{
 		"If you must reset it (rarely needed): DELETE the row directly via sqlite3 + restart the nanotun / nanotun-web processes.",
 	"setting.sysHint.schemaVersion": "the schema version is advanced by the Migrate framework; editing it by hand makes the next upgrade skip unexecuted migrations. " +
 		"To recover after a mistaken edit: use sqlite3 to set value back to the migration number that actually ran.",
+	"setting.sysHint.vipCanonicalized": "one-shot completion flag for VIP canonicalization, managed solely by the canonicalizeStoredVIPs migration hook. " +
+		"Setting it to 1 by hand makes the next upgrade skip canonicalization, leaving non-canonical VIPs that break dedup and can double-allocate. Do not set it manually.",
 	"setting.validateFailed":      "%q validation failed: %s",
 	"setting.written":             "written: %s=%s",
 	"setting.notFound":            "setting %q not found",
@@ -213,6 +215,7 @@ var catEN = map[string]string{
 	"init.setupDoneNoUser": "setup is complete but user %q does not exist; to add an admin use `user create %s --admin`, or add --reset-psk to run the interactive wizard",
 	"init.noop":            "(setup complete, user %q exists; no changes made. To reset the PSK add --reset-psk.)",
 	"init.promptPSK":       "admin PSK (press Enter to auto-generate)",
+	"init.confirmResetPSK": "confirm resetting the PSK for existing admin %q? The old PSK is invalidated immediately and the user's sessions are kicked.",
 	"init.refuseReset":     "refusing to reset already-setup user %q: add --reset-psk",
 	"init.resetNoUser":     "cannot --reset-psk: user %q does not exist (check for typos); create it first with `user create %s --admin`",
 	"init.resetRaced":      "another admin reset admin %q's PSK first; refresh or rerun init",

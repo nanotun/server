@@ -50,6 +50,8 @@ var catZH = map[string]string{
 		"若必须重置(极少需要):用 sqlite3 直接 DELETE 该行 + 重启 nanotun / nanotun-web 进程。",
 	"setting.sysHint.schemaVersion": "schema 版本由 Migrate 框架推进,手改会让下次升级跳过未执行的 migration。" +
 		"误改后回退:用 sqlite3 把 value 改回真实跑过的迁移编号。",
+	"setting.sysHint.vipCanonicalized": "VIP 规范化的一次性完成标记,由 Migrate 的 canonicalizeStoredVIPs 兜底专管。" +
+		"手改成 1 会让下次升级跳过规范化,残留非规范 VIP → 去重失配 / 双占。请勿手动设置。",
 	"setting.validateFailed":      "%q 校验失败:%s",
 	"setting.written":             "已写入：%s=%s",
 	"setting.notFound":            "未找到设置项 %q",
@@ -210,6 +212,7 @@ var catZH = map[string]string{
 	"init.setupDoneNoUser": "setup 已完成但用户 %q 不存在；如需新增 admin 请用 `user create %s --admin`，或加 --reset-psk 走交互向导",
 	"init.noop":            "（setup 已完成，用户 %q 存在；未做任何修改。如需重置 PSK 请加 --reset-psk。）",
 	"init.promptPSK":       "管理员 PSK（回车自动生成）",
+	"init.confirmResetPSK": "确认重置已存在管理员 %q 的 PSK？旧 PSK 立即失效,该用户的会话会被踢下线。",
 	"init.refuseReset":     "拒绝重置已 setup 的用户 %q：请加 --reset-psk",
 	"init.resetNoUser":     "无法 --reset-psk：用户 %q 不存在（请检查是否打错）；请先用 `user create %s --admin` 创建",
 	"init.resetRaced":      "另一管理员已先一步重置 admin %q 的 PSK;请刷新或重跑 init",

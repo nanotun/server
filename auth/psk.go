@@ -148,10 +148,35 @@ func VerifyPSK(plaintext, encoded string) (bool, error) {
 // ctx 取消 / 无 deadline 导致 Acquire 失败时返回 (false, 非 nil err) —— 调用方应视为「暂时不可用」而非「密码错误」。
 func VerifyPSKLimited(ctx context.Context, plaintext, encoded string) (bool, error) {
 	if err := argon2Sema.Acquire(ctx, 1); err != nil {
-		return false, fmt.Errorf("auth: argon2 capacity exhausted: %w", err)
+		return false, fmt.Errorf("%w: argon2 capacity/ctx: %v", ErrVerifyUnavailable, err)
 	}
 	defer argon2Sema.Release(1)
 	return VerifyPSK(plaintext, encoded)
+}
+
+// ErrVerifyUnavailable 表示 argon2 verify 因**容量耗尽 / ctx 取消**(排队超时、连接断开)而**未能执行**,
+// 语义是「暂时不可用」而非「密码错误」。第十二轮深扫 MED:调用方应据此**避免**把它计入登录失败 / 账号锁定,
+// 否则并发把 argon2Sema 打满即可让合法管理员被「超时=失败」放大成锁定 DoS。
+var ErrVerifyUnavailable = errors.New("auth: psk verify temporarily unavailable")
+
+// VerifyPSKLimitedOrDecoy 在**同一次** semaphore 持有内完成「真实 verify +(必要时)decoy」:
+// 若 encoded 畸形(DecodePSK 在跑 argon2 **之前**就返回错误,响应明显偏快),就地对 decoyEncoded 跑一次
+// 等价 argon2 烧掉耗时,使「存储 hash 损坏」无法凭响应时延与「密码错误」区分。返回真实 verify 的 (ok, err)。
+//
+// 第十二轮深扫 MED:此前 web 侧畸形 hash 的 decoy 是**另起**一次 VerifyPSKLimited(第二次 Acquire),高并发下
+// 第二次 Acquire 可能超时被跳过 → decoy 不跑 → 时序泄漏「此账号 hash 异常」。合并到单次 Acquire 内即无此窗口。
+// Acquire 失败(容量/ctx)→ 返回 (false, ErrVerifyUnavailable wrapper),不跑 decoy(整体已超时,时序无意义)。
+func VerifyPSKLimitedOrDecoy(ctx context.Context, plaintext, encoded, decoyEncoded string) (bool, error) {
+	if err := argon2Sema.Acquire(ctx, 1); err != nil {
+		return false, fmt.Errorf("%w: argon2 capacity/ctx: %v", ErrVerifyUnavailable, err)
+	}
+	defer argon2Sema.Release(1)
+	ok, err := VerifyPSK(plaintext, encoded)
+	if err != nil {
+		// 存储 hash 畸形:上面在 DecodePSK 阶段就返回、没跑 argon2。就地在同一 slot 内烧一次等价 argon2。
+		_, _ = VerifyPSK(plaintext, decoyEncoded)
+	}
+	return ok, err
 }
 
 // DecodePSK 解析 EncodePSK 写出的 PHC 字符串。导出供测试与 admin 后台诊断使用。
