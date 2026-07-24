@@ -47,6 +47,10 @@ var (
 	exitForwardDroppedRate     atomic.Uint64 // 超过本会话出口转发速率帽丢弃的包数(M6 带宽帽)
 	exitForwardDroppedNoV6     atomic.Uint64 // 目的是公网 v6 但所选出口无 v6 出网:回 ICMPv6 unreachable 后丢弃的包数
 	exitForwardDroppedMeshDst  atomic.Uint64 // 第十六轮:目的落在本 mesh 网段但无在线归属(对端离线),不外泄给出口,就地丢
+	// 第十九轮:目的是 mesh 内部专用地址(4via6 fdbc:4a60::/64,或落在某已批准子网路由 LAN 前缀内)但漏到出口路径
+	// —— 典型是子网/4via6 宣告方**自指**在 forwardPacketToSubnetRoute 返回 false 后、若又选了 peer 出口就会到这里。
+	// 这类内部目的绝非公网出口流量,fail-closed 就地丢弃(不外泄内部编址 / LAN 内容给出口节点)。
+	exitForwardDroppedInternalDst atomic.Uint64
 
 	// server 自出口(egress=server/默认)对公网 v6 的兜底:server 本机无 v6 公网出网时,把使用方发来的公网全局
 	// 单播 v6 回 ICMPv6 unreachable 使其秒回落 v4(与 peer 出口的 exitForwardDroppedNoV6 同理,补 egress==0 路径)。
@@ -89,6 +93,8 @@ type ExitNodeStats struct {
 	DroppedRate     uint64 `json:"dropped_rate"`
 	DroppedNoV6     uint64 `json:"dropped_no_v6"`
 	DroppedMeshDst  uint64 `json:"dropped_mesh_dst"`
+	// DroppedInternalDst:目的是 mesh 内部专用地址(4via6 / 已批准子网 LAN 前缀)却漏到出口路径,fail-closed 丢弃的包数。
+	DroppedInternalDst uint64 `json:"dropped_internal_dst"`
 	// ServerEgressDroppedNoV6:走 server 自出口、因 server 本机无 v6 而回 ICMPv6 unreachable 的公网 v6 包数。
 	ServerEgressDroppedNoV6 uint64 `json:"server_egress_dropped_no_v6"`
 	// RateCapBPS:当前生效的 per-session 出口转发速率帽(字节/秒);0 = 不限。
@@ -109,6 +115,7 @@ func snapshotExitNodeStats() ExitNodeStats {
 		DroppedRate:             exitForwardDroppedRate.Load(),
 		DroppedNoV6:             exitForwardDroppedNoV6.Load(),
 		DroppedMeshDst:          exitForwardDroppedMeshDst.Load(),
+		DroppedInternalDst:      exitForwardDroppedInternalDst.Load(),
 		ServerEgressDroppedNoV6: serverEgressDroppedNoV6.Load(),
 		RateCapBPS:              exitForwardRateBPS.Load(),
 	}
@@ -159,6 +166,20 @@ func forwardPacketToExitNode(c *Connection, payload []byte) bool {
 	// 语义,避免误伤与 mesh 段重叠的合法内网宣告)。
 	if isMeshCIDRAddr(t.dst) {
 		exitForwardDroppedMeshDst.Add(1)
+		return true
+	}
+	// 第十九轮深扫 MED(confused deputy):4via6(fdbc:4a60::/64)与「已批准子网路由 LAN 前缀」都是 mesh 内部
+	// 专用目的,绝非公网出口流量。forwardPacketToSubnetRoute 对**自指**(宣告方访问自己宣告的网段 / 自己的
+	// 4via6 site)返回 false 交回原链路,但在 server 上这类 dst 没有「本地投递」语义 —— 若该会话又选了 peer 出口,
+	// 会漏到这里被当公网转发给出口节点,把内部 4via6 编址 / LAN 内容泄漏出去(跨信任域)。与 isMeshCIDRAddr 同款
+	// fail-closed:就地丢弃。lookupSubnetRoute 命中即「dst 属某已批准 LAN 段」(其自身 vIP/网关已在 isLocalMeshDst
+	// 排除),非出口流量;is4via6 命中即 mesh 专用 v6。二者都不回退 server 自出口(ULA 在公网注定黑洞)。
+	if is4via6(t.dst) {
+		exitForwardDroppedInternalDst.Add(1)
+		return true
+	}
+	if _, ok := lookupSubnetRoute(t.dst); ok {
+		exitForwardDroppedInternalDst.Add(1)
 		return true
 	}
 	// 按 device 取「真在跑出口」会话(advertisedExit && !takenOver),与选择侧同口径。

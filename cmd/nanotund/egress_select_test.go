@@ -188,6 +188,41 @@ func TestExitDeniedForPacket_GatewayAllowed(t *testing.T) {
 	}
 }
 
+// TestForwardPacketToExitNode_InternalDstFailClosed(第十九轮深扫 MED,confused deputy):选了 peer 出口的会话,
+// 若目的落在 mesh 内部专用地址(4via6,或某已批准子网路由的 LAN 前缀)——典型是子网/4via6 宣告方自指在
+// forwardPacketToSubnetRoute 返回 false 后又被送到出口路径——必须 fail-closed 丢弃,绝不把内部编址/LAN 内容
+// 外泄给出口节点。普通公网 dst(出口离线)走 offline 分支,不计 internal。
+func TestForwardPacketToExitNode_InternalDstFailClosed(t *testing.T) {
+	resetConnByDeviceForTest(t)
+	setServerGatewayAddrs("10.201.0.1/16", "")
+	t.Cleanup(func() { serverGatewayAddrs.Store(nil) })
+	setSubnetRouteTableForTest(t, []subnetRouteEntry{mkEntry("192.168.50.0/24", 99)})
+
+	a := &Connection{userID: "u1", connIDStr: "a", deviceID: 11, exitAllowed: true}
+	a.egressDeviceID.Store(88) // 选了 peer 出口(device 88)
+
+	before := exitForwardDroppedInternalDst.Load()
+	// (1) 4via6 dst → mesh 内部专用 → fail-closed 丢弃。
+	if !forwardPacketToExitNode(a, mkVia6(5, netip.MustParseAddr("10.0.0.5"))) {
+		t.Fatal("4via6 dst 应 fail-closed 返回 true(丢弃)")
+	}
+	// (2) 已批准子网 LAN dst → fail-closed 丢弃。
+	if !forwardPacketToExitNode(a, mkIPv4(netip.MustParseAddr("192.168.50.9"))) {
+		t.Fatal("已批准子网 LAN dst 应 fail-closed 返回 true(丢弃)")
+	}
+	if got := exitForwardDroppedInternalDst.Load() - before; got != 2 {
+		t.Fatalf("exitForwardDroppedInternalDst 应 +2,实际 +%d", got)
+	}
+
+	// 对照:普通公网 dst + 出口离线 → 走 offline 分支,不计 internal。
+	if !forwardPacketToExitNode(a, mkIPv4(netip.MustParseAddr("8.8.8.8"))) {
+		t.Fatal("公网 dst 出口离线应 fail-closed 返回 true")
+	}
+	if got := exitForwardDroppedInternalDst.Load() - before; got != 2 {
+		t.Fatalf("公网 dst 不应计入 internal-dst 丢弃:仍应为 +2,实际 +%d", got)
+	}
+}
+
 // 选了出口但出口离线 → fail-closed:返回 true(丢弃),不回退 server 自出口。
 func TestForwardPacketToExitNode_OfflineFailClosed(t *testing.T) {
 	resetConnByDeviceForTest(t)

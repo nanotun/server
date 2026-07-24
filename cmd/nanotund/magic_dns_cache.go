@@ -307,6 +307,14 @@ func buildRawDNSResponseFor(query []byte, qid uint16, cachedRaw []byte) []byte {
 	if !ok || len(cachedRaw) < qEnd {
 		return nil
 	}
+	// 第十九轮深扫 LOW:改写前必须确认 cachedRaw 的 question 段与当前查询**线格等长**。上面注释论证「同一归一化
+	// key 的 question 必等长」只在 cachedRaw 确为该 qname 的合法应答时成立;但缓存摄取(parseRawDNSMeta)只跳过
+	// question、并不强制它与查询匹配 —— 坏/恶意出口回一份 question 段更短/更长的合法 RCODE 应答仍会被以本 query
+	// 的 key 缓存下来。届时 copy(out[12:qEnd], query[12:qEnd]) 会越过 cachedRaw 真实 question 末尾覆写进答复区 →
+	// 污染答案。要求两端 question 末尾偏移一致才原位覆盖,否则返回 nil → 调用方回 SERVFAIL(不吐污染答案)。
+	if cEnd, cok := dnsQuestionEnd(cachedRaw); !cok || cEnd != qEnd {
+		return nil
+	}
 	out := make([]byte, len(cachedRaw))
 	copy(out, cachedRaw)
 	out[0] = byte(qid >> 8)

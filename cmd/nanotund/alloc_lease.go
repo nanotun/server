@@ -229,10 +229,11 @@ func persistDeviceLease(gw *gatewayState, res *loginAuthResult, assignments []ut
 // 避免给新设备分到已被持久化的别人的 vIP（写 lease 时撞 leases.vip_v4/_v6 UNIQUE
 // 索引 → UpsertLease 静默失败 → 同一个 vIP 在多台 device 上「重叠分配」）。
 //
-// exceptV4 / exceptV6：本次登录的设备已有 lease 时传入，避免把自己挡在外面。
+// exceptV4 / exceptV6：本次登录的设备**自身**占用的 vIP 列表(fixed + lease,两族),从已用集里剔除,避免把
+// 自己挡在外面。见 deviceReservedVIPExceptions。
 //
 // 任何错误都被吞掉、仅日志：lease 一致性是 best-effort，不应让登录失败。
-func dbReservedVIPs(gw *gatewayState, exceptV4, exceptV6 string) (map[string]bool, map[string]bool) {
+func dbReservedVIPs(gw *gatewayState, exceptV4, exceptV6 []string) (map[string]bool, map[string]bool) {
 	if gw == nil || gw.store == nil {
 		return nil, nil
 	}
@@ -243,13 +244,45 @@ func dbReservedVIPs(gw *gatewayState, exceptV4, exceptV6 string) (map[string]boo
 		logrus.WithError(err).Warn("加载 db lease used 失败，登录回落仅用内存 used 集分配 vIP")
 		return nil, nil
 	}
-	if exceptV4 != "" {
-		delete(v4, exceptV4)
+	for _, e := range exceptV4 {
+		if e != "" {
+			delete(v4, e)
+		}
 	}
-	if exceptV6 != "" {
-		delete(v6, exceptV6)
+	for _, e := range exceptV6 {
+		if e != "" {
+			delete(v6, e)
+		}
 	}
 	return v4, v6
+}
+
+// deviceReservedVIPExceptions 返回本设备**自己**占用的全部 vIP(devices.fixed_vip_* + 当前 leases.vip_*,两族,去空),
+// 供 dbReservedVIPs 从「db 已用集」里剔除 —— 本设备自身的地址不该被当成「别人占用」而把自己挡在外面。
+//
+// 第十九轮深扫 MED:此前登录路径把 preferredLeasedVIPs(fixed **优先于** lease 的**合并**结果)当 except 传入。
+// 当 fixed≠lease(如 `set-fixed-vip --force` 撞上仍在线的旧持有者、或 fixed 地址掉出网段)时,只剔除了 fixed、
+// **漏剔本设备的实际 lease** → 该 lease 被当他人占用、本设备既复用不到也回收不了 → 分到第三个地址,于是 fixed 与
+// 新 lease 并存、同一设备双占两个 vIP(小前缀上白烧地址)。这里返回**fixed 与 lease 全部**,确保本设备自身地址
+// 一律被 except。查库出错(best-effort)时仅退回 fixed 部分,不阻断登录。
+func deviceReservedVIPExceptions(gw *gatewayState, res *loginAuthResult) (v4s, v6s []string) {
+	if gw == nil || gw.store == nil || res == nil || res.Device == nil {
+		return nil, nil
+	}
+	add := func(dst *[]string, v string) {
+		if v != "" {
+			*dst = append(*dst, v)
+		}
+	}
+	add(&v4s, res.Device.FixedVIPv4)
+	add(&v6s, res.Device.FixedVIPv6)
+	ctx, cancel := contextWithTimeout()
+	defer cancel()
+	if prev, err := gw.store.GetLeaseByDevice(ctx, res.Device.ID); err == nil && prev != nil {
+		add(&v4s, prev.VIPv4)
+		add(&v6s, prev.VIPv6)
+	}
+	return v4s, v6s
 }
 
 // mergeUsedVIPs 返回 a ∪ b 的新集合（不修改任一入参；nil 视为空集）。
