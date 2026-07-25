@@ -3748,6 +3748,32 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// connIDMapMu 的读者只会观察到「takenOver=false 且 oldConn 在索引」或「takenOver=true 且 newConn 在索引」两种
 	// 自洽状态,消除该子窗口。(锁序不变:takeoverMu → connIDMapMu;takenOver 是 atomic 写,不引入新锁。)
 	connIDMapMu.Lock()
+	// 第二十一轮深扫 MED:提交前在**同一锁段内**做最后一次 superseded 复检。3468 行那次复检之后,本函数还做了
+	// GetRateDefaults 读库 + 两次**有界**写(LoginResp / ConvSalt,各钉 10s)+ 给老链路的 TakenOver 通知(1s),
+	// 窗口宽度由这几个超时决定 —— 停读的新客户端可以把它撑到接近十秒,不是纳秒级。而 kickConnForUserInvalidate
+	// **不持 takeoverMu**:它只置 oldConn.superseded=true 再关老链路,因此整个 kick 能落进这个窗口。
+	//
+	// 不复检就照常提交的后果:connIDMap[sid] 换成 newConn(其 superseded 是新结构体零值 false)、vIP 过户给
+	// newConn、oldConn.takenOver=true 使其 cleanup 跳过 vIP / SessionRelease 回收 → 会话带着**同一 sid** 在新链路
+	// 上继续存活,kick 被绕过。周期扫描(runUserInvalidationLoop)下一 tick 能自愈 user_deleted / user_disabled /
+	// platform_denied 三种;但**管理员显式 kick**(control_socket 的 kick session/device/user)是一次性的 —— 不重试、
+	// 不做 DB 级会话失效,还会 resp.Kicked++ 把 connID 回给管理员,于是变成「静默失败 + 虚假成功回报」。
+	//
+	// 只需复检 superseded:cleanupConnection 自己也要抢 c.takeoverMu(见其开头),并发的另一次同 sid takeover 亦然,
+	// 而本 goroutine 全程持着它 → 窗口内 connIDMap[sid] 不可能被摘除或改写,3468 行验过的 curAfter==oldConn 依然成立。
+	//
+	// 放弃接管是干净的:此刻 rollbackNewConnNeeded 仍为 true(要到下方 map 切换后才清零),现成的 defer 会回滚
+	// connections[newConn.connID];vIP 尚未 registerVIPOwners 过户、clientIPUsed 里那些地址仍记在 oldConn 名下,
+	// 由它随后(解锁后)的完整 cleanup 正常释放,不双释放也不泄漏。新客户端已收到成功的 LoginResp,但紧接着链路
+	// 被关,它会当成一次普通掉线退回全新 primary login —— 那条路会按用户当下的真实状态正确拒掉,结果收敛。
+	if oldConn.superseded.Load() {
+		connIDMapMu.Unlock()
+		unlockTakeover()
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).
+			Warn("[takeover] 提交前发现 oldConn 已被踢除(admin kick / PSK 失效等),放弃接管")
+		auditTakeoverFail(gw, remote, "session_kicked_before_commit", oldConn.userID)
+		return
+	}
 	oldConn.takenOver.Store(true)
 	connIDMap[newConn.connIDStr] = newConn
 	// P3-a:by-user 索引同步切换 —— 先移除 oldConn(它已 takenOver,不会再被 evict),

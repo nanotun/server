@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nanotun/server/auth"
+	"github.com/nanotun/server/store"
 	"github.com/nanotun/server/util"
 )
 
@@ -336,6 +338,109 @@ func TestHandleTakeoverLogin_RejectEmptySecret(t *testing.T) {
 
 // TestParseLoginReq_TakeoverFieldsRoundtrip 验证 LoginReq + takeover 字段 JSON 兼容性
 // （从 server 端 parser 视角，再次校验 PR1 协议字段在 server 包内可用）。
+// TestHandleTakeoverLogin_AbortsWhenKickedMidWindow 覆盖第二十一轮深扫 MED:接管**提交前**必须复检
+// oldConn.superseded,否则落在「argon2 后复检(server.go:3468)」与「提交(connIDMapMu 段)」之间的一次踢除
+// 会被绕过 —— kickConnForUserInvalidate 不持 takeoverMu,只置 superseded + 关老链路,而提交若不复检就照常
+// 把 newConn 发布到 connIDMap[sid] 并过户 vIP,会话带着同一 sid 在新链路上继续存活。周期扫描能自愈三种
+// 自动踢除,但**管理员显式 kick**(control_socket)是一次性的,还会向管理员报「已踢除」→ 静默失败。
+//
+// 用 net.Pipe 无缓冲这一特性把踢除**确定性**地插进窗口:server 写 ConvSalt 会阻塞到本测试去读,而提交严格
+// 晚于该写返回,故在「读 ConvSalt 之前」置 superseded 必然落在窗口内。
+func TestHandleTakeoverLogin_AbortsWhenKickedMidWindow(t *testing.T) {
+	resetServerGlobals(t)
+	gw, st := newPSKGateway(t)
+	ctx := t.Context()
+
+	// 真实 argon2 PSK:authVerifier 是具体类型,无法注入假实现。
+	hash, err := auth.HashPSK("takeover-pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := st.CreateUser(ctx, store.NewUser{Username: "eve", PSKHash: hash})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const sid = "test-kick-midwindow-sid"
+	secret := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	oldIPs := []util.VirtualIPAssignment{{
+		VirtualIP: "10.201.0.5",
+		Mask:      "255.255.0.0",
+		Gateway:   "10.201.0.1/16",
+		TunChan:   make(chan *util.TunPacket, 4),
+	}}
+	oldConn := &Connection{
+		connIDStr:      sid,
+		userID:         userIDFromStoreID(u.ID),
+		linkConn:       &routeFakeConn{}, // 缓冲写:老链路的 TakenOver 通知不阻塞(它排在提交之前)
+		takeoverSecret: secret,
+		tunnelDone:     make(chan struct{}),
+	}
+	oldConn.clientIPs.Store(&oldIPs)
+
+	connIDMapMu.Lock()
+	connIDMap[sid] = oldConn
+	connIDMapMu.Unlock()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleTakeoverLogin(serverConn, gw, &util.LoginReq{
+			Purpose:           util.PurposeTakeover,
+			TakeoverSessionID: sid,
+			TakeoverSecret:    secret,
+			Transport:         "hy2",
+			Name:              "eve",
+			Token:             "takeover-pw",
+		}, "test-remote-kick", "")
+	}()
+
+	// 1) 先收 LoginResp —— 此刻 server 已过 3468 复检,正走向提交(接管在客户端看来已成功)。
+	if resp := readResp(t, clientConn); resp.Code != 0 {
+		t.Fatalf("接管应已通过校验并回 code=0,got %+v", resp)
+	}
+
+	// 2) 模拟 admin kick 落进窗口:置 superseded(kickConnForUserInvalidate 关链路前做的第一件事)。
+	oldConn.superseded.Store(true)
+
+	// 3) 读掉 ConvSalt,放 server 继续走到提交点 —— 此后它必须发现 superseded 并放弃接管。
+	_ = clientConn.SetDeadline(time.Now().Add(2 * time.Second))
+	typ, _, rerr := util.ReadLinkFrame(clientConn)
+	if rerr != nil {
+		t.Fatalf("读 ConvSalt 失败: %v", rerr)
+	}
+	if typ != util.LinkTypeConvSaltMsg {
+		t.Fatalf("期望 ConvSaltMsg(=%d),got %d", util.LinkTypeConvSaltMsg, typ)
+	}
+	// 注意失败模式:守卫若缺失,handleTakeoverLogin 会提交并继续走老链路 teardown → 等
+	// oldConn.tunnelDone(本测试从不关它)→ 进 newConn 的 runLinkTunnel,**永不返回**。
+	// 所以回归时先在这里以「handler did not return in time」告警,而不是命中下面的状态断言。
+	awaitDone(t, done)
+
+	// 接管必须被放弃:oldConn 不得标 takenOver(否则其 cleanup 会跳过 vIP / SessionRelease 回收,
+	// 被踢的会话资源永久滞留),连表也不得被换成 newConn。
+	if oldConn.takenOver.Load() {
+		t.Fatal("窗口内被踢除时不应把 oldConn 标为 takenOver(接管应放弃)")
+	}
+	connIDMapMu.RLock()
+	cur := connIDMap[sid]
+	connIDMapMu.RUnlock()
+	if cur != oldConn {
+		t.Fatalf("connIDMap[sid] 应仍是 oldConn(接管放弃),却被换成了 %p", cur)
+	}
+	// rollback defer 必须把 newConn 从 connections 表撤掉(测试没往里放 oldConn,故应为空)。
+	connectionsMu.Lock()
+	n := len(connections)
+	connectionsMu.Unlock()
+	if n != 0 {
+		t.Fatalf("放弃接管后 connections 应被回滚为空,仍有 %d 条(newConn 泄漏)", n)
+	}
+}
+
 func TestParseLoginReq_TakeoverFieldsRoundtrip(t *testing.T) {
 	in := &util.LoginReq{
 		Name:              "u",
