@@ -1011,3 +1011,53 @@ func TestParsePacketTuple_IPv6AHUnresolvedESPResolved(t *testing.T) {
 		t.Fatalf("ipv6 no-next-header(59) got %+v ok=%v, want l4Unresolved=false", tu, ok)
 	}
 }
+
+// TestConnSourceSpoofed_Via6ReturnAllowed:4via6 回程的合法源就是 4via6 地址,不能一律判伪造,
+// 但只允许「自己 site + 自己已批准网段」。
+//
+// 三机实测(2026-07-25):A 经 4via6 访问 C 后方内网,C 的用户态转发器确实解码后投进了内网、内网主机也回了包,
+// 但回程在 server 被计成 src_spoof_drops(+31),ping6 100% 丢包、curl 超时 —— 4via6 端到端完全不通。
+func TestConnSourceSpoofed_Via6ReturnAllowed(t *testing.T) {
+	setServerGatewayAddrs("10.201.0.1/16", "")
+	t.Cleanup(func() { serverGatewayAddrs.Store(nil) })
+	// C = device 31,site 2,已批准 192.168.88.0/24。
+	setSubnetRouteTableForTest(t, []subnetRouteEntry{mkEntry("192.168.88.0/24", 31)})
+	setVia6SiteTableForTest(t, map[uint16]int64{2: 31, 7: 99})
+
+	c := &Connection{userID: "u4", connIDStr: "c", deviceID: 31}
+	c.advertisedSubnetApproved.Store(true)
+	pfxs := []netip.Prefix{netip.MustParsePrefix("192.168.88.0/24")}
+	c.advertisedRoutes.Store(&pfxs)
+
+	mk := func(siteID uint16, v4 string) []byte {
+		src, ok := encode4via6(siteID, netip.MustParseAddr(v4))
+		if !ok {
+			t.Fatalf("encode4via6(%d,%s) 失败", siteID, v4)
+		}
+		return mkIPv6(src, netip.MustParseAddr("fd00:200::3"))
+	}
+
+	// 自己 site + 已批准网段内的 LAN 主机 → 合法回程。
+	if connSourceSpoofed(c, mk(2, "192.168.88.10")) {
+		t.Error("自己 site + 已批准网段的 4via6 源应放行(这正是 4via6 回程的唯一合法形态)")
+	}
+	// 别人的 site → 冒充另一站点的内网主机。
+	if !connSourceSpoofed(c, mk(7, "192.168.88.10")) {
+		t.Error("别人 site 的 4via6 源应判伪造")
+	}
+	// 自己 site 但内嵌 v4 不在已批准网段内 → 拿未批准/已撤销网段的地址当源。
+	if !connSourceSpoofed(c, mk(2, "10.99.0.5")) {
+		t.Error("内嵌 v4 不在已批准网段内的 4via6 源应判伪造")
+	}
+	// 未知 site。
+	if !connSourceSpoofed(c, mk(123, "192.168.88.10")) {
+		t.Error("未知 site 的 4via6 源应判伪造")
+	}
+	// 普通会话(非已批准宣告方)拿 4via6 当源 → 走 (4) 分支判伪造。
+	plain := &Connection{userID: "u1", connIDStr: "p", deviceID: 16}
+	plainIPs := []util.VirtualIPAssignment{{VirtualIP: "10.201.0.77"}}
+	plain.clientIPs.Store(&plainIPs)
+	if !connSourceSpoofed(plain, mk(2, "192.168.88.10")) {
+		t.Error("普通会话拿 4via6 当源应判伪造")
+	}
+}

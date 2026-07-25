@@ -232,6 +232,33 @@ func deviceApprovedPrefixContains(deviceID int64, addr netip.Addr) bool {
 	return false
 }
 
+// via6SrcOwnedByConn 判断某 4via6 **源**地址是否确属本会话:site ID 必须映射到本会话自己的 device,
+// 且内嵌的 v4 必须落在该 device **已被 admin 批准**的宣告网段内。
+//
+// 用于反源欺骗(connSourceSpoofed):4via6 回程的合法源必然是 4via6 地址(请求方连的就是它),但只能是
+// **自己 site、自己已批准网段**的那些 —— 否则一个宣告方就能拿别人 site 的地址(冒充另一站点的内网主机)
+// 或自己 pending/已撤销网段的地址当源向 mesh 对端注包。与 connSourceSpoofed 里纯子网中继的收窄同一口径。
+//
+// site 表 / 已批准表未加载(启动初、reload 瞬间)时**不收窄**:无法区分「确实不属于」与「暂时不知道」,
+// 收窄会误杀合法回程(与 deviceApprovedPrefixContains 的调用约定一致)。
+func via6SrcOwnedByConn(c *Connection, src netip.Addr) bool {
+	if c == nil || c.deviceID == 0 {
+		return false
+	}
+	siteID, v4, ok := decode4via6(src)
+	if !ok {
+		return false
+	}
+	if via6SiteTable.Load() == nil || !subnetRouteTableLoaded() {
+		return true // 表未就绪:保守放行,不误杀
+	}
+	dev, known := lookupVia6Site(siteID)
+	if !known || dev != c.deviceID {
+		return false
+	}
+	return deviceApprovedPrefixContains(c.deviceID, v4)
+}
+
 // lookupSubnetRoute 在已批准子网路由表里对 dst 做**最长前缀匹配**，返回宣告方 deviceID。
 // 路由数极少（典型 < 数十条），线性扫 + 记最长掩码即可；返回 (0,false) = 无匹配。
 // netip.Prefix.Contains 天然处理地址族（v4 dst 不会命中 v6 prefix，反之亦然）。

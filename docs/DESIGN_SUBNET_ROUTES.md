@@ -194,6 +194,29 @@ dev nanotun0` 也被撤下了。但 A 是**全隧道**客户端、出口选的�
 —— 正是这个顺序要避免的黑洞。故闸门放在 server 侧是正确且充分的；宣告方的规则只表达「这台机器被
 配置成愿意为该网段做路由器」，在 server 不投递该网段流量时不可达。
 
+## 5.7 4via6 曾被反源欺骗守卫整条打死（2026-07-25 修复）
+
+三机实测：A 经 4via6 访问 C 后方内网，MagicDNS 正确返回 `fdbc:4a60::2:c0a8:580a`（site 2 +
+`c0a8:580a` = 192.168.88.10），A 也装上了 `fdbc:4a60::/64 dev nanotun0`，server 侧
+`subnet_route.forwarded` 正常上涨且各类丢弃计数全为 0，C 的用户态转发器（`via6_only`）也确实把请求
+解码后投进了内网、内网主机也回了包 —— 但 `ping6` 100% 丢包、TCP 全超时，**一个包都回不来**。
+
+根因在 `connSourceSpoofed` 的反源欺骗守卫：它把 `is4via6(src)` 无条件判为伪造，理由是「合法中继回程源
+只会是外网 / LAN 地址或对端 vIP」。这个前提对 4via6 恰好不成立 —— 请求方连的就是
+`fdbc:4a60::<site>:<v4>`，宣告方的回包**只有以该地址为源**才能匹配上请求方的连接（客户端 netstack
+正是这么回的）。于是回程在 server 被计成 `src_spoof_drops`（ICMP + TCP 各试一轮，计数 +31）。
+
+修法：4via6 源不再一律判伪造，收窄成「该 site ID 映射到**本会话自己的 device**，且内嵌 v4 落在本
+device **已被 admin 批准**的宣告网段内」（`via6SrcOwnedByConn`）。与纯子网中继的收窄同一口径：既放通
+合法回程，又不让一个宣告方拿别人 site 的地址（冒充另一站点的内网主机）或自己 pending / 已撤销网段的
+地址当源向 mesh 对端注包。site 表 / 已批准表未加载时不收窄，避免启动与 reload 瞬态误杀。
+
+修复后实测：4via6 的 TCP 与 ICMP 均端到端可达；别人 site、未批准网段、未知 site、普通会话拿 4via6
+当源仍判伪造（单测覆盖）。
+
+> ICMP 经 4via6 能通是因为客户端另有一条 ICMP echo 中继（真 ping 目标、可达才合成 EchoReply 注回），
+> 与 netstack 的 `enable_icmp(false)` 不冲突 —— 后者关的是「接口本地伪造 EchoReply」那种假通。
+
 ## 6. Open questions
 
 - 重复 CIDR(两台 device 都声明 `192.168.1.0/24`)的优先级仲裁:

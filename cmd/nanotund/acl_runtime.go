@@ -833,7 +833,17 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 		// 已在 (2) lookupVIPOwner 命中判伪造)。若在此放过一个「落在 mesh 网段内、但非任何在线 vIP」的源,已批准的
 		// 出口 / 子网中继方就能把源伪造成任一**当前离线**的 mesh 对端,向在线对端注包(跨设备冒充;default-allow 部署
 		// 下跨信任域)。isMeshCIDRAddr 已含网关(上面 dst 网关分支是另一维度),此处按**源**再拦一道。
-		if isMeshCIDRAddr(src) || is4via6(src) {
+		// 例外:4via6 回程的合法源**必然**是 4via6 地址。请求方连的就是 fdbc:4a60::<site>:<v4>,宣告方的回包
+		// 只有以该地址为源才能匹配上请求方的连接(客户端 netstack 也正是这么回的)。上面那条把 is4via6(src) 一律
+		// 判伪造 → 4via6 从「解析出地址、路由也装了」到「一个包都回不来」全断。三机实测(2026-07-25):A 经
+		// 4via6 访问 C 后方内网,C 的用户态转发器确实把请求解码后投进了内网、内网主机也回了包,但回程在 server
+		// 这里被计成 src_spoof_drops(ICMP + TCP 各试一轮,计数 +31),ping6 100% 丢包、curl 超时。
+		// 收窄到「该 4via6 源属于**本设备自己的 site**,且内嵌 v4 落在本设备**已批准**的宣告网段内」——
+		// 与下面纯子网中继同一口径,既放通合法回程,又不让一个宣告方拿别人 site / 未批准网段的地址当源。
+		if is4via6(src) {
+			return !via6SrcOwnedByConn(c, src)
+		}
+		if isMeshCIDRAddr(src) {
 			return true
 		}
 		// 第二十一轮深扫 MED:**纯子网中继**(只批准了子网路由、未批准为出口)的豁免收窄到「源 ∈ 本会话**当前宣告
