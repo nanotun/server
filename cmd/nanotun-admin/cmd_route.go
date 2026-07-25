@@ -207,6 +207,7 @@ func cmdRouteReject(ctx context.Context, st *store.Store, opts *globalOpts, args
 		fmt.Sprintf("cidr=%s reason=%s", cidr, *reason))
 	fmt.Fprintln(opts.stdout, opts.T("route.rejected", deviceID, cidr, *reason))
 	if util.IsExitDefaultRoute(cidr) {
+		warnExitStillApprovedOtherFamily(ctx, st, opts, deviceID, cidr)
 		notifyExitsChanged(opts) // 撤销出口 → 即时把绑定它的会话踢回 server + 刷新下拉。best-effort。
 	} else {
 		notifyRoutesChanged(opts) // 拒绝子网路由 → 即时从 server 的已批准子网路由表移除。best-effort。
@@ -241,11 +242,34 @@ func cmdRouteDelete(ctx context.Context, st *store.Store, opts *globalOpts, args
 		fmt.Sprintf("route:%d/%s", deviceID, cidr), "cidr="+cidr)
 	fmt.Fprintln(opts.stdout, opts.T("route.deleted", deviceID, cidr))
 	if util.IsExitDefaultRoute(cidr) {
+		warnExitStillApprovedOtherFamily(ctx, st, opts, deviceID, cidr)
 		notifyExitsChanged(opts) // 删出口路由 → 即时把绑定它的会话踢回 server + 刷新下拉。best-effort。
 	} else {
 		notifyRoutesChanged(opts) // 删子网路由 → 即时从 server 的已批准子网路由表移除。best-effort。
 	}
 	return nil
+}
+
+// warnExitStillApprovedOtherFamily 在**按族**撤掉一条出口默认路由(0.0.0.0/0 或 ::/0)后,检查该 device 是否
+// 另一族仍被批准;若仍被批准就响亮告警 —— 因为出口绑定是**按 device**判定的(见 resolveApprovedExitDeviceID):
+// 只要还剩一族 approved,这台机器就仍是合法出口,连 **IPv4** 流量也照样经它出网。
+//
+// 2026-07-25 三机实测(A 经 C 出口)坐实:只撤 C 的 0.0.0.0/0、留着 ::/0,A 的 v4 出网 IP 仍是 C 的公网 IP。
+// route 子命令把两族显示成两行、也允许单独删一行,天然暗示了一个「并不存在」的粒度;此前还完全静默。
+// 不改成硬失败:按族操作对「先撤 v4 再撤 v6」这类分步流程仍有意义,故只保证操作者不被静默误导,并指路
+// `exit revoke`(一次撤两族 + 可清 fixed vIP)。
+func warnExitStillApprovedOtherFamily(ctx context.Context, st *store.Store, opts *globalOpts, deviceID int64, cidr string) {
+	rows, err := st.ListRoutesByDevice(ctx, deviceID)
+	if err != nil {
+		return // best-effort:告警不该让撤销命令失败
+	}
+	for _, r := range rows {
+		if r.Status != util.RouteStatusApproved || !util.IsExitDefaultRoute(r.CIDR) || r.CIDR == cidr {
+			continue
+		}
+		fmt.Fprintln(opts.stderr, opts.T("route.exitOtherFamilyStillApproved", deviceID, r.CIDR))
+		return
+	}
 }
 
 func parseRouteTarget(opts *globalOpts, args []string) (int64, string, error) {

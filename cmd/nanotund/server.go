@@ -3897,7 +3897,8 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// (newConn 已入 connIDMap + oldConn 已 takenOver)后异步补一次复核——继承来的出口此刻若已被 admin 撤销,而撤销侧
 	// 的 revalidateExitBindings 可能只扫到尚未 takenOver 的 oldConn、把 CAS 落在已死的 oldConn 而漏掉 newConn,这里
 	// 补扫把 newConn 重置回 server 自出口 + 通知客户端。幂等且不误撤销(approved/DB 查不动都保留),仅有出口绑定才触发。
-	if newConn.egressDeviceID.Load() != 0 {
+	// >0 = 真绑了某设备才需复核(0 是 server 自出口;egressFailClosed 是已 fail-closed 的无效选择,无可复核)。
+	if newConn.egressDeviceID.Load() > 0 {
 		// 第十四轮深扫 MED:异步补扫包 safeGoroutine —— 一次性任务,panic 只 log 不应拖垮整进程(不触发关停)。
 		go safeGoroutine("revalidateExitBindings/takeover", func() { revalidateExitBindings(context.Background()) })
 	}

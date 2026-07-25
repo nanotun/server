@@ -450,27 +450,115 @@ func TestRevalidateExitBindings_DBErrorKeepsBinding(t *testing.T) {
 	}
 }
 
-// 新策略:选一个**未批准/已撤销/未知**的出口 → 不绑定,回退 server(egressDeviceID=0)+ ack not_approved。
-// 用「先绑着别的出口(egressDeviceID=77)」验证「无效 → 重置回 server」。
-func TestEgressSelect_UnapprovedFallsBackToServer(t *testing.T) {
+// 选一个**未批准/已撤销/未知**的出口 → fail-closed(egressDeviceID=egressFailClosed)+ ack not_approved。
+//
+// 2026-07-25 三机实测改的口径:此前这里存 0(= server 自出口),于是「点名 C 却被拒」的使用方公网流量
+// 静默从 server 的公网 IP 出去(实测出网 IP 变成 server 的),与 --exit-fallback-server 承诺的
+// 「默认严格 fail-closed」相反。用「先绑着别的出口(77)」验证无效选择不会把它放回 server。
+func TestEgressSelect_UnapprovedFailsClosed(t *testing.T) {
 	resetConnByDeviceForTest(t)
 	_ = egressTestStore(t) // 空库:任何 UUID 都不是已批准出口。
 
 	fake := newFakeLinkConn()
 	a := &Connection{userID: "u1", connIDStr: "a", deviceID: 11, exitAllowed: true, linkConn: fake}
-	a.egressDeviceID.Store(77) // 假装之前已绑某出口,选无效出口应把它重置回 0(server)。
+	a.egressDeviceID.Store(77)
 	body, err := util.MarshalEgressSelect("99999999-2222-4333-8444-555555555555")
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	handleEgressSelectFrame(t.Context(), a, body)
 
-	if a.egressDeviceID.Load() != 0 {
-		t.Fatalf("选未批准出口应回退 server(egressDeviceID=0),实际 %d", a.egressDeviceID.Load())
+	if got := a.egressDeviceID.Load(); got != egressFailClosed {
+		t.Fatalf("选未批准出口应 fail-closed(egressDeviceID=%d),实际 %d —— 0 意味着静默改从 server 公网 IP 出网", egressFailClosed, got)
 	}
 	ack := parseLastEgressAck(t, fake)
 	if ack.Accepted || ack.Reason != "not_approved" {
 		t.Fatalf("应 {accepted:false, reason:not_approved},实际 %+v", ack)
+	}
+
+	// 数据面:该会话的公网包就地丢弃,且**不**返回 false(返 false = 调用方回退 server 自出口 = 泄露)。
+	before := exitForwardDroppedFailClosed.Load()
+	if !forwardPacketToExitNode(a, mkIPv4(netip.MustParseAddr("8.8.8.8"))) {
+		t.Fatal("fail-closed 会话的公网包应被就地丢弃(返 true),返 false 会让调用方改走 server 自出口")
+	}
+	if got := exitForwardDroppedFailClosed.Load(); got != before+1 {
+		t.Fatalf("dropped_fail_closed 应 +1,实际 %d → %d", before, got)
+	}
+}
+
+// fail-closed 只该落在**公网出口**流量上:mesh 互访 / 网关(MagicDNS)/ 内部目的地必须照旧走原链路。
+//
+// 三机实测(2026-07-25)抓到的回归:哨兵判断最初写在函数开头、排在「这不是公网出口流量」的各项排除之前,
+// 结果一个 fail-closed 会话连 mesh 网关和对端 vIP 都 ping 不通 —— 出口不可用不该把私有组网一起打死。
+func TestForwardPacketToExitNode_FailClosedKeepsMeshReachable(t *testing.T) {
+	resetConnByDeviceForTest(t)
+	setServerGatewayAddrs("10.201.0.1/16", "fd00:200::1/64") // 模拟 TUN 已配网关
+	t.Cleanup(func() { serverGatewayAddrs.Store(nil) })
+	peerVIP := netip.MustParseAddr("10.201.0.3") // 在线对端(出口节点自己的 vIP 就是这个形态)
+	registerVIPOwners([]netip.Addr{peerVIP}, 999, 1)
+	t.Cleanup(func() { unregisterVIPOwners([]netip.Addr{peerVIP}, 1) })
+
+	a := &Connection{userID: "u1", connIDStr: "a", deviceID: 11, exitAllowed: true}
+	a.egressDeviceID.Store(egressFailClosed)
+
+	// 网关(MagicDNS 的落点)与在线对端 vIP:返 false = 交回原链路,由 server TUN / 本地服务处理。
+	for _, dst := range []string{"10.201.0.1", "10.201.0.3"} {
+		if forwardPacketToExitNode(a, mkIPv4(netip.MustParseAddr(dst))) {
+			t.Fatalf("fail-closed 会话发往 mesh 目的 %s 不该被 exit 路径接管(mesh 互访会被打断)", dst)
+		}
+	}
+	// 公网目的仍就地丢弃。
+	if !forwardPacketToExitNode(a, mkIPv4(netip.MustParseAddr("8.8.8.8"))) {
+		t.Fatal("fail-closed 会话的公网包应被就地丢弃")
+	}
+}
+
+// 选到自己当出口(下拉里点了自己那台)同样 fail-closed:「无法兑现的选择」不该悄悄变成「从 server 公网 IP 出网」。
+func TestEgressSelect_SelfFailsClosed(t *testing.T) {
+	resetConnByDeviceForTest(t)
+	st := egressTestStore(t)
+	uuid := "77777777-2222-4333-8444-555555555555"
+	devID := seedApprovedExitDevice(t, st, uuid)
+
+	fake := newFakeLinkConn()
+	// 本会话自己就是那台已批准出口设备。
+	a := &Connection{userID: "u1", connIDStr: "a", deviceID: devID, exitAllowed: true, linkConn: fake}
+	body, err := util.MarshalEgressSelect(uuid)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	handleEgressSelectFrame(t.Context(), a, body)
+
+	if got := a.egressDeviceID.Load(); got != egressFailClosed {
+		t.Fatalf("选到自己应 fail-closed(%d),实际 %d", egressFailClosed, got)
+	}
+	ack := parseLastEgressAck(t, fake)
+	if ack.Accepted || ack.Reason != "self" {
+		t.Fatalf("应 {accepted:false, reason:self},实际 %+v", ack)
+	}
+}
+
+// fail-closed 会话不得被 revalidateExitBindings(admin 每次改出口都会经 reload exits 触发)悄悄放回 server:
+// 哨兵不对应任何 deviceID,若被当作「绑了个未批准设备」复核,就会 CAS 回 0 = 本次修的泄露原地复活。
+func TestRevalidateExitBindings_SkipsFailClosedSessions(t *testing.T) {
+	resetConnByDeviceForTest(t)
+	_ = egressTestStore(t)
+
+	fake := newFakeLinkConn()
+	a := &Connection{userID: "u1", connIDStr: "a", deviceID: 11, exitAllowed: true, linkConn: fake}
+	a.egressDeviceID.Store(egressFailClosed)
+	connIDMapMu.Lock()
+	connIDMap[a.connIDStr] = a
+	connIDMapMu.Unlock()
+
+	if n := revalidateExitBindings(t.Context()); n != 0 {
+		t.Fatalf("fail-closed 会话不该被复核重置,实际重置 %d 个", n)
+	}
+	if got := a.egressDeviceID.Load(); got != egressFailClosed {
+		t.Fatalf("复核后应保持 fail-closed(%d),实际 %d", egressFailClosed, got)
+	}
+	if len(fake.writeBuf) != 0 {
+		t.Fatalf("不该给 fail-closed 会话回 revoked 通知,实际写了 %d 字节", len(fake.writeBuf))
 	}
 }
 

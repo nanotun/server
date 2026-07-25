@@ -26,11 +26,29 @@ import (
 //   1. Egress 为空 / "server" → 退回 server 自出口(egressDeviceID=0),回 Ack(accepted, egress=server);
 //   2. 否则按「授权」绑定:目标是 admin 已批准的出口设备(approved 0/0/::/0,**在线/离线均可**)+ 本会话 exit_allowed
 //      → 置 egressDeviceID=该设备,回 Ack(accepted, egress=<uuid>);在不在线交给数据面决定走/阻断;
-//   3. 目标不是已批准出口(撤销/未知)→ egressDeviceID=0(回退 server)+ Ack(rejected, not_approved)。
+//   3. 目标不是已批准出口(撤销/未知/选到自己)→ egressDeviceID=[egressFailClosed](公网流量就地丢弃,
+//      **不**回退 server 自出口)+ Ack(rejected, not_approved/self)。
 //
 // 全段 best-effort:解析失败只 log + 计数,绝不 break readLoop。数据面真正转发在 M2(runLinkTunnel)。
 //
 // 协议规范见 docs/DESIGN_EXIT_NODE.md。
+
+// egressFailClosed 是 c.egressDeviceID 的哨兵值:「用户点名了一个出口,但服务器无法兑现」。
+//
+// 与 0(= server 自出口)的区别是本次修复的核心:此前「选了 C 但 C 未获批准」会被存成 0,于是使用方的
+// 公网流量**静默**从 server 的公网 IP 出去 —— 而用户点名某个出口,往往正因为目的站点只放行那个 IP、
+// 或者必须不被归因到 VPN 服务器。三处口径都说这不行:
+//   - 客户端 `--exit-fallback-server` 的帮助文本:「默认关 —— 严格 fail-closed(不静默改出口,
+//     保护「不经 server 公网 IP 出网」意图)」;
+//   - 同一机制的「出口中途掉线」分支确实 fail-closed(见 forwardPacketToExitNode 注释);
+//   - docs/DESIGN_EXIT_NODE.md 把「选了出口的使用方静默改经 server 自出口」定性为 HIGH 泄露
+//     (并为此修过 takeover 继承路径)。
+//
+// 语义:数据面就地丢弃该会话的公网出口流量(mesh / 网关 / MagicDNS 不受影响),客户端已在选择时
+// 收到 rejected ack,可据此 fail-closed 提示或按 --exit-fallback-server 主动重发 EgressSelect{server}。
+// 不做「管理员事后批准即自动升级」:哨兵不保留目标 deviceID(未批准的设备压根没解析出来),
+// 事后批准由客户端重连 / 重发选择收敛,与 ack 文案一致。
+const egressFailClosed int64 = -1
 
 // 暴露给 /status / 测试观测的计数(best-effort)。
 var (
@@ -51,6 +69,10 @@ var (
 	// —— 典型是子网/4via6 宣告方**自指**在 forwardPacketToSubnetRoute 返回 false 后、若又选了 peer 出口就会到这里。
 	// 这类内部目的绝非公网出口流量,fail-closed 就地丢弃(不外泄内部编址 / LAN 内容给出口节点)。
 	exitForwardDroppedInternalDst atomic.Uint64
+
+	// 选定的出口无法兑现(未批准 / 已撤销 / 未知 UUID / 选到自己)→ 按 egressFailClosed 就地丢弃的包数。
+	// 单列计数:与「出口离线」区分,便于回答「用户说不通,是出口掉线还是压根没批准」。
+	exitForwardDroppedFailClosed atomic.Uint64
 
 	// server 自出口(egress=server/默认)对公网 v6 的兜底:server 本机无 v6 公网出网时,把使用方发来的公网全局
 	// 单播 v6 回 ICMPv6 unreachable 使其秒回落 v4(与 peer 出口的 exitForwardDroppedNoV6 同理,补 egress==0 路径)。
@@ -95,6 +117,9 @@ type ExitNodeStats struct {
 	DroppedMeshDst  uint64 `json:"dropped_mesh_dst"`
 	// DroppedInternalDst:目的是 mesh 内部专用地址(4via6 / 已批准子网 LAN 前缀)却漏到出口路径,fail-closed 丢弃的包数。
 	DroppedInternalDst uint64 `json:"dropped_internal_dst"`
+	// DroppedFailClosed:选定出口无法兑现(未批准/已撤销/未知/选到自己)→ fail-closed 丢弃的包数(见 egressFailClosed)。
+	// 与 DroppedOffline 分开看:前者是「压根没批准」,后者是「批了但此刻不在线」。
+	DroppedFailClosed uint64 `json:"dropped_fail_closed"`
 	// ServerEgressDroppedNoV6:走 server 自出口、因 server 本机无 v6 而回 ICMPv6 unreachable 的公网 v6 包数。
 	ServerEgressDroppedNoV6 uint64 `json:"server_egress_dropped_no_v6"`
 	// RateCapBPS:当前生效的 per-session 出口转发速率帽(字节/秒);0 = 不限。
@@ -115,6 +140,7 @@ func snapshotExitNodeStats() ExitNodeStats {
 		DroppedRate:             exitForwardDroppedRate.Load(),
 		DroppedNoV6:             exitForwardDroppedNoV6.Load(),
 		DroppedMeshDst:          exitForwardDroppedMeshDst.Load(),
+		DroppedFailClosed:       exitForwardDroppedFailClosed.Load(),
 		DroppedInternalDst:      exitForwardDroppedInternalDst.Load(),
 		ServerEgressDroppedNoV6: serverEgressDroppedNoV6.Load(),
 		RateCapBPS:              exitForwardRateBPS.Load(),
@@ -180,6 +206,16 @@ func forwardPacketToExitNode(c *Connection, payload []byte) bool {
 	}
 	if _, ok := lookupSubnetRoute(t.dst); ok {
 		exitForwardDroppedInternalDst.Add(1)
+		return true
+	}
+	// 选定的出口无法兑现(未批准 / 已撤销 / 未知 / 选到自己)→ 就地丢弃,**绝不**回退 server 自出口:回退等于把
+	// 用户明确要避开的「从 server 公网 IP 出网」静默给他(详见 egressFailClosed)。返 true = 本包已处理。
+	//
+	// 位置很关键,必须排在上面所有「这不是公网出口流量」的排除之后:三机实测(2026-07-25)最初把它放在函数开头,
+	// 结果 fail-closed 会话连 mesh 网关 / 对端 vIP / MagicDNS 都 ping 不通 —— 阻断只该落在公网出口流量上,
+	// mesh 互访与内部目的地照旧走原链路(与「出口离线」分支的处置位置一致)。
+	if egress == egressFailClosed {
+		exitForwardDroppedFailClosed.Add(1)
 		return true
 	}
 	// 按 device 取「真在跑出口」会话(advertisedExit && !takenOver),与选择侧同口径。
@@ -672,17 +708,21 @@ func handleEgressSelectFrame(ctx context.Context, c *Connection, payload []byte)
 		return
 	}
 	if deviceID == 0 {
-		// 确实未批准 / 已撤销 / 未知 UUID —— 不是合法出口 → 回退 server 自出口(egressDeviceID=0)+ 通知。
-		// 按设计:唯一回退 server 的触发就是「目标不再是被授权的出口」。
-		c.egressDeviceID.Store(0)
+		// 确实未批准 / 已撤销 / 未知 UUID —— 不是合法出口 → **fail-closed**(不回退 server 自出口)+ 通知。
+		//
+		// 此前这里存 0(= server 自出口):用户点名 C、服务器答「不行」,然后把他的公网流量从 server 自己的
+		// 公网 IP 送出去,唯一线索是客户端一行日志。三机实测(2026-07-25)复现:A 选未批准的 C → 出网 IP
+		// 变成 server 的 45.32.249.36。改为哨兵后由数据面就地丢弃,与「出口中途掉线」分支同口径;想要
+		// 便利回落的用户显式开 --exit-fallback-server,客户端收到本 ack 后会主动重发 EgressSelect{server}。
+		c.egressDeviceID.Store(egressFailClosed)
 		egressSelectRejected.Add(1)
 		sendEgressSelectAck(c, util.EgressSelectAck{Accepted: false, Reason: "not_approved"})
 		return
 	}
 	if c.deviceID != 0 && deviceID == c.deviceID {
-		// 选到自己当出口:relay 模型下自选无意义(数据面 forwardPacketToExitNode 有自环防护、会回退 server)。
-		// 这里**显式**回退 server + 回 rejected,避免「ack=accepted 却实际走 server」的口径不一致(深扫 #4)。
-		c.egressDeviceID.Store(0)
+		// 选到自己当出口:relay 模型下自选无意义。同样 fail-closed —— 「无法兑现的选择」不该悄悄变成
+		// 「从 server 出网」(数据面仍保留 egress==c.deviceID 的自环防护,覆盖 takeover 继承等非选择路径)。
+		c.egressDeviceID.Store(egressFailClosed)
 		egressSelectRejected.Add(1)
 		sendEgressSelectAck(c, util.EgressSelectAck{Accepted: false, Reason: "self"})
 		return
@@ -804,7 +844,11 @@ func revalidateExitBindings(ctx context.Context) int {
 		if c == nil || c.takenOver.Load() {
 			continue
 		}
-		if dev := c.egressDeviceID.Load(); dev != 0 {
+		// 只复核**真绑了某设备**的会话(dev > 0)。dev==0 是 server 自出口;dev==egressFailClosed 是
+		// 「选择无法兑现、已 fail-closed」—— 它不对应任何 deviceID,若一并收进来,下面
+		// deviceHasApprovedExitRoute(-1) 会答「确实没批准」→ 把它 CAS 回 0(server 自出口),
+		// 等于每次 admin 改出口(reload exits)都悄悄把 fail-closed 会话放回 server 出网,正是本次要修的泄露。
+		if dev := c.egressDeviceID.Load(); dev > 0 {
 			bs = append(bs, bound{c: c, dev: dev})
 		}
 	}

@@ -81,7 +81,7 @@
     per-session 令牌桶非阻塞 `AllowN`，超额 fail-closed 丢包并计数 `dropped_rate`。
   - ✅ 滥用审计：会话首次经出口转发记一条 INFO（user / conn / exit_device，一次性，换出口复位再记）。
   - ✅ 客户端感知回执：rust 核心读 `EgressSelectAck` 经 `on_debug`（前缀 `EGRESS_ACK_DEBUG_PREFIX`）透出，
-    CLI `--exit` 用户始终可见「接受 / 拒绝（将经 server 自出口）/ 中途掉线（fail-closed 阻断）」。
+    CLI `--exit` 用户始终可见「接受 / 拒绝（fail-closed 阻断）/ 中途掉线（fail-closed 阻断）」。
     遵守 fail-closed：核心**不**自动改出口（不静默回落明文），由宿主决定（自动回落需显式开关，留待 UI）。
   - ✅ 掉线自动回落（显式 opt-in）：CLI `--exit-fallback-server`（默认关）——选定出口掉线时主动重发
     `EgressSelect{server}` 回落 server 自出口，避免黑洞；默认仍严格 fail-closed（不静默改出口）。
@@ -128,14 +128,21 @@
     (create→designate→exit list→cleanup)通过。
   - ⏳ 可选后续：出口机 device_id 落持久卷的运维约束文档。
 - **M9** 出口选择策略「按授权绑定」（用户拍板的语义）：
-  - **原则**：「选了 C」= 绑定 C 这个**已授权**出口。授权(approved)决定绑、在线只决定走/阻断、**唯撤销回退 server**。
+  - **原则**：「选了 C」= 绑定 C 这个**已授权**出口。授权(approved)决定绑、在线只决定走/阻断、**唯运行中被撤销才回退 server**。
     | C 状态 | 处理 |
     |---|---|
     | 已批准 + 在线在跑 | 走 C |
     | 已批准 + 离线/没在跑 | 绑定 C + fail-closed 阻断 + C 回来**自动恢复**（默认）；`exit_fallback_server` 开则回退 server |
-    | 被 admin 撤销 | 回退 server + 响亮通知 |
+    | 选择时就不是已批准出口（未批准/已撤销/未知 UUID/选到自己） | `egressDeviceID=egressFailClosed` + fail-closed 阻断（**不**回退 server）+ `not_approved`/`self` 通知；`exit_fallback_server` 开则客户端重发 `EgressSelect{server}` 回落 |
+    | 运行中被 admin 撤销 | 回退 server + 响亮通知 |
     | `not_running`（在线没跑出口） | 当「暂时不可用」=绑定+等它跑（同离线） |
-  - **Phase 1 ✅（选择按授权绑定）**：`handleEgressSelectFrame` 改用 `resolveApprovedExitDeviceID`（按 UUID 在 approved 出口集解析 deviceID，**在线/离线均可**）→ 解析到即绑、解析不到（撤销/未知）→ `egressDeviceID=0`+`not_approved`（回退 server）。`forwardPacketToExitNode` 成功投递复位 `exitOfflineNotified`（per-episode 通知 + 自动恢复）。单测 + 实跑验证（选离线 approved→accepted/绑定；选未批→not_approved/server）。
+  - **为什么「选择时被拒」也 fail-closed（2026-07-25 三机实测改口径）**：原先存 `egressDeviceID=0`（= server 自出口），
+    于是「点名 C 却被拒」的使用方公网流量**静默**从 server 的公网 IP 出去（实测：A 选未批准的 C → 出网 IP 变成
+    server 的 45.32.249.36，唯一线索是客户端一行日志）。这与本文档自己的两处口径冲突：`--exit-fallback-server`
+    「默认关 = 严格 fail-closed，不静默改出口」，以及下方把「使用方静默改经 server 自出口」列为 **HIGH 泄露**
+    （热切换那条）。用户点名某出口往往正因为目的站点只放行那个 IP、或不愿被归因到 VPN 服务器，静默回落恰好
+    给了他要避开的东西。阻断只落在**公网出口流量**上：mesh 互访 / 网关（MagicDNS）/ 内部目的地照旧走原链路。
+  - **Phase 1 ✅（选择按授权绑定）**：`handleEgressSelectFrame` 改用 `resolveApprovedExitDeviceID`（按 UUID 在 approved 出口集解析 deviceID，**在线/离线均可**）→ 解析到即绑、解析不到（撤销/未知）→ `egressDeviceID=egressFailClosed`+`not_approved`（fail-closed 阻断，**不**回退 server；口径见上表）。`forwardPacketToExitNode` 成功投递复位 `exitOfflineNotified`（per-episode 通知 + 自动恢复）。单测 + 实跑验证（选离线 approved→accepted/绑定；选未批→not_approved/fail-closed 阻断且 mesh 不受影响）。
   - **Phase 2 ✅（撤销实时 + 新批准即时推送）**：`egressDeviceID` 改 `atomic.Int64`；control endpoint `POST /reload?what=exits` → `revalidateExitBindings`（绑定设备被撤销→CAS 重置回 server + `EgressSelectAck{revoked}` 通知）+ `broadcastExitsList`。admin `exit designate/revoke`、`route approve/reject/delete`(出口) 后 best-effort `notifyExitsChanged`。实跑验证：A 用着 C、`exit revoke C` → ~3s A 收到 revoked + 改经 server（不重连）。
   - **Phase 3**：
     - **E ✅ 出口偏好 per-profile**：`exit_egress_device` 从全局移到 `profile_store.StoredProfile`（各 server 各记各的）；连接按当前 profile 取（`resolve_active_exit_egress`）；选出口写当前 profile，仅当前连接的 profile 才实时切。

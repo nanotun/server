@@ -126,3 +126,47 @@ func TestRouteReject_PendingOnlyGuard(t *testing.T) {
 		t.Fatalf("pending 路由 reject 应成功, code=%d stderr=%s", c, e)
 	}
 }
+
+// 三机实测回归(2026-07-25):按族撤掉出口路由时,若另一族仍 approved,该 device **仍是合法出口**——
+// 出口绑定按 device 判定,实测「只撤 0.0.0.0/0、留 ::/0」后使用方的 v4 出网 IP 仍是出口节点的公网 IP。
+// 此前完全静默,操作者会以为已撤销 v4 出口。现在必须告警并指路 `exit revoke`。
+func TestRouteDelete_WarnsWhenOtherExitFamilyStillApproved(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "route-exit-family.db")
+	st := openStoreForTest(t, db)
+	ctx := t.Context()
+	u, err := st.CreateUser(ctx, openStoreNewUser("exituser"))
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	dev, err := st.UpsertDevice(ctx, u.ID, "12121212-3333-4444-8555-666666666666", "an-exit", "linux")
+	if err != nil {
+		t.Fatalf("upsert device: %v", err)
+	}
+	for _, cidr := range []string{"0.0.0.0/0", "::/0"} {
+		if _, err := st.UpsertAdvertisedRoute(ctx, dev.ID, cidr); err != nil {
+			t.Fatalf("upsert route %s: %v", cidr, err)
+		}
+		if err := st.SetRouteStatus(ctx, dev.ID, cidr, util.RouteStatusApproved, ""); err != nil {
+			t.Fatalf("approve %s: %v", cidr, err)
+		}
+	}
+	_ = st.Close()
+
+	devStr := fmt.Sprintf("%d", dev.ID)
+	// 只删 v4:v6 仍 approved → 必须告警 + 指路 exit revoke。
+	c, _, stderr := runCLI(t, db, "", "route", "delete", devStr, "0.0.0.0/0", "--yes")
+	if c != 0 {
+		t.Fatalf("route delete 应成功, code=%d stderr=%s", c, stderr)
+	}
+	if !strings.Contains(stderr, "::/0") || !strings.Contains(stderr, "exit revoke") {
+		t.Fatalf("应告警另一族(::/0)仍生效并指路 exit revoke,实际 stderr: %s", stderr)
+	}
+	// 再删 v6:已无其它 approved 出口路由 → 不应再告警(否则是噪音)。
+	c, _, stderr = runCLI(t, db, "", "route", "delete", devStr, "::/0", "--yes")
+	if c != 0 {
+		t.Fatalf("route delete(v6) 应成功, code=%d stderr=%s", c, stderr)
+	}
+	if strings.Contains(stderr, "exit revoke") {
+		t.Fatalf("撤完最后一族不应再告警,实际 stderr: %s", stderr)
+	}
+}

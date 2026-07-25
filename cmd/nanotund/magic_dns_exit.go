@@ -407,6 +407,9 @@ func interceptExitDNSResponseIfPending(c *Connection, payload []byte) bool {
 }
 
 // exitDeviceForClientVIP 返回该客户端 vIP 所属会话选定的出口 deviceID（egressDeviceID）；0 = 未选出口 / 未找到。
+// 可能返回 [egressFailClosed]（选择无法兑现、已 fail-closed）：两个调用方随后 lookupRunningExitConnByDevice
+// 查不到会话 → 回 SERVFAIL，与「出口离线」同款 fail-closed，正是我们要的——这类会话的公网流量本就被丢弃，
+// 用 server 的地理答案填它的 DNS 缓存只会在它换出口后继续误导。
 // 低频（仅公网 DNS 查询触发），扫 connIDMap 可接受；数据面热路径不走这里。
 func exitDeviceForClientVIP(vip netip.Addr) int64 {
 	connIDMapMu.RLock()
