@@ -121,6 +121,65 @@ func TestConnSourceSpoofed_SubnetOnlyScopedToAdvertisedRoutes(t *testing.T) {
 	}
 }
 
+// TestConnSourceSpoofed_SubnetOnlyRequiresApprovedPrefix 覆盖第二十二轮深扫 HIGH:纯子网中继的源校验必须同时
+// 满足「∈ 会话当前宣告集」**和**「∈ 本设备已被 admin 批准的网段」。宣告集是客户端自报、独立于批准状态填充的,
+// 只查它 → 一台仅被批准共享 192.168.50.0/24 的设备,多报一条 pending 的 10.0.0.0/8 就能拿它当源注包。
+func TestConnSourceSpoofed_SubnetOnlyRequiresApprovedPrefix(t *testing.T) {
+	mkPkt := func(src [4]byte) []byte {
+		dst := [4]byte{8, 8, 8, 8}
+		return []byte{
+			0x45, 0x00, 0x00, 0x1c,
+			0x00, 0x00, 0x00, 0x00,
+			0x40, 0x11, 0x00, 0x00,
+			src[0], src[1], src[2], src[3],
+			dst[0], dst[1], dst[2], dst[3],
+			0x12, 0x34, 0x00, 0x35,
+			0x00, 0x08, 0x00, 0x00,
+		}
+	}
+	const devID = 42
+	mkConn := func(exitApproved bool) *Connection {
+		c := &Connection{deviceID: devID}
+		ips := []util.VirtualIPAssignment{{VirtualIP: "10.9.0.5"}}
+		c.clientIPs.Store(&ips)
+		c.advertisedSubnetRoutes.Store(true)
+		c.advertisedSubnetApproved.Store(true)
+		c.advertisedExitApproved.Store(exitApproved)
+		// 会话**宣告**两条:一条已批准,一条只是 pending(客户端自报即入集)。
+		pfxs := []netip.Prefix{
+			netip.MustParsePrefix("192.168.50.0/24"),
+			netip.MustParsePrefix("10.0.0.0/8"),
+		}
+		c.advertisedRoutes.Store(&pfxs)
+		return c
+	}
+	approvedSrc := [4]byte{192, 168, 50, 10} // 已批准网段内
+	pendingSrc := [4]byte{10, 1, 2, 3}       // 只在宣告集里,未获批准
+
+	// 已批准表:只有 192.168.50.0/24 属该设备。
+	prev := subnetRouteTable.Load()
+	tbl := []subnetRouteEntry{{prefix: netip.MustParsePrefix("192.168.50.0/24"), deviceID: devID}}
+	subnetRouteTable.Store(&tbl)
+	t.Cleanup(func() { subnetRouteTable.Store(prev) })
+
+	if connSourceSpoofed(mkConn(false), mkPkt(approvedSrc)) {
+		t.Error("源落在已批准且已宣告的网段内:应合法")
+	}
+	if !connSourceSpoofed(mkConn(false), mkPkt(pendingSrc)) {
+		t.Error("源只在宣告集、未获批准:应判伪造(第二十二轮修复点)")
+	}
+	// 已批准为出口者仍走宽豁免,不受子网收窄影响。
+	if connSourceSpoofed(mkConn(true), mkPkt(pendingSrc)) {
+		t.Error("已批准出口应仍豁免任意源")
+	}
+
+	// 表未加载(nil)= 暂时不知道 → 不收窄,避免启动瞬间误杀合法回程。
+	subnetRouteTable.Store(nil)
+	if connSourceSpoofed(mkConn(false), mkPkt(pendingSrc)) {
+		t.Error("已批准表未加载时不应收窄(应退回宣告集口径)")
+	}
+}
+
 // 帮助:把一份测试规则装载为当前 snapshot,默认动作为 ACLAllow。
 func loadACLForTest(rules []*store.ACLPair, defaultAction string) {
 	aclCurrent.Store(buildACLSnapshot(rules, defaultAction))

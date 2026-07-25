@@ -146,6 +146,52 @@ func TestUpsertLease_DoesNotDowngradeManual(t *testing.T) {
 	}
 }
 
+// TestUpsertLease_ManualNotInheritedByNewVIP 覆盖第二十二轮深扫 HIGH:保留 manual 只适用于「地址没换」。
+// vip_* 恒被本次分配结果覆盖,若 manual 无条件 OR,则偏好地址不可用时分配器给出的**全新**地址会继承
+// manual=1 —— 管理员从未钉过它,却使它永久免疫 lease gc,而真正被钉的地址已从该行消失。
+func TestUpsertLease_ManualNotInheritedByNewVIP(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	u, err := s.CreateUser(ctx, NewUser{Username: "frank", PSKHash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.UpsertDevice(ctx, u.ID, "uuid-newvip", "m-newvip", "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 管理员钉下 10.0.0.90(manual=1)。
+	if _, err := s.UpsertManualLeasePreservingEmpty(ctx, d.ID, "10.0.0.90", "", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// 设备重登,但偏好地址不可用 → 分配器给了**另一个**地址。manual 不得被继承。
+	l, err := s.UpsertLease(ctx, d.ID, "10.0.0.91", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Manual {
+		t.Fatal("换到新地址时不应继承管理员的 manual 标记(否则新地址永久免疫 GC)")
+	}
+	if l.VIPv4 != "10.0.0.91" {
+		t.Fatalf("vip_v4 = %q, want 10.0.0.91", l.VIPv4)
+	}
+
+	// 双栈某族本次缺失(具体地址 → NULL)**不算换址**:manual 仍应保留。
+	if _, err := s.UpsertManualLeasePreservingEmpty(ctx, d.ID, "10.0.0.91", "fd00::91", true); err != nil {
+		t.Fatal(err)
+	}
+	l2, err := s.UpsertLease(ctx, d.ID, "10.0.0.91", "", false) // 本次只分到 v4
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l2.Manual {
+		t.Fatal("某族本次缺失不算换址,manual 应保留")
+	}
+}
+
 // TestSetDeviceFixedVIP_SyncsManual 验证事务化后 devices.fixed_vip 与 leases.manual 同步:设固定→manual=1,
 // 清固定→manual=0。
 func TestSetDeviceFixedVIP_SyncsManual(t *testing.T) {

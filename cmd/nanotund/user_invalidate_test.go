@@ -464,3 +464,57 @@ func TestKickConnForUserInvalidate_NetPipeWorks(t *testing.T) {
 		t.Fatal("远端 net.Pipe 未感知 close (写 + Close 应触发 EOF)")
 	}
 }
+
+// TestKickConnForUserInvalidate_FollowsTakeoverToCurrentConn 覆盖第二十二轮深扫 MED:被踢的 conn 已被 takeover
+// 顶掉时,不能早退 —— 业务会话仍以**同一 connIDStr** 活在接管后的新 conn 上。调用方(control-socket /kick)是在
+// connIDMapMu 下快照完就放锁的,快照与踢除之间足够一次 takeover 提交完成;若早退,真正在跑的会话没被踢,而管理员
+// 还会收到「已踢除 N 条」的虚假成功。周期扫描下一 tick 能自愈,一次性的 admin kick 不能。
+func TestKickConnForUserInvalidate_FollowsTakeoverToCurrentConn(t *testing.T) {
+	ctx := context.Background()
+	const sid = "conn-followed-after-takeover"
+
+	oldFake := newFakeLinkConn()
+	oldConn := &Connection{
+		connIDStr:  sid,
+		userID:     "u1",
+		linkConn:   oldFake,
+		tunnelDone: make(chan struct{}),
+		createdAt:  time.Now().Add(-time.Minute),
+	}
+	newFake := newFakeLinkConn()
+	newConn := &Connection{
+		connIDStr:  sid,
+		userID:     "u1",
+		linkConn:   newFake,
+		tunnelDone: make(chan struct{}),
+		createdAt:  time.Now(),
+	}
+
+	// 复刻 takeover 提交后的真实状态:oldConn 标 takenOver,连表里同一 sid 指向 newConn。
+	installConn(t, newConn)
+	oldConn.takenOver.Store(true)
+
+	if !kickConnForUserInvalidate(ctx, nil, oldConn, 1, "user_deleted") {
+		t.Fatal("kick 应沿 sid 追到接管后的当前会话,并如实回 true")
+	}
+	select {
+	case <-newFake.closed:
+	case <-time.After(time.Second):
+		t.Fatal("接管后的 newConn 应被关闭(否则 admin kick 静默失效)")
+	}
+	if !newConn.superseded.Load() {
+		t.Error("被踢的 newConn 应标 superseded")
+	}
+	select {
+	case <-oldFake.closed:
+		t.Error("不应去关已作废的 oldConn 链路")
+	default:
+	}
+
+	// sid 已从连表摘除(接管后的会话也走完了 cleanup)→ 无活会话可踢,如实回 false,不产生虚假成功计数。
+	gone := &Connection{connIDStr: "conn-gone-after-takeover", userID: "u1", tunnelDone: make(chan struct{}), createdAt: time.Now()}
+	gone.takenOver.Store(true)
+	if kickConnForUserInvalidate(ctx, nil, gone, 1, "user_deleted") {
+		t.Error("sid 已不在连表时应回 false")
+	}
+}

@@ -203,6 +203,35 @@ func deviceInSubnetRouteTable(deviceID int64) bool {
 	return false
 }
 
+// deviceApprovedPrefixContains 报告 addr 是否落在 deviceID **已被 admin 批准**的某条子网路由前缀内。
+//
+// 与 deviceAdvertisesV4 同源(都只读 subnetRouteTable 快照、无锁、无 DB),区别是**不限地址族** —— 后者专为
+// 4via6 生成而只匹配 v4 前缀。第二十二轮深扫 HIGH:本函数给 connSourceSpoofed 补上「已批准」这一半的源校验。
+// 转发方向一直是「已批准表 ∩ 会话当前宣告集」双查(见 forwardPacketToSubnetRoute),而源方向此前只查了宣告集
+// —— 宣告集是客户端自报、且**独立于批准状态**填充的(见 handleRouteAdvertiseFrame),故只查它等于让一台
+// 「已批准共享某个 LAN」的设备,靠再多报几条 pending / 已撤销的私有网段就能拿那些网段里的地址当源注包。
+//
+// 前缀在 rebuildSubnetRouteTable 里已 Masked;addr 先 Unmap,避免 IPv4-mapped-IPv6 形态与 v4 前缀比对恒 false
+// (netip.Prefix.Contains 对跨族一律返回 false)。表未构建(nil)/ deviceID==0 时返回 false,调用方须自行决定
+// 是否因此放宽 —— connSourceSpoofed 用 subnetRouteTableLoaded() 把「表未加载」与「确实未批准」区分开,
+// 避免启动瞬间误杀合法回程(与 advertisedSubnetApproved 的处理同一约定)。
+func deviceApprovedPrefixContains(deviceID int64, addr netip.Addr) bool {
+	if deviceID == 0 {
+		return false
+	}
+	ptr := subnetRouteTable.Load()
+	if ptr == nil {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, e := range *ptr {
+		if e.deviceID == deviceID && e.prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
 // lookupSubnetRoute 在已批准子网路由表里对 dst 做**最长前缀匹配**，返回宣告方 deviceID。
 // 路由数极少（典型 < 数十条），线性扫 + 记最长掩码即可；返回 (0,false) = 无匹配。
 // netip.Prefix.Contains 天然处理地址族（v4 dst 不会命中 v6 prefix，反之亦然）。

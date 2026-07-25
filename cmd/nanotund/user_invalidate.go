@@ -222,13 +222,40 @@ func userInvalidStatus(ctx context.Context, st *store.Store, userID int64) (u *s
 
 // kickConnForUserInvalidate 给单条 conn 写一帧 LinkTypeClose(code=CloseCodeUserInvalidated),
 // 然后 Close linkConn;readLoop 收 EOF 后 cleanupConnection 自然回收 vIP / connIDMap。
-func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connection, userID int64, reason string) {
+// maxKickTakeoverHops 限制 kickConnForUserInvalidate 沿「接管链」回溯的跳数。正常最多 1 跳(oldConn → newConn);
+// 给几跳余量以容忍踢除与连续 takeover 撞在一起,同时防病态循环 / 自指把调用方钉死在这里。
+const maxKickTakeoverHops = 4
+
+func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connection, userID int64, reason string) bool {
 	if c == nil {
-		return
+		return false
 	}
-	if c.takenOver.Load() {
-		// takeover 路径下 oldConn 已经处于「待回收」状态,不再写帧。
-		return
+	// 第二十二轮深扫 MED:c 已被 takeover 顶掉时**不能只是返回** —— 业务会话仍以**同一 connIDStr** 活在接管后的
+	// 新 conn 上(takeover 只换底层链路,sid / vIP / 身份全继承)。调用方是在 connIDMapMu 下快照完就放锁的,快照
+	// 与这里之间足够一次 takeover 提交完成,于是:管理员的 kick 打在一个已经作废的 oldConn 上 → 早退 → 真正在跑
+	// 的 newConn 从头到尾没被踢,而 control-socket 还会把它计成「已踢除 N 条」回报给管理员(静默失败 + 虚假成功)。
+	// 周期扫描(scanAndKickInvalidUsers)下一 tick 能自愈,一次性的 admin kick 不能。故沿 sid 重新解析当前持有者。
+	//
+	// 与 round-21 在 takeover **提交前**加的 superseded 复检互补:那条堵的是「kick 早于提交」,这条兜的是
+	// 「kick 晚于提交」。两侧合起来才让 kick 对任意交错都生效。
+	for hop := 0; c.takenOver.Load(); hop++ {
+		if hop >= maxKickTakeoverHops {
+			logrus.WithFields(logrus.Fields{
+				"conn_id": c.connIDStr,
+				"user_id": userID,
+				"reason":  reason,
+			}).Warn("[user-invalidate] 沿接管链回溯超过跳数上限,放弃本次踢除(下一轮扫描会重试)")
+			return false
+		}
+		connIDMapMu.RLock()
+		cur := connIDMap[c.connIDStr]
+		connIDMapMu.RUnlock()
+		if cur == nil || cur == c {
+			// 接管后的新 conn 也已离场(cleanup 已把该 sid 摘除),或表里仍是自己(理论不会:提交时必被换成
+			// newConn)。无活会话可踢,如实回 false,避免虚假成功计数。
+			return false
+		}
+		c = cur
 	}
 	// exit-node/subnet route 黑洞修复:本 conn 即将被 close(admin kick / PSK 失效自动踢),立即标 superseded——
 	// 使它**瞬间**从 by-device 转发目标(lookupRunningExitConnByDevice / lookupSubnetAdvertiserConnByDevice)与在线出口
@@ -275,6 +302,7 @@ func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connect
 		defer cancel()
 		_ = gw.store.Audit(auditCtx, "user-invalidate", "kick_user_invalidate", userIDFromStoreID(userID), "reason="+reason+",conn="+c.connIDStr)
 	}
+	return true
 }
 
 // closeCodeForInvalidateReason 给踢线帧选 close code。

@@ -60,16 +60,23 @@ func (s *Store) GetLeaseByDevice(ctx context.Context, deviceID int64) (*Lease, e
 //
 // 调用方传入空字符串视为「该协议下无 vIP」，并在数据库里存为 NULL（受唯一索引约束）。
 //
-// manual 语义是**单向置位**(第二十一轮深扫 MED:此前 SQL 写的是 manual=excluded.manual,与本函数
-// 开头「保留 manual 标记」的文档承诺自相矛盾):
-//   - 传 true  → 置 manual=1;
-//   - 传 false → **保留**现有 manual(不下调)。
+// manual 语义:**地址未变则单向置位,地址换掉则跟随调用方**。
+//   - 传 true                          → 置 manual=1;
+//   - 传 false 且本次没换地址          → **保留**现有 manual(不下调);
+//   - 传 false 且某族从一个具体地址换成**另一个**具体地址 → 取传入值(即清零)。
 //
-// 原因:本函数在生产中的唯一调用方是登录分配路径(cmd/nanotund/alloc_lease.go persistDeviceLease),
-// 它只在「本次分到的 vIP == device.fixed_vip」时才算出 manual=true。于是管理员用
-// `nanotun-admin lease set <dev> --v4 X`(--manual 默认 true、且**不**写 device.fixed_vip)钉下的
-// manual=1 租约,会在该设备下次重登时被覆盖成 0 → 之后 `lease gc` 到期即回收管理员手钉的 sticky 地址
-// (fixed_vip 那条另有 GC 守卫兜底,纯 manual 这条此前无人兜)。自动分配没有资格清掉管理员的手钉标记。
+// 为什么要保留(第二十一轮深扫 MED):本函数在生产中的唯一调用方是登录分配路径
+// (cmd/nanotund/alloc_lease.go persistDeviceLease),它只在「本次分到的 vIP == device.fixed_vip」时才算出
+// manual=true。于是管理员用 `nanotun-admin lease set <dev> --v4 X`(--manual 默认 true、且**不**写
+// device.fixed_vip)钉下的 manual=1 租约,会在该设备下次重登时被覆盖成 0 → 之后 `lease gc` 到期即回收管理员
+// 手钉的 sticky 地址(fixed_vip 那条另有 GC 守卫兜底,纯 manual 这条无人兜)。自动分配没资格清管理员的手钉。
+//
+// 为什么换址就不能保留(第二十二轮深扫 HIGH,修上一轮 `manual=MAX(...)` 的过度保留):vip_* 恒被本次分配
+// 结果覆盖,若 manual 无条件 OR,则当偏好地址**不可用**时(preferredVIPUsable 因不在网段内 / 被别的在线设备
+// 占用 / 被 --force 挪走而拒绝),分配器给出的**全新**地址 Y 会继承 manual=1 —— 管理员从未钉过 Y,却使 Y 永久
+// 免疫 `lease gc`;而真正被钉的 X 已从本行消失,若 devices.fixed_vip 仍指向 X,该设备就同时占住两个池地址。
+// 故只在「地址没换」时保留。双栈某族本次缺失(具体地址 → NULL)**不算换址**,仍保留手钉 —— 那属于
+// 「按本次分配结果落库」的既有语义(见调用方注释),不应连带清掉管理员的标记。
 //
 // 清 manual 的合法路径都不经本函数:`lease set --manual=false` / `lease release`
 // (走 UpsertManualLeasePreservingEmpty)与 SetDeviceFixedVIP 清 fixed_vip(事务内同步 manual=0)。
@@ -93,7 +100,12 @@ func (s *Store) UpsertLease(ctx context.Context, deviceID int64, vipV4, vipV6 st
 		 ON CONFLICT(device_id) DO UPDATE SET
 		   vip_v4=excluded.vip_v4,
 		   vip_v6=excluded.vip_v6,
-		   manual=MAX(excluded.manual, leases.manual),
+		   manual=CASE
+		     WHEN (excluded.vip_v4 IS NOT NULL AND leases.vip_v4 IS NOT NULL AND excluded.vip_v4 <> leases.vip_v4)
+		       OR (excluded.vip_v6 IS NOT NULL AND leases.vip_v6 IS NOT NULL AND excluded.vip_v6 <> leases.vip_v6)
+		     THEN excluded.manual
+		     ELSE MAX(excluded.manual, leases.manual)
+		   END,
 		   assigned_at=excluded.assigned_at`,
 		deviceID, nullableString(vipV4), nullableString(vipV6), boolToInt(manual), now,
 	); err != nil {

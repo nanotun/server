@@ -804,9 +804,13 @@ func controlHandleKick(gw *gatewayState) http.HandlerFunc {
 			if matchKind == "user" && uid == 0 {
 				uid = targetUserID
 			}
-			kickConnForUserInvalidate(ctx, gw, c, uid, req.Reason)
-			resp.Kicked++
-			resp.ConnIDs = append(resp.ConnIDs, c.connIDStr)
+			// 第二十二轮深扫 MED:只统计**确实踢掉**的。此前无条件 ++,于是「快照到的 conn 在放锁后被 takeover 顶掉
+			// (kickConnForUserInvalidate 早退)」或「会话已自行离场」都会被回报成「已踢除」—— 管理员据此以为处置生效。
+			// kick 侧现已沿 sid 追到接管后的当前持有者,故 false 只剩「真的没有活会话可踢」这一种含义。
+			if kickConnForUserInvalidate(ctx, gw, c, uid, req.Reason) {
+				resp.Kicked++
+				resp.ConnIDs = append(resp.ConnIDs, c.connIDStr)
+			}
 		}
 		resp.OK = true
 

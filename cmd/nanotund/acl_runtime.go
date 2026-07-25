@@ -856,6 +856,20 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 					return true
 				}
 			}
+			// 第二十二轮深扫 HIGH:上面只校验了「源 ∈ 会话**当前宣告**集」,还必须再校验「源 ∈ 本设备**已被 admin
+			// 批准**的网段」。宣告集是客户端自报的,且**独立于批准状态**填充(见 handleRouteAdvertiseFrame:归一成功
+			// 即入集,不等 DB upsert、不看审批),而 advertisedSubnetApproved 又是**设备粒度**(该设备有任意一条已批准
+			// 路由即为真)。二者叠加的后果:一台仅被批准共享 192.168.50.0/24 的设备,只要再宣告一条 10.0.0.0/8
+			// (pending,或已被 admin 撤销但客户端仍在报),就能拿 10.0.0.0/8 里的地址当源向 mesh 对端注包 —— 正是
+			// 上一轮想堵而没堵严的提权。NormalizeAdvertisedCIDR 限定私有/保留段,故残留面是「任意私有段」而非公网,
+			// 但仍跨信任域。转发方向本就是「已批准表 ∩ 当前宣告集」双查(forwardPacketToSubnetRoute),这里把源方向
+			// 补齐成同一口径。
+			//
+			// 表未加载(启动初 / reload 瞬间,ptr==nil)时**不收窄**:此时无法区分「确实未批准」与「暂时不知道」,
+			// 收窄会误杀合法回程。与 advertisedSubnetApproved 仅在 subnetRouteTableLoaded() 时才改写同一约定。
+			if subnetRouteTableLoaded() && !deviceApprovedPrefixContains(c.deviceID, src) {
+				return true
+			}
 		}
 		return false
 	}
