@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/nanotun/server/config"
 )
@@ -37,6 +38,54 @@ func isPrivateDenyCandidateV4(p netip.Prefix) bool {
 }
 
 var cgnatV4 = netip.MustParsePrefix("100.64.0.0/10")
+
+// exitDenyPrivateMode 是本次运行生效的 exit_deny_private 档位(auto / link-local / off),
+// 启动期由 server.go 置一次。数据面每包读,故用 atomic.Value 而非每次 ResolveExitDenyPrivate。
+// 零值(尚未置位)按 auto 处理 —— 安全默认与 ResolveExitDenyPrivate 一致。
+var exitDenyPrivateMode atomic.Value // string
+
+func currentExitDenyPrivateMode() string {
+	if m, ok := exitDenyPrivateMode.Load().(string); ok && m != "" {
+		return m
+	}
+	return config.TUNExitDenyPrivateAuto
+}
+
+// privateDstDeniedForPeerExit 判断某目的地址该不该拒绝「转发给 peer 出口节点」。
+//
+// peer 出口的用途是**公网**出网。私网 / 链路本地目的转给它,等于把「谁能进出口节点的内网」这个决定
+// 交给出口节点的本机防火墙状态 —— 而访问出口节点背后的内网,本该走子网路由的 admin 审批闸。
+//
+// 这不是理论问题。三机实测(2026-07-25):C 宣告并被批准 192.168.88.0/24,A 经子网路由访问其后方内网主机;
+// 随后 admin `route delete` 撤销审批 —— server 确实把路由从 A 撤下了(A 的 ip route 里没了),但 A 是全隧道
+// 客户端、出口选的正是 C,于是同一个目的地落进默认路由、被当作**普通公网流量**转发给 C,而 C 上为该网段装的
+// FORWARD ACCEPT + MASQUERADE 规则并没有随撤销拆除(它压根没收到撤销通知),照样投递进内网。
+// 也就是说:撤销把这个目的地从「内部,丢弃」(下方 lookupSubnetRoute 那道守卫)翻转成了「公网,转发给出口」,
+// 语义正好反了,审批闸被绕过。抓包为证:`nanotun0 In 10.201.0.77 > 192.168.88.10` → `veth-c Out 192.168.88.1 > ...`。
+//
+// 档位复用 tun.exit_deny_private(与内核侧 DROP 规则同一个旋钮,语义一致、运维只需理解一个概念):
+//   - off        → 不拦(运维显式放弃这层防护)
+//   - link-local → 只拦链路本地(169.254/16、fe80::/10),含云元数据那一条
+//   - auto(默认)→ 连 RFC1918 / CGNAT / ULA 一起拦
+//
+// mesh 自身的地址不会走到这里:调用点前面已被 isLocalMeshDst / isMeshCIDRAddr / is4via6 /
+// lookupSubnetRoute 逐一排除,故不会误伤 mesh 互访、网关、4via6 与**仍在批准中**的子网路由。
+func privateDstDeniedForPeerExit(dst netip.Addr, mode string) bool {
+	if !dst.IsValid() || mode == config.TUNExitDenyPrivateOff {
+		return false
+	}
+	dst = dst.Unmap()
+	if dst.IsLinkLocalUnicast() {
+		return true
+	}
+	if mode == config.TUNExitDenyPrivateLinkLocal {
+		return false
+	}
+	if dst.Is4() {
+		return dst.IsPrivate() || cgnatV4.Contains(dst)
+	}
+	return dst.IsPrivate()
+}
 
 // isPrivateDenyCandidateV6 判断 IPv6 前缀是否属于 ULA(fc00::/7)或链路本地。
 func isPrivateDenyCandidateV6(p netip.Prefix) bool {

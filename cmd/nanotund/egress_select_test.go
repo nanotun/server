@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/nanotun/server/auth"
+	"github.com/nanotun/server/config"
 	"github.com/nanotun/server/store"
 	"github.com/nanotun/server/util"
 
@@ -928,5 +929,91 @@ func TestEgressSelect_IsolateRejectsPeerExit(t *testing.T) {
 	handleEgressSelectFrame(t.Context(), b, body)
 	if got := b.egressDeviceID.Load(); got != dev {
 		t.Fatalf("非 isolate 下应绑定到出口设备 %d,实际 %d", dev, got)
+	}
+}
+
+// TestPrivateDstDeniedForPeerExit:私网 / 链路本地目的地不该被转发给 peer 出口,以及三档的边界。
+func TestPrivateDstDeniedForPeerExit(t *testing.T) {
+	addr := netip.MustParseAddr
+	cases := []struct {
+		dst  string
+		auto bool // auto 档是否该拦
+		ll   bool // link-local 档是否该拦
+	}{
+		{"8.8.8.8", false, false},              // 公网 v4 —— 出口的本职工作
+		{"2001:4860:4860::8888", false, false}, // 公网 v6
+		{"192.168.88.10", true, false},         // RFC1918:撤销审批后被当公网转发的正是这类
+		{"10.5.0.7", true, false},
+		{"172.16.3.4", true, false},
+		{"100.64.1.2", true, false},     // CGNAT
+		{"169.254.169.254", true, true}, // 云元数据:两档都必须拦
+		{"fe80::1", true, true},         // v6 链路本地
+		{"fd12:3456::9", true, false},   // ULA
+	}
+	for _, c := range cases {
+		if got := privateDstDeniedForPeerExit(addr(c.dst), config.TUNExitDenyPrivateAuto); got != c.auto {
+			t.Errorf("auto 档 %s: got %v want %v", c.dst, got, c.auto)
+		}
+		if got := privateDstDeniedForPeerExit(addr(c.dst), config.TUNExitDenyPrivateLinkLocal); got != c.ll {
+			t.Errorf("link-local 档 %s: got %v want %v", c.dst, got, c.ll)
+		}
+		// off 档 = 运维显式放弃这层防护,一律不拦。
+		if privateDstDeniedForPeerExit(addr(c.dst), config.TUNExitDenyPrivateOff) {
+			t.Errorf("off 档 %s 不该拦", c.dst)
+		}
+	}
+	if privateDstDeniedForPeerExit(netip.Addr{}, config.TUNExitDenyPrivateAuto) {
+		t.Error("无效地址不该拦(交回原链路)")
+	}
+	// v4-in-v6 形态的私网地址同样要拦,否则换个书写方式就绕过去了。
+	if !privateDstDeniedForPeerExit(addr("::ffff:192.168.88.10"), config.TUNExitDenyPrivateAuto) {
+		t.Error("v4-mapped 的私网地址也应拦")
+	}
+}
+
+// TestForwardPacketToExitNode_PrivateDstDenied:撤销子网路由审批后的绕过必须被堵住。
+//
+// 三机实测(2026-07-25):C 宣告并被批准 192.168.88.0/24 → admin `route delete` 撤销 → server 确实把路由从
+// 使用方 A 撤下了,但 A 是全隧道客户端且出口选的就是 C,于是同一目的地落进默认路由、被当**公网流量**转发给 C;
+// C 上为该网段装的 FORWARD ACCEPT + MASQUERADE 并没随撤销拆除(它压根没收到通知),照样投递进内网 ——
+// 撤销把这个目的地从「内部,丢弃」翻转成「公网,转发给出口」,审批闸被绕过。
+func TestForwardPacketToExitNode_PrivateDstDenied(t *testing.T) {
+	resetConnByDeviceForTest(t)
+	setServerGatewayAddrs("10.201.0.1/16", "")
+	t.Cleanup(func() { serverGatewayAddrs.Store(nil) })
+	// 关键前提:审批表**空**(撤销后的状态)—— 故 lookupSubnetRoute 那道守卫不会命中。
+	setSubnetRouteTableForTest(t, nil)
+	prevMode := exitDenyPrivateMode.Load()
+	t.Cleanup(func() {
+		if s, ok := prevMode.(string); ok {
+			exitDenyPrivateMode.Store(s)
+		} else {
+			exitDenyPrivateMode.Store(config.TUNExitDenyPrivateAuto)
+		}
+	})
+	exitDenyPrivateMode.Store(config.TUNExitDenyPrivateAuto)
+
+	a := &Connection{userID: "u1", connIDStr: "a", deviceID: 11, exitAllowed: true}
+	a.egressDeviceID.Store(88) // 出口选的是 C(device 88)
+
+	before := exitForwardDroppedPrivateDst.Load()
+	if !forwardPacketToExitNode(a, mkIPv4(netip.MustParseAddr("192.168.88.10"))) {
+		t.Fatal("已撤销审批的私网 dst 应就地丢弃(返回 true),不得转发给出口节点")
+	}
+	if !forwardPacketToExitNode(a, mkIPv4(netip.MustParseAddr("169.254.169.254"))) {
+		t.Fatal("出口节点的云元数据地址应就地丢弃")
+	}
+	if got := exitForwardDroppedPrivateDst.Load() - before; got != 2 {
+		t.Fatalf("exitForwardDroppedPrivateDst 应 +2,实际 +%d", got)
+	}
+
+	// off 档:运维显式关掉这层 → 不计入私网丢弃(公网 dst 同款走 offline 分支)。
+	exitDenyPrivateMode.Store(config.TUNExitDenyPrivateOff)
+	before = exitForwardDroppedPrivateDst.Load()
+	if !forwardPacketToExitNode(a, mkIPv4(netip.MustParseAddr("192.168.88.10"))) {
+		t.Fatal("出口离线仍应 fail-closed 返回 true")
+	}
+	if got := exitForwardDroppedPrivateDst.Load() - before; got != 0 {
+		t.Fatalf("off 档不该计入私网丢弃,实际 +%d", got)
 	}
 }

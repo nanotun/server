@@ -70,6 +70,10 @@ var (
 	// 这类内部目的绝非公网出口流量,fail-closed 就地丢弃(不外泄内部编址 / LAN 内容给出口节点)。
 	exitForwardDroppedInternalDst atomic.Uint64
 
+	// 目的是私网 / 链路本地地址(RFC1918、CGNAT 100.64/10、169.254/16、ULA、fe80::/10)却走到出口路径
+	// —— peer 出口的用途是**公网**出网,把这类目的转给它等于「让出口节点的本机防火墙来裁决谁能进它的内网」。
+	exitForwardDroppedPrivateDst atomic.Uint64
+
 	// 选定的出口无法兑现(未批准 / 已撤销 / 未知 UUID / 选到自己)→ 按 egressFailClosed 就地丢弃的包数。
 	// 单列计数:与「出口离线」区分,便于回答「用户说不通,是出口掉线还是压根没批准」。
 	exitForwardDroppedFailClosed atomic.Uint64
@@ -122,6 +126,8 @@ type ExitNodeStats struct {
 	DroppedMeshDst  uint64 `json:"dropped_mesh_dst"`
 	// DroppedInternalDst:目的是 mesh 内部专用地址(4via6 / 已批准子网 LAN 前缀)却漏到出口路径,fail-closed 丢弃的包数。
 	DroppedInternalDst uint64 `json:"dropped_internal_dst"`
+	// DroppedPrivateDst:目的是私网 / 链路本地却走到出口路径,被拒转发的包数(见 exitForwardDroppedPrivateDst)。
+	DroppedPrivateDst uint64 `json:"dropped_private_dst"`
 	// DroppedFailClosed:选定出口无法兑现(未批准/已撤销/未知/选到自己)→ fail-closed 丢弃的包数(见 egressFailClosed)。
 	// 与 DroppedOffline 分开看:前者是「压根没批准」,后者是「批了但此刻不在线」。
 	DroppedFailClosed uint64 `json:"dropped_fail_closed"`
@@ -147,6 +153,7 @@ func snapshotExitNodeStats() ExitNodeStats {
 		DroppedMeshDst:          exitForwardDroppedMeshDst.Load(),
 		DroppedFailClosed:       exitForwardDroppedFailClosed.Load(),
 		DroppedInternalDst:      exitForwardDroppedInternalDst.Load(),
+		DroppedPrivateDst:       exitForwardDroppedPrivateDst.Load(),
 		ServerEgressDroppedNoV6: serverEgressDroppedNoV6.Load(),
 		RateCapBPS:              exitForwardRateBPS.Load(),
 	}
@@ -211,6 +218,14 @@ func forwardPacketToExitNode(c *Connection, payload []byte) bool {
 	}
 	if _, ok := lookupSubnetRoute(t.dst); ok {
 		exitForwardDroppedInternalDst.Add(1)
+		return true
+	}
+	// 上面那道守卫只覆盖**当前仍被批准**的子网路由。审批一撤,同一个私网目的地就从「内部,丢弃」翻转成
+	// 「公网,转发给出口」—— 于是能不能进出口节点的内网,取决于它本机残留的 FORWARD/NAT 规则而不是 admin 的
+	// 审批闸(三机实测复现,详见 privateDstDeniedForPeerExit 的注释)。peer 出口只该承载公网流量:
+	// 私网 / 链路本地目的一律不转发。档位由 tun.exit_deny_private 控制(off 可关掉这层)。
+	if privateDstDeniedForPeerExit(t.dst, currentExitDenyPrivateMode()) {
+		exitForwardDroppedPrivateDst.Add(1)
 		return true
 	}
 	// 选定的出口无法兑现(未批准 / 已撤销 / 未知 / 选到自己)→ 就地丢弃,**绝不**回退 server 自出口:回退等于把

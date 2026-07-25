@@ -954,6 +954,9 @@ func main() {
 	if err := cfg.TUN.ValidateExitDenyPrivate(); err != nil {
 		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"exit_deny_private": cfg.TUN.ExitDenyPrivate}, "%v", err)
 	}
+	// 同一个旋钮还管**转发给 peer 出口**这条路上的私网目的地(不只是内核侧那些 DROP 规则),
+	// 数据面每包要读,故在这里快照一次。见 privateDstDeniedForPeerExit。
+	exitDenyPrivateMode.Store(cfg.TUN.ResolveExitDenyPrivate())
 
 	// 第十七轮深扫 MED:启动期改用与 `config lint` 同一个 ValidateTUNSubnets —— 既查「两者皆空(含仅
 	// 空白项)」,也查族错配(IPv4 CIDR 落进 subnets_v6 / IPv6 CIDR 落进 subnets)。此前启动仅判

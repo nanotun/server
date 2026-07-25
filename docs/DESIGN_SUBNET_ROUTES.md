@@ -164,6 +164,36 @@ mesh 投递、要过内核 FORWARD，而 isolate 在那里装的正是 `-i <tun>
 （`cmd/nanotund/isolate_relay_warn.go`），提示要么改 `exit_mode = "mesh"`，要么把这些审批清掉，
 免得客户端装上黑洞路由（若与它本地真实 LAN 前缀重叠，还会连带打断本地访问）。
 
+## 5.6 撤销审批曾被「同一台宣告方当出口节点」绕过（2026-07-25 修复）
+
+三机实测发现的审批闸绕过。复现路径：C 宣告并被批准 `192.168.88.0/24`（其后方 LAN 用 netns 模拟，
+**只有 C 能到**，server 自己路由不过去，故穿透是真的）；A 经子网路由正常访问；随后 admin
+`route delete` 撤销审批。
+
+撤销后 server 侧看起来是对的：已批准表重建为 `routes=0`，A 的 `ip route` 里那条 `192.168.88.0/24
+dev nanotun0` 也被撤下了。但 A 是**全隧道**客户端、出口选的正是 C，于是同一个目的地落进默认路由，
+被当作**普通公网流量**转发给 C；而 C 上为该网段装的 `FORWARD ACCEPT` + `MASQUERADE` 并没有随撤销
+拆除，照样投递进 LAN。抓包为证：`nanotun0 In 10.201.0.77 > 192.168.88.10` →
+`veth-c Out 192.168.88.1 > 192.168.88.10`（已 NAT）→ 回程原路返回，内容照常拿到。
+
+根因在 `forwardPacketToExitNode`：那里原有一道 confused-deputy 守卫会丢弃「目的落在**已批准**子网
+路由前缀内」的包（那不是公网流量）。审批一撤，`lookupSubnetRoute` 不再命中，同一个目的地就从
+「内部，丢弃」**翻转**成「公网，转发给出口」—— 语义正好和撤销相反。于是「谁能进 C 的内网」实际上
+由 C 本机残留的防火墙规则决定，而不是 admin 的审批闸。
+
+修法：peer 出口只承载**公网**流量，私网 / 链路本地目的地一律不转发给它
+（`privateDstDeniedForPeerExit`，计数 `exit_node.dropped_private_dst`）。档位复用
+`tun.exit_deny_private`（`auto` 拦 RFC1918 + CGNAT + ULA + 链路本地；`link-local` 只拦链路本地，
+含云元数据那一条；`off` 关掉）。mesh 自身地址不受影响：调用点前面已被 `isLocalMeshDst` /
+`isMeshCIDRAddr` / `is4via6` / `lookupSubnetRoute` 逐一排除。实测修复后：已撤销网段被拒、
+从未宣告的网段被拒、重新批准后合法访问立即恢复，公网 / mesh / MagicDNS 均无影响。
+
+**宣告方为何不随撤销拆规则**（有意为之，不是漏掉）：客户端按 `--advertise-routes` 在**声明之前**
+先把 NAT/转发装好（见客户端 `exit_nat::apply` 处注释：装成功才向 server 声明），这样审批永远不会
+跑在数据面前面。若改成「撤销即拆、重新批准再装」，就会引入「server 已批准、客户端还没装好」的窗口
+—— 正是这个顺序要避免的黑洞。故闸门放在 server 侧是正确且充分的；宣告方的规则只表达「这台机器被
+配置成愿意为该网段做路由器」，在 server 不投递该网段流量时不可达。
+
 ## 6. Open questions
 
 - 重复 CIDR(两台 device 都声明 `192.168.1.0/24`)的优先级仲裁:
