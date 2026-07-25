@@ -192,3 +192,10 @@
   启动期还会对库里已批准的出口设备 / 子网路由打一条 WARN（见 `isolate_relay_warn.go`）。
   语义上也应如此：isolate 承诺「客户端之间不得互通」，而经 peer 出口正是客户端间中转。
   子网路由同理受限（同一条 DROP），要用这两个特性请改 `exit_mode = "mesh"`。
+
+  解析层同口径（2026-07-25 补齐）：isolate 下 MagicDNS 对「解析到别人地址」的名字一律
+  NXDOMAIN（`magicNameDeniedByIsolate`）。此前解析层只有 mesh 总开关（只拦跨 user）和 ACL
+  两道闸，isolate 不在其列 —— 三机实测：A 查 `vultr.u4.lan` 照样拿到 `10.201.0.3`，ping / TCP
+  却全不通，正是「解析成功、连接超时」的排障陷阱，外加跨 user 的设备存在性泄漏。判定按**会话**
+  而非 user（同 user 的两台设备在 isolate 下同样互不可达），自查本机名照常解析；非 A/AAAA 的
+  存在性探测走同一道闸，换个 qtype 绕不过去。

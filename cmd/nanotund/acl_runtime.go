@@ -981,6 +981,18 @@ func lookupVIPOwner(a netip.Addr) (int64, bool) {
 	return e.userID, true
 }
 
+// lookupVIPOwnerConn 反查某 vIP 的**会话**(而非 user)。isolate 下判「这个地址是不是查询方自己的」
+// 要精确到设备:同一 user 的两台设备在 isolate 下同样互不可达。ownerConnID 是会话唯一标识,
+// 一台设备的 v4 / v6 vIP 共用同一个 connID,故跨族比较也成立。
+func lookupVIPOwnerConn(a netip.Addr) (uint32, bool) {
+	m := vipOwnerCur.Load()
+	e, ok := (*m)[a]
+	if !ok {
+		return 0, false
+	}
+	return e.ownerConnID, true
+}
+
 // serverGatewayAddrsT 是 server 自身 TUN 网关地址（v4/v6）与 mesh 网段前缀的快照。
 // v4Net/v6Net 第十六轮深扫 MED 加入:供 isMeshCIDRAddr 判「目的落在本 mesh 网段但无在线归属」——
 // forwardPacketToExitNode 据此对离线对端的 mesh 地址 fail-closed,不外泄给出口节点。

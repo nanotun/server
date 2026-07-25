@@ -117,6 +117,13 @@ func tryResolvePublicViaExit(conn *net.UDPConn, peer *net.UDPAddr, query []byte,
 	if egress == 0 {
 		return false // 未选 peer 出口（走 server 自出口）→ 本地上游解析即可
 	}
+	if egress == egressFailClosed {
+		// 选定出口无法兑现（未批准 / 已撤销 / isolate 拒绝）：与「出口离线」同处置 —— 公网流量已被数据面
+		// 就地丢弃，解析出来的地址反正连不上。**显式**判这个哨兵而不是让它落到下面：-1 不是 device ID，
+		// 交给 lookupRunningExitConnByDevice 只是碰巧查不到才得到正确结果，读起来像在查一台 id=-1 的设备。
+		writeExitDNSServfail(conn, peer, qid, q)
+		return true
+	}
 	exitConn := lookupRunningExitConnByDevice(egress)
 	if exitConn == nil {
 		// 出口离线：数据面对真流量本就 fail-closed 丢包，这里回 SERVFAIL 与之对齐——解析出的地址反正连不上，
@@ -217,6 +224,10 @@ func tryRelayPublicViaExit(conn *net.UDPConn, peer *net.UDPAddr, query []byte, q
 	egress := exitDeviceForClientVIP(vip)
 	if egress == 0 {
 		return false // 未选 peer 出口 → 本地上游解析即可
+	}
+	if egress == egressFailClosed {
+		writeExitDNSServfail(conn, peer, qid, q) // 出口无法兑现 → 同「出口离线」，见 tryResolvePublicViaExit
+		return true
 	}
 	exitConn := lookupRunningExitConnByDevice(egress)
 	if exitConn == nil {
@@ -411,6 +422,8 @@ func interceptExitDNSResponseIfPending(c *Connection, payload []byte) bool {
 // 查不到会话 → 回 SERVFAIL，与「出口离线」同款 fail-closed，正是我们要的——这类会话的公网流量本就被丢弃，
 // 用 server 的地理答案填它的 DNS 缓存只会在它换出口后继续误导。
 // 低频（仅公网 DNS 查询触发），扫 connIDMap 可接受；数据面热路径不走这里。
+// 返回值有三种含义:0 = 未选 peer 出口(走 server 自出口);egressFailClosed(-1) = 选了但兑现不了
+// (未批准 / 已撤销 / isolate 拒绝),**不是** device ID,调用方必须显式判;其余为出口 device ID。
 func exitDeviceForClientVIP(vip netip.Addr) int64 {
 	connIDMapMu.RLock()
 	defer connIDMapMu.RUnlock()

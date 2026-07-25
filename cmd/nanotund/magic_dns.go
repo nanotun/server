@@ -400,7 +400,7 @@ func handleMagicDNSPacket(ctx context.Context, gw *gatewayState, conn *net.UDPCo
 				_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeNameError, nil, q)
 				return
 			}
-			if magicHostExists(ctx, gw, name, r.suffix) {
+			if magicHostExists(ctx, gw, peer, name, r.suffix) {
 				_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeSuccess, nil, q)
 			} else {
 				magicDNSUnknownNameCount.Add(1)
@@ -459,6 +459,12 @@ func handleMagicDNSPacket(ctx context.Context, gw *gatewayState, conn *net.UDPCo
 				_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeNameError, nil, q)
 				return
 			}
+			// isolate:4via6 名指向别的客户端背后的内网主机,整条路径在 isolate 下必然黑洞(见 magicNameDeniedByIsolate)。
+			if magicNameDeniedByIsolate(peer, []netip.Addr{addr}) {
+				magicDNSMeshOffNXCount.Add(1)
+				_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeNameError, nil, q)
+				return
+			}
 			// addr 是 4via6(v6)：AAAA 查询返回它；A 查询按类型过滤得空 answer（NOERROR/0，OS 自会转查 AAAA）。
 			resp, err := buildMagicDNSAnswer(hdr.ID, q, []netip.Addr{addr})
 			if err != nil {
@@ -479,6 +485,12 @@ func handleMagicDNSPacket(ctx context.Context, gw *gatewayState, conn *net.UDPCo
 		addrs, ok := lookupMagicHost(ctx, gw.store, user, host)
 		if !ok || len(addrs) == 0 {
 			magicDNSUnknownNameCount.Add(1)
+			_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeNameError, nil, q)
+			return
+		}
+		// isolate:解析到别人的 vIP 一律 NXDOMAIN(自查本机名照常),见 magicNameDeniedByIsolate。
+		if magicNameDeniedByIsolate(peer, addrs) {
+			magicDNSMeshOffNXCount.Add(1)
 			_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeNameError, nil, q)
 			return
 		}
@@ -647,6 +659,38 @@ func magicNameDeniedByMeshOff(ctx context.Context, gw *gatewayState, peer *net.U
 	return dstUser != srcUser
 }
 
+// magicNameDeniedByIsolate:exit_mode=isolate 下,把「解析到别人地址」的 magic 名判为 NXDOMAIN。
+//
+// isolate 的承诺比 mesh-off 和 ACL 都强 ——「任何客户端都不得访问任何别的客户端」,连同一 user 的
+// 两台设备也不例外(FORWARD 上是一条无差别的 `-i tun0 -o tun0 DROP`)。而解析层此前只看 mesh 总开关
+// (magicNameDeniedByMeshOff,只拦跨 user)和 ACL,于是 isolate 下 MagicDNS 照常把对端设备名解析成 vIP:
+// 三机实测(2026-07-25)A 查 vultr.u4.lan 仍拿到 10.201.0.3,而 ping / TCP 全部不通 —— 正是
+// mesh-off 那条注释里说要避免的「域名解析成功、连接却超时」,外加一层跨 user 的设备存在性泄漏。
+//
+// 判定按**会话**而非 user:允许解析的只有查询方自己的地址(自查本机名是合法且有用的)。
+// 与另两个 gate 同样 fail-open(拿不准不拦):非 isolate / 查询方 vIP 不在归属表 / 没解析出地址 → 放行。
+// 同样只是 UX 与信息面对齐,硬闸仍是 FORWARD 的 DROP。
+func magicNameDeniedByIsolate(peer *net.UDPAddr, addrs []netip.Addr) bool {
+	if !clientIsolateMode.Load() || len(addrs) == 0 {
+		return false
+	}
+	vip, ok := netipAddrFromUDP(peer)
+	if !ok {
+		return false
+	}
+	selfConn, ok := lookupVIPOwnerConn(vip)
+	if !ok {
+		return false
+	}
+	// 只要有一个答案属于查询方自己,就照常作答(自查本机名)。
+	for _, a := range addrs {
+		if c, ok := lookupVIPOwnerConn(a); ok && c == selfConn {
+			return false
+		}
+	}
+	return true
+}
+
 // magicNameDeniedByACL(第七轮深扫 MED):mesh ON 时,若**用户 ACL** 判定 查询方→名字目标 完全不可达,
 // 就地把该跨用户 magic 名判为 NXDOMAIN——与数据面一致(能不能解析出对方地址 == 能不能连对方)。
 //
@@ -714,20 +758,29 @@ func magicNameOwnerUserID(ctx context.Context, st *store.Store, name, suffix str
 // magicHostExists 判断某 magic 名（4via6 站点名或普通 host.user.<suffix>）当前是否解析得到地址——供**非 A/AAAA**
 // 查询走「主机存在→NODATA / 不存在→NXDOMAIN」的本地作答（不外发公网上游）。复用 A/AAAA 路径同一套解析，只关心
 // 「是否存在」不关心具体地址。低频（仅 mesh 名的非 A/AAAA 查询触发）。
-func magicHostExists(ctx context.Context, gw *gatewayState, name, suffix string) bool {
+//
+// peer 用于 isolate 判定:isolate 下别人的名字连「存在与否」也不该答(否则 A/AAAA 拦了、
+// 换个 qtype 照样能探出对端设备的存在性)。peer 为 nil 时跳过该判定。
+func magicHostExists(ctx context.Context, gw *gatewayState, peer *net.UDPAddr, name, suffix string) bool {
 	if gw == nil || gw.store == nil {
 		return false
 	}
 	if v4, siteID, okv := parseVia6Hostname(name, suffix); okv {
-		_, ok := lookupVia6Addr(ctx, gw.store, siteID, v4)
-		return ok
+		addr, ok := lookupVia6Addr(ctx, gw.store, siteID, v4)
+		if !ok {
+			return false
+		}
+		return !magicNameDeniedByIsolate(peer, []netip.Addr{addr})
 	}
 	host, user, ok := parseMagicHostname(name, suffix)
 	if !ok {
 		return false
 	}
 	addrs, ok := lookupMagicHost(ctx, gw.store, user, host)
-	return ok && len(addrs) > 0
+	if !ok || len(addrs) == 0 {
+		return false
+	}
+	return !magicNameDeniedByIsolate(peer, addrs)
 }
 
 // lookupMagicHost 在 store 里找 (user, hostname) 对应的 vIP 集合。
