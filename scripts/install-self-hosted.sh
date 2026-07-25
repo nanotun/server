@@ -16,6 +16,9 @@
 #      /etc/nanotun/{config.toml, certs/, masquerade/}（证书由 ensure-server-assets.sh 按需自签）
 #      /var/lib/nanotun/                        （SQLite home）
 #      /etc/systemd/system/{nanotun-tun-setup,nanotun-tun-isolate,nanotun}.service
+#      config.toml 已存在则**原样保留**（模板另存 config.toml.dist 供 diff）；模板里的
+#      REPLACE_WITH_* 占位与示例 short_ids 由 fill_config_secrets 就地换成本机随机值，
+#      否则 [reality].private_key 非法会让 nanotund 起不来（exit 31）。权限 0600。
 #   2. 开启 IP forwarding（v4 + v6）+ unprivileged ICMP ping（nanotun-web
 #      pro-bing 探测 server_dial_host 可达性必备），写 /etc/sysctl.d/99-nanotun.conf
 #   3. ufw active 时自动放行 8443/tcp（REALITY）+ 443/udp（hy2）（装了 web 再加 7443/tcp；
@@ -26,9 +29,11 @@
 #   6. enable + start systemd units（重启系统会自动拉起）
 #   7. 打印 init 输出 + 端口监听 + journalctl tail，方便人工核对
 #
-# 幂等：重复跑不会破坏数据；init 自带「同名管理员只重置 PSK」逻辑；
-#       ufw allow / systemctl enable 都是幂等命令；K1 旧 DB 检查在新 DB 已有真实
-#       用户(NEW_USERS>0)时永远跳过,不会覆盖二次部署。
+# 幂等：重复跑不会破坏数据，**也不会动已生效的 config.toml / 密钥**（重签密钥等于
+#       踢掉全部现有客户端）；init 自带「同名管理员只重置 PSK」逻辑；ufw allow /
+#       systemctl enable 都是幂等命令；K1 旧 DB 检查在新 DB 已有真实用户
+#       (NEW_USERS>0)时永远跳过,不会覆盖二次部署。
+#       想用模板推倒重来：NANOTUN_FORCE_CONFIG=1（原配置会备份到 config.toml.bak.*）。
 
 set -euo pipefail
 
@@ -42,6 +47,59 @@ step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 ok()   { printf '    \033[1;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '    \033[1;33m!\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# 32 字节 X25519 私钥,编成 RawURL Base64(无 padding)—— [reality].private_key 要的格式。
+# PKCS8 DER 恒为 48 字节,尾部 32 字节即裸私钥。刻意不用 basenc(coreutils ≥8.31 才有),
+# 走 openssl + tr 让老发行版也能跑。
+gen_x25519_priv() {
+  openssl genpkey -algorithm X25519 -outform DER \
+    | tail -c 32 | openssl base64 -A | tr '+/' '-_' | tr -d '='
+}
+
+# 把 config.toml 里仍为占位 / 文档示例的密钥换成本机随机值。
+#
+# 2026-07-25 部署实测:发布包模板带 REPLACE_WITH_* 占位,而 [reality].private_key
+# 非法会让 nanotund 直接 ExitListenOther(31) —— 本脚本跑完(含 systemctl start)留下的
+# 是一个 crash-loop 的服务,「一键安装」实际装不出可用服务器。这里在启动前补齐。
+#
+# 只替换**仍是占位**的项,故幂等:重复跑不会重签已生效的密钥(那会踢掉所有现有客户端),
+# 也能把历史上装完即 crash-loop 的机器一次性救活。
+# 生成值都是 hex / base64url([A-Za-z0-9_-]),不含 sed 元字符,可直接内插。
+fill_config_secrets() {
+  local cfg="$ETC_DIR/config.toml" filled=0
+  command -v openssl >/dev/null 2>&1 || die "缺 openssl,无法生成 REALITY / hy2 密钥"
+
+  if grep -q 'REPLACE_WITH_YOUR_RANDOM_TOKEN' "$cfg"; then
+    sed -i "s|REPLACE_WITH_YOUR_RANDOM_TOKEN|$(openssl rand -hex 16)|g" "$cfg"; filled=1
+  fi
+  if grep -q 'REPLACE_WITH_A_LONG_RANDOM_PASSWORD' "$cfg"; then
+    sed -i "s|REPLACE_WITH_A_LONG_RANDOM_PASSWORD|$(openssl rand -hex 24)|g" "$cfg"; filled=1
+  fi
+  if grep -q 'REPLACE_WITH_ANOTHER_RANDOM_OBFS_PASSWORD' "$cfg"; then
+    sed -i "s|REPLACE_WITH_ANOTHER_RANDOM_OBFS_PASSWORD|$(openssl rand -hex 16)|g" "$cfg"; filled=1
+  fi
+  if grep -q 'REPLACE_WITH_YOUR_X25519_PRIVATE_KEY' "$cfg"; then
+    sed -i "s|REPLACE_WITH_YOUR_X25519_PRIVATE_KEY|$(gen_x25519_priv)|g" "$cfg"; filled=1
+  fi
+  # short_ids 的两条文档示例值:config.toml 自己就写着「替换示例值再上线」。
+  if grep -q '"0123456789abcdef"' "$cfg"; then
+    sed -i "s|\"0123456789abcdef\"|\"$(openssl rand -hex 8)\"|" "$cfg"; filled=1
+  fi
+  if grep -q '"fedcba9876543210"' "$cfg"; then
+    sed -i "s|\"fedcba9876543210\"|\"$(openssl rand -hex 8)\"|" "$cfg"; filled=1
+  fi
+
+  # 兜底自检:模板将来新增占位而本函数没跟上时,**装不上**比「装完 crash-loop」好得多。
+  if grep -n 'REPLACE_WITH' "$cfg" >&2; then
+    die "config.toml 仍有未填占位(见上),nanotund 会启动失败;补齐后重跑本脚本"
+  fi
+
+  if [ "$filled" = 1 ]; then
+    ok "已为本机生成 REALITY 私钥 / hy2 密码 / obfs 密码 / WS path token / short_ids"
+  else
+    ok "config.toml 无待填占位,密钥原样保留"
+  fi
+}
 
 # 必要文件存在性自检。nanotun-web 是 M2 引入的 Web 后台:可选,缺了不会 fatal,
 # 但会跳过其安装步骤并 warn。这样老 deploy 包不会因为多一个二进制就失败。
@@ -75,11 +133,35 @@ install -m 0755 "$SCRIPTS_DIR/tun-teardown.sh"  /usr/local/bin/nanotun-tun-teard
 mkdir -p "$ETC_DIR/certs" "$ETC_DIR/masquerade" "$LIB_DIR"
 chmod 0750 "$LIB_DIR"
 
-# config.toml：旧文件备份后覆盖
-if [ -f "$ETC_DIR/config.toml" ]; then
-  cp -f "$ETC_DIR/config.toml" "$ETC_DIR/config.toml.bak.$(date +%Y%m%d-%H%M%S)"
+# config.toml：**绝不覆盖已有配置**。
+#
+# 2026-07-25 部署实测:原逻辑无条件用发布包模板覆盖 $ETC_DIR/config.toml(只留 .bak)。
+# 模板带 REPLACE_WITH_* 占位,而非法的 [reality].private_key 会让 nanotund 直接
+# ExitListenOther(31) —— 于是「重复跑做升级」这个本脚本自己宣称幂等的正常用法,会把
+# 一台正在服务的机器打成 crash-loop,且必须人工从 .bak 里捞回四个密钥才能恢复。
+# 现在:已有配置原样保留,模板另存 config.toml.dist 供 diff 出新增字段;确实想推倒
+# 重来的显式走 NANOTUN_FORCE_CONFIG=1。
+#
+# 权限一律 0600:填充后的 config.toml 含 hy2 密码 / obfs 密码 / REALITY 私钥,
+# 原来的 0644 等于把它们摊给机器上任何本地用户读(两个 unit 都 User=root,收紧无副作用)。
+install -m 0600 "$EXTRAS_DIR/config.toml" "$ETC_DIR/config.toml.dist"
+if [ -f "$ETC_DIR/config.toml" ] && [ "${NANOTUN_FORCE_CONFIG:-0}" != "1" ]; then
+  ok "保留已有 config.toml(发布包模板另存 config.toml.dist,可 diff 新增字段)"
+else
+  if [ -f "$ETC_DIR/config.toml" ]; then
+    CFG_BAK="$ETC_DIR/config.toml.bak.$(date +%Y%m%d-%H%M%S)"
+    cp -f "$ETC_DIR/config.toml" "$CFG_BAK"
+    chmod 0600 "$CFG_BAK"
+    warn "NANOTUN_FORCE_CONFIG=1:已用模板覆盖 config.toml(原文件 → $CFG_BAK)"
+  fi
+  install -m 0600 "$EXTRAS_DIR/config.toml" "$ETC_DIR/config.toml"
 fi
-install -m 0644 "$EXTRAS_DIR/config.toml" "$ETC_DIR/config.toml"
+chmod 0600 "$ETC_DIR/config.toml"
+# 顺带收紧历史遗留的 0644 备份:里面同样有 hy2 密码 / REALITY 私钥。
+chmod 0600 "$ETC_DIR"/config.toml.bak.* 2>/dev/null || true
+
+# 占位密钥填充。必须在 ensure-server-assets.sh / systemctl start 之前完成。
+fill_config_secrets
 
 # 证书 / masquerade 页：按 config.toml 里配置的路径**按需自签**(不随包分发)。
 # ensure-server-assets.sh 读 [server] / [hysteria] 的 tls_* 与 masquerade_dir,
@@ -152,13 +234,18 @@ LEGACY_DB=/root/nanotun/data/nanotun.db
 count_real_users() {
   # 第三列 ADMIN 为 "no" 视为终端用户。
   # nanotun-admin user list 在空库 / 不存在表时返回空,这种就是 0。
-  /usr/local/bin/nanotun-admin --db-path "$1" user list 2>/dev/null \
+  #
+  # `|| true` 不可省:本脚本开了 pipefail,而 DB 不存在时 nanotun-admin 退非零会
+  # 让整条管线非零。若把兜底写成调用侧的 `|| echo 0`,awk 已打印的 "0" 会再被追加
+  # 一个 "0",变量成 "0\n0",下面的 `[ -eq ]` 直接语法错 → if 静默走 else,
+  # 本节的旧库保护检查等于没跑(2026-07-25 部署实测到)。计数固定由 awk 单独输出。
+  { /usr/local/bin/nanotun-admin --db-path "$1" user list 2>/dev/null || true; } \
     | awk 'NR>1 && $3=="no" {n++} END {print n+0}'
 }
-NEW_USERS=$(count_real_users "$LIB_DIR/nanotun.db" 2>/dev/null || echo 0)
+NEW_USERS=$(count_real_users "$LIB_DIR/nanotun.db")
 LEGACY_USERS=0
 if [ -f "$LEGACY_DB" ]; then
-  LEGACY_USERS=$(count_real_users "$LEGACY_DB" 2>/dev/null || echo 0)
+  LEGACY_USERS=$(count_real_users "$LEGACY_DB")
 fi
 if [ "$NEW_USERS" -eq 0 ] && [ "$LEGACY_USERS" -gt 0 ]; then
   if [ "${NANOTUN_IMPORT_LEGACY_DB:-0}" = "1" ]; then

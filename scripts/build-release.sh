@@ -34,7 +34,9 @@ cp scripts/ensure-server-assets.sh scripts/install-self-hosted.sh "${STAGING}/sc
 chmod +x "${STAGING}/scripts/"*.sh
 
 echo "3. 打包 ${DIR_NAME}.tar.gz ..."
-(cd "$DIST" && tar -czf "${DIR_NAME}.tar.gz" "$DIR_NAME")
+# COPYFILE_DISABLE=1:macOS 上打包时 bsdtar 默认把 xattr 另存成 AppleDouble(`._foo`)
+# 一并塞进 tar,解到 Linux 部署机上就是一堆 0755 的垃圾文件(2026-07-25 实测)。
+(cd "$DIST" && COPYFILE_DISABLE=1 tar -czf "${DIR_NAME}.tar.gz" "$DIR_NAME")
 
 echo "4. 清理临时目录 ..."
 rm -rf "$STAGING"

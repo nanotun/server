@@ -16,8 +16,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -271,7 +273,10 @@ func credentialsIsReadOnly(rest []string) bool {
 // 起到守门作用。
 func runWithStore(opts *globalOpts, readOnly bool, fn func(ctx context.Context, st *store.Store) error) int {
 	// 默认:非只读路径跑 migration(写路径负责推进 schema);只读路径不跑(query_only 拒 CREATE TABLE)。
-	return runWithStoreOpts(opts, readOnly, !readOnly, fn)
+	//
+	// mustExist=readOnly:只读子命令绝不该凭空造库。写路径(init / user create 等)保留
+	// 「库不存在就建」的 bootstrap 语义 —— 那是首次部署的正常入口。
+	return runWithStoreOpts(opts, readOnly, !readOnly, readOnly, fn)
 }
 
 // runWithStoreNoMigrate 打开 read-write 连接但**不跑 Migrate**。用于 backup:
@@ -281,13 +286,35 @@ func runWithStore(opts *globalOpts, readOnly bool, fn func(ctx context.Context, 
 // 一次「热备份」就可能在旧版 nanotund 仍在运行时**推进 schema**(加列 / 建索引),让线上 server 撞上它不认识的
 // 新 schema(尤其升级窗口期先跑 backup 再重启 server 的常见运维顺序)。备份的语义是「照原样拍快照」,绝不应有
 // 任何 DDL 副作用。这里开 RW 连接但跳过 Migrate:VACUUM INTO 拿到需要的写连接,又不碰 schema。
+// backup 语义是「给现有库拍快照」,库不存在时必须报错而不是建个空库再快照出来 → mustExist=true。
 func runWithStoreNoMigrate(opts *globalOpts, fn func(ctx context.Context, st *store.Store) error) int {
-	return runWithStoreOpts(opts, false, false, fn)
+	return runWithStoreOpts(opts, false, false, true, fn)
 }
 
-func runWithStoreOpts(opts *globalOpts, readOnly, migrate bool, fn func(ctx context.Context, st *store.Store) error) int {
+func runWithStoreOpts(opts *globalOpts, readOnly, migrate, mustExist bool, fn func(ctx context.Context, st *store.Store) error) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// SQLite 的 Open 对不存在的路径是「建一个空库」,只读子命令走到这里会拿到一个没有任何表的
+	// 新库:后续每处读都退化成「查无此表」或「空结果」,而调用方多半只 warn 一句就照常出结果 ——
+	// 于是 `--db-path` 打错字 / 忘了传(落到 cwd 相对的默认 data/nanotun.db)时,看到的是
+	// 「没有用户」「profile 缺 server_id」这类**貌似成功**的输出,而非「你指的库不存在」。
+	// 2026-07-25 部署实测:漏传 --db-path 的 `profile show` 就这样静默生成了
+	// /etc/nanotun/data/nanotun.db 并派发了缺 server_id 的 profile(客户端无法去重)。
+	if mustExist {
+		if _, statErr := os.Stat(opts.dbPath); statErr != nil {
+			if errors.Is(statErr, fs.ErrNotExist) {
+				fmt.Fprintf(opts.stderr,
+					"db not found: %s\n"+
+						"read-only subcommands never create a database. Check --db-path (or $NANOTUN_DB); "+
+						"run `nanotun-admin init` first for a new deployment.\n",
+					opts.dbPath)
+				return 2
+			}
+			fmt.Fprintf(opts.stderr, "stat db %s: %v\n", opts.dbPath, statErr)
+			return 1
+		}
+	}
 
 	st, err := store.Open(ctx, opts.dbPath, store.Options{ReadOnly: readOnly})
 	if err != nil {

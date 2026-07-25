@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -480,5 +481,59 @@ func TestReadOnlyVerbSets_IncludeLS(t *testing.T) {
 	}
 	if settingIsReadOnly([]string{"set", "foo", "bar"}) {
 		t.Error("settingIsReadOnly(set ...) 应为写")
+	}
+}
+
+// 只读子命令绝不该凭空造库。2026-07-25 部署实测:漏传 --db-path 的 `profile show`
+// 让 SQLite 在 cwd 相对路径下新建了一个空库,随后每处读都退化成「查无此表」,而
+// cmdProfile 只 warn 一句就照常派发了缺 server_id 的 profile —— 运维看到的是貌似
+// 成功的输出而非「你指的库不存在」。这里钉住:库不存在 → exit 2 + 明确报错 + 不建文件。
+func TestReadOnlySubcommandsRefuseToCreateDB(t *testing.T) {
+	for _, args := range [][]string{
+		{"user", "list"},
+		{"device", "list"},
+		{"lease", "list"},
+		{"acl", "list"},
+		{"audit", "list"},
+		{"profile", "show", "--dial-host", "203.0.113.10"},
+		{"backup", "--out", filepath.Join(t.TempDir(), "snap.db")},
+	} {
+		name := strings.Join(args, "_")
+		t.Run(name, func(t *testing.T) {
+			// 每个子测试用独立 TempDir,确保 missing 路径的父目录存在但文件本身不存在。
+			missing := filepath.Join(t.TempDir(), "nope.db")
+
+			code, stdout, stderr := runCLI(t, missing, "", args...)
+			if code != 2 {
+				t.Fatalf("code=%d, want 2 (usage error); stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if !strings.Contains(stderr, "db not found") {
+				t.Fatalf("stderr 未说明库不存在: %q", stderr)
+			}
+			// 关键断言:不能留下任何空库(以及 WAL / shm 副产物)。
+			for _, suffix := range []string{"", "-wal", "-shm"} {
+				if _, err := os.Stat(missing + suffix); err == nil {
+					t.Fatalf("只读子命令仍创建了 %s", missing+suffix)
+				}
+			}
+		})
+	}
+}
+
+// 反面:写路径保留「库不存在就建」的 bootstrap 语义 —— 那是首次部署的正常入口
+// (install-self-hosted.sh 的 `init`、以及直接 `user create` 起库)。
+func TestWriteSubcommandStillBootstrapsDB(t *testing.T) {
+	fresh := filepath.Join(t.TempDir(), "fresh.db")
+
+	code, _, stderr := runCLI(t, fresh, "", "user", "create", "alice", "--psk", "secret")
+	if code != 0 {
+		t.Fatalf("user create 应能在空路径上起库: code=%d stderr=%s", code, stderr)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("写路径未建库: %v", err)
+	}
+	// 建好之后同一路径的只读命令自然应该通过。
+	if c, _, e := runCLI(t, fresh, "", "user", "list"); c != 0 {
+		t.Fatalf("库已存在后 user list 应成功: code=%d stderr=%s", c, e)
 	}
 }
