@@ -235,3 +235,84 @@ func TestDispatchRejectsForeignVPN1(t *testing.T) {
 	}
 	_ = cliPipe.Close()
 }
+
+// TestWriteLoopbackProxyHeaderMixedAddrFamilies 是 hy2 真实 IP 透传的回归测试。
+//
+// 背景:go-proxyproto 的 HeaderProxyFromAddrs 要求 src/dst 同类型,否则**静默**退化成 LOCAL
+// (无源)头。hy2 的客户端地址来自 QUIC(*net.UDPAddr),而环回 smux 的 dst 是 TCP —— 这个组合
+// 曾让「真实 IP 透传」在 hy2 上完全不生效(审计仍记 127.0.0.1),而按 token 关联的单测全绿。
+// 故这里按**地址类型组合**逐一断言服务端最终读到的地址。
+func TestWriteLoopbackProxyHeaderMixedAddrFamilies(t *testing.T) {
+	tcpDst := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080}
+
+	cases := []struct {
+		name string
+		src  net.Addr
+		dst  net.Addr
+		want string // "" = 期望回退环回(LOCAL 头)
+	}{
+		{
+			name: "hy2:UDP 源 + TCP 目的(此前会退化成 LOCAL)",
+			src:  &net.UDPAddr{IP: net.ParseIP("149.28.132.138"), Port: 51820},
+			dst:  tcpDst,
+			want: "149.28.132.138:51820",
+		},
+		{
+			name: "hy2 IPv6:UDP 源 + TCP 目的",
+			src:  &net.UDPAddr{IP: net.ParseIP("2001:db8::1"), Port: 4443},
+			dst:  tcpDst,
+			want: "[2001:db8::1]:4443",
+		},
+		{
+			name: "REALITY:TCP 源 + TCP 目的",
+			src:  &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 33445},
+			dst:  tcpDst,
+			want: "203.0.113.7:33445",
+		},
+		{
+			name: "目的地址不可用时仍须带出真实源(dst 仅为满足头格式)",
+			src:  &net.UDPAddr{IP: net.ParseIP("198.51.100.22"), Port: 1234},
+			dst:  nil,
+			want: "198.51.100.22:1234",
+		},
+		{
+			name: "源地址缺失:退回 LOCAL,由服务端按环回归因",
+			src:  nil,
+			dst:  tcpDst,
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cli, srv := net.Pipe()
+			defer cli.Close()
+			defer srv.Close()
+
+			go func() {
+				_ = writeLoopbackProxyHeader(cli, tc.src, tc.dst)
+				// 头后紧跟一帧,顺带确认归一化没有破坏「头后字节不丢」的约定。
+				_, _ = cli.Write([]byte("x"))
+			}()
+
+			wrapped := readLoopbackClientAddr(srv)
+			got := wrapped.RemoteAddr().String()
+			if tc.want == "" {
+				// LOCAL 头 = 无源,应回退底层连接地址(真实部署里就是环回地址;
+				// net.Pipe 下是 "pipe")。
+				if want := srv.RemoteAddr().String(); got != want {
+					t.Fatalf("应回退底层连接地址 %q,得到 %q", want, got)
+				}
+				return
+			}
+			if got != tc.want {
+				t.Fatalf("RemoteAddr = %q, want %q(退化成 LOCAL 头 = 真实 IP 透传失效)", got, tc.want)
+			}
+			_ = wrapped.SetReadDeadline(time.Now().Add(3 * time.Second))
+			b := make([]byte, 1)
+			if _, err := io.ReadFull(wrapped, b); err != nil || b[0] != 'x' {
+				t.Fatalf("头后首字节丢失: %v %q", err, b)
+			}
+		})
+	}
+}

@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/nanotun/server/auth"
 	"github.com/nanotun/server/store"
@@ -515,6 +518,41 @@ func TestReadOnlySubcommandsRefuseToCreateDB(t *testing.T) {
 				if _, err := os.Stat(missing + suffix); err == nil {
 					t.Fatalf("只读子命令仍创建了 %s", missing+suffix)
 				}
+			}
+		})
+	}
+}
+
+// 「文件在但不是 nanotun 库」也必须被明确挡下:打错 --db-path 之后目录里常留着一个 SQLite
+// 顺手建出的 0 表空库,它过得了「文件存在」那道检查,但之后每处读都撞裸 SQL 的
+// "no such table: xxx",运维看不出真因是指错了库。
+func TestReadOnlySubcommandsRejectUninitializedDB(t *testing.T) {
+	for _, args := range [][]string{
+		{"user", "list"},
+		{"audit", "list"},
+		{"profile", "show", "--dial-host", "203.0.113.10"},
+		{"backup", "--out", filepath.Join(t.TempDir(), "snap.db")},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			// 造一个「存在但没有任何表」的库,模拟误传 --db-path 的残留物。
+			empty := filepath.Join(t.TempDir(), "empty.db")
+			db, err := sql.Open("sqlite", empty)
+			if err != nil {
+				t.Fatalf("open empty sqlite: %v", err)
+			}
+			if _, err := db.Exec("PRAGMA user_version=0"); err != nil {
+				t.Fatalf("touch empty sqlite: %v", err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("close empty sqlite: %v", err)
+			}
+
+			code, stdout, stderr := runCLI(t, empty, "", args...)
+			if code != 2 {
+				t.Fatalf("code=%d, want 2; stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if !strings.Contains(stderr, "db not initialized") {
+				t.Fatalf("stderr 应明确说明库未初始化,得到: %q", stderr)
 			}
 		})
 	}

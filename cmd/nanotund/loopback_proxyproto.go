@@ -62,11 +62,64 @@ func isLoopbackConnPeer(c net.Conn) bool {
 // 正常远小于此;设超时只为个别异常 stream 不至于卡死其 goroutine。
 const loopbackProxyHeaderReadTimeout = 10 * time.Second
 
-// writeLoopbackProxyHeader 向环回 smux stream 写一行 PROXY v2 头。src/dst 任一非 *net.TCPAddr 时
-// go-proxyproto 退化为 LOCAL(无源)头。REALITY 传 realityConn.RemoteAddr()/LocalAddr()。
+// writeLoopbackProxyHeader 向环回 smux stream 写一行 PROXY v2 头,携带真实客户端地址。
+// REALITY 传 realityConn.RemoteAddr()/LocalAddr();hy2 传 QUIC 对端地址(见 hysteria_clientaddr.go)。
+//
+// 地址一律先归一成 *net.TCPAddr,见 normalizeProxyAddr —— 少了这步,hy2 这条路会静默退化成
+// LOCAL(无源)头。
 func writeLoopbackProxyHeader(w net.Conn, src, dst net.Addr) error {
-	_, err := proxyproto.HeaderProxyFromAddrs(2, src, dst).WriteTo(w)
+	nsrc := normalizeProxyAddr(src)
+	if nsrc == nil {
+		// 没有可用的源地址就写 LOCAL,由服务端回退环回地址 —— 绝不能写个残缺头让对端解析出错。
+		return writeLoopbackProxyHeaderLocal(w)
+	}
+	ndst := normalizeProxyAddr(dst)
+	if ndst == nil {
+		// dst 仅为满足 PROXY 头格式,服务端只取 source 做归因,故用环回占位即可。
+		ndst = &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
+	}
+	_, err := proxyproto.HeaderProxyFromAddrs(2, nsrc, ndst).WriteTo(w)
 	return err
+}
+
+// normalizeProxyAddr 把地址归一成 *net.TCPAddr;拿不到 IP:port 时返回 nil。
+//
+// 为什么必须归一:go-proxyproto 的 HeaderProxyFromAddrs 要求 src 与 dst **同类型**,否则整个头
+// 退化成 LOCAL(无源)。而环回 smux 的 dst 恒为 TCP(WebSocket over TCP),hy2 的客户端地址却来自
+// QUIC —— *net.UDPAddr。不归一就会静默退化,服务端回退环回地址,「真实 IP 透传」形同未做
+// (2026-07-25 双机实测:hy2 会话的审计 actor 仍是 127.0.0.1)。
+//
+// 头里因此声明 TCPv4/TCPv6 而非 UDP:该头是**本机环回**的内部约定,唯一用途是把 IP:port 带给
+// 服务端做归因(服务端按 hdr.TCPAddrs() 解析),并不表达客户端真实的四层协议。
+func normalizeProxyAddr(a net.Addr) *net.TCPAddr {
+	switch v := a.(type) {
+	case nil:
+		return nil
+	case *net.TCPAddr:
+		if v == nil || len(v.IP) == 0 {
+			return nil
+		}
+		return v
+	case *net.UDPAddr:
+		if v == nil || len(v.IP) == 0 {
+			return nil
+		}
+		return &net.TCPAddr{IP: v.IP, Port: v.Port, Zone: v.Zone}
+	}
+	// 其它 net.Addr 实现(如自定义包装):退回按字符串解析 host:port。
+	host, port, err := net.SplitHostPort(a.String())
+	if err != nil {
+		return nil
+	}
+	ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return nil
+	}
+	p, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return nil
+	}
+	return &net.TCPAddr{IP: ip.AsSlice(), Port: p}
 }
 
 // writeLoopbackProxyHeaderLocal 写一个 LOCAL(无源)PROXY v2 头,用于 hy2 这类拿不到客户端地址的场景,

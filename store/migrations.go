@@ -112,6 +112,32 @@ func (s *Store) ensureSettingsTable(ctx context.Context) error {
 	return nil
 }
 
+// SchemaVersionIfInitialized 报告该库是否已被 Migrate 初始化过,以及当前 schema 版本。
+//
+// 用途是只读子命令的守门。SQLite 的 Open 对不存在的路径会顺手建一个空库,于是「--db-path 打错字」
+// 之后目录里往往留着一个 0 表的库文件:文件存在(过得了 os.Stat 那道检查),但每处读都撞
+// "no such table: xxx" 这类裸 SQL 报错,运维看不出真正原因是「指错库」。有了本方法,调用方能
+// 给出「库未初始化」的明确提示。2026-07-25 部署实测:一个早先残留的空库就让 `audit list` 报了
+// "SQL logic error: no such table: audit_logs"。
+func (s *Store) SchemaVersionIfInitialized(ctx context.Context) (version int, initialized bool, err error) {
+	var name string
+	// app_settings 是 migration runner 最先建的表(见 ensureSettingsTable),它不存在即「从未 Migrate 过」。
+	scanErr := s.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='app_settings'`).Scan(&name)
+	if errors.Is(scanErr, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if scanErr != nil {
+		return 0, false, fmt.Errorf("store: probe app_settings: %w", scanErr)
+	}
+	v, verErr := s.currentSchemaVersion(ctx)
+	if verErr != nil {
+		return 0, false, verErr
+	}
+	// 表在但版本为 0:migration 从未成功记账,同样按未初始化处理(读出来的一切都不可信)。
+	return v, v > 0, nil
+}
+
 func (s *Store) currentSchemaVersion(ctx context.Context) (int, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key='schema_version'`)
 	var v string

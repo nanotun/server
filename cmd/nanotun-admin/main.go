@@ -321,6 +321,24 @@ func runWithStoreOpts(opts *globalOpts, readOnly, migrate, mustExist bool, fn fu
 		fmt.Fprintf(opts.stderr, "open store %s: %v\n", opts.dbPath, err)
 		return 1
 	}
+	// 文件存在还不够:早先「打错 --db-path」留下的 0 表空库同样过得了上面的 os.Stat,之后每处读都
+	// 撞裸 SQL 的 "no such table",看不出真因是指错了库。只读 / backup 路径在这里明确判定一次。
+	if mustExist {
+		if _, initialized, verErr := st.SchemaVersionIfInitialized(ctx); verErr != nil {
+			fmt.Fprintf(opts.stderr, "check schema of %s: %v\n", opts.dbPath, verErr)
+			_ = st.Close()
+			return 1
+		} else if !initialized {
+			fmt.Fprintf(opts.stderr,
+				"db not initialized: %s\n"+
+					"the file exists but holds no nanotun schema (a mistyped --db-path leaves an empty "+
+					"SQLite file behind). Check --db-path (or $NANOTUN_DB); "+
+					"run `nanotun-admin init` to set up a new deployment.\n",
+				opts.dbPath)
+			_ = st.Close()
+			return 2
+		}
+	}
 	defer st.Close()
 
 	// 只读模式禁止跑 migration(会触发 CREATE TABLE,被 query_only 拒)。

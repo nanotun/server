@@ -53,20 +53,35 @@ func (o *vpnLocalOutbound) CheckUDP(string) error {
 // vpnSmuxStreamOutbound 经 loopbackSmuxPool 在单条环回 WebSocket 上 OpenStream，与 REALITY 共用 smux 会话。
 type vpnSmuxStreamOutbound struct {
 	pool *loopbackSmuxPool
+	// relay 提供本条 stream 的真实客户端地址(见 hysteria_clientaddr.go)。nil 或取不到时
+	// 回退 LOCAL 头,按环回归因。
+	relay *hy2ClientAddrRelay
 }
 
-func (o *vpnSmuxStreamOutbound) TCP(_ string) (net.Conn, error) {
+func (o *vpnSmuxStreamOutbound) TCP(reqAddr string) (net.Conn, error) {
 	if o.pool == nil {
 		return nil, fmt.Errorf("smux pool 未初始化")
+	}
+	// 注意:reqAddr 只用于取 relay token,**绝不**用作 dial 目标 —— hy2 出口恒环回本机 VPN
+	// 数据面,这是「hy2 不得被当作任意 TCP 开放代理」的硬约束。
+	var realSrc net.Addr
+	if o.relay != nil {
+		realSrc = o.relay.Take(reqAddr)
 	}
 	st, err := o.pool.OpenStream()
 	if err != nil {
 		return nil, err
 	}
-	// M1:hy2 共享 smux 池无法把某条 stream 关联回具体客户端(hysteria Outbound 接口不透出客户端
-	// 地址),写一个 LOCAL(无源)PROXY v2 头 —— 让服务端「每条 loopback stream 先读一个头」的约定
-	// 成立(否则会把 hy2 首个 VPN 帧误当 PROXY 头解析)。hy2 会话据此回退环回地址计,与既有行为一致。
-	if werr := writeLoopbackProxyHeaderLocal(st); werr != nil {
+	// 每条 loopback stream 开头有且仅有一个 PROXY v2 头(否则服务端会把 hy2 首个 VPN 帧误当
+	// PROXY 头解析)。拿到真实源就写真实源,让服务端按客户端 IP 做 PoW/限流/失败计数/审计;
+	// 取不到才退回 LOCAL(无源)头 —— 后者会让本会话按环回归因,即修复前的行为。
+	var werr error
+	if realSrc != nil {
+		werr = writeLoopbackProxyHeader(st, realSrc, st.LocalAddr())
+	} else {
+		werr = writeLoopbackProxyHeaderLocal(st)
+	}
+	if werr != nil {
 		_ = st.Close()
 		return nil, werr
 	}
@@ -133,7 +148,7 @@ func validateHysteriaUserConfig(hc *config.HysteriaConfig) error {
 	return hc.ValidateTuning()
 }
 
-func buildHysteriaServerConfig(hc *config.HysteriaConfig, cert tls.Certificate, tcpOut hyserver.Outbound) (*hyserver.Config, error) {
+func buildHysteriaServerConfig(hc *config.HysteriaConfig, cert tls.Certificate, tcpOut hyserver.Outbound, relay *hy2ClientAddrRelay) (*hyserver.Config, error) {
 	tlsCfg := hyserver.TLSConfig{Certificates: []tls.Certificate{cert}}
 	if caPath := hc.TLSClientCAFile; caPath != "" {
 		pem, err := os.ReadFile(caPath)
@@ -189,6 +204,14 @@ func buildHysteriaServerConfig(hc *config.HysteriaConfig, cert tls.Certificate, 
 			MaxTx: hc.BandwidthMaxTxBps,
 			MaxRx: hc.BandwidthMaxRxBps,
 		},
+	}
+	// RequestHook + EventLogger 一对:前者给每条 TCP stream 埋一次性 token,后者按 token 记下
+	// 真实客户端地址,供 vpnSmuxStreamOutbound 写进 PROXY v2 头(见 hysteria_clientaddr.go)。
+	// 两者必须同时设置 —— 只设 hook 会让 Outbound 永远取不到地址(退回 LOCAL,行为等同未修);
+	// 只设 EventLogger 则没有 token 可记。
+	if relay != nil {
+		out.RequestHook = relay
+		out.EventLogger = relay
 	}
 	if hc.UDPRelayEnabled && hc.UDPIdleTimeoutSec != 0 {
 		out.UDPIdleTimeout = time.Duration(hc.UDPIdleTimeoutSec) * time.Second
@@ -280,12 +303,16 @@ func startEmbeddedHysteria(cfg *config.Config, vpnListenAddr string, loopbackWSU
 		dialTimeout = 15 * time.Second
 	}
 	var tcpOb hyserver.Outbound
+	var addrRelay *hy2ClientAddrRelay
 	if smuxPool != nil {
-		tcpOb = &vpnSmuxStreamOutbound{pool: smuxPool}
+		addrRelay = newHy2ClientAddrRelay()
+		tcpOb = &vpnSmuxStreamOutbound{pool: smuxPool, relay: addrRelay}
 	} else {
+		// 每流直拨环回 WebSocket 的路径(未配 [smux] 时)没有「stream 开头一个 PROXY 头」的约定,
+		// 真实源无处安放,故仍按环回归因。发布的 config.toml 默认带 [smux],走上面的分支。
 		tcpOb = &vpnLocalOutbound{wsURL: loopbackWSURL, timeout: dialTimeout, tlsClient: loopbackWSTLS}
 	}
-	hyCfg, err := buildHysteriaServerConfig(hc, cert, tcpOb)
+	hyCfg, err := buildHysteriaServerConfig(hc, cert, tcpOb, addrRelay)
 	if err != nil {
 		_ = packetConn.Close()
 		if hopCleanup != nil {
