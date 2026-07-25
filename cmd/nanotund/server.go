@@ -947,6 +947,10 @@ func main() {
 	if err := cfg.TUN.ValidateExitDNSRedirect(); err != nil {
 		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"exit_dns_redirect": cfg.TUN.ExitDNSRedirect}, "%v", err)
 	}
+	// exit_deny_private 同族 fail-fast:拼错不能让「拦云元数据 / 私网」的意图静默落空。
+	if err := cfg.TUN.ValidateExitDenyPrivate(); err != nil {
+		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"exit_deny_private": cfg.TUN.ExitDenyPrivate}, "%v", err)
+	}
 
 	// 第十七轮深扫 MED:启动期改用与 `config lint` 同一个 ValidateTUNSubnets —— 既查「两者皆空(含仅
 	// 空白项)」,也查族错配(IPv4 CIDR 落进 subnets_v6 / IPv6 CIDR 落进 subnets)。此前启动仅判
@@ -970,6 +974,10 @@ func main() {
 		if udpConnlimit <= 0 {
 			udpConnlimit = 40
 		}
+
+		// 上次实际用过的 mesh 网段（server 启动落库的 mesh_cidrs 快照）。只要这次仍可用就继续沿用，
+		// 避免重启换网段作废全部 lease 与 admin 钉住的 fixed vIP（详见 tun_subnet_sticky.go）。
+		prevMeshGateways := readPersistedMeshGateways(cfg.Store.DBPath)
 
 		// 筛出与本机网段不冲突的合法 IPv4 网段
 		var chosenSubnet, gatewayCIDR string
@@ -1002,8 +1010,11 @@ func main() {
 			if len(usableSubnets) == 0 {
 				logrus.Warn("无可用 IPv4 网段（均与本机冲突），跳过 IPv4")
 			} else {
-				idx := int(tunRandSeed.Add(1)) % len(usableSubnets)
-				chosenSubnet = usableSubnets[idx]
+				var sticky bool
+				chosenSubnet, sticky = chooseTUNSubnet(usableSubnets, prevMeshGateways, true)
+				logrus.WithFields(logrus.Fields{
+					"subnet": chosenSubnet, "reused_last": sticky, "usable": len(usableSubnets),
+				}).Info("[tun-subnet] 已选定 IPv4 mesh 网段")
 				gw, errGW := gatewayCIDRFromSubnet(chosenSubnet)
 				if errGW != nil {
 					logrus.WithError(errGW).Warn("IPv4 网关 CIDR 解析失败，跳过 IPv4")
@@ -1042,8 +1053,11 @@ func main() {
 				}
 			}
 			if len(usableSubnetsV6) > 0 {
-				idxV6 := int(tunRandSeed.Add(1)) % len(usableSubnetsV6)
-				chosenSubnetV6 = usableSubnetsV6[idxV6]
+				var stickyV6 bool
+				chosenSubnetV6, stickyV6 = chooseTUNSubnet(usableSubnetsV6, prevMeshGateways, false)
+				logrus.WithFields(logrus.Fields{
+					"subnet": chosenSubnetV6, "reused_last": stickyV6, "usable": len(usableSubnetsV6),
+				}).Info("[tun-subnet] 已选定 IPv6 mesh 网段")
 				gwV6, errGWv6 := gatewayCIDRFromSubnet(chosenSubnetV6)
 				if errGWv6 != nil {
 					logrus.WithError(errGWv6).Warn("IPv6 网关 CIDR 解析失败，跳过 IPv6")
@@ -1058,6 +1072,8 @@ func main() {
 		if gatewayCIDR == "" && gatewayCIDRv6 == "" {
 			util.FatalExit(util.ExitConfigSemantic, nil, "IPv4 和 IPv6 均无可用网段，TUN 转发将不可用")
 		}
+		// 网段真漂了就明确告警：全部 lease 作废 + 掉出新网段的 fixed vIP 会被跳过，运维必须知道。
+		logMeshSubnetMoved(prevMeshGateways, gatewayCIDR, gatewayCIDRv6)
 		// requireTUN: Linux + root 时认为是生产环境,任何 TUN/iptables 步骤失败都
 		// 必须 Fatal —— 否则服务端会监听 :8080/:443/:8443,但客户端登录后没数据面,
 		// 形成「TCP 接得上,流量黑洞」的伪可用状态,极易掩盖网卡/CAP_NET_ADMIN/防火墙
@@ -1105,7 +1121,7 @@ func main() {
 					failTUN(errWan, "获取 WAN 失败,跳过 iptables")
 				} else if err := SetupIptables(deviceName, wanIface, wanIP, []string{chosenSubnet}, tcpConnlimit, udpConnlimit,
 					cfg.TUN.ForwardBlockBT, cfg.TUN.ForwardBlockTracker6969, cfg.TUN.ForwardBlockSMTP25, cfg.TUN.ResolveExitMode(), cfg.TUN.ExitDNSRedirect,
-					magicGwV4, magicPort); err != nil {
+					cfg.TUN.ResolveExitDenyPrivate(), magicGwV4, magicPort); err != nil {
 					failTUN(err, "配置 iptables 失败")
 				} else {
 					iptablesInstalled = true
@@ -1125,7 +1141,8 @@ func main() {
 						return false
 					}
 					if err := SetupIp6tables(deviceName, wanIfaceV6, wanIPv6, []string{chosenSubnetV6}, tcpConnlimit, udpConnlimit,
-						cfg.TUN.ForwardBlockBT, cfg.TUN.ForwardBlockTracker6969, cfg.TUN.ForwardBlockSMTP25, cfg.TUN.ResolveExitMode(), cfg.TUN.ExitDNSRedirect); err != nil {
+						cfg.TUN.ForwardBlockBT, cfg.TUN.ForwardBlockTracker6969, cfg.TUN.ForwardBlockSMTP25, cfg.TUN.ResolveExitMode(), cfg.TUN.ExitDNSRedirect,
+						cfg.TUN.ResolveExitDenyPrivate()); err != nil {
 						logrus.WithError(err).Warn("配置 ip6tables 失败")
 						return false
 					}
@@ -3007,6 +3024,9 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	// PSK + device 模式下，登录时尝试沿用之前的 vIP 租约（含 user.fixed_vip_*）。
 	// 这里仅查询，不写入，写入留到 firstAllocCfg 真正用上之后由 AllocOrLeaseVIP 完成。
 	leasedV4, leasedV6 := preferredLeasedVIPs(gw, authResult)
+	// admin 钉的 fixed vIP 掉出当前 mesh 网段时会被静默跳过(设备转而拿一个自动分配的地址),而
+	// `device list` 仍显示那个钉住的值 —— 此前整条路径无任何日志。这里按设备去重地告警一次。
+	warnFixedVIPOutOfMesh(authResult)
 	// 第十九轮深扫 MED:except 集必须涵盖本设备**自身**的 fixed + lease **两者**(见 deviceReservedVIPExceptions),
 	// 不能只传 preferredLeasedVIPs 的 fixed-优先合并值 —— 否则 fixed≠lease 时漏剔本设备实际 lease → 白烧地址。
 	exceptV4, exceptV6 := deviceReservedVIPExceptions(gw, authResult)

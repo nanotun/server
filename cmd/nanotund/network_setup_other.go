@@ -39,10 +39,10 @@ func GetWANv6() (iface, ip string, err error) {
 	return "", "", fmt.Errorf("IPv6 WAN detection only supported on Linux")
 }
 
-func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, _, _, _ bool, _, _ string, _ string, _ int) error {
+func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, _, _, _ bool, _, _, _ string, _ string, _ int) error {
 	return fmt.Errorf("iptables only supported on Linux")
 }
 
-func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, _, _, _ bool, _, _ string) error {
+func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, _, _, _ bool, _, _, _ string) error {
 	return fmt.Errorf("ip6tables only supported on Linux")
 }

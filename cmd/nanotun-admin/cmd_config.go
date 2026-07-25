@@ -96,6 +96,9 @@ func lintSemantic(cfg *config.Config) error {
 	if err := cfg.TUN.ValidateExitDNSRedirect(); err != nil {
 		return err
 	}
+	if err := cfg.TUN.ValidateExitDenyPrivate(); err != nil {
+		return err
+	}
 	// 第十六轮深扫 MED:TUN 网段「两者皆空」与「族错配」——同为启动期 Fatal,理应在重启前被 lint 拦下。
 	if err := cfg.TUN.ValidateTUNSubnets(); err != nil {
 		return err

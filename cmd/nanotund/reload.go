@@ -330,6 +330,15 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 		}).Error("[reload] tun.exit_dns_redirect 不可热更(出口 DNS 拦截 iptables 规则启动时落链),需重启 server")
 		out = append(out, "tun.exit_dns_redirect")
 	}
+	// exit_deny_private 同族:私网/链路本地 DROP 也是启动时一次性落链。比较前归一化,
+	// 使 ""→"auto" 这类「效果不变」的改动不被误报。
+	if newCfg.TUN.ResolveExitDenyPrivate() != old.TUN.ResolveExitDenyPrivate() {
+		logrus.WithFields(logrus.Fields{
+			"old": old.TUN.ResolveExitDenyPrivate(),
+			"new": newCfg.TUN.ResolveExitDenyPrivate(),
+		}).Error("[reload] tun.exit_deny_private 不可热更(出口私网 DROP 规则启动时落链),需重启 server")
+		out = append(out, "tun.exit_deny_private")
+	}
 	// [server.pow] 段:hmac_key 启动随机,公式参数初始化时塞死,reload 不重建
 	// PoWService(否则会让运行中的所有 challenge 一次失效,等价于踢所有 pre-login
 	// 连接,反而比 restart 更激进)。统一 ERROR 提示 + 进 deferred 列表,让运维

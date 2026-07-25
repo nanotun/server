@@ -61,3 +61,36 @@ func TestTUNConfig_ValidateExitDNSRedirect(t *testing.T) {
 		}
 	}
 }
+
+func TestTUNConfig_ExitDenyPrivate(t *testing.T) {
+	// 归一:留空 = auto(安全默认),大小写/空白不敏感。
+	cases := map[string]string{
+		"":             TUNExitDenyPrivateAuto,
+		"auto":         TUNExitDenyPrivateAuto,
+		" AUTO ":       TUNExitDenyPrivateAuto,
+		"link-local":   TUNExitDenyPrivateLinkLocal,
+		" Link-Local ": TUNExitDenyPrivateLinkLocal,
+		"off":          TUNExitDenyPrivateOff,
+		"OFF":          TUNExitDenyPrivateOff,
+	}
+	for in, want := range cases {
+		if got := (&TUNConfig{ExitDenyPrivate: in}).ResolveExitDenyPrivate(); got != want {
+			t.Errorf("ResolveExitDenyPrivate(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// 与 ExitMode 相反:typo 的兜底方向必须是「更严」而非「更松」——
+	// 拼错顶多让部署比预期严,绝不能静默把云元数据/私网闸门放开。
+	if got := (&TUNConfig{ExitDenyPrivate: "of"}).ResolveExitDenyPrivate(); got != TUNExitDenyPrivateAuto {
+		t.Errorf("未知值兜底应为 %q(fail 向关), got %q", TUNExitDenyPrivateAuto, got)
+	}
+	for _, v := range []string{"", "auto", "link-local", "off", " OFF "} {
+		if err := (&TUNConfig{ExitDenyPrivate: v}).ValidateExitDenyPrivate(); err != nil {
+			t.Errorf("ValidateExitDenyPrivate(%q) 应通过, got err=%v", v, err)
+		}
+	}
+	for _, v := range []string{"of", "linklocal", "link_local", "private", "true", "1"} {
+		if err := (&TUNConfig{ExitDenyPrivate: v}).ValidateExitDenyPrivate(); err == nil {
+			t.Errorf("ValidateExitDenyPrivate(%q) 应拒绝(fail-fast), got nil", v)
+		}
+	}
+}

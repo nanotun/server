@@ -303,7 +303,7 @@ func GetWANv6() (iface string, ip string, err error) {
 // 这样进程崩 / kill -9 / 二进制升级都不会让 iptables 表里积累幽灵规则。
 // P2#16:exitMode 三档语义见 config.TUNConfig.ResolveExitMode 注释。
 // 老路径(布尔 clientIsolate)统一翻译成 exitMode 后进入,见 SetupIptablesLegacy。
-func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, blockBT, blockTracker6969, blockSMTP25 bool, exitMode, exitDNSRedirect string, magicDNSGwV4 string, magicDNSPort int) error {
+func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, blockBT, blockTracker6969, blockSMTP25 bool, exitMode, exitDNSRedirect, exitDenyPrivate string, magicDNSGwV4 string, magicDNSPort int) error {
 	if deviceName == "" {
 		deviceName = "tun0"
 	}
@@ -429,6 +429,14 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 		logrus.Info("iptables: exit_mode=off,已 DROP FORWARD device->WAN(纯组网,无出口)")
 	}
 
+	// 3.5) 出口方向拦掉链路本地 / 私网目的地(云元数据 + 服务器所处内网)。
+	// 必须排在第 3 步的 device→wan ACCEPT **之前**;插入用的是 -I FORWARD 1,后插入=更靠前,故这里的顺序正确。
+	if applied, err := applyExitDenyPrivate("iptables", deviceName, wanIface, exitDenyPrivate, subnets, allowExitWAN); err != nil {
+		return err
+	} else {
+		logExitDenyPrivate("iptables", exitDenyPrivate, applied)
+	}
+
 	// 4) NAT SNAT：每个可用网段一条（幂等）。off 模式跳过(没出口流量,SNAT 也没意义)。
 	if allowExitWAN {
 		for _, subnet := range subnets {
@@ -493,7 +501,7 @@ func iptablesInsertForward(ruleArgs []string) error {
 // 语义见 SetupIptables;exitMode 也是三档 mesh/isolate/off。
 // exitDNSRedirect 参数在 v6 侧暂不使用(DNS 接管走 v4 DNAT 到 v4 解析器,见 SetupIptables 第 6 步;
 // 客户端 v6 DNS 查询无 v4 解析器可 DNAT 到,保持原样转发)。留参数是为调用点两个函数签名对齐。
-func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, blockBT, blockTracker6969, blockSMTP25 bool, exitMode, _ string) error {
+func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, blockBT, blockTracker6969, blockSMTP25 bool, exitMode, _, exitDenyPrivate string) error {
 	if deviceName == "" {
 		deviceName = "tun0"
 	}
@@ -598,6 +606,13 @@ func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpCon
 			}
 		}
 		logrus.Info("ip6tables: exit_mode=off,已 DROP FORWARD device->WAN(纯组网,无出口)")
+	}
+
+	// 3.5) 出口方向拦掉链路本地(fe80::/10)/ ULA 目的地,语义同 v4 侧,见 applyExitDenyPrivate。
+	if applied, err := applyExitDenyPrivate("ip6tables", deviceName, wanIface, exitDenyPrivate, subnets, allowExitWAN); err != nil {
+		return err
+	} else {
+		logExitDenyPrivate("ip6tables", exitDenyPrivate, applied)
 	}
 
 	// 4) NAT MASQUERADE：IPv6 一般不需要 NAT（全局可路由），但在 ULA 段时仍需 MASQUERADE。

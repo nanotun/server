@@ -259,6 +259,35 @@ type TUNConfig struct {
 	//
 	// SIGHUP 不可热更(同 ExitMode,涉及 nat 表重建)。
 	ExitDNSRedirect string `toml:"exit_dns_redirect,omitempty"`
+
+	// ExitDenyPrivate(2026-07-25):出口路径上「链路本地 / 私网目的地」的拦截档位。
+	//
+	// 背景:出口模式(mesh/isolate)装的是 `-i <tun> -o <wan> ACCEPT` + SNAT,语义是
+	// 「凡经出网网卡可达的目的地一律放行」。这句话顺带包含两类**本该只有服务器自己够得着**的地方:
+	//
+	//   1. 云厂商元数据 169.254.169.254 —— 只对本机应答,吐的是这台机器自己的身份:
+	//      主机名 / 网络配置 / SSH 公钥,AWS 上是 IMDSv1 的 IAM 角色临时凭证,GCP/Azure 上是
+	//      服务账号 token。VPN 用户把它塞进隧道就能读到(2026-07-25 双机实测坐实:客户端拿到的
+	//      instance-v2-id 与服务器本机一致,tun→wan 规则计数器同步递增)。
+	//   2. 服务器所处的私网 —— AWS/GCP/Azure 单网卡形态下内网地址与出网流量共用一块卡,
+	//      「出网卡」同时就是「进 VPC」:邻居的数据库 / Redis / 内部管理页往往只靠「在 VPC 里」防护。
+	//
+	// 这条策略此前**无法表达**:ACL 只有 src_user × dst_user|exit × proto × port 四个维度,
+	// 没有目的 IP 维度;唯一能拦的是 exit_mode="off",但那把互联网出口一起关了。
+	//
+	// 取值:
+	//   ""(默认) / "auto" → 拦链路本地(169.254.0.0/16、fe80::/10)+ 自动探测到的
+	//                       「出网网卡上 on-link / 经它路由的私网段」(RFC1918、CGNAT 100.64/10、ULA)。
+	//   "link-local"      → 只拦链路本地。私网段照旧放行 —— 给「服务器兼作局域网网关」的部署留门,
+	//                       但云上单网卡 VPC 仍然暴露,选它要清楚这一点。
+	//   "off"             → 完全不拦(修复前的行为)。
+	//
+	// 与 mesh / 子网路由不冲突:FORWARD 侧的 DROP 一律带 `-o <wan>` 限定在出网方向,而客户端互访是
+	// tun→tun、已批准的子网路由由用户态直投宣告方会话(见 subnet route 数据面),都不经这条路;
+	// 探测结果里与 mesh 网段重叠的前缀也会被显式剔除。
+	//
+	// SIGHUP 不可热更(同 ExitMode,涉及 iptables 规则集)。
+	ExitDenyPrivate string `toml:"exit_deny_private,omitempty"`
 }
 
 // TUNExitMode 取值常量。
@@ -266,6 +295,13 @@ const (
 	TUNExitModeMesh    = "mesh"
 	TUNExitModeIsolate = "isolate"
 	TUNExitModeOff     = "off"
+)
+
+// TUNExitDenyPrivate 取值常量,见 TUNConfig.ExitDenyPrivate 字段注释。
+const (
+	TUNExitDenyPrivateAuto      = "auto"
+	TUNExitDenyPrivateLinkLocal = "link-local"
+	TUNExitDenyPrivateOff       = "off"
 )
 
 // MagicDNSConfig 见 TUNConfig.MagicDNS 字段注释。
@@ -336,6 +372,33 @@ func (t *TUNConfig) ValidateExitMode() error {
 	default:
 		return fmt.Errorf("config: unknown tun.exit_mode %q (valid: %q / %q / %q, or leave empty)",
 			t.ExitMode, TUNExitModeMesh, TUNExitModeIsolate, TUNExitModeOff)
+	}
+}
+
+// ResolveExitDenyPrivate 把 tun.exit_deny_private 归一为 auto / link-local / off。
+// 留空 → auto(安全默认)。未知非空值本应被 ValidateExitDenyPrivate fail-fast 拦下,
+// 兜底同样回 auto —— 与 ExitMode 的兜底方向相反:这里 fail 向**关**(更严),
+// 一个 typo 顶多让部署比预期更严,不会静默把闸门放开。
+func (t *TUNConfig) ResolveExitDenyPrivate() string {
+	switch strings.ToLower(strings.TrimSpace(t.ExitDenyPrivate)) {
+	case TUNExitDenyPrivateLinkLocal:
+		return TUNExitDenyPrivateLinkLocal
+	case TUNExitDenyPrivateOff:
+		return TUNExitDenyPrivateOff
+	default:
+		return TUNExitDenyPrivateAuto
+	}
+}
+
+// ValidateExitDenyPrivate 在启动早期校验 tun.exit_deny_private(枚举,大小写不敏感)。
+func (t *TUNConfig) ValidateExitDenyPrivate() error {
+	switch strings.ToLower(strings.TrimSpace(t.ExitDenyPrivate)) {
+	case "", TUNExitDenyPrivateAuto, TUNExitDenyPrivateLinkLocal, TUNExitDenyPrivateOff:
+		return nil
+	default:
+		return fmt.Errorf("config: unknown tun.exit_deny_private %q (valid: %q / %q / %q, or leave empty for %q)",
+			t.ExitDenyPrivate, TUNExitDenyPrivateAuto, TUNExitDenyPrivateLinkLocal, TUNExitDenyPrivateOff,
+			TUNExitDenyPrivateAuto)
 	}
 }
 
