@@ -79,6 +79,11 @@ var (
 	serverEgressDroppedNoV6 atomic.Uint64
 )
 
+// clientIsolateMode:本次运行的 exit_mode 是否为 isolate(启动期由 server.go 置一次;
+// exit_mode 不支持热更新,故无需重载)。isolate 下 FORWARD 链 DROP 所有客户端间转发,
+// peer 出口 / 子网路由的回程都走那条路 —— 控制面据此当场拒绝,避免静默黑洞。
+var clientIsolateMode atomic.Bool
+
 // server 自出口 v6 能力探测缓存:数据面热路径每包读,故用 atomic 缓存 + 后台 goroutine 定期探测(startServerV6EgressProbe),
 // 绝不在数据面同步做 net.Dial。Known=false(尚未探测出结果)时保守放行(走 server 自出口,维持旧行为)。
 var (
@@ -311,11 +316,24 @@ func notifyExitOfflineOnce(c *Connection) {
 		return
 	}
 	c.exitOfflineNotified = true
+	exitDev := c.egressDeviceID.Load()
 	logrus.WithFields(logrus.Fields{
 		"user_id":        c.userID,
-		"exit_device_id": c.egressDeviceID.Load(),
-	}).Warn("[egress] 选定出口节点已离线,本会话公网流量 fail-closed 丢弃(已通知客户端)")
+		"exit_device_id": exitDev,
+	}).Warn("[egress] " + exitUnavailableCause(exitDev) + ",本会话公网流量 fail-closed 丢弃(已通知客户端)")
 	sendEgressSelectAck(c, util.EgressSelectAck{Accepted: false, Reason: "exit_offline"})
+}
+
+// exitUnavailableCause 区分「出口设备真的不在线」与「设备在线但这条会话没在跑出口」。
+// 两者数据面处置相同(fail-closed 丢弃),但排障方向完全相反:前者去看出口机为什么掉线,
+// 后者是出口机连上来时没带 --exit-node(或已撤回声明)——设备在 device list 里明明是
+// last_seen 刚刚、admin exit list 里也有 ✓,日志却只说「已离线」,三机实测(2026-07-25)
+// 就在这上面白查了一轮。wire 上的 reason 仍是 exit_offline(客户端处置不变,不动协议)。
+func exitUnavailableCause(exitDeviceID int64) string {
+	if lookupActiveConnByDevice(exitDeviceID) != nil {
+		return "选定出口节点设备在线但当前会话未以出口模式运行(未带 --exit-node / 已撤回出口声明)"
+	}
+	return "选定出口节点已离线"
 }
 
 // deliverIPPacketToConn 把一个原始 IP 包投递到目标会话的 TunChan(池化 *util.TunPacket，
@@ -689,6 +707,24 @@ func handleEgressSelectFrame(ctx context.Context, c *Connection, payload []byte)
 	if !c.exitAllowed {
 		egressSelectRejected.Add(1)
 		sendEgressSelectAck(c, util.EgressSelectAck{Accepted: false, Reason: "exit_not_allowed"})
+		return
+	}
+
+	// exit_mode=isolate 与「经 peer 出口」互斥,当场拒绝而不是绑上去黑洞。
+	//
+	// isolate 在 FORWARD 链装的是 `-i <tun> -o <tun> DROP`。去程(使用方 → server → 出口机)是用户态
+	// 直投、不过这条链,所以选择会被接受、甚至打出「会话开始经出口节点转发公网流量」的审计;但**回程**
+	// (出口机 → server → 使用方 vIP)是普通 mesh 投递、要过内核,于是整条路径静默黑洞。三机实测
+	// (2026-07-25):A 经 C 出网 curl 全超时,DROP 计数器同步上涨,十几秒后客户端只收到一句「出口已离线」。
+	// 语义上也该拒:isolate 的承诺就是「客户端之间不得互通」,而经 peer 出口正是客户端间中转。
+	if clientIsolateMode.Load() {
+		c.egressDeviceID.Store(egressFailClosed)
+		egressSelectRejected.Add(1)
+		logrus.WithFields(logrus.Fields{
+			"user_id": c.userID,
+			"egress":  es.Egress,
+		}).Warn("[egress] exit_mode=isolate 禁止客户端互通,已拒绝经 peer 出口的选择(要用出口节点请改 exit_mode=mesh)")
+		sendEgressSelectAck(c, util.EgressSelectAck{Accepted: false, Reason: "isolate"})
 		return
 	}
 

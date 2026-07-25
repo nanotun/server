@@ -120,6 +120,9 @@ client_isolate = false
 # P2#16:TUN 出口三档开关。比 client_isolate 表达更细的拓扑。
 #   mesh    (默认)允许同 TUN 客户端互访 + 允许出 WAN(SNAT/MASQUERADE)。
 #   isolate 禁止同 TUN 客户端互访,仍允许出 WAN(公共出口/访客网络)。
+#           与「出口节点」「子网路由」互斥 —— 这两者都是经另一个客户端中转,回程会撞上
+#           客户端互访 DROP。isolate 下 EgressSelect 直接拒绝(reason=isolate),启动期
+#           对库里已批准的出口设备 / 子网路由打 WARN。要用它们请改 mesh。
 #   off     禁止出 WAN(不装 NAT,FORWARD device->wan DROP),仅允许同 TUN 客户端互访(纯组网)。
 # 留空 → 回退 client_isolate 兼容路径(true→isolate, false→mesh)。
 # 想要 off 模式必须显式写 exit_mode = "off"。

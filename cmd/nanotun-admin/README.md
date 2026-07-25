@@ -114,6 +114,13 @@ nanotun-admin lease set 7 --v4 100.64.0.50 --manual    # 钉死，不被自动�
 - 显式 `deny` 规则拒绝（同优先级下 deny 胜 allow）
 - 有任何规则但本对 src→dst 没命中 → 默认 deny（白名单语义）
 
+> **规则是单向且无状态的**：`deny alice bob` 只匹配 `src=alice, dst=bob` 的包，不会自动
+> 匹配 `bob → alice`。但**双向协议照样会整体不通** —— `bob ping alice` 的 echo request
+> 放行、alice 的 echo reply 因 `alice → bob` 被拒而丢弃，表象是「两个方向都断」。
+> 反过来，在白名单语义下只写 `allow alice bob` 也不足以让 alice↔bob 的 TCP 建连：
+> 回程 `bob → alice` 没命中 allow 就被默认 deny 挡掉，需要成对写两条。
+> （三机实测 2026-07-25 抓包确认：deny 方向的对端确实收到了请求，丢的是回包。）
+
 ```bash
 nanotun-admin acl allow alice bob          # 允许 alice → bob
 nanotun-admin acl deny  alice carol        # 拒绝 alice → carol（deny 优先于 allow）

@@ -113,7 +113,10 @@ MTTD:
   本质是 50/50 抛硬币:两个随机端口哪个数值小决定胜负。修法二选一:
     a) 测试侧改成 `expected := min(primary, secondary)` 再比对(承认生产语义);
     b) 生产侧改成保留 portUnion 字符串里的首项作为 primary(承认 toml 语义)。
-  目前不修;下次有 hysteria port hopping 工作时一并处理。
+  **已按 (b) 修(2026-07-25)**:`PrimaryPortFromUDPListenAddr` 改为取并集串的首个
+  token,`ParsePortUnion` 仅用于校验合法性;这样 `:8443,443` 绑 8443 而不是 443,
+  与函数名 / `config.listen_addr` 注释 / 启动日志三处"主端口"说法一致,单测
+  `TestPrimaryPortFollowsWrittenOrder` 覆盖乱序与区间写法。
 
 ## 教训
 

@@ -132,13 +132,23 @@ func TestPSK_LoginShutdownDrain(t *testing.T) {
 	// 触发 graceful shutdown 广播。drainTimeout=0 立刻返回(不 Sleep)。
 	go broadcastShutdownClose(0)
 
-	// 客户端应当收到 LinkTypeClose
-	typC, payC, err := readLinkFrameWithDeadline(clientEnd, 3*time.Second)
-	if err != nil {
-		t.Fatalf("read shutdown Close frame: %v", err)
-	}
-	if typC != util.LinkTypeClose {
-		t.Fatalf("typC=%d want LinkTypeClose", typC)
+	// 客户端应当收到 LinkTypeClose。登录后服务器还会推一些与本测试无关的帧
+	// (如 LinkTypeRoutesList 可用子网路由列表),所以跳过非 Close 帧继续读,
+	// 而不是断言「下一帧就是 Close」——后者会在新增任何登录后推送时假失败。
+	var payC []byte
+	for i := 0; ; i++ {
+		typC, pay, err := readLinkFrameWithDeadline(clientEnd, 3*time.Second)
+		if err != nil {
+			t.Fatalf("read shutdown Close frame: %v", err)
+		}
+		if typC == util.LinkTypeClose {
+			payC = pay
+			break
+		}
+		if i >= 8 {
+			t.Fatalf("连读 %d 帧仍未收到 LinkTypeClose,最后一帧 typ=%d", i+1, typC)
+		}
+		t.Logf("跳过登录后推送帧 typ=%d", typC)
 	}
 	msg, err := util.ParseCloseLinkPayload(payC)
 	if err != nil {

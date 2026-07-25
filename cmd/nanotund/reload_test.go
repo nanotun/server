@@ -2,6 +2,9 @@ package main
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -9,6 +12,24 @@ import (
 
 	"github.com/nanotun/server/config"
 )
+
+// requireJumpFWCapable:jump_host_firewall 在 Linux 上真的会调 ipset/iptables,
+// 缺二进制或非 root 时 Replace 必然失败 → reload 不标记 applied,测试假失败
+// (机器差异而非代码回归)。这类环境下直接跳过。
+func requireJumpFWCapable(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("跳过:Linux 上 jump_host_firewall 需要 root")
+	}
+	for _, bin := range []string{"ipset", "iptables"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("跳过:Linux 上 jump_host_firewall 需要 %s(未安装)", bin)
+		}
+	}
+}
 
 func newReloadCfg() config.Config {
 	c := config.Config{}
@@ -76,6 +97,7 @@ func TestApplyConfigReload_LogLevelInvalid_KeepsOld(t *testing.T) {
 // G6 单测 c:jump_host_allowed_ips 内容变了 → Replace 被调用,cfg 同步;
 // 顺序变内容不变(集合相等)不应触发 Replace。
 func TestApplyConfigReload_JumpHostAllowedIPs(t *testing.T) {
+	requireJumpFWCapable(t)
 	cur := newReloadCfg()
 	rs := &reloadState{configPath: "fake.toml", cfg: &cur, jumpFW: newJumpHostFirewall(true, 8080)}
 

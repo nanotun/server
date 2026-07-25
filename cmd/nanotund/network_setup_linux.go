@@ -219,6 +219,99 @@ func ensureLooseRPFilter(deviceName string) {
 	logrus.Infof("已设置 %s(出口回程 hairpin 需要 loose 反向路由校验)", key)
 }
 
+// redirectSysctlKeys 返回抑制 ICMP Redirect 需要写的 sysctl 键值对。
+// 内核对 send_redirects 取 OR(conf/all, conf/<dev>)（IN_DEV_TX_REDIRECTS），
+// 所以只关本设备不够 —— all 仍为 1 时照样发。两个都要写。
+func redirectSysctlKeys(deviceName string) []string {
+	return []string{
+		"net.ipv4.conf.all.send_redirects=0",
+		fmt.Sprintf("net.ipv4.conf.%s.send_redirects=0", deviceName),
+	}
+}
+
+// suppressICMPRedirects 关掉 ICMP Redirect 的发送。
+//
+// mesh 内 peer 互访天然是 hairpin：客户端 A 的包从 TUN 进来、目的是同一条 TUN 上的
+// 客户端 C，内核转发时发现「出接口 == 入接口且下一跳在同一链路」，就给 A 回一条
+// ICMP Redirect（New nexthop: C 的 vIP）。这条重定向对客户端毫无用处 —— vIP 只能
+// 经隧道到达，A 根本没有直连 C 的路径 —— 但会造成三件事：
+//   - 客户端内核缓存一条「dst=C via C」的重定向路由，peer 越多缓存越脏；
+//   - ping/traceroute 等工具把它记成错误（`+N errors`），监控与健康检查误报；
+//   - 网关向所有客户端广撒重定向，属于路由器加固基线（CIS）明确要求关掉的行为。
+//
+// best-effort：失败只 Warn 不阻断（容器内 sysctl 可能只读）。
+func suppressICMPRedirects(deviceName string) {
+	for _, key := range redirectSysctlKeys(deviceName) {
+		if out, err := exec.Command("sysctl", "-w", key).CombinedOutput(); err != nil {
+			logrus.WithError(err).WithField("out", strings.TrimSpace(string(out))).
+				Warnf("sysctl %s 失败;mesh peer 互访时网关会向客户端发 ICMP Redirect(功能不受影响,但客户端路由缓存变脏、ping 记为 error)", key)
+			continue
+		}
+		logrus.Infof("已设置 %s(mesh hairpin 转发不再向客户端发 ICMP Redirect)", key)
+	}
+}
+
+// connlimitRuleArgs 造一条 per-客户端-IP 并发连接上限的 FORWARD DROP 规则(不含 comment)。
+//
+// 两个限定缺一不可:
+//   - `-s <subnet>`:只按「客户端网段为源」计数。少了它,出口回程 hairpin(源是公网 CDN IP)
+//     会按 CDN 源 IP 计数,热门边缘节点并发一超限就把该 IP 的全部 TCP 包连同既有流一起 DROP
+//     (2026-07 tv.cctv.com 整站卡死的根因)。
+//   - `-o <wanIface>`:只管**出公网**这一段。少了它,同一条规则连 mesh 内部的 tun→tun 流量
+//     也一起计数并丢弃 —— 而 xt_connlimit 是按 conntrack **原始方向**的源地址归类的,于是
+//     「某客户端公网连接数超标」会连带把它的 peer 互访、子网路由、出口回程全打死。
+//     三机实测(2026-07-25):A↔C 的 mesh TCP 握手永远收不到 SYN-ACK(ICMP 却通),
+//     且当时 conntrack 表里连一条相关条目都没有(nf_conncount 计数已陈旧)、
+//     规则计数器经 nft-compat 层还不自增 —— 现场几乎无法定位。限定出接口后立刻恢复。
+//
+// wanIface 为空(WAN 探测失败等)时退回不限定出接口的老形态:此时宁可保守限流,也不放空。
+func connlimitRuleArgs(deviceName, wanIface, subnet, proto string, limit int, mask string) []string {
+	args := []string{"-i", deviceName}
+	if strings.TrimSpace(wanIface) != "" {
+		args = append(args, "-o", wanIface)
+	}
+	return append(args, "-s", subnet, "-p", proto,
+		"-m", "connlimit", "--connlimit-above", strconv.Itoa(limit),
+		"--connlimit-saddr", "--connlimit-mask", mask, "-j", "DROP")
+}
+
+// installConnlimitRules 把每网段 × {tcp,udp} 的并发上限规则装进 FORWARD 链首(幂等)。
+//
+// **调用位置有硬性要求**:必须排在 device→wan ACCEPT 之后。两者都用 `-I FORWARD 1`,
+// 后插入的更靠前;先装 connlimit 再装 ACCEPT 的话,ACCEPT 会盖在 connlimit 上方,
+// 出公网的包第一条就被放行、永远走不到限流规则 —— 功能整条静默失效,而 `iptables -S`
+// 里两条规则一应俱全,看不出任何异常。2026-07-25 三机实测抓到:某客户端并发开 60 条
+// 公网 TCP(上限 40)全部建连成功,`iptables -vnL FORWARD` 显示 tun→wan ACCEPT 480 包、
+// 两条 connlimit 各 0 包。判据也就在这里:限流规则的计数器长期为 0 即说明被盖住了。
+func installConnlimitRules(bin, deviceName, wanIface string, subnets []string, tcpConnlimit, udpConnlimit int, mask string) error {
+	for _, pl := range []struct {
+		proto string
+		limit int
+	}{{"tcp", tcpConnlimit}, {"udp", udpConnlimit}} {
+		if pl.limit <= 0 {
+			continue
+		}
+		for _, subnet := range subnets {
+			if subnet == "" {
+				continue
+			}
+			ruleArgs := withMainComment(connlimitRuleArgs(deviceName, wanIface, subnet, pl.proto, pl.limit, mask))
+			check := append([]string{"-C", "FORWARD"}, ruleArgs...)
+			if exec.Command(bin, check...).Run() == nil {
+				continue
+			}
+			args := append([]string{"-I", "FORWARD", "1"}, ruleArgs...)
+			if err := exec.Command(bin, args...).Run(); err != nil {
+				return fmt.Errorf("%s connlimit %s: %w", bin, pl.proto, err)
+			}
+		}
+	}
+	if tcpConnlimit > 0 || udpConnlimit > 0 {
+		logrus.Infof("%s: 已添加 connlimit TCP=%d/每IP UDP=%d/每IP", bin, tcpConnlimit, udpConnlimit)
+	}
+	return nil
+}
+
 // EnableIPForward 开启 IPv4 转发
 func EnableIPForward() error {
 	out, err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").CombinedOutput()
@@ -327,6 +420,10 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 	// Ubuntu 默认 all=2 恰好能用,但不能赌发行版默认值(RHEL 系默认 strict)。
 	ensureLooseRPFilter(deviceName)
 
+	// 0.5) 关掉 ICMP Redirect 发送。mesh peer 互访是同一条 TUN 上的 hairpin 转发,
+	// 内核默认会给发送方回「改走 <对端 vIP>」的重定向,见 suppressICMPRedirects。
+	suppressICMPRedirects(deviceName)
+
 	// 1) 客户端互访策略
 	if clientIsolate {
 		// 隔离模式：先清掉可能存在的 mesh ACCEPT，再插入 DROP，避免两条同时存在导致策略混乱
@@ -364,42 +461,7 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 		}
 	}
 
-	// 2) connlimit（幂等），TCP/UDP 分别计数。
-	// 必须加 -s <subnet> 只匹配「客户端网段为源」的包:FORWARD 链上还有出口节点回程的
-	// hairpin 流量(tun→tun,源是公网 CDN IP;正向 client→exit 在用户态直投、不进内核,
-	// conntrack 只见回程单向包)。不加 -s 时 connlimit 按 CDN 源 IP 计数,热门 CDN 边缘
-	// 节点(多个域名解析到同一 IP,如 p1-p5.img.cctvpic.com)并发条目 >limit 后该 IP 的
-	// 全部 TCP 包(含 SYN-ACK 与既有流数据)被 DROP——表现为经出口的页面加载整体黑洞
-	// 数十秒,直到 CDN 侧 FIN 让 conntrack 条目过期(2026-07 tv.cctv.com 卡死根因)。
-	for _, pl := range []struct {
-		proto string
-		limit int
-	}{{"tcp", tcpConnlimit}, {"udp", udpConnlimit}} {
-		if pl.limit <= 0 {
-			continue
-		}
-		for _, subnet := range subnets {
-			if subnet == "" {
-				continue
-			}
-			ruleArgs := withMainComment([]string{"-i", deviceName, "-s", subnet, "-p", pl.proto,
-				"-m", "connlimit", "--connlimit-above", strconv.Itoa(pl.limit),
-				"--connlimit-saddr", "--connlimit-mask", "32", "-j", "DROP"})
-			check := append([]string{"-C", "FORWARD"}, ruleArgs...)
-			if exec.Command("iptables", check...).Run() == nil {
-				continue
-			}
-			args := append([]string{"-I", "FORWARD", "1"}, ruleArgs...)
-			if err := exec.Command("iptables", args...).Run(); err != nil {
-				return fmt.Errorf("iptables connlimit %s: %w", pl.proto, err)
-			}
-		}
-	}
-	if tcpConnlimit > 0 || udpConnlimit > 0 {
-		logrus.Infof("iptables: 已添加 connlimit TCP=%d/每IP UDP=%d/每IP", tcpConnlimit, udpConnlimit)
-	}
-
-	// 3) FORWARD: device <-> WAN
+	// 2) FORWARD: device <-> WAN
 	if allowExitWAN {
 		if err := iptablesInsertForward([]string{"-i", deviceName, "-o", wanIface, "-j", "ACCEPT"}); err != nil {
 			return err
@@ -429,8 +491,13 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 		logrus.Info("iptables: exit_mode=off,已 DROP FORWARD device->WAN(纯组网,无出口)")
 	}
 
+	// 3) connlimit（幂等），TCP/UDP 分别计数。必须排在第 2 步之后,见 installConnlimitRules。
+	if err := installConnlimitRules("iptables", deviceName, wanIface, subnets, tcpConnlimit, udpConnlimit, "32"); err != nil {
+		return err
+	}
+
 	// 3.5) 出口方向拦掉链路本地 / 私网目的地(云元数据 + 服务器所处内网)。
-	// 必须排在第 3 步的 device→wan ACCEPT **之前**;插入用的是 -I FORWARD 1,后插入=更靠前,故这里的顺序正确。
+	// 必须排在第 2 步的 device→wan ACCEPT **之前**;插入用的是 -I FORWARD 1,后插入=更靠前,故这里的顺序正确。
 	if applied, err := applyExitDenyPrivate("iptables", deviceName, wanIface, exitDenyPrivate, subnets, allowExitWAN); err != nil {
 		return err
 	} else {
@@ -550,37 +617,7 @@ func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpCon
 		}
 	}
 
-	// 2) connlimit（幂等），IPv6 用 128 位掩码；TCP/UDP 分别计数。
-	// -s <subnet> 限定客户端源,原因同 SetupIptables 第 2 步(出口回程 hairpin 按公网源 IP 误限)。
-	for _, pl := range []struct {
-		proto string
-		limit int
-	}{{"tcp", tcpConnlimit}, {"udp", udpConnlimit}} {
-		if pl.limit <= 0 {
-			continue
-		}
-		for _, subnet := range subnets {
-			if subnet == "" {
-				continue
-			}
-			ruleArgs := withMainComment([]string{"-i", deviceName, "-s", subnet, "-p", pl.proto,
-				"-m", "connlimit", "--connlimit-above", strconv.Itoa(pl.limit),
-				"--connlimit-saddr", "--connlimit-mask", "128", "-j", "DROP"})
-			check := append([]string{"-C", "FORWARD"}, ruleArgs...)
-			if exec.Command("ip6tables", check...).Run() == nil {
-				continue
-			}
-			args := append([]string{"-I", "FORWARD", "1"}, ruleArgs...)
-			if err := exec.Command("ip6tables", args...).Run(); err != nil {
-				return fmt.Errorf("ip6tables connlimit %s: %w", pl.proto, err)
-			}
-		}
-	}
-	if tcpConnlimit > 0 || udpConnlimit > 0 {
-		logrus.Infof("ip6tables: 已添加 connlimit TCP=%d/每IP UDP=%d/每IP", tcpConnlimit, udpConnlimit)
-	}
-
-	// 3) FORWARD: device <-> WAN
+	// 2) FORWARD: device <-> WAN
 	if allowExitWAN {
 		if err := ip6tablesInsertForward([]string{"-i", deviceName, "-o", wanIface, "-j", "ACCEPT"}); err != nil {
 			return err
@@ -606,6 +643,11 @@ func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpCon
 			}
 		}
 		logrus.Info("ip6tables: exit_mode=off,已 DROP FORWARD device->WAN(纯组网,无出口)")
+	}
+
+	// 3) connlimit（幂等），IPv6 用 128 位掩码。位置要求同 v4，见 installConnlimitRules。
+	if err := installConnlimitRules("ip6tables", deviceName, wanIface, subnets, tcpConnlimit, udpConnlimit, "128"); err != nil {
+		return err
 	}
 
 	// 3.5) 出口方向拦掉链路本地(fe80::/10)/ ULA 目的地,语义同 v4 侧,见 applyExitDenyPrivate。

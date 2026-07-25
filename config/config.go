@@ -235,6 +235,10 @@ type TUNConfig struct {
 	//   - "isolate"  禁止同 TUN 客户端互访(DROP i==o),仍允许出 WAN。
 	//                公共出口型部署、企业版"访客网络"——只让用户用本机做 NAT 出口,
 	//                不允许横向移动到别人虚拟 IP。
+	//                **与出口节点 / 子网路由互斥**:这两个特性都是「经另一个客户端中转」,
+	//                回程要过 FORWARD 的 DROP i==o,必然黑洞。因此 isolate 下 EgressSelect
+	//                会当场拒绝(reason=isolate),启动期还会对库里已批准的中转类审批打 WARN。
+	//                要用出口节点 / 子网路由,请改 "mesh"(谁能出网仍由 exit_allowed + ACL 管)。
 	//
 	//   - "off"      禁止出 WAN(不装 SNAT,FORWARD device→wan DROP),仅允许同 TUN
 	//                客户端互访。纯组网模式,把 nanotun 当 Tailscale-like 内网用,

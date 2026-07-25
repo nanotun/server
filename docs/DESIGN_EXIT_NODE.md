@@ -177,3 +177,11 @@
 - 中转双倍带宽（无 P2P 的代价）。
 - 0/0 安全门：必须 admin 明确批准 + 数据面只转发被授权 exit 流量，避免开放代理。
 - 出口客户端 IP 成为他人出口：需同意 + 审计 + 限速（法务/滥用）。
+- **与 `exit_mode = "isolate"` 互斥**：isolate 在 FORWARD 装 `-i <tun> -o <tun> DROP`。
+  去程（使用方 → server → 出口机）是用户态直投，绕过这条链；**回程**（出口机 → server →
+  使用方 vIP）是普通 mesh 投递、要过内核 —— 整条路径因此黑洞。三机实测（2026-07-25）：
+  选择被接受、审计打了「开始经出口转发」、curl 全超时，十几秒后客户端只收到「出口已离线」。
+  现在 `handleEgressSelectFrame` 在 isolate 下当场拒绝（`reason=isolate`，会话 fail-closed），
+  启动期还会对库里已批准的出口设备 / 子网路由打一条 WARN（见 `isolate_relay_warn.go`）。
+  语义上也应如此：isolate 承诺「客户端之间不得互通」，而经 peer 出口正是客户端间中转。
+  子网路由同理受限（同一条 DROP），要用这两个特性请改 `exit_mode = "mesh"`。

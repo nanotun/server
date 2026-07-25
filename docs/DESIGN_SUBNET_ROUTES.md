@@ -153,6 +153,17 @@ nanotun-admin route delete  12 192.168.1.0/24
 5. 收到非自己 vIP 的 packet 时,通过本机 routing(IP forward)转发到真实
    内网。客户端要做 NAT(IP masquerade)避免对端目标看到 vIP source。
 
+## 5.5 与 `exit_mode = "isolate"` 互斥
+
+子网路由是「经宣告方这台**客户端**中转进 LAN」，回程（宣告方 → server → 请求方 vIP）走普通
+mesh 投递、要过内核 FORWARD，而 isolate 在那里装的正是 `-i <tun> -o <tun> DROP` —— 于是审批
+照常成功、客户端照常装上路由、流量 100% 黑洞。三机实测（2026-07-25）：isolate 下已批准的
+`192.168.88.0/24` 请求全超时，服务器 DROP 计数器同步上涨。
+
+现在的处置：启动期若 `exit_mode=isolate` 且库里存在已批准的出口设备 / 子网路由，打一条 WARN
+（`cmd/nanotund/isolate_relay_warn.go`），提示要么改 `exit_mode = "mesh"`，要么把这些审批清掉，
+免得客户端装上黑洞路由（若与它本地真实 LAN 前缀重叠，还会连带打断本地访问）。
+
 ## 6. Open questions
 
 - 重复 CIDR(两台 device 都声明 `192.168.1.0/24`)的优先级仲裁:

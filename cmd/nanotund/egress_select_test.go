@@ -888,3 +888,43 @@ func TestForwardPacketToExitNode_PublicV6WithV6Exit(t *testing.T) {
 		t.Fatal("exitForwarded 未自增")
 	}
 }
+
+// TestEgressSelect_IsolateRejectsPeerExit:exit_mode=isolate 下选 peer 出口必须当场被拒 +
+// fail-closed,而不是绑上去让数据面黑洞。
+//
+// isolate 的 FORWARD DROP 只拦得住走内核的那一段:去程(使用方 → server → 出口机)是用户态直投、
+// 拦不到,回程(出口机 → server → 使用方 vIP)才被 DROP。三机实测(2026-07-25)的表象就是
+// 「选择被接受 + 打了『开始经出口转发』审计 + 全程超时 + 十几秒后一句『出口已离线』」。
+func TestEgressSelect_IsolateRejectsPeerExit(t *testing.T) {
+	resetConnByDeviceForTest(t)
+	st := egressTestStore(t)
+	exitUUID := "c13dcf70-ba47-4962-b303-d2ba7c567790"
+	dev := seedApprovedExitDevice(t, st, exitUUID)
+
+	clientIsolateMode.Store(true)
+	t.Cleanup(func() { clientIsolateMode.Store(false) })
+
+	fake := newFakeLinkConn()
+	a := &Connection{userID: "u1", connIDStr: "a", deviceID: 11, exitAllowed: true, linkConn: fake}
+	body, err := util.MarshalEgressSelect(exitUUID)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	handleEgressSelectFrame(t.Context(), a, body)
+
+	if got := a.egressDeviceID.Load(); got != egressFailClosed {
+		t.Fatalf("isolate 下应 fail-closed(%d),实际 %d(绑到 %d 就会黑洞)", egressFailClosed, got, dev)
+	}
+	ack := parseLastEgressAck(t, fake)
+	if ack.Accepted || ack.Reason != "isolate" {
+		t.Fatalf("应 {accepted:false, reason:isolate},实际 %+v", ack)
+	}
+
+	// 关掉 isolate 后同一次选择要能正常绑上(证明拒绝确实由 isolate 触发,不是把出口整个拒死)。
+	clientIsolateMode.Store(false)
+	b := &Connection{userID: "u1", connIDStr: "b", deviceID: 11, exitAllowed: true, linkConn: newFakeLinkConn()}
+	handleEgressSelectFrame(t.Context(), b, body)
+	if got := b.egressDeviceID.Load(); got != dev {
+		t.Fatalf("非 isolate 下应绑定到出口设备 %d,实际 %d", dev, got)
+	}
+}

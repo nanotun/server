@@ -49,7 +49,15 @@ func FormatUDPListenAddr(host string, primaryPort uint16) string {
 	return host + ":" + p
 }
 
-// PrimaryPortFromUDPListenAddr 取端口并集的第一个端口（主监听口）。
+// PrimaryPortFromUDPListenAddr 取端口并集里**书写顺序**的第一个端口（主监听口，真正
+// bind 的那个；并集里其余端口由 iptables REDIRECT 折过来）。
+//
+// 不能直接用 hyutils.ParsePortUnion 的第 0 项：它会把并集升序排序并合并，
+// ":8443,443" 解析出来第 0 项是 443 —— 于是主端口变成"最小端口"而不是配置里写的
+// 第一个，和本函数名、config.listen_addr 注释、启动日志里的"主端口"三处说法都对不上，
+// 且随管理员书写顺序静默改变绑定口。这里按原串取首个 token（"5000-5100,443" → 5000），
+// 仍用 hysteria 的解析器校验整体合法性；首 token 解析不出来时回退到旧行为，
+// 不让边角写法把服务器卡在启动失败上。
 func PrimaryPortFromUDPListenAddr(addr string) (uint16, error) {
 	_, portUnion, err := SplitUDPListenAddr(addr)
 	if err != nil {
@@ -59,7 +67,22 @@ func PrimaryPortFromUDPListenAddr(addr string) (uint16, error) {
 	if len(pu) == 0 {
 		return 0, fmt.Errorf("invalid port union in %q", addr)
 	}
+	if p, ok := firstWrittenPort(portUnion); ok {
+		return p, nil
+	}
 	return pu[0].Start, nil
+}
+
+// firstWrittenPort 从并集串里取书写顺序的第一个端口："8443,443" → 8443、
+// "5000-5100,443" → 5000。解析不出合法端口时返回 ok=false，由调用方回退。
+func firstWrittenPort(portUnion string) (uint16, bool) {
+	head, _, _ := strings.Cut(strings.TrimSpace(portUnion), ",")
+	head, _, _ = strings.Cut(strings.TrimSpace(head), "-")
+	n, err := strconv.ParseUint(strings.TrimSpace(head), 10, 16)
+	if err != nil || n == 0 {
+		return 0, false
+	}
+	return uint16(n), true
 }
 
 // PortUnionStringFromUDPListenAddr 返回端口并集子串（无 host），供 profile udp_ports 导出。

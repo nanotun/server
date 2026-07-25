@@ -941,6 +941,9 @@ func main() {
 	if err := cfg.TUN.ValidateExitMode(); err != nil {
 		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"exit_mode": cfg.TUN.ExitMode}, "%v", err)
 	}
+	// 控制面要在客户端连上来之前就知道自己是不是 isolate:该模式 DROP 掉所有「同 TUN 进、同 TUN 出」
+	// 的包,而 peer 出口 / 子网路由的回程正好走这条路 → 只能黑洞。见 handleEgressSelectFrame。
+	clientIsolateMode.Store(cfg.TUN.ResolveExitMode() == config.TUNExitModeIsolate)
 	// 深扫第九轮 MED:exit_dns_redirect 同样 fail-fast(姊妹于 exit_mode)。非空值必须是
 	// auto/off/合法 IPv4;拼错(如 "of")过去会被 resolveExitDNSRedirect 静默回退 auto,
 	// 把本想关闭的 DNS 接管反而打开 —— 这里在启动期就拦下。
@@ -1500,6 +1503,9 @@ func main() {
 	}
 	leaseGCCleanup := startLeaseGCLoop(gw, leaseGCIdleDays, gw.cfg.Server.LeaseGCIntervalHours)
 	defer leaseGCCleanup()
+
+	// isolate 与出口节点 / 子网路由互斥,库里已批过的在本模式下只会黑洞 —— 启动期说一次。
+	warnIsolateBlocksApprovedRelays(context.Background(), gw)
 
 	// P1#6/7/8(2026-05-22):admin 控制面 unix socket。默认 /run/nanotun/control.sock,
 	// 设 control_socket_path="off" 显式关闭。

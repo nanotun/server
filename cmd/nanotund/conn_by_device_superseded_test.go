@@ -140,3 +140,27 @@ func TestDeliverIPPacketToConn_OpenTunChanDelivers(t *testing.T) {
 		t.Fatal("TunChan 应收到投递的包")
 	}
 }
+
+// TestExitUnavailableCause_DistinguishesOfflineFromNotRunningExit:出口不可用时,
+// 日志必须区分「设备真离线」与「设备在线但没跑出口」——两者数据面处置一样(fail-closed),
+// 排障方向却相反。三机实测里 C 在线却只报「已离线」,白查了一轮。
+func TestExitUnavailableCause_DistinguishesOfflineFromNotRunningExit(t *testing.T) {
+	const dev = int64(9101)
+
+	if got := exitUnavailableCause(dev); got != "选定出口节点已离线" {
+		t.Errorf("无任何会话时应判为离线,got %q", got)
+	}
+
+	// 设备在线,但这条会话没有 advertisedExit(没带 --exit-node / 已撤回声明)。
+	c := &Connection{connIDStr: "plain-session", deviceID: dev}
+	installDeviceConn(t, c)
+	if got := exitUnavailableCause(dev); got == "选定出口节点已离线" {
+		t.Errorf("设备在线(仅未跑出口)不应报「已离线」,got %q", got)
+	}
+
+	// 会话被接管/踢掉后,该设备就算真的没人了 → 回到「已离线」。
+	c.takenOver.Store(true)
+	if got := exitUnavailableCause(dev); got != "选定出口节点已离线" {
+		t.Errorf("会话已被接管应判为离线,got %q", got)
+	}
+}
