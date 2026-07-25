@@ -612,9 +612,17 @@ func (s *Store) DeleteUser(ctx context.Context, id int64) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 第二十三轮深扫 MED:与 DeleteDevice 同口径 —— 还要求「删完之后没有**别的用户**的设备仍持有同一 UUID」。
+	// device_uuid 仅在 UNIQUE(user_id, device_uuid) 内唯一,跨 user 允许重名,否则删掉 B 用户会连带清掉
+	// A 用户指向同 UUID 的转发(A 的设备还在,转发却没了)。
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM port_forwards
-		  WHERE LOWER(target_device_uuid) IN (SELECT LOWER(device_uuid) FROM devices WHERE user_id=?)`, id); err != nil {
+		  WHERE LOWER(target_device_uuid) IN (SELECT LOWER(device_uuid) FROM devices WHERE user_id=?)
+		    AND NOT EXISTS (
+		      SELECT 1 FROM devices d2
+		       WHERE d2.user_id <> ?
+		         AND LOWER(d2.device_uuid) = LOWER(port_forwards.target_device_uuid)
+		    )`, id, id); err != nil {
 		return fmt.Errorf("store: delete user port_forwards: %w", err)
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id=?`, id)

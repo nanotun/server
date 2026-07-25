@@ -1364,7 +1364,12 @@ func main() {
 			util.FatalExit(util.ExitConfigSemantic, nil, "%s", err.Error())
 		}
 		logrus.WithField("count", len(allowed)).Info("[server] 从 jump_host_allowed_ips 静态注入跳板机名单")
-		jumpFW.Replace(allowed)
+		// 第二十三轮深扫 HIGH:应用失败必须 Fatal,与上面「名单空 = 全网开放 → Fatal」同一口径。此前 Replace
+		// 的失败只打一行日志,启动照常继续 → 运维以为受保护端口已限制到跳板机名单,实际对全网敞开(ipset/iptables
+		// 未装、无权限、内核缺模块都会走到这)。fail-closed:宁可起不来让运维立刻发现,不可静默裸奔。
+		if err := jumpFW.Replace(allowed); err != nil {
+			util.FatalExit(util.ExitConfigSemantic, nil, "%s", err.Error())
+		}
 	}
 
 	// 统一 graceful shutdown:收到 SIGTERM/SIGINT 后只做两件事,
@@ -1423,15 +1428,6 @@ func main() {
 	// 覆盖,不依赖 chan 缓冲。
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	// J2(2026-05-22):systemd Type=notify 集成。READY 必须在所有监听就绪之后发,
-	// 这里时点已 OK(VPN listener / Hysteria / control socket / health 都已 startup)。
-	// startSDWatchdog 在没 systemd / 没设 WatchdogSec= 时直接 no-op,不影响非 systemd 部署。
-	sdNotifyReady()
-	if startSDWatchdog(globalContext) {
-		// 注:只在确实启用 watchdog 时才需要在 shutdown 路径上额外发 STOPPING,
-		// 让 systemctl status 看到 deactivating 状态而不是「卡住几秒」。
-		defer sdNotifyStopping()
-	}
 	// 第十四轮深扫 MED:信号 / SIGHUP hot-reload handler 是常驻全局 goroutine,包 safeGlobalGoroutine ——
 	// applyConfigReload / triggerShutdown 里的 panic 若不捕获会以 Go 默认处理直接崩进程、绕过优雅关停。
 	// defer signal.Stop(sigCh) 在传入的 fn 内,panic 时先跑再冒泡到 recover,行为不变。
@@ -1536,6 +1532,16 @@ func main() {
 	portForwardCleanup := startPortForwardManager(gw, tunDevName)
 	defer portForwardCleanup()
 
+	// 第二十三轮深扫 MED:启动收尾阶段若已收到停机信号,不要再把监听拉起来。triggerShutdown 只做
+	// globalContextCancel() + vpnLn.Close(),**并不会让 main 提前返回** —— 于是"优雅停机"期间 main 仍会继续
+	// 走完下面的 startVPNHTTPServer / realityStartAccept / hySrv.Serve,在公网端口上短暂张开一批监听并接客,
+	// 直到 Serve 在已关闭的 vpnLn 上返回才收摊。此处直接 return,交给已注册的 LIFO defer 链正常撤销
+	// (撤 iptables / 关 TUN / DB checkpoint 等),与正常停机路径完全一致。
+	if globalContext.Err() != nil {
+		logrus.Warn("[server] 启动收尾阶段已收到停机信号,跳过监听启动,直接进入 teardown")
+		return
+	}
+
 	acceptErr := make(chan error, 1)
 	vpnHTTPShutdown := startVPNHTTPServer(vpnLn, wsPath, gw, muxEnabled, muxOptsForAccept, acceptErr)
 	// I10: Serve 返回(因 Listener.Close)之后,显式 srv.Shutdown 给 HTTP/1.1 idle
@@ -1558,6 +1564,20 @@ func main() {
 				logrus.WithError(err).Error("Hysteria Serve 退出")
 			}
 		})
+	}
+
+	// J2(2026-05-22):systemd Type=notify 集成。
+	//
+	// 第二十三轮深扫 MED:READY 必须发在**真正开始 Serve/Accept 之后**。此前它紧跟 signal.Notify(彼时只建好了
+	// vpnLn 这个 socket),而 health server、control socket、Magic DNS、端口转发、环回 WS Serve、REALITY Accept、
+	// hy2 Serve 全在其后 —— systemd 在这段窗口里已把服务标成 active,依赖它的 After=/Requires= 单元与探针会对着
+	// 一个还不接客的服务开工(端口 backlog 里排队,直到 15s 拨号超时被打回)。挪到此处后 READY 名副其实。
+	// startSDWatchdog 在没 systemd / 没设 WatchdogSec= 时直接 no-op,不影响非 systemd 部署。
+	sdNotifyReady()
+	if startSDWatchdog(globalContext) {
+		// 注:只在确实启用 watchdog 时才需要在 shutdown 路径上额外发 STOPPING,
+		// 让 systemctl status 看到 deactivating 状态而不是「卡住几秒」。
+		defer sdNotifyStopping()
 	}
 
 	errAcc := <-acceptErr

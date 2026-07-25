@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -93,45 +94,77 @@ type loopbackSmuxPool struct {
 
 	mu   sync.Mutex
 	sess *smux.Session
+	// dialing 非 nil = 已有一名调用者正在重建会话(拨号在**锁外**进行)。其余调用者等它关闭后重取 sess,
+	// 而不是各自再拨一次 —— 见 OpenStream。
+	dialing chan struct{}
 }
 
 func newLoopbackSmuxPool(wsURL string, smuxCfg *smux.Config, tlsDial *tls.Config) *loopbackSmuxPool {
 	return &loopbackSmuxPool{wsURL: wsURL, smuxCfg: smuxCfg, tlsDial: tlsDial}
 }
 
+// loopbackSmuxDialTimeout 是环回 WSS 握手的上限。它同时是 OpenStream 慢路径的最长等待。
+const loopbackSmuxDialTimeout = 15 * time.Second
+
+// OpenStream 取一条复用 stream;会话不存在 / 已关闭时按需重建。
+//
+// 第二十三轮深扫 MED:重建的**拨号必须在锁外**。此前 OpenStream 全程持 p.mu 并在锁内调
+// DialVPNWebSocket(15s 上限),于是环回 WSS 变慢或不可达时:① 每个等锁的调用者依次各拨一次,N 个并发调用
+// 被放大成 N×15s 的串行阻塞;② 期间任何 hy2 / REALITY 新流都卡在这把锁上 —— 一次慢握手把整个节点的新连接
+// 全部串行化。现在改为 singleflight:同一时刻只有一名调用者拨号(锁外),其余等它的结果;失败也只失败一次。
 func (p *loopbackSmuxPool) OpenStream() (net.Conn, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if err := p.ensureSessionLocked(); err != nil {
-		return nil, err
+	// 最多两轮:第一轮可能是「等别人重建」,若那次失败则本轮自己成为拨号者。再失败即返回,不无限重试。
+	for attempt := 0; attempt < 2; attempt++ {
+		p.mu.Lock()
+		if sess := p.sess; sess != nil && !sess.IsClosed() {
+			p.mu.Unlock()
+			return sess.OpenStream()
+		}
+		if ch := p.dialing; ch != nil {
+			p.mu.Unlock()
+			<-ch // 等在飞的那次重建落地,不再各自拨一次
+			continue
+		}
+		ch := make(chan struct{})
+		p.dialing = ch
+		p.mu.Unlock()
+
+		sess, err := p.dialNewSession()
+		p.mu.Lock()
+		if err == nil {
+			p.sess = sess
+		}
+		p.dialing = nil
+		p.mu.Unlock()
+		close(ch) // 唤醒等待者(无论成败:失败时它们会自己再试一轮)
+		if err != nil {
+			return nil, err
+		}
+		return sess.OpenStream()
 	}
-	return p.sess.OpenStream()
+	return nil, errors.New("loopback smux: 会话重建未能就绪")
 }
 
-func (p *loopbackSmuxPool) ensureSessionLocked() error {
-	if p.sess != nil && !p.sess.IsClosed() {
-		return nil
-	}
-	p.sess = nil
-	conn, err := util.DialVPNWebSocket(p.wsURL, 15*time.Second, p.tlsDial)
+// dialNewSession 建一条新的环回 WSS + smux 客户端会话。**不持 p.mu**(见 OpenStream)。
+func (p *loopbackSmuxPool) dialNewSession() (*smux.Session, error) {
+	conn, err := util.DialVPNWebSocket(p.wsURL, loopbackSmuxDialTimeout, p.tlsDial)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	enableTCPKeepAlive(conn)
 	if _, err := conn.Write(loopbackSmuxMagic); err != nil {
 		_ = conn.Close()
-		return err
+		return nil, err
 	}
 	sess, err := smux.Client(conn, p.smuxCfg)
 	if err != nil {
 		_ = conn.Close()
-		return err
+		return nil, err
 	}
-	p.sess = sess
 	// 第十四轮深扫 MED:包 safeGoroutine —— clearOnClose 阻塞在 sess.CloseChan() 等会话关闭,panic 只应 log、
 	// 不拖垮整进程(与全站「无裸 go」不变量一致)。
 	go safeGoroutine("loopbackSmux/clearOnClose", func() { p.clearOnClose(conn, sess) })
-	return nil
+	return sess, nil
 }
 
 func (p *loopbackSmuxPool) clearOnClose(conn net.Conn, sess *smux.Session) {

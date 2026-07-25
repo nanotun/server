@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -146,50 +147,101 @@ func TestUpsertLease_DoesNotDowngradeManual(t *testing.T) {
 	}
 }
 
-// TestUpsertLease_ManualNotInheritedByNewVIP 覆盖第二十二轮深扫 HIGH:保留 manual 只适用于「地址没换」。
-// vip_* 恒被本次分配结果覆盖,若 manual 无条件 OR,则偏好地址不可用时分配器给出的**全新**地址会继承
-// manual=1 —— 管理员从未钉过它,却使它永久免疫 lease gc,而真正被钉的地址已从该行消失。
-func TestUpsertLease_ManualNotInheritedByNewVIP(t *testing.T) {
-	s := newTestStore(t)
-	ctx := t.Context()
+// TestUpsertLease_ManualPreservationMatrix 穷举 (原行 v4,原行 v6) × (本次写入 v4,本次写入 v6) 全组合,把
+// 「登录路径何时可以保留管理员手钉」这条语义**整体**钉住。
+//
+// 为什么要穷举:这条规则连续三轮出错 —— 第二十一轮写成无条件 manual=excluded.manual(登录把管理员手钉清掉);
+// 第二十二轮改成无条件 MAX(全新地址继承手钉、永久免疫 GC);第二十二轮的修正只按「同族具体→具体」判换址,又漏了
+// **跨族替换**(A4 为空、v6 被钉,本次只写 v4)。逐个补点测试显然拦不住这一类漏判,故改为矩阵。
+//
+// 规则(与 UpsertLease 文档同一句):传 false 时,仅当「原行至少一个具体地址被原封不动保住、且没有任何一族被换成
+// 另一个具体地址」才保留。期望值在表里逐行**显式**写出,不用 Go 复算规则 —— 否则实现与期望可能一起错。
+func TestUpsertLease_ManualPreservationMatrix(t *testing.T) {
+	const (
+		a4 = "10.0.0.90"
+		b4 = "10.0.0.91"
+		a6 = "fd00::90"
+		b6 = "fd00::91"
+	)
+	cases := []struct {
+		old4, old6 string // 原行(manual=1)
+		new4, new6 string // 本次 UpsertLease 写入(manual=false)
+		want       bool   // 期望 manual
+		why        string
+	}{
+		// 原行只有 v4 被钉。
+		{a4, "", a4, "", true, "A4 原封不动留下"},
+		{a4, "", a4, b6, true, "A4 留下,另一族新增不影响手钉"},
+		{a4, "", b4, "", false, "A4 被换成 B4"},
+		{a4, "", b4, b6, false, "A4 被换成 B4"},
+		{a4, "", "", a6, false, "跨族替换:A4 没留下"},
+		{a4, "", "", b6, false, "跨族替换:A4 没留下"},
 
-	u, err := s.CreateUser(ctx, NewUser{Username: "frank", PSKHash: "h"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	d, err := s.UpsertDevice(ctx, u.ID, "uuid-newvip", "m-newvip", "linux")
-	if err != nil {
-		t.Fatal(err)
+		// 原行只有 v6 被钉 —— 第二十三轮实测出的漏洞就在这一组。
+		{"", a6, "", a6, true, "A6 原封不动留下"},
+		{"", a6, a4, a6, true, "A6 留下,另一族新增不影响手钉"},
+		{"", a6, b4, a6, true, "A6 留下"},
+		{"", a6, "", b6, false, "A6 被换成 B6"},
+		{"", a6, a4, "", false, "跨族替换:A6 没留下(第二十三轮漏洞点)"},
+		{"", a6, b4, "", false, "跨族替换:A6 没留下(第二十三轮漏洞点)"},
+		{"", a6, a4, b6, false, "A6 被换成 B6"},
+
+		// 原行双栈都被钉。
+		{a4, a6, a4, a6, true, "两族都原封不动"},
+		{a4, a6, a4, "", true, "A4 留下(某族本次缺失不影响手钉)"},
+		{a4, a6, "", a6, true, "A6 留下"},
+		{a4, a6, b4, a6, false, "A4 被换掉(行级标记取保守方向)"},
+		{a4, a6, a4, b6, false, "A6 被换掉"},
+		{a4, a6, b4, b6, false, "两族都被换掉"},
+		{a4, a6, b4, "", false, "A4 被换掉"},
+		{a4, a6, "", b6, false, "A6 被换掉"},
+
+		// 原行本无地址:没有手钉可依附,跟随传入值。
+		{"", "", a4, "", false, "原行无地址"},
+		{"", "", "", a6, false, "原行无地址"},
 	}
 
-	// 管理员钉下 10.0.0.90(manual=1)。
-	if _, err := s.UpsertManualLeasePreservingEmpty(ctx, d.ID, "10.0.0.90", "", true); err != nil {
-		t.Fatal(err)
-	}
+	for _, tc := range cases {
+		name := fmt.Sprintf("old(%s,%s)->new(%s,%s)", or(tc.old4, "-"), or(tc.old6, "-"), or(tc.new4, "-"), or(tc.new6, "-"))
+		t.Run(name, func(t *testing.T) {
+			s := newTestStore(t)
+			ctx := t.Context()
+			u, err := s.CreateUser(ctx, NewUser{Username: "matrix", PSKHash: "h"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, err := s.UpsertDevice(ctx, u.ID, "uuid-matrix", "m-matrix", "linux")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// 直接建原行:UpsertManualLeasePreservingEmpty 无法把某族按需置成 NULL(空串按「保留」处理)。
+			if _, err := s.DB().ExecContext(ctx,
+				`INSERT INTO leases(device_id,vip_v4,vip_v6,manual,assigned_at) VALUES(?,?,?,1,?)`,
+				d.ID, nullableString(tc.old4), nullableString(tc.old6), nowUnix(),
+			); err != nil {
+				t.Fatal(err)
+			}
 
-	// 设备重登,但偏好地址不可用 → 分配器给了**另一个**地址。manual 不得被继承。
-	l, err := s.UpsertLease(ctx, d.ID, "10.0.0.91", "", false)
-	if err != nil {
-		t.Fatal(err)
+			l, err := s.UpsertLease(ctx, d.ID, tc.new4, tc.new6, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if l.Manual != tc.want {
+				t.Errorf("manual = %v, want %v(%s)", l.Manual, tc.want, tc.why)
+			}
+			// 地址本身恒按本次分配结果落库,与 manual 的判定无关。
+			if l.VIPv4 != tc.new4 || l.VIPv6 != tc.new6 {
+				t.Errorf("地址应恒按本次写入落库: got (%q,%q), want (%q,%q)", l.VIPv4, l.VIPv6, tc.new4, tc.new6)
+			}
+		})
 	}
-	if l.Manual {
-		t.Fatal("换到新地址时不应继承管理员的 manual 标记(否则新地址永久免疫 GC)")
-	}
-	if l.VIPv4 != "10.0.0.91" {
-		t.Fatalf("vip_v4 = %q, want 10.0.0.91", l.VIPv4)
-	}
+}
 
-	// 双栈某族本次缺失(具体地址 → NULL)**不算换址**:manual 仍应保留。
-	if _, err := s.UpsertManualLeasePreservingEmpty(ctx, d.ID, "10.0.0.91", "fd00::91", true); err != nil {
-		t.Fatal(err)
+func or(s, dflt string) string {
+	if s == "" {
+		return dflt
 	}
-	l2, err := s.UpsertLease(ctx, d.ID, "10.0.0.91", "", false) // 本次只分到 v4
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !l2.Manual {
-		t.Fatal("某族本次缺失不算换址,manual 应保留")
-	}
+	return s
 }
 
 // TestSetDeviceFixedVIP_SyncsManual 验证事务化后 devices.fixed_vip 与 leases.manual 同步:设固定→manual=1,

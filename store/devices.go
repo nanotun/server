@@ -329,9 +329,20 @@ func (s *Store) DeleteDevice(ctx context.Context, id int64) error {
 	defer func() { _ = tx.Rollback() }()
 
 	// 写在先(write-first,与本包纪律一致):清孤儿转发。
+	//
+	// 第二十三轮深扫 MED:必须再要求「删完之后**没有别的设备**还持有同一 UUID」。device_uuid 只在
+	// UNIQUE(user_id, device_uuid) 里唯一,不同 user 下**允许**同 UUID(GetDeviceByUUIDAny 撞到多行会回
+	// ErrAmbiguousDevice,正是为此)。此前的 SQL 只按 UUID 匹配 → 管理员为消解这种冲突而删掉后注册的那台设备时,
+	// 会把**另一个用户**指向同 UUID 的端口转发一起删掉(它的设备还在,转发却没了,只能重建)。
+	// 只有在该 UUID 真正随本次删除而彻底消失时,转发才算孤儿。
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM port_forwards
-		  WHERE LOWER(target_device_uuid) = (SELECT LOWER(device_uuid) FROM devices WHERE id=?)`, id); err != nil {
+		  WHERE LOWER(target_device_uuid) = (SELECT LOWER(device_uuid) FROM devices WHERE id=?)
+		    AND NOT EXISTS (
+		      SELECT 1 FROM devices d2
+		       WHERE d2.id <> ?
+		         AND LOWER(d2.device_uuid) = LOWER(port_forwards.target_device_uuid)
+		    )`, id, id); err != nil {
 		return fmt.Errorf("store: delete device port_forwards: %w", err)
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM devices WHERE id=?`, id)

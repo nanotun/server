@@ -63,3 +63,63 @@ func TestBatchTouchDevices_EmptyNoop(t *testing.T) {
 		t.Fatalf("empty 应返回 nil, got %v", err)
 	}
 }
+
+// TestDeleteDevice_KeepsPortForwardOfSameUUIDUnderOtherUser 覆盖第二十三轮深扫 MED:清理孤儿端口转发时只按
+// UUID 匹配会误删别的用户的转发 —— device_uuid 仅在 UNIQUE(user_id, device_uuid) 内唯一,跨 user 允许同 UUID
+// (GetDeviceByUUIDAny 撞多行回 ErrAmbiguousDevice 正是为此)。管理员为消解这种冲突而删掉后注册那台时,
+// 不该动到先注册那位的转发。
+func TestDeleteDevice_KeepsPortForwardOfSameUUIDUnderOtherUser(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	const sharedUUID = "shared-uuid-collision"
+
+	alice, err := s.CreateUser(ctx, NewUser{Username: "alice-pf", PSKHash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eve, err := s.CreateUser(ctx, NewUser{Username: "eve-pf", PSKHash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertDevice(ctx, alice.ID, sharedUUID, "alice-box", "linux"); err != nil {
+		t.Fatal(err)
+	}
+	eveDev, err := s.UpsertDevice(ctx, eve.ID, sharedUUID, "eve-box", "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.CreatePortForward(ctx, PortForward{
+		Proto: "tcp", PublicPort: 18080, TargetDeviceUUID: sharedUUID, TargetIP: "10.0.0.7", TargetPort: 80, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 删掉 Eve 那台(UUID 仍被 Alice 的设备持有)→ 转发必须保留。
+	if err := s.DeleteDevice(ctx, eveDev.ID); err != nil {
+		t.Fatal(err)
+	}
+	pfs, err := s.ListPortForwards(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pfs) != 1 {
+		t.Fatalf("同 UUID 仍被别的用户的设备持有,转发不应被清:剩余 %d 条", len(pfs))
+	}
+
+	// 再删 Alice 那台 → UUID 彻底消失,此时才该清掉孤儿转发。
+	aliceDev, err := s.GetDeviceByUUID(ctx, alice.ID, sharedUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteDevice(ctx, aliceDev.ID); err != nil {
+		t.Fatal(err)
+	}
+	pfs, err = s.ListPortForwards(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pfs) != 0 {
+		t.Fatalf("UUID 已彻底消失,孤儿转发应被清:剩余 %d 条", len(pfs))
+	}
+}

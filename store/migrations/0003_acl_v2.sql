@@ -57,8 +57,10 @@ CREATE TABLE acl_pairs (
     dst_port_hi   INTEGER NOT NULL DEFAULT 0,
     dst_kind      TEXT NOT NULL DEFAULT 'user',
     created_at    INTEGER NOT NULL,
-    -- NULL 在 SQLite UNIQUE 里被视作彼此不等,所以通配(src/dst=NULL)规则不会被这条约束拦,
-    -- 应用层(admin CLI acl add)负责防止「重复加同名通配」。
+    -- NULL 在 SQLite UNIQUE 里被视作彼此不等,所以通配(src/dst=NULL)规则不会被这条约束拦。
+    -- 【勘误 · 第二十三轮深扫 MED】这里原本写着「应用层(admin CLI acl add)负责防止重复加同名通配」,
+    -- 但那道应用层守卫从未被实现过。现由 0030 的表达式唯一索引 idx_acl_pairs_logical 真正兜住
+    -- (把 NULL 折叠成 -1 再判唯一),通配重复会与非通配一样撞 UNIQUE → 归一成 ErrDuplicate。
     UNIQUE(src_user_id, dst_user_id, action, proto, dst_port_lo, dst_port_hi, dst_kind)
 );
 

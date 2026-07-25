@@ -25,7 +25,15 @@ func buildRealityTLSConfig(r *config.RealityConfig) (*reality.Config, error) {
 		return nil, err
 	}
 
-	dialer := net.Dialer{}
+	// 第二十三轮深扫 HIGH:必须给 dest 拨号钉上超时。reality.Server 在**握手之前**就 DialContext 到 dest
+	// (third_party/xtls-reality/tls.go 里 "failed to dial dest" 那处),而并发限制器是在 Accept 时就占槽、
+	// 只在 conn.Close 才释放(见 realityConcLimitListener)。零值 Dialer 无超时 + 上层传的是 context.Background()
+	// → dest 被黑洞(丢包不回 RST)、或 hostname 形式的 dest 遇上 DNS 挂起时,每个进来的连接都攥着一个槽位死等
+	// 内核 TCP 超时(常达数分钟,甚至更久)。攒满 realityMaxConcurrent 后 Accept 永久阻塞在 `sem <-`,整个
+	// REALITY 监听僵死 —— 与上面注释里那次 CloseWrite panic 导致的槽位泄漏是同一个终局。
+	// realityAcceptDeadlineListener 只管**入站** conn 的 deadline,管不到这条出站拨号。
+	// 取值与握手超时同量级:dest 慢到超过它本就无法用来做 REALITY 伪装目标。
+	dialer := net.Dialer{Timeout: realityHandshakeTimeout}
 	rc := &reality.Config{
 		DialContext:            dialer.DialContext,
 		Show:                   r.Show,

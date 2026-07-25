@@ -60,10 +60,8 @@ func (s *Store) GetLeaseByDevice(ctx context.Context, deviceID int64) (*Lease, e
 //
 // 调用方传入空字符串视为「该协议下无 vIP」，并在数据库里存为 NULL（受唯一索引约束）。
 //
-// manual 语义:**地址未变则单向置位,地址换掉则跟随调用方**。
-//   - 传 true                          → 置 manual=1;
-//   - 传 false 且本次没换地址          → **保留**现有 manual(不下调);
-//   - 传 false 且某族从一个具体地址换成**另一个**具体地址 → 取传入值(即清零)。
+// manual 语义:**传 true 必置位;传 false 时,仅当「原行至少一个具体地址被原封不动保住、且没有任何一族被换成
+// 另一个具体地址」才保留现有 manual,否则跟随传入值(即清零)。**
 //
 // 为什么要保留(第二十一轮深扫 MED):本函数在生产中的唯一调用方是登录分配路径
 // (cmd/nanotund/alloc_lease.go persistDeviceLease),它只在「本次分到的 vIP == device.fixed_vip」时才算出
@@ -71,12 +69,22 @@ func (s *Store) GetLeaseByDevice(ctx context.Context, deviceID int64) (*Lease, e
 // device.fixed_vip)钉下的 manual=1 租约,会在该设备下次重登时被覆盖成 0 → 之后 `lease gc` 到期即回收管理员
 // 手钉的 sticky 地址(fixed_vip 那条另有 GC 守卫兜底,纯 manual 这条无人兜)。自动分配没资格清管理员的手钉。
 //
-// 为什么换址就不能保留(第二十二轮深扫 HIGH,修上一轮 `manual=MAX(...)` 的过度保留):vip_* 恒被本次分配
-// 结果覆盖,若 manual 无条件 OR,则当偏好地址**不可用**时(preferredVIPUsable 因不在网段内 / 被别的在线设备
-// 占用 / 被 --force 挪走而拒绝),分配器给出的**全新**地址 Y 会继承 manual=1 —— 管理员从未钉过 Y,却使 Y 永久
-// 免疫 `lease gc`;而真正被钉的 X 已从本行消失,若 devices.fixed_vip 仍指向 X,该设备就同时占住两个池地址。
-// 故只在「地址没换」时保留。双栈某族本次缺失(具体地址 → NULL)**不算换址**,仍保留手钉 —— 那属于
-// 「按本次分配结果落库」的既有语义(见调用方注释),不应连带清掉管理员的标记。
+// 为什么不能无条件保留(第二十二轮 HIGH + 第二十三轮 HIGH):vip_* 恒被本次分配结果覆盖。若 manual 只是
+// 无条件 OR,则偏好地址**不可用**时(preferredVIPUsable 因不在网段内 / 被别的在线设备占用 / 被 --force 挪走
+// 而拒绝),分配器给出的**全新**地址会继承 manual=1 —— 管理员从未钉过它,却使它永久免疫 `lease gc`;而真正
+// 被钉的地址已从本行消失,若 devices.fixed_vip 仍指向它,该设备就同时占住两个池地址。第二十二轮只按「同族
+// 具体→具体」判换址,漏掉了**跨族替换**:行 (NULL, fd00::90, manual=1) 遇上只分到 v4 的登录 → 写成
+// (10.0.0.91, NULL) 时两族都变了却没有任何一族是具体→具体 → 又落回错误的保留分支。故判据改为下面三条:
+//
+//	原行 → 本次写入            manual 结果    理由
+//	(A4, --)  → (A4, --|B6)    保留          A4 原封不动留下
+//	(A4, --)  → (B4, *)        跟随传入      A4 被换成 B4
+//	(A4, --)  → (--, A6|B6)    跟随传入      A4 没留下,新址与手钉无关(跨族替换)
+//	(--, A6)  → (B4|A4, A6)    保留          A6 原封不动留下
+//	(--, A6)  → (A4|B4, --)    跟随传入      A6 没留下(即上面实测出的漏洞)
+//	(A4, A6)  → (A4, --)       保留          A4 留下(双栈某族本次缺失不影响手钉)
+//	(A4, A6)  → (B4, A6)       跟随传入      A4 被换掉(手钉是行级标记,无法只对一族生效 → 取保守方向)
+//	(--, --)  → (A4, --)       跟随传入      原行没有地址,谈不上手钉
 //
 // 清 manual 的合法路径都不经本函数:`lease set --manual=false` / `lease release`
 // (走 UpsertManualLeasePreservingEmpty)与 SetDeviceFixedVIP 清 fixed_vip(事务内同步 manual=0)。
@@ -101,9 +109,15 @@ func (s *Store) UpsertLease(ctx context.Context, deviceID int64, vipV4, vipV6 st
 		   vip_v4=excluded.vip_v4,
 		   vip_v6=excluded.vip_v6,
 		   manual=CASE
+		     -- (a) 某族的具体地址被换成**另一个**具体地址 → 管理员的手钉不再适用于新址。
 		     WHEN (excluded.vip_v4 IS NOT NULL AND leases.vip_v4 IS NOT NULL AND excluded.vip_v4 <> leases.vip_v4)
 		       OR (excluded.vip_v6 IS NOT NULL AND leases.vip_v6 IS NOT NULL AND excluded.vip_v6 <> leases.vip_v6)
 		     THEN excluded.manual
+		     -- (b) **没有任何一族保住具体地址**(原行本就没有,或原有的本次都写成 NULL)→ 手钉无所依附。
+		     WHEN NOT (leases.vip_v4 IS NOT NULL AND excluded.vip_v4 IS NOT NULL)
+		      AND NOT (leases.vip_v6 IS NOT NULL AND excluded.vip_v6 IS NOT NULL)
+		     THEN excluded.manual
+		     -- (c) 其余:至少一族两边都是具体地址(经 (a) 已排除不等 → 必为同一地址)→ 保留手钉,不许自动分配下调。
 		     ELSE MAX(excluded.manual, leases.manual)
 		   END,
 		   assigned_at=excluded.assigned_at`,

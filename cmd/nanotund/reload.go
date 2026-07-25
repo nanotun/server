@@ -115,7 +115,25 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 			// 配置改成关闭 jump_host_firewall:这是 enabled 切换,属于非热更新路径
 			deferred = append(deferred, "server.jump_host_firewall(开关切换需重启)")
 		default:
-			rs.jumpFW.Replace(newCfg.Server.JumpHostAllowedIPs)
+			// 第二十三轮深扫 MED:SIGHUP 路径必须自己重跑 ValidateJumpHostFirewall。冷启动与 `config lint` 都会跑它
+			// (拒「名单空」「条目全非法/全空白」),但 SIGHUP 走的 loadConfig 只做 Validate() —— 于是把名单改成
+			// 一堆非法项(误写 CIDR / 主机名 / 拼错)后 reload,sanitizeJumpHostIPv4s 会把它们全丢掉,只剩
+			// ensureLoopbackIPv4Allowlist 补的 127.0.0.1 → 真正的跳板机在受保护端口上被静默挡死(自锁)。
+			// 同一份配置冷启动会直接 Fatal,热更新却悄悄生效,口径必须一致:校验不过就不应用,保留现名单。
+			if verr := newCfg.Server.ValidateJumpHostFirewall(); verr != nil {
+				logrus.WithError(verr).Error("[reload] server.jump_host_allowed_ips 校验未通过,保留原名单不应用")
+				deferred = append(deferred, "server.jump_host_allowed_ips(校验未通过,保留原名单)")
+				break
+			}
+			// 第二十三轮深扫 HIGH:应用失败(ipset/iptables 不可用等)时**不得**标记为已应用。此前无条件记
+			// applied 并打「已热更新」,而 Replace 内部失败会回滚规则 → 受保护端口实际敞开,运维却收到成功回报;
+			// 更糟的是内存里的 old 名单已被更新,下一次相同的 SIGHUP 会因 sameStringSetSorted 相等而整段跳过,
+			// 敞开状态一直维持到重启。保持 old 不变,让下一次 reload 仍会重试。
+			if rerr := rs.jumpFW.Replace(newCfg.Server.JumpHostAllowedIPs); rerr != nil {
+				logrus.WithError(rerr).Error("[reload] server.jump_host_allowed_ips 应用失败(受保护端口当前未受限),未标记为已应用")
+				deferred = append(deferred, "server.jump_host_allowed_ips(应用失败,见日志)")
+				break
+			}
 			logrus.WithFields(logrus.Fields{
 				"old_count": len(old.Server.JumpHostAllowedIPs),
 				"new_count": len(newCfg.Server.JumpHostAllowedIPs),

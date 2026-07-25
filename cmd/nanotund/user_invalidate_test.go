@@ -450,7 +450,7 @@ func TestKickConnForUserInvalidate_NetPipeWorks(t *testing.T) {
 		createdAt:      time.Now(),
 	}
 	installConn(t, c)
-	kickConnForUserInvalidate(context.Background(), nil, c, 10, "psk_rotated")
+	kickConnForUserInvalidate(context.Background(), nil, c, 10, "psk_rotated", kickNoFollow)
 
 	done := make(chan struct{})
 	go func() {
@@ -494,7 +494,7 @@ func TestKickConnForUserInvalidate_FollowsTakeoverToCurrentConn(t *testing.T) {
 	installConn(t, newConn)
 	oldConn.takenOver.Store(true)
 
-	if !kickConnForUserInvalidate(ctx, nil, oldConn, 1, "user_deleted") {
+	if !kickConnForUserInvalidate(ctx, nil, oldConn, 1, "user_deleted", kickFollowTakeover) {
 		t.Fatal("kick 应沿 sid 追到接管后的当前会话,并如实回 true")
 	}
 	select {
@@ -514,7 +514,83 @@ func TestKickConnForUserInvalidate_FollowsTakeoverToCurrentConn(t *testing.T) {
 	// sid 已从连表摘除(接管后的会话也走完了 cleanup)→ 无活会话可踢,如实回 false,不产生虚假成功计数。
 	gone := &Connection{connIDStr: "conn-gone-after-takeover", userID: "u1", tunnelDone: make(chan struct{}), createdAt: time.Now()}
 	gone.takenOver.Store(true)
-	if kickConnForUserInvalidate(ctx, nil, gone, 1, "user_deleted") {
+	if kickConnForUserInvalidate(ctx, nil, gone, 1, "user_deleted", kickFollowTakeover) {
 		t.Error("sid 已不在连表时应回 false")
+	}
+}
+
+// TestKickConnForUserInvalidate_DoesNotFollowForPerConnReason 覆盖第二十三轮深扫 MED:逐连接属性的踢除
+// (psk_rotated / platform_denied)**不得**沿 connID 追到接管后的新会话。
+//
+// 场景:管理员 reset-psk → 周期扫描在锁下快照到旧会话(陈旧哈希)后放锁 → 用户用**新** PSK 经 takeover 重连成功
+// (takeover 刻意给 newConn 盖上 DB 当下的哈希,见 server.go 中 pskHashAtLogin 的注释,正是为免掉二次踢)→ 若踢除
+// 追过去,被踢掉的正是刚刚合法重认证过的会话,用户经历"踢-takeover-再被踢"的抖动(P1-1 回归)。
+func TestKickConnForUserInvalidate_DoesNotFollowForPerConnReason(t *testing.T) {
+	ctx := context.Background()
+	const sid = "conn-psk-rotated-takeover"
+
+	oldConn := &Connection{
+		connIDStr:      sid,
+		userID:         "u1",
+		linkConn:       newFakeLinkConn(),
+		pskHashAtLogin: "psk-old",
+		tunnelDone:     make(chan struct{}),
+		createdAt:      time.Now().Add(-time.Minute),
+	}
+	newFake := newFakeLinkConn()
+	newConn := &Connection{
+		connIDStr:      sid,
+		userID:         "u1",
+		linkConn:       newFake,
+		pskHashAtLogin: "psk-new", // 已用新 PSK 重认证过
+		tunnelDone:     make(chan struct{}),
+		createdAt:      time.Now(),
+	}
+	installConn(t, newConn)
+	oldConn.takenOver.Store(true)
+
+	if kickConnForUserInvalidate(ctx, nil, oldConn, 1, "psk_rotated", kickNoFollow) {
+		t.Error("按连接自身属性判定的踢除不应追到接管后的新会话")
+	}
+	select {
+	case <-newFake.closed:
+		t.Fatal("已用新 PSK 合法重认证的会话被误踢(P1-1 抖动回归)")
+	default:
+	}
+	if newConn.superseded.Load() {
+		t.Error("新会话不应被标 superseded")
+	}
+}
+
+// TestKickConnForUserInvalidate_FollowSkipsForeignUser:追踪时若当前持有者已不属目标 user,宁可漏踢也不误踢。
+func TestKickConnForUserInvalidate_FollowSkipsForeignUser(t *testing.T) {
+	ctx := context.Background()
+	const sid = "conn-sid-reused-by-other-user"
+
+	oldConn := &Connection{
+		connIDStr:  sid,
+		userID:     "u1",
+		linkConn:   newFakeLinkConn(),
+		tunnelDone: make(chan struct{}),
+		createdAt:  time.Now(),
+	}
+	otherFake := newFakeLinkConn()
+	other := &Connection{
+		connIDStr:  sid,
+		userID:     "u2", // 不同 user
+		linkConn:   otherFake,
+		tunnelDone: make(chan struct{}),
+		createdAt:  time.Now(),
+	}
+	installConn(t, other)
+	oldConn.takenOver.Store(true)
+
+	if kickConnForUserInvalidate(ctx, nil, oldConn, 1, "user_deleted", kickFollowTakeover) {
+		t.Error("追到的会话已不属目标 user 时应放弃踢除")
+	}
+	select {
+	case <-otherFake.closed:
+		t.Fatal("误踢了不属目标 user 的会话")
+	default:
 	}
 }

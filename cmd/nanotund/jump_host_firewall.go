@@ -87,15 +87,25 @@ func newJumpHostFirewallWithSpecs(enabled bool, specs []jumpHostPortSpec) *jumpH
 	return &jumpHostFirewall{enabled: enabled, protectedPorts: clean}
 }
 
-func (f *jumpHostFirewall) Replace(ips []string) {
+// Replace 用给定名单重刷 ipset,并确保 iptables 侧规则已安装。
+//
+// 第二十三轮深扫 HIGH:**必须把失败返回给调用方**。此前所有失败分支只 logrus.Errorf 后 return,于是
+// `jump_host_firewall=true` 时 ipset/iptables 不可用(未装、无权限、内核无模块、瞬时错误)只表现为日志里一行
+// 红字:启动流程照常继续、reload 照常把它记成「已热更新」并回报成功。运维据配置认为受保护端口已被限制到跳板机
+// 名单内,实际却是**对全网敞开** —— 与「名单为空即 Fatal」想防的是同一件事,只是那条走 config 校验、这条走
+// 运行时应用。现在:启动期失败 → Fatal(见 server.go 调用处),reload 失败 → 不标记已应用并回错(见 reload.go)。
+//
+// 返回 nil 的三种情况都不是"应用失败":未启用(enabled=false)、非 Linux(已明确告知不支持,不承诺保护)、
+// 以及真正刷成功。回滚路径(flush/add 失败后 rollbackJumpFirewallLocked)一律回错 —— 那正是「端口现在没被保护」。
+func (f *jumpHostFirewall) Replace(ips []string) error {
 	if !f.enabled {
-		return
+		return nil
 	}
 	if runtime.GOOS != "linux" {
 		if atomic.CompareAndSwapUint32(&f.nonLinuxLogged, 0, 1) {
 			logrus.Warn("[server] jump_host_firewall 仅支持 Linux，已忽略")
 		}
-		return
+		return nil
 	}
 	sanitized := ensureLoopbackIPv4Allowlist(ips)
 	f.mu.Lock()
@@ -103,18 +113,18 @@ func (f *jumpHostFirewall) Replace(ips []string) {
 
 	if err := f.ensureInstalledLocked(); err != nil {
 		logrus.Errorf("[server] jump_host_firewall 安装失败（已跳过本次刷新，避免误伤端口）: %v", err)
-		return
+		return fmt.Errorf("jump_host_firewall 安装失败(受保护端口当前**未**受限): %w", err)
 	}
 	if out, err := exec.Command("ipset", "flush", jumpHostIPSetName).CombinedOutput(); err != nil {
 		logrus.Errorf("[server] ipset flush %s: %v (%s)，尝试回滚防火墙规则", jumpHostIPSetName, err, strings.TrimSpace(string(out)))
 		f.rollbackJumpFirewallLocked()
-		return
+		return fmt.Errorf("ipset flush %s 失败,已回滚(受保护端口当前**未**受限): %w", jumpHostIPSetName, err)
 	}
 	for _, ip := range sanitized {
 		if out, err := exec.Command("ipset", "add", jumpHostIPSetName, ip).CombinedOutput(); err != nil {
 			logrus.Errorf("[server] ipset add %s %q: %v (%s)，尝试回滚（避免端口在空 ipset 下被全 DROP）", jumpHostIPSetName, ip, err, strings.TrimSpace(string(out)))
 			f.rollbackJumpFirewallLocked()
-			return
+			return fmt.Errorf("ipset add %s %q 失败,已回滚(受保护端口当前**未**受限): %w", jumpHostIPSetName, ip, err)
 		}
 	}
 	f.installed = true
@@ -123,6 +133,7 @@ func (f *jumpHostFirewall) Replace(ips []string) {
 		"ip_count":       len(sanitized),
 		"protected_spec": describePortSpecs(f.protectedPorts),
 	}).Info("[server] jump_host_firewall:已刷新 ipset")
+	return nil
 }
 
 func (f *jumpHostFirewall) Teardown() {

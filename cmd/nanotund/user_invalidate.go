@@ -156,7 +156,8 @@ func scanAndKickInvalidUsers(ctx context.Context, gw *gatewayState) {
 		u, reason, kickAll := userInvalidStatus(ctx, gw.store, uid)
 		if kickAll {
 			for _, snap := range snaps {
-				kickConnForUserInvalidate(ctx, gw, snap.c, uid, reason)
+				// 账号级失效:接管后的新会话同样该死 → 追。
+				kickConnForUserInvalidate(ctx, gw, snap.c, uid, reason, kickFollowTakeover)
 			}
 			continue
 		}
@@ -179,7 +180,9 @@ func scanAndKickInvalidUsers(ctx context.Context, gw *gatewayState) {
 		for _, snap := range snaps {
 			// psk_rotated 优先:本连接登录时用的 PSK hash 与 DB 当下不一致 → 只踢这条。
 			if snap.pskHashAtLogin != "" && dbHash != strings.TrimSpace(snap.pskHashAtLogin) {
-				kickConnForUserInvalidate(ctx, gw, snap.c, uid, "psk_rotated")
+				// 逐连接属性判据 → **不追**接管后的新会话:它可能已用新 PSK 合法重认证过(takeover 会盖上
+				// DB 当下的哈希,正是为了免掉这次二次踢)。见 kickFollowPolicy。
+				kickConnForUserInvalidate(ctx, gw, snap.c, uid, "psk_rotated", kickNoFollow)
 				continue
 			}
 			// 平台白名单(2026-07-18):user 本身有效,但 admin 可能改过 allowed_platforms。
@@ -187,7 +190,8 @@ func scanAndKickInvalidUsers(ctx context.Context, gw *gatewayState) {
 			// 那一条。空快照(登录时没报 platform)在已设白名单时同样不合规 —— 与登录
 			// 路径 AllowsPlatform 对空串的拒绝口径一致,重登也会吃 910,不存在误伤。
 			if !allowedEmpty && !u.AllowsPlatform(snap.platformAtLogin) {
-				kickConnForUserInvalidate(ctx, gw, snap.c, uid, "platform_denied")
+				// 同为逐连接属性(平台取自本连接登录时的上报)→ 不追,下一轮按新会话的平台重判。
+				kickConnForUserInvalidate(ctx, gw, snap.c, uid, "platform_denied", kickNoFollow)
 			}
 		}
 	}
@@ -226,8 +230,31 @@ func userInvalidStatus(ctx context.Context, st *store.Store, userID int64) (u *s
 // 给几跳余量以容忍踢除与连续 takeover 撞在一起,同时防病态循环 / 自指把调用方钉死在这里。
 const maxKickTakeoverHops = 4
 
-func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connection, userID int64, reason string) bool {
+// kickFollowPolicy 决定「目标已被 takeover 顶掉」时是否沿 connID 追到当前持有者。
+//
+// 第二十三轮深扫 MED:第二十二轮无条件追,踩坏了 takeover 的一条既有保护。判据分两类:
+//
+//   - **账号级 / 管理员显式指定**(user_deleted、user_disabled、control-socket kick):判据与被踢连接自身的
+//     属性无关,接管后的新会话同样该死 → 必须追,否则一次性的 admin kick 会静默失效(见 kickFollowTakeover)。
+//   - **逐连接属性**(psk_rotated、platform_denied):判据取自**被踢连接登录时的快照**。takeover 会给 newConn
+//     盖上 DB 当下的真值(见 server.go 里 pskHashAtLogin 的注释),正是为了让「管理员改了 PSK → 用户用新 PSK
+//     重连成功」的会话不被同周期再踢一次("踢-takeover-再被踢"抖动)。若这类踢除也追,就把那条保护废掉了:
+//     周期扫描先在锁下快照到旧会话(陈旧哈希)再放锁判定,接管一旦落进这个间隙,追过去踢掉的正是刚刚合法
+//     重认证过的新会话 → 必须**不追**。放掉它是安全的:下一 tick 会对新会话按其真实属性重判。
+type kickFollowPolicy bool
+
+const (
+	kickNoFollow       kickFollowPolicy = false // 逐连接属性判据(psk_rotated / platform_denied)
+	kickFollowTakeover kickFollowPolicy = true  // 账号级或管理员显式指定
+)
+
+func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connection, userID int64, reason string, follow kickFollowPolicy) bool {
 	if c == nil {
+		return false
+	}
+	if follow == kickNoFollow && c.takenOver.Load() {
+		// takeover 路径下 oldConn 已处于「待回收」状态,不再写帧;而按本连接属性做的判定对接管后的新连接
+		// 未必成立(理由见 kickFollowPolicy),交给下一轮扫描重判。
 		return false
 	}
 	// 第二十二轮深扫 MED:c 已被 takeover 顶掉时**不能只是返回** —— 业务会话仍以**同一 connIDStr** 活在接管后的
@@ -254,6 +281,20 @@ func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connect
 			// 接管后的新 conn 也已离场(cleanup 已把该 sid 摘除),或表里仍是自己(理论不会:提交时必被换成
 			// newConn)。无活会话可踢,如实回 false,避免虚假成功计数。
 			return false
+		}
+		// 追到的会话必须仍属同一 user 才踢。takeover 不换身份(同 sid + 同 takeoverSecret),故正常必然相等;
+		// 这里防的是「sid 被复用到别的用户」这类不该发生但一旦发生就会踢错人的情形 —— 宁可漏踢(下一轮扫描
+		// 会按新会话的真实归属重判),不可误踢无关用户。userID==0(调用方未能解析出目标 user)时跳过该校验。
+		if userID != 0 {
+			if curUID := parseUserIDStr(cur.userID); curUID != 0 && curUID != userID {
+				logrus.WithFields(logrus.Fields{
+					"conn_id":  c.connIDStr,
+					"want_uid": userID,
+					"got_uid":  curUID,
+					"reason":   reason,
+				}).Warn("[user-invalidate] 接管后的会话已不属目标 user,放弃踢除")
+				return false
+			}
 		}
 		c = cur
 	}
