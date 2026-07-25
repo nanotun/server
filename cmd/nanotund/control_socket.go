@@ -279,6 +279,15 @@ type controlStatusResp struct {
 	ACLExitDrops    uint64 `json:"acl_exit_drops"`
 	ExitGateDrops   uint64 `json:"exit_gate_drops"`
 	MeshOffDrops    uint64 `json:"mesh_off_drops"`
+	// SrcSpoofDrops(M2 源地址反欺骗)/ TunWriteDrops / TunOversizeDrops:此前只在 /metrics 里有,
+	// 而 /metrics 挂在 health endpoint 上、默认不开;控制 socket 的 /status 才是一定拿得到的那个。
+	// 这三个恰好是**回程**方向仅有的静默丢包点——尤其 src_spoof:出口 / 子网路由的回程源是公网 / LAN 地址,
+	// 一旦转发方的「已批准」豁免闸没对上,回包就在这里无声消失。三机实测(2026-07-25)撞到过一次:
+	// 出口选择 accepted、exit_node.forwarded 照常涨、两端抓包都能看到 SYN-ACK 从出口机发回,
+	// 但 A 永远收不到,而 /status 里没有任何一个计数器动 —— 只能靠两端对包排查。补上后一眼可判。
+	SrcSpoofDrops    uint64 `json:"src_spoof_drops"`
+	TunWriteDrops    uint64 `json:"tun_write_drops"`
+	TunOversizeDrops uint64 `json:"tun_oversize_drops"`
 	MeshEnabled     bool   `json:"mesh_enabled"`
 	UserKickTotal   uint64 `json:"user_invalidate_kicks"`
 	// 2026-05-23:同 device_uuid 重登触发的踢旧次数(语义见 supersede.go 顶部注释)。
@@ -349,6 +358,9 @@ func controlHandleStatus(gw *gatewayState) http.HandlerFunc {
 			ACLExitDrops:                   aclExitDropCount.Load(),
 			ExitGateDrops:                  exitGateDropCount.Load(),
 			MeshOffDrops:                   meshOffDropCount.Load(),
+			SrcSpoofDrops:                  srcSpoofDropCount.Load(),
+			TunWriteDrops:                  tunWriteDropCount.Load(),
+			TunOversizeDrops:               tunOversizeDropCount.Load(),
 			MeshEnabled:                    meshOn,
 			UserKickTotal:                  userInvalidateKickCount.Load(),
 			SessionSupersedeTotal:          sessionSupersedeCount.Load(),

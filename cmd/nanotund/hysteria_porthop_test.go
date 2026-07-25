@@ -15,14 +15,11 @@ import (
 // TestStartEmbeddedHysteria_PortUnionBindsPrimary 端口并集时仅 bind「数值最小」端口,
 // 另一端在 redirect 装上之前仍可由其它进程占用。
 //
-// P2-13(2026-05-22): 修历史 flaky。`PrimaryPortFromUDPListenAddr` 内部用
-// `hyutils.ParsePortUnion` 解析端口并集,**按数值排序**返回首个端口 —— 与「listen 串里
-// 写哪个就是 primary」无关。旧测试用 pickFreeUDPPort 随机抽两个端口,断言 gotPort
-// == 第一个写入的(`primary`),50% 概率失败(当 secondary < primary 时)。
-//
-// 现在两条修正:
-//  1. 用 `min(primary, secondary)` 表达正确的 expected,**不**依赖随机端口大小关系;
-//  2. 同样把 boundPrimary / freePort 也用对换后的变量名,避免阅读混淆。
+// P2-13(2026-05-22)曾把本测试改成断言「绑定数值最小的端口」——那是迁就当时
+// `PrimaryPortFromUDPListenAddr` 内部 `hyutils.ParsePortUnion` 会排序的实现,
+// 而文档与配置注释一直承诺「listen 串里写在最前的那个就是 primary」。
+// 2026-07-25 已把实现改回按书写顺序取首个端口(见 util.PrimaryPortFromUDPListenAddr),
+// 于是这里断言 gotPort == 写在最前的 a,与端口数值大小无关(也就不会 flaky)。
 func TestStartEmbeddedHysteria_PortUnionBindsPrimary(t *testing.T) {
 	dir := t.TempDir()
 	cert, key := writeTestHy2ServerTLS(t, dir)
@@ -31,7 +28,7 @@ func TestStartEmbeddedHysteria_PortUnionBindsPrimary(t *testing.T) {
 	for b == a {
 		b = pickFreeUDPPort(t)
 	}
-	// 仍按「a,b」写入 listen 串,验证不论哪边数值小,绑定的都是数值最小那个。
+	// 按「a,b」写入 listen 串:不论 b 是否比 a 小,绑定的都该是写在最前的 a。
 	listen := fmt.Sprintf("127.0.0.1:%d,%d", a, b)
 	cfg := testHysteriaConfig(t, listen, "test-hop-pw", cert, key)
 
@@ -46,14 +43,9 @@ func TestStartEmbeddedHysteria_PortUnionBindsPrimary(t *testing.T) {
 		t.Fatal("expected hy2 server")
 	}
 	defer hySrv.Close()
-	expectedBound := a
-	expectedFree := b
-	if b < a {
-		expectedBound = b
-		expectedFree = a
-	}
+	expectedBound, expectedFree := a, b
 	if gotPort != expectedBound {
-		t.Fatalf("udp port=%d want bound(min) %d (listen=%s)", gotPort, expectedBound, listen)
+		t.Fatalf("udp port=%d,want 绑定书写顺序首个端口 %d (listen=%s)", gotPort, expectedBound, listen)
 	}
 	if _, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", expectedFree)); err != nil {
 		t.Fatalf("free port %d should remain bindable before redirect: %v", expectedFree, err)

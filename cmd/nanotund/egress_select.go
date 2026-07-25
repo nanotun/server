@@ -910,14 +910,21 @@ func revalidateExitBindings(ctx context.Context) int {
 		if keep {
 			continue // 仍被批准 / 暂时无法判定 → 保持绑定。
 		}
-		// 撤销 / 不再批准 → 回退 server。CAS 防误伤:仅当它**仍**绑着这个被撤销的 dev 才重置
-		// (期间客户端可能已自行改了出口;atomic CAS 与 readLoop 的 Store 安全并发)。
-		if b.c.egressDeviceID.CompareAndSwap(b.dev, 0) {
+		// 撤销 / 不再批准 → fail-closed,**不**回退 server 自出口。与选择期 not_approved 同口径
+		// (见 egressFailClosed):用户点名某个出口往往正因为不愿被归因到 server 的公网 IP,
+		// 「批准被撤销」并不代表他改了主意。此前这里存 0,于是 admin 一撤销,在用会话的公网流量就
+		// 静默从 server IP 出去 —— 三机实测(2026-07-25):A 用着 C,`exit revoke C` 后 A 的出网 IP
+		// 当场从 C 变成 server,而 A 压根没开 --exit-fallback-server。想要便利回落的用户显式开该开关,
+		// 客户端收到 revoked ack 后会主动重发 EgressSelect{server}。
+		//
+		// CAS 防误伤:仅当它**仍**绑着这个被撤销的 dev 才重置(期间客户端可能已自行改了出口;
+		// atomic CAS 与 readLoop 的 Store 安全并发)。
+		if b.c.egressDeviceID.CompareAndSwap(b.dev, egressFailClosed) {
 			logrus.WithFields(logrus.Fields{
 				"user_id":        b.c.userID,
 				"conn_id":        b.c.connIDStr,
 				"exit_device_id": b.dev,
-			}).Warn("[egress] 出口资格被撤销,本会话已实时回退 server 自出口(待通知客户端)")
+			}).Warn("[egress] 出口资格被撤销,本会话公网流量已 fail-closed 阻断(未改走 server 自出口,待通知客户端)")
 			resetConns = append(resetConns, b.c)
 		}
 	}

@@ -372,8 +372,8 @@ func TestEgressSelect_BindsApprovedExitEvenWhenOffline(t *testing.T) {
 	}
 }
 
-// Phase 2(撤销实时):revalidateExitBindings —— 绑定的出口仍被批准则不动;被撤销则即时重置回 server(0)+ ack revoked。
-func TestRevalidateExitBindings_RevokedResetToServer(t *testing.T) {
+// Phase 2(撤销实时):revalidateExitBindings —— 绑定的出口仍被批准则不动;被撤销则即时改判 fail-closed + ack revoked。
+func TestRevalidateExitBindings_RevokedFailsClosed(t *testing.T) {
 	resetConnByDeviceForTest(t)
 	st := egressTestStore(t)
 	const exitUUID = "22222222-3333-4444-8555-666666666666"
@@ -404,12 +404,14 @@ func TestRevalidateExitBindings_RevokedResetToServer(t *testing.T) {
 		t.Fatalf("delete route: %v", err)
 	}
 
-	// revalidate → 绑定它的 A 即时重置回 server(0)+ ack revoked。
+	// revalidate → 绑定它的 A 即时改判 fail-closed + ack revoked。**不能**是 0(server 自出口):
+	// 用户点名出口正因为不愿被归因到 server 的公网 IP,撤销不代表他改了主意(三机实测 2026-07-25:
+	// 此前 `exit revoke` 后 A 的出网 IP 当场从出口机变成 server,而 A 没开 --exit-fallback-server)。
 	if n := revalidateExitBindings(t.Context()); n != 1 {
 		t.Fatalf("撤销后应重置 1 个会话,实际 %d", n)
 	}
-	if a.egressDeviceID.Load() != 0 {
-		t.Fatalf("撤销后绑定它的会话应重置回 server(0),实际 %d", a.egressDeviceID.Load())
+	if got := a.egressDeviceID.Load(); got != egressFailClosed {
+		t.Fatalf("撤销后应改判 fail-closed(%d),实际 %d", egressFailClosed, got)
 	}
 	ack := parseLastEgressAck(t, fake)
 	if ack.Accepted || ack.Reason != "revoked" {

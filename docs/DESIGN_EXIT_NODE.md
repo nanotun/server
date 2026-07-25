@@ -143,10 +143,16 @@
     （热切换那条）。用户点名某出口往往正因为目的站点只放行那个 IP、或不愿被归因到 VPN 服务器，静默回落恰好
     给了他要避开的东西。阻断只落在**公网出口流量**上：mesh 互访 / 网关（MagicDNS）/ 内部目的地照旧走原链路。
   - **Phase 1 ✅（选择按授权绑定）**：`handleEgressSelectFrame` 改用 `resolveApprovedExitDeviceID`（按 UUID 在 approved 出口集解析 deviceID，**在线/离线均可**）→ 解析到即绑、解析不到（撤销/未知）→ `egressDeviceID=egressFailClosed`+`not_approved`（fail-closed 阻断，**不**回退 server；口径见上表）。`forwardPacketToExitNode` 成功投递复位 `exitOfflineNotified`（per-episode 通知 + 自动恢复）。单测 + 实跑验证（选离线 approved→accepted/绑定；选未批→not_approved/fail-closed 阻断且 mesh 不受影响）。
-  - **Phase 2 ✅（撤销实时 + 新批准即时推送）**：`egressDeviceID` 改 `atomic.Int64`；control endpoint `POST /reload?what=exits` → `revalidateExitBindings`（绑定设备被撤销→CAS 重置回 server + `EgressSelectAck{revoked}` 通知）+ `broadcastExitsList`。admin `exit designate/revoke`、`route approve/reject/delete`(出口) 后 best-effort `notifyExitsChanged`。实跑验证：A 用着 C、`exit revoke C` → ~3s A 收到 revoked + 改经 server（不重连）。
+  - **Phase 2 ✅（撤销实时 + 新批准即时推送）**：`egressDeviceID` 改 `atomic.Int64`；control endpoint `POST /reload?what=exits` → `revalidateExitBindings`（绑定设备被撤销→CAS 置 `egressFailClosed` + `EgressSelectAck{revoked}` 通知）+ `broadcastExitsList`。admin `exit designate/revoke`、`route approve/reject/delete`(出口) 后 best-effort `notifyExitsChanged`。实跑验证：A 用着 C、`exit revoke C` → ~3s A 收到 revoked + 公网流量 fail-closed 阻断（不重连）。
+  - **撤销也 fail-closed（2026-07-25 三机实测补齐）**：上面「选择时被拒」的口径原先漏了**运行中被撤销**这条路径——
+    `revalidateExitBindings` 仍 CAS 成 `0`（= server 自出口）。实测：A 正用着出口 C（出网 IP 149.28.145.50），
+    admin 执行 `exit revoke C` → A 的出网 IP 当场变成 server 的 45.32.249.36，而 A **没有**开 `--exit-fallback-server`。
+    这与选择期口径、与该开关「默认关 = 严格 fail-closed」的承诺都相反。撤销是管理员的动作，不代表用户改了主意。
+    现改为置 `egressFailClosed`；想要便利回落的用户显式开开关，客户端收到 `revoked` ack 后主动重发 `EgressSelect{server}`。
   - **Phase 3**：
     - **E ✅ 出口偏好 per-profile**：`exit_egress_device` 从全局移到 `profile_store.StoredProfile`（各 server 各记各的）；连接按当前 profile 取（`resolve_active_exit_egress`）；选出口写当前 profile，仅当前连接的 profile 才实时切。
-    - **F ✅ 撤销客户端提示**：CLI/GUI 对 `reason=revoked` 显示「已被管理员撤销，已自动改经 server」。
+    - **F ✅ 撤销客户端提示**：CLI/GUI 对 `reason=revoked` 显示「已被管理员撤销，公网流量已 fail-closed 阻断」，
+      并与「掉线 / 被拒」共用 `--exit-fallback-server` 分支（开了才回落 server）。
     - **D ✅ 实测为非问题（strict-block 零泄露窗口）**：理论上连接瞬间约 1RTT 内首包可能经 server 自出口。
       用真出口机 box2(203.0.113.20，真 NAT) 实测:A `--kill-switch --exit box2` 连接,从发起即密集采样公网出口 IP →
       序列为 `1×BLOCKED(连上前 kill-switch 阻断) → 20×box2(203.0.113.20)`,**全程无一次 server IP(203.0.113.10)**。
@@ -154,7 +160,8 @@
       故**不做** D 的多端连接时序重排(改连接关键路径有风险、收益为零)。若将来真观测到泄露再议。
   - **完整转发 live e2e ✅（真出口机 box2）**：A(本地容器,full-tunnel `--exit box2`)→ server(203.0.113.10)→ D(box2,真 NAT)→ 公网。
     实测:① A 出口 IP = box2(203.0.113.20);② box2 下线 → A fail-closed 阻断(出口 IP 空,非 server);③ box2 上线 → A 自动恢复经 box2(不重连);
-    ④ `exit revoke` box2 → ~5s A 实时改经 server 自出口(203.0.113.10)+ 收到 `reason=revoked`(不重连)。P1/P2/P3-E 全链路成立。
+    ④ `exit revoke` box2 → ~5s A 收到 `reason=revoked`、公网流量实时 fail-closed 阻断(不重连;当时的实现是改经 server 自出口,
+    见上「撤销也 fail-closed」——2026-07-25 已改口径)。P1/P2/P3-E 全链路成立。
   - **深扫加固（第三轮 Bugbot + 逻辑复核）✅**：
     - **DB 出错不误伤绑定**：`deviceHasApprovedExitRoute` / `resolveApprovedExitDeviceID` 返 `ok` 位，区分「DB 查不动(无法判定)」与「确实未批准」。`revalidateExitBindings`：`keep = approved || !ok`，DB 抖动**绝不误撤销**在用出口；`handleEgressSelectFrame`：`!ok` 回 `try_again`（不改现状、不静默回落 server），仅 `deviceID==0`(确认未批) 才 `not_approved` 回退 server；`buildExitsList` / 广播：DB 查不动时保守「不列 / 不广播」。取舍：真撤销若恰逢 DB 故障会延后到下次 `revalidate` 成功——这是「绝不误撤销」优先级换来的。
     - **出口列表仅连接时镜像（客户端 Linux GUI）**：`apply_daemon_state` 仅 `Connected` 镜像 `exits_list_json`、其余清 `None`，修重连过渡期 daemon DTO 残留把陈旧/离线出口灌回刚清空的下拉。
