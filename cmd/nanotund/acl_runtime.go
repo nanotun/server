@@ -817,7 +817,8 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 	}
 
 	// (3) 已批准的出口 / 子网转发者:合法中继非 vIP 源的外网 / LAN 回程 → 豁免。
-	if c.advertisedExitApproved.Load() || c.advertisedSubnetApproved.Load() {
+	exitApproved := c.advertisedExitApproved.Load()
+	if exitApproved || c.advertisedSubnetApproved.Load() {
 		// 第十六轮深扫 MED:豁免**不含**「目的 == server 自身网关」的包。合法的出口/子网回程只会指向对端 vIP 或
 		// 外网/LAN,绝不会以网关自身为目的;而 MagicDNS resolver 监听 gateway:53、mesh 服务也在网关。若在此放过一个
 		// **非 vIP 源、目的网关**的包,它会以「未知源」抵达 MagicDNS → 触发解析层 fail-open(magicNameDeniedByMeshOff/
@@ -834,6 +835,27 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 		// 下跨信任域)。isMeshCIDRAddr 已含网关(上面 dst 网关分支是另一维度),此处按**源**再拦一道。
 		if isMeshCIDRAddr(src) || is4via6(src) {
 			return true
+		}
+		// 第二十一轮深扫 MED:**纯子网中继**(只批准了子网路由、未批准为出口)的豁免收窄到「源 ∈ 本会话**当前宣告
+		// 的网段**」。子网路由**不做 NAT**,其合法回程源就是被访问的 LAN 主机地址,必然落在宣告网段内;而**出口**要
+		// NAT 整个公网,合法源可以是任意公网地址,故 exitApproved 仍保持宽豁免。此前二者共用同一宽豁免 → 「批准设备
+		// 共享 192.168.50.0/24」这一授权被提权成「可向任意 mesh 对端注入任意源 IP 的包」(拿公网地址或别的 LAN 地址
+		// 冒充,做 DNS/ICMP/TCP 注入、连接干扰与错误归因),超出"共享我的 LAN"的语义。
+		// 集为 nil/空 = 未知 → 退回旧的宽松行为,与 forwardPacketToSubnetRoute 的 per-CIDR 门控同一约定(生产中布尔
+		// 置真必同帧填 advertisedRoutes,故正常不走该退路;仅防御性兜底,不误杀 setup 瞬态)。
+		if !exitApproved {
+			if pfxs := c.advertisedRoutes.Load(); pfxs != nil && len(*pfxs) > 0 {
+				covered := false
+				for _, p := range *pfxs {
+					if p.Contains(src) {
+						covered = true
+						break
+					}
+				}
+				if !covered {
+					return true
+				}
+			}
 		}
 		return false
 	}

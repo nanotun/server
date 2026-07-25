@@ -95,6 +95,14 @@ func broadcastShutdownClose(drainTimeout time.Duration) {
 		// 见 cmd/nanotund/safego.go 注释。如果落掉 `go`,这里会顺序执行,放大慢连接拖死整体广播的风险。
 		go safeGoroutine("shutdownClose/"+c.connIDStr, func() {
 			defer wg.Done()
+			// 第二十一轮深扫 MED:抢 linkWrMu 之前先取消本 conn 的 tunnel ctx,逼停可能卡在限速器 WaitN(持该锁)
+			// 的下行 demux —— 与 kick/supersede/takeover 同款(见 forceCancelTunnel)。本广播**刻意**排在
+			// globalContextCancel 之前(见 triggerShutdown 注释),而 WaitN 的取消源是 per-tunnel tunCtx(globalContext
+			// 的子 ctx),故此刻它还活着:低限速会话若正在下行写,WaitN 会持锁等到令牌到齐(1s 写 deadline 管不住令牌
+			// 等待),下面的 Lock() 随之阻塞、wg.Wait() 拖住整个 drain 屏障。取消后:空闲 demux 走 ctx.Done 直接返回
+			// (**不**关 linkConn,故本帧仍能正常写出,不违反「先广播再 cancel」的初衷);正卡在 WaitN 的 demux 则
+			// 写失败退出并关链路 —— 那条本就是拥塞到收不下 Close 帧的会话,不值得为它拖住停机。
+			forceCancelTunnel(c)
 			c.linkWrMu.Lock()
 			defer c.linkWrMu.Unlock()
 			// takeover 完成的老 conn(takenOver=true)与 cleanupConnection 即将关闭

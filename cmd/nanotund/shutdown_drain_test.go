@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -124,6 +125,28 @@ func TestBroadcastShutdownClose_WritesCloseFrame(t *testing.T) {
 	}
 	if msg.Reason != ShutdownReason {
 		t.Fatalf("CloseMsg.Reason = %q, 期望 %q", msg.Reason, ShutdownReason)
+	}
+}
+
+// TestBroadcastShutdownClose_CancelsTunnelBeforeWrite 覆盖第二十一轮深扫 MED:广播在抢 linkWrMu 之前必须先
+// 取消本 conn 的 tunnel ctx,逼停可能卡在限速器 WaitN(持该锁)的下行 demux —— 否则低限速会话会把 Lock() 连同
+// wg.Wait() 一起拖住,整个停机 drain 屏障被单条慢会话卡数秒(1s 写 deadline 管不住令牌等待)。
+// 同时断言取消**不**妨碍 Close 帧照常写出(取消只停 demux,不关 linkConn)。
+func TestBroadcastShutdownClose_CancelsTunnelBeforeWrite(t *testing.T) {
+	tc := &shutdownTestConn{}
+	c := makeShutdownTestConn("c-cancel", tc)
+	var canceled atomic.Bool
+	cf := context.CancelFunc(func() { canceled.Store(true) })
+	c.tunnelCancel.Store(&cf)
+	withConnIDMap(t, map[string]*Connection{c.connIDStr: c})
+
+	broadcastShutdownClose(0)
+
+	if !canceled.Load() {
+		t.Fatal("广播应先 forceCancelTunnel 逼停可能持 linkWrMu 的限速 demux,实际未取消")
+	}
+	if len(tc.Bytes()) == 0 {
+		t.Fatal("取消 tunnel ctx 不应妨碍 Close 帧写出(取消只停 demux,不关 linkConn)")
 	}
 }
 

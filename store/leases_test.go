@@ -90,6 +90,62 @@ func TestGcOrphanLeases_FixedVIPGuard(t *testing.T) {
 	}
 }
 
+// TestUpsertLease_DoesNotDowngradeManual 覆盖第二十一轮深扫 MED:UpsertLease 的 manual 是**单向置位** ——
+// 登录分配路径(唯一生产调用方)只在「本次分到的 vIP == device.fixed_vip」时才传 true,若 false 能清掉现值,
+// 管理员用 `lease set --v4 X`(--manual 默认 true、且不写 device.fixed_vip)钉下的租约就会在该设备下次重登时
+// 被降级成 manual=0 → 之后 `lease gc` 到期即回收管理员手钉的 sticky 地址(fixed_vip 那条另有 GC 守卫兜底,
+// 纯 manual 这条无人兜)。清 manual 的合法路径都不经 UpsertLease。
+func TestUpsertLease_DoesNotDowngradeManual(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	u, err := s.CreateUser(ctx, NewUser{Username: "erin", PSKHash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.UpsertDevice(ctx, u.ID, "uuid-manual", "m-manual", "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 管理员手钉一条 manual 租约(注意:**不**设 device.fixed_vip,故 GC 的 fixed_vip 守卫兜不到它)。
+	if _, err := s.UpsertManualLeasePreservingEmpty(ctx, d.ID, "10.0.0.80", "", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// 设备重登:登录路径复用同一 vIP,但因 fixed_vip 为空而算出 manual=false。
+	l, err := s.UpsertLease(ctx, d.ID, "10.0.0.80", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l.Manual {
+		t.Fatal("登录路径传 manual=false 不应清掉管理员钉下的 manual=1")
+	}
+
+	// 端到端确认后果已闭合:设备推到很久以前,GC 也不应回收这条 manual 租约。
+	old := time.Now().Add(-3600 * time.Second).Unix()
+	if _, err := s.DB().ExecContext(ctx, `UPDATE devices SET last_seen_at=? WHERE id=?`, old, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.GcOrphanLeases(ctx, 60); err != nil {
+		t.Fatal(err)
+	} else if n != 0 {
+		t.Fatalf("manual 租约不应被 GC 回收,got %d", n)
+	}
+
+	// 单向置位的另一半:传 true 仍能正常把 manual=0 抬成 1。
+	if _, err := s.DB().ExecContext(ctx, `UPDATE leases SET manual=0 WHERE device_id=?`, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	l2, err := s.UpsertLease(ctx, d.ID, "10.0.0.80", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l2.Manual {
+		t.Fatal("UpsertLease 传 manual=true 应能置位 manual")
+	}
+}
+
 // TestSetDeviceFixedVIP_SyncsManual 验证事务化后 devices.fixed_vip 与 leases.manual 同步:设固定→manual=1,
 // 清固定→manual=0。
 func TestSetDeviceFixedVIP_SyncsManual(t *testing.T) {

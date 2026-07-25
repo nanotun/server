@@ -64,6 +64,63 @@ func TestConnSourceSpoofed(t *testing.T) {
 	}
 }
 
+// TestConnSourceSpoofed_SubnetOnlyScopedToAdvertisedRoutes 覆盖第二十一轮深扫 MED:**纯子网中继**(只批准了
+// 子网路由、未批准为出口)的源豁免收窄到「源 ∈ 本会话当前宣告的网段」——子网路由不做 NAT,合法回程源必是被访问
+// 的 LAN 主机。出口(要 NAT 整个公网)仍保持任意源宽豁免;宣告集为 nil/空(未知)时退回旧的宽松行为,不误杀。
+func TestConnSourceSpoofed_SubnetOnlyScopedToAdvertisedRoutes(t *testing.T) {
+	mkPkt := func(src [4]byte) []byte {
+		dst := [4]byte{8, 8, 8, 8}
+		return []byte{
+			0x45, 0x00, 0x00, 0x1c,
+			0x00, 0x00, 0x00, 0x00,
+			0x40, 0x11, 0x00, 0x00,
+			src[0], src[1], src[2], src[3],
+			dst[0], dst[1], dst[2], dst[3],
+			0x12, 0x34, 0x00, 0x35,
+			0x00, 0x08, 0x00, 0x00,
+		}
+	}
+	// adv==nil 表示「未填宣告集」(未知);否则填入指定网段。
+	mkConn := func(exitApproved bool, adv []string) *Connection {
+		c := &Connection{}
+		ips := []util.VirtualIPAssignment{{VirtualIP: "10.9.0.5"}}
+		c.clientIPs.Store(&ips)
+		c.advertisedSubnetRoutes.Store(true)
+		c.advertisedSubnetApproved.Store(true)
+		c.advertisedExitApproved.Store(exitApproved)
+		if adv != nil {
+			pfxs := make([]netip.Prefix, 0, len(adv))
+			for _, s := range adv {
+				pfxs = append(pfxs, netip.MustParsePrefix(s).Masked())
+			}
+			c.advertisedRoutes.Store(&pfxs)
+		}
+		return c
+	}
+	lan := []string{"192.168.50.0/24"}
+	inLAN := [4]byte{192, 168, 50, 10} // 宣告网段内的 LAN 主机 → 合法回程源
+	pub := [4]byte{203, 0, 113, 8}     // 集外公网地址 → 纯子网中继不该能拿它作源
+	otherLAN := [4]byte{10, 77, 0, 5}  // 集外的别人 LAN → 同样不该放行
+
+	if connSourceSpoofed(mkConn(false, lan), mkPkt(inLAN)) {
+		t.Error("纯子网中继以其已宣告网段内的 LAN 主机为源:应合法")
+	}
+	if !connSourceSpoofed(mkConn(false, lan), mkPkt(pub)) {
+		t.Error("纯子网中继以集外公网地址为源:应判伪造")
+	}
+	if !connSourceSpoofed(mkConn(false, lan), mkPkt(otherLAN)) {
+		t.Error("纯子网中继以集外的其它 LAN 地址为源:应判伪造")
+	}
+	// 同一个集外公网源,若该设备**也已批准为出口** → 仍豁免(出口 NAT 整个公网,任意源合法)。
+	if connSourceSpoofed(mkConn(true, lan), mkPkt(pub)) {
+		t.Error("已批准出口携公网源应仍豁免(不能被子网收窄逻辑误伤)")
+	}
+	// 宣告集未填(nil)= 未知 → 退回旧的宽松行为,避免 setup 瞬态误杀。
+	if connSourceSpoofed(mkConn(false, nil), mkPkt(pub)) {
+		t.Error("宣告集为空时应退回宽松行为,不判伪造")
+	}
+}
+
 // 帮助:把一份测试规则装载为当前 snapshot,默认动作为 ACLAllow。
 func loadACLForTest(rules []*store.ACLPair, defaultAction string) {
 	aclCurrent.Store(buildACLSnapshot(rules, defaultAction))

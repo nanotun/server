@@ -154,6 +154,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 			s.renderInternalError(w, r, "setup:issue_session", err)
 			return
 		}
+		// 第二十一轮深扫 MED:与登录成功同口径 —— 新的成功认证作废残留的 pending 2FA 转场态(理由见 handleLogin)。
+		s.sess.ClearTOTPPending(w)
 		_ = s.store.RecordWebAdminLoginSuccess(ctx, admin.ID, ip)
 		s.audit.Write(ctx, admin, "web.setup", FormatTarget("web_admin", admin.ID),
 			FormatDetail("username", admin.Username))
@@ -341,6 +343,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			s.renderInternalError(w, r, "login:issue_session", err)
 			return
 		}
+		// 第二十一轮深扫 MED:任何**新的成功认证**都应作废浏览器里可能残留的 pending 2FA 转场态。
+		// 场景:管理员 A(已开 TOTP)在本浏览器过了密码步 → 种下一枚 5 分钟、IP 绑定的 pending;随后同一浏览器
+		// 直接以管理员 B(未开 TOTP)登录成功 —— 此前不清,A 的 pending 仍然有效,窗口内任何人只要拿到 A 的第二
+		// 因子即可直接完成 /login/totp,而**无需再输 A 的密码**。/logout 与 TOTP 成功都会清,这里补齐「密码即登录」
+		// 这条路径(setup 成功同理)。ClearTOTPPending 幂等:本就没有 pending 时只是多发一枚立即过期的 cookie。
+		s.sess.ClearTOTPPending(w)
 		// 成功登录 → 把 IP 失败计数减半(非清零,见 Decay):合法用户自身手误的少量计数会落到阈值下、
 		// 几乎无感,而 NAT 共享 IP 下同段攻击者的失败信号不会被一次成功清空。TOTP 分支不在这里衰减,
 		// 放到 handleLoginTOTP 成功才算"真登录"。
