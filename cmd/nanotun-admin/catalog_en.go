@@ -146,6 +146,7 @@ var catEN = map[string]string{
 	"device.fixedConflictV6":     "fixed_vip_v6=%s conflicts with an existing lease / fixed-vip: %s (add --force to override)",
 	"device.forceOverrideV4":     "WARN: force-overriding fixed_vip_v4 conflict: %s — the store-level UNIQUE index only guards devices↔devices; this bypass can leave two holders on the same vIP (double-allocation / blackhole at next login). Proceed only if you will fix the other holder.",
 	"device.forceOverrideV6":     "WARN: force-overriding fixed_vip_v6 conflict: %s — the store-level UNIQUE index only guards devices↔devices; this bypass can leave two holders on the same vIP (double-allocation / blackhole at next login). Proceed only if you will fix the other holder.",
+	"device.fixedOutOfMesh":      "WARN: %s=%s is outside the current mesh subnet (%s) — at its next login the device will be **silently auto-assigned** a different vIP while `device list` keeps showing this pin (the server logs a [tun-subnet] warning). Pin an address inside the subnet to make it stick; ignore this if you are pre-staging for a planned subnet change.",
 	"device.fixedUpdated":        "updated: device id=%d uuid=%s fixed_vip_v4=%s fixed_vip_v6=%s",
 	"device.rateUpdated":         "updated device id=%d: up=%s down=%s",
 	"device.badIP":               "not a valid IP %q",

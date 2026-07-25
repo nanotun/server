@@ -377,6 +377,13 @@ func cmdDeviceSetFixedVIP(ctx context.Context, st *store.Store, opts *globalOpts
 			fmt.Fprintln(opts.stderr, opts.T("device.forceOverrideV6", conflict))
 		}
 	}
+	// 钉住的地址若不在当前 mesh 网段内,登录路径会静默改走自动分配(见 nanotund 的 warnFixedVIPOutOfMesh)。
+	// 那条告警只落在 server 日志里,而 admin 这边看到的是一句绿色的「已更新」、`device list` 也照常显示钉住值
+	// —— 三机实测(2026-07-25):把 device 1 钉到 10.99.0.5(不在 10.200~10.202/16 任何一段)CLI 毫无异议,
+	// 设备下次登录拿到的却是自动分配的 10.201.0.5。这里在下发当场提示,别让运维等到读日志才发现。
+	// 只 warn 不拒绝:运维可能正为「计划中的换网段」预置地址,硬失败会挡住合法用法。
+	warnFixedVIPOutOfMesh(ctx, st, opts, changedV4, newV4, changedV6, newV6)
+
 	oldV4, oldV6 := d.FixedVIPv4, d.FixedVIPv6
 	// --force 传到 store 层:让它在跨表 lease 冲突时释放他设备占用后再钉(而非 ErrDuplicate 拒绝),
 	// 与 CLI 侧「--force 跳过预检」的语义一致(见 SetDeviceFixedVIP)。
@@ -483,6 +490,59 @@ func pushRateRefresh(opts *globalOpts, deviceID int64) error {
 	}
 	_, err := controlDo(cli, "POST", path, nil)
 	return err
+}
+
+// warnFixedVIPOutOfMesh 在钉住的地址落在当前 mesh 网段之外时打一条 WARN(不拒绝)。
+//
+// 网段来源是库里的 mesh_cidrs 快照(server 每次启动落库的实际网关 CIDR),而不是配置文件里的
+// `[tun] subnets` 候选列表 —— 候选可能有三段,真正生效的只有选中的那一段,拿候选比会漏报。
+// best-effort:库里还没有快照(server 从未启动过)或读失败,就不提示,绝不因为一条提醒而挡住下发。
+func warnFixedVIPOutOfMesh(ctx context.Context, st *store.Store, opts *globalOpts, changedV4 bool, newV4 string, changedV6 bool, newV6 string) {
+	if (!changedV4 || newV4 == "") && (!changedV6 || newV6 == "") {
+		return // 两族都没改 / 都是清除 —— 没有要校验的地址
+	}
+	cidrs, err := st.GetMeshCIDRs(ctx)
+	if err != nil || len(cidrs) == 0 {
+		return
+	}
+	prefixes := make([]netip.Prefix, 0, len(cidrs))
+	for _, c := range cidrs {
+		if p, perr := netip.ParsePrefix(strings.TrimSpace(c)); perr == nil {
+			prefixes = append(prefixes, p)
+		}
+	}
+	if len(prefixes) == 0 {
+		return
+	}
+	for _, f := range []struct {
+		changed bool
+		flag    string
+		val     string
+	}{{changedV4, "fixed_vip_v4", newV4}, {changedV6, "fixed_vip_v6", newV6}} {
+		if !f.changed || f.val == "" {
+			continue
+		}
+		addr, aerr := netip.ParseAddr(f.val)
+		if aerr != nil {
+			continue // 族校验已在调用方做过,这里只是防御
+		}
+		// 只与**同族**网段比:v6 快照不该让 v4 地址判为越界(反之亦然)。
+		inMesh, sawSameFamily := false, false
+		for _, p := range prefixes {
+			if p.Addr().Is4() != addr.Is4() {
+				continue
+			}
+			sawSameFamily = true
+			if p.Contains(addr) {
+				inMesh = true
+				break
+			}
+		}
+		if !sawSameFamily || inMesh {
+			continue // 该族压根没启用(比如没配 v6 网段)就无从判断,不提示
+		}
+		fmt.Fprintln(opts.stderr, opts.T("device.fixedOutOfMesh", f.flag, f.val, strings.Join(cidrs, ", ")))
+	}
 }
 
 // findFixedVIPConflict 检查 candidate vIP 是否已被其它持有者占用(0008 device 维度版)。
