@@ -308,6 +308,9 @@ type pktTuple struct {
 	dst     netip.Addr
 	proto   string // "tcp" / "udp" / "icmp" / "icmpv6" / ""(未识别)
 	dstPort uint16 // tcp/udp 才有意义;其他 0
+	// srcPort 与 dstPort 同批解析(同一 hasL4Ports 门控)。只有 FRP LAN 回程豁免用得上:
+	// 「server 自己拨出去的那条连接的回包」唯一可辨特征就是 src == 配置的 target_ip:target_port。
+	srcPort uint16
 	// hasL4Ports 表示 dstPort 确实来自本报文里**存在**的 L4 头(整包 / IPv4 首片的 tcp/udp)。
 	// 第四轮深扫 MED:IPv4 **非首片**(fragment offset != 0)不携带 L4 头,`p[ihl+2:ihl+4]` 是净荷字节而非端口;
 	// 截断头亦然。此时 hasL4Ports=false,带端口的规则一律视为不命中(见 ruleMatchesPacket),避免:
@@ -674,12 +677,14 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 		case 6:
 			out.proto = "tcp"
 			if !isNonFirstFragment && len(p) >= ihl+4 {
+				out.srcPort = binary.BigEndian.Uint16(p[ihl : ihl+2])
 				out.dstPort = binary.BigEndian.Uint16(p[ihl+2 : ihl+4])
 				out.hasL4Ports = true
 			}
 		case 17:
 			out.proto = "udp"
 			if !isNonFirstFragment && len(p) >= ihl+4 {
+				out.srcPort = binary.BigEndian.Uint16(p[ihl : ihl+2])
 				out.dstPort = binary.BigEndian.Uint16(p[ihl+2 : ihl+4])
 				out.hasL4Ports = true
 			}
@@ -717,6 +722,7 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 				out.proto = "tcp"
 				resolved = true
 				if !nonFirstFrag && len(p) >= off+4 {
+					out.srcPort = binary.BigEndian.Uint16(p[off : off+2])
 					out.dstPort = binary.BigEndian.Uint16(p[off+2 : off+4])
 					out.hasL4Ports = true
 				}
@@ -725,6 +731,7 @@ func parsePacketTuple(p []byte) (pktTuple, bool) {
 				out.proto = "udp"
 				resolved = true
 				if !nonFirstFrag && len(p) >= off+4 {
+					out.srcPort = binary.BigEndian.Uint16(p[off : off+2])
 					out.dstPort = binary.BigEndian.Uint16(p[off+2 : off+4])
 					out.hasL4Ports = true
 				}
@@ -841,7 +848,18 @@ func connSourceSpoofed(c *Connection, payload []byte) bool {
 		// ACL 查不到源归属即放行)→ 绕过 mesh-off / 跨用户 ACL 枚举全 mesh 名字→vIP。故对目的网关的包仍要求合法 vIP
 		// 源(落到 (4):本会话有 vIP 则源必为自身 vIP,否则判伪造)。这样 MagicDNS 永远只见到已知归属的 peer,解析层
 		// 的 fail-open 只对真正的 server 自查 / 测试生效,不再成为已批准转发者的枚举旁路。
-		if t.dst.IsValid() && isServerGatewayAddr(t.dst.Unmap()) {
+		// 例外:FRP 端口转发的 **LAN 目标**回程。server 自己从网关地址 net.Dial 进宣告方的 LAN,回包必然是
+		// src=target_ip:target_port、dst=网关 —— 正好撞在上面这条拦截上。三机实测(2026-07-26):node 目标
+		// (target 是 vIP)正常,LAN 目标从加固那一版起**一个包都回不来**:C 收到 SYN 并回了 SYN-ACK,server 侧
+		// 计成 src_spoof_drops(+9),外部 curl 挂死;而 web 上这条映射的状态一直显示 listening、iptables 放行也
+		// 在,没有任何一处能看出它是坏的。
+		//
+		// 放通口径尽量窄:必须是 (src, srcPort) 恰好等于某条已启用映射配置的 target_ip:target_port、协议一致,
+		// **且**那条映射指定的宣告方就是本会话这台设备。命中后不在此早退,继续走下面与纯子网中继同口径的源校验
+		// (源不能落在 mesh 网段、必须 ∈ 本设备当前宣告 ∩ 已批准网段),所以豁免不会扩大到别的地址。
+		// MagicDNS(网关:53)这类信任锚仍要求合法 vIP 源:除非 admin 真的把某台设备 LAN 里的 53 端口发布出去,
+		// 否则查不到表、照旧判伪造。
+		if t.dst.IsValid() && isServerGatewayAddr(t.dst.Unmap()) && !frpLANReplyFromDevice(c.deviceID, src, t) {
 			return hasAnyVIP
 		}
 		// 第二十轮深扫 MED:豁免只该覆盖「非 vIP 源的外网 / LAN 回程」。源若落在本 mesh 网段(TUN v4/v6 CIDR)或 4via6

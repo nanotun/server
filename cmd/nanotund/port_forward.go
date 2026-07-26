@@ -126,6 +126,40 @@ var portForwardMgr atomic.Pointer[portForwardManager]
 // nil = 未构建 / 无 LAN 映射。
 var frpTargetTable atomic.Pointer[map[netip.Addr]int64]
 
+// frpLANReplyKey / frpLANReplyTable：FRP **LAN 目标 (IP, 端口)** → 该映射指定的宣告方 deviceID + 协议。
+//
+// 只给源地址反欺骗守卫用（connSourceSpoofed）：LAN 目标的回程是 src=target_ip:target_port、dst=server 网关，
+// 而守卫为防 MagicDNS 投毒/枚举，默认把「非 vIP 源 + 目的网关」一律判伪造 —— LAN 目标因此从加固那一版起彻底不通。
+// 用 (IP, 端口, 协议, 指定设备) 四元组精确放通，比按网段放宽窄得多：admin 没发布的端口一个都碰不到网关。
+// 与 frpTargetTable 同在 rebuildFRPTargetTable 里重建并原子发布。nil = 未构建 / 无 LAN 映射。
+type frpLANReplyKey struct {
+	addr netip.Addr
+	port uint16
+}
+
+type frpLANReplyVal struct {
+	deviceID int64
+	proto    string // 映射配置的协议（"tcp" / "udp"），与报文 proto 严格比对
+}
+
+var frpLANReplyTable atomic.Pointer[map[frpLANReplyKey]frpLANReplyVal]
+
+// frpLANReplyFromDevice 判断 (src, t.srcPort, t.proto) 是否正是某条已启用 LAN 映射的目标端点，
+// 且那条映射指定的宣告方就是 deviceID。无锁只读原子快照，数据面可调。
+//
+// deviceID <= 0（匿名会话）恒 false —— 无从确认这台是被指定的宣告方。
+func frpLANReplyFromDevice(deviceID int64, src netip.Addr, t pktTuple) bool {
+	if deviceID <= 0 || !t.hasL4Ports || t.srcPort == 0 {
+		return false
+	}
+	m := frpLANReplyTable.Load()
+	if m == nil {
+		return false
+	}
+	v, ok := (*m)[frpLANReplyKey{addr: src.Unmap(), port: t.srcPort}]
+	return ok && v.deviceID == deviceID && v.proto == t.proto
+}
+
 // lookupFRPTarget 查 dst 是否为某条 FRP 映射**明确指向**的 LAN 目标，返回该映射指定的宣告方 deviceID。
 // 只读 atomic 快照、无锁、无 DB。(0,false)=非 FRP 明确目标（demux 兜底回落到 lookupSubnetRoute）。
 func lookupFRPTarget(dst netip.Addr) (int64, bool) {
@@ -216,6 +250,9 @@ func (m *portForwardManager) isLANTarget(ip netip.Addr) bool {
 // 先见者 + Warn，保证确定性。
 func (m *portForwardManager) rebuildFRPTargetTable(ctx context.Context, rows []store.PortForward) {
 	tbl := make(map[netip.Addr]int64)
+	// replies：按 (IP, 端口) 收，供源反欺骗守卫放通 LAN 回程（见 frpLANReplyTable）。同一 IP 上的不同端口
+	// 各自独立成键，所以上面「同 IP 歧义只留先见者」的裁决不适用于它 —— 但设备归属仍以先见者为准，保持一致。
+	replies := make(map[frpLANReplyKey]frpLANReplyVal, len(rows))
 	for _, pf := range rows {
 		addr, err := netip.ParseAddr(pf.TargetIP)
 		if err != nil || !m.isLANTarget(addr) {
@@ -234,8 +271,14 @@ func (m *portForwardManager) rebuildFRPTargetTable(ctx context.Context, rows []s
 			continue
 		}
 		tbl[key] = dev
+		proto := strings.ToLower(strings.TrimSpace(pf.Proto))
+		if proto == "" {
+			proto = "tcp" // 空 = 历史行/默认，与监听侧同口径
+		}
+		replies[frpLANReplyKey{addr: key, port: uint16(pf.TargetPort)}] = frpLANReplyVal{deviceID: dev, proto: proto}
 	}
 	frpTargetTable.Store(&tbl)
+	frpLANReplyTable.Store(&replies)
 }
 
 // resolveDeviceID 按 UUID 解析 deviceID（供精确路由表构建）。低频（reload 时）直接查库，不缓存。
