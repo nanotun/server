@@ -170,3 +170,67 @@ func TestRouteDelete_WarnsWhenOtherExitFamilyStillApproved(t *testing.T) {
 		t.Fatalf("撤完最后一族不应再告警,实际 stderr: %s", stderr)
 	}
 }
+
+// TestRouteApprove_WarnsOnDuplicateCIDRAcrossDevices:同一 CIDR 批给第二台设备时必须告警。
+//
+// 数据面 tiebreak 是确定的(lookupSubnetRoute 同长度取最小 deviceID),但 admin 侧此前毫无提示:
+// 较小 deviceID 静默胜出,另一台身后的 LAN 经 mesh 完全不可达,而 admin 以为两台都在服务(甚至以为
+// 做到了冗余)。设计文档 Open questions 把这条列为「剩余的是 UX」。
+func TestRouteApprove_WarnsOnDuplicateCIDRAcrossDevices(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "route-dup-cidr.db")
+	st := openStoreForTest(t, db)
+	ctx := t.Context()
+	u, err := st.CreateUser(ctx, openStoreNewUser("dupuser"))
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	mkDev := func(uuid, name string) int64 {
+		d, derr := st.UpsertDevice(ctx, u.ID, uuid, name, "linux")
+		if derr != nil {
+			t.Fatalf("upsert device %s: %v", name, derr)
+		}
+		return d.ID
+	}
+	dev1 := mkDev("11111111-2222-4333-8444-555555555555", "router-a")
+	dev2 := mkDev("22222222-3333-4444-8555-666666666666", "router-b")
+	const cidr = "192.168.77.0/24"
+	const other = "10.9.9.0/24"
+	for _, d := range []int64{dev1, dev2} {
+		if _, err := st.UpsertAdvertisedRoute(ctx, d, cidr); err != nil {
+			t.Fatalf("upsert route: %v", err)
+		}
+	}
+	if _, err := st.UpsertAdvertisedRoute(ctx, dev2, other); err != nil {
+		t.Fatalf("upsert other route: %v", err)
+	}
+	_ = st.Close()
+
+	d1, d2 := fmt.Sprintf("%d", dev1), fmt.Sprintf("%d", dev2)
+	// 第一台:没有别人持有该 CIDR → 不该告警(否则是噪音)。
+	c, _, stderr := runCLI(t, db, "", "route", "approve", d1, cidr)
+	if c != 0 {
+		t.Fatalf("approve 应成功, code=%d stderr=%s", c, stderr)
+	}
+	if strings.Contains(stderr, "WARN") {
+		t.Fatalf("首次批准不该告警重复,实际 stderr: %s", stderr)
+	}
+	// 第二台:同一 CIDR 已被 dev1 持有 → 必须告警,并指明胜出者是较小的 dev1。
+	c, _, stderr = runCLI(t, db, "", "route", "approve", d2, cidr)
+	if c != 0 {
+		t.Fatalf("approve 应成功(只告警不阻断), code=%d stderr=%s", c, stderr)
+	}
+	if !strings.Contains(stderr, "WARN") || !strings.Contains(stderr, cidr) {
+		t.Fatalf("应告警该 CIDR 已批给别的设备,实际 stderr: %s", stderr)
+	}
+	if !strings.Contains(stderr, fmt.Sprintf("#%d", dev1)) {
+		t.Fatalf("应指明胜出者为较小 deviceID #%d,实际 stderr: %s", dev1, stderr)
+	}
+	// 不同 CIDR 不该触发告警。
+	c, _, stderr = runCLI(t, db, "", "route", "approve", d2, other)
+	if c != 0 {
+		t.Fatalf("approve 应成功, code=%d stderr=%s", c, stderr)
+	}
+	if strings.Contains(stderr, "WARN") {
+		t.Fatalf("不同 CIDR 不该告警重复,实际 stderr: %s", stderr)
+	}
+}

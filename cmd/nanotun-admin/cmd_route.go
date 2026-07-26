@@ -5,6 +5,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/nanotun/server/store"
@@ -159,9 +161,45 @@ func cmdRouteApprove(ctx context.Context, st *store.Store, opts *globalOpts, arg
 		notifyExitsChanged(opts) // 即时把新批准的出口推给客户端下拉。best-effort。
 	} else {
 		fmt.Fprintln(opts.stderr, opts.T("route.approveSubnetHint"))
+		warnDuplicateApprovedCIDR(ctx, st, opts, deviceID, cidr)
 		notifyRoutesChanged(opts) // 即时重建 server 的已批准子网路由表。best-effort。
 	}
 	return nil
+}
+
+// warnDuplicateApprovedCIDR 在「同一 CIDR 已被批给另一台设备」时告警。
+//
+// 数据面对此有确定性 tiebreak(lookupSubnetRoute:最长前缀优先,同长度取**最小 deviceID**),所以行为是
+// 可预期的、不需要再定语义 —— 但 admin 侧此前没有任何提示:较小 deviceID 静默胜出,另一台宣告方成为死重
+// (它身后的 LAN 经 mesh 完全不可达),而 admin 以为两台都在服务、甚至以为做到了冗余/负载分担。
+//
+// 只告警不阻断:为计划中的路由器替换而让两条同时 approved 一段时间是合理操作。只比**完全相同**的 CIDR ——
+// 不同掩码长度的交叠由最长前缀匹配定义得很清楚,那是有意行为,不该噪扰。
+func warnDuplicateApprovedCIDR(ctx context.Context, st *store.Store, opts *globalOpts, deviceID int64, cidr string) {
+	routes, err := st.ListRoutesByStatus(ctx, util.RouteStatusApproved)
+	if err != nil {
+		return // best-effort:查不到就不提示,绝不影响 approve 本身
+	}
+	others := make([]int64, 0, 2)
+	for _, r := range routes {
+		if r.DeviceID != deviceID && r.CIDR == cidr {
+			others = append(others, r.DeviceID)
+		}
+	}
+	if len(others) == 0 {
+		return
+	}
+	sort.Slice(others, func(i, j int) bool { return others[i] < others[j] })
+	// 胜出者 = 所有持有该 CIDR 的设备里 deviceID 最小的那个(与 lookupSubnetRoute 同口径)。
+	winner := deviceID
+	if others[0] < winner {
+		winner = others[0]
+	}
+	strs := make([]string, 0, len(others))
+	for _, d := range others {
+		strs = append(strs, strconv.FormatInt(d, 10))
+	}
+	fmt.Fprintln(opts.stderr, opts.T("route.duplicateCIDR", cidr, strings.Join(strs, ", "), winner))
 }
 
 func cmdRouteReject(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {

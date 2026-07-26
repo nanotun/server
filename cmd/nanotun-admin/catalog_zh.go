@@ -369,6 +369,7 @@ var catZH = map[string]string{
 	"route.approved":                     "已批准 device=%d cidr=%s",
 	"route.exitOtherFamilyStillApproved": "警告: device %d 仍有已批准的出口路由 %s —— 出口资格是按 device 判定的,只要还剩一族被批准,这台设备就仍是合法出口,选它的用户连另一族(含 IPv4)流量也照样经它出网。要真正取消出口资格请用 `nanotun-admin exit revoke <device_id>`(一次撤两族;--clear-vip 同时清 fixed vIP)。",
 	"route.approveExitHint":              "提示: 这是出口节点路由(exit-node)。该 device 在线且本会话 exit_allowed 时,选它当出口的用户公网流量将经它真正转发(数据面已落地)。详见 docs/DESIGN_EXIT_NODE.md",
+	"route.duplicateCIDR":                "WARN: %s 已被批准给另外的设备(%s)。数据面对同一 CIDR 取**最小 deviceID** 的那台(此处为 #%d)转发,其余几台身后的 LAN 经 mesh 完全不可达 —— 这不是冗余也不是负载分担。若想换宣告方,请把旧的那条 `route delete` 掉;若是为计划中的替换预置,可忽略本提示。",
 	"route.approveSubnetHint":            "提示: 子网路由数据面已接入(SR-M1)。该 device 在线时,使用方发往本网段的流量将经它真正转发(由其本机转进 LAN,需 SR-M2 出口侧 NAT)。详见 docs/DESIGN_SUBNET_ROUTES.md",
 	"route.rejected":                     "已拒绝 device=%d cidr=%s reason=%q",
 	"route.notPending":                   "路由 device=%d cidr=%s 不是 pending(当前状态=%s);reject 仅作用于待审批声明。要撤销已批准的路由请用 `route delete`,或加 --force 越过。",

@@ -246,10 +246,16 @@ device **已被 admin 批准**的宣告网段内」（`via6SrcOwnedByConn`）。
 
 ## 6. Open questions
 
-- ~~重复 CIDR 的优先级仲裁~~：数据面已实现确定性 tiebreak —— `lookupSubnetRoute` 最长前缀优先、
-  **同长度取最小 deviceID**（深扫#14），消除切片 / DB 行序带来的不确定。剩余的是 UX：admin 把同一
-  CIDR 批给两台设备时**没有任何提示**，较小 deviceID 静默胜出、另一台成为死重（它的 LAN 经 mesh
-  不可达，而 admin 以为两台都在服务）。加一条 approve 期告警即可，语义无需再定。
+- ~~重复 CIDR 的优先级仲裁~~（**已闭环**，2026-07-26）：数据面本就有确定性 tiebreak ——
+  `lookupSubnetRoute` 最长前缀优先、**同长度取最小 deviceID**（深扫#14），消除切片 / DB 行序带来的
+  不确定，语义无需再定。剩下的 UX 缺口已补：`route approve` 现在在「同一 CIDR 已批给别的设备」时
+  告警（`route.duplicateCIDR`，只告警不阻断 —— 为计划中的路由器替换而并存一段时间是合理操作）。
+
+  三机实测确认了 tiebreak 与它的危害形态：C（device 31）已批准 `192.168.88.0/24` 且身后真有主机；
+  让 A（device 1）也宣告同一 CIDR 并批准后，仲裁归 **A**（1 < 31），而 A 身后并没有这个网段 →
+  该网段**整体失联**（`curl 192.168.88.10` 超时），C 的 LAN 成了不可达的死重 —— 这正是告警要拦住
+  的误操作。同时验证：**4via6 不受仲裁影响** —— `192-168-88-10via2.lan` 显式带 site ID（site 2 = C），
+  照旧直达 C 身后主机，因为 4via6 本就是「点名某个宣告方」的消歧机制。
 - 路由声明 audit / 告警:首版 `route_advertise` 计数器够用;若 reject
   率高需要更细的 audit 类型(`route.reject.applied`)。
 - 安全:目前仅在登录路径要求合法 `device_uuid`,没有"路由声明权"per-user
