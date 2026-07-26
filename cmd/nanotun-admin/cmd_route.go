@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -162,6 +163,7 @@ func cmdRouteApprove(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	} else {
 		fmt.Fprintln(opts.stderr, opts.T("route.approveSubnetHint"))
 		warnDuplicateApprovedCIDR(ctx, st, opts, deviceID, cidr)
+		warnOverlappingApprovedCIDR(ctx, st, opts, deviceID, cidr)
 		notifyRoutesChanged(opts) // 即时重建 server 的已批准子网路由表。best-effort。
 	}
 	return nil
@@ -200,6 +202,43 @@ func warnDuplicateApprovedCIDR(ctx context.Context, st *store.Store, opts *globa
 		strs = append(strs, strconv.FormatInt(d, 10))
 	}
 	fmt.Fprintln(opts.stderr, opts.T("route.duplicateCIDR", cidr, strings.Join(strs, ", "), winner))
+}
+
+// warnOverlappingApprovedCIDR 在「批准的网段与另一台设备已批准的网段**交叠但掩码不同**」时告警。
+//
+// 与 warnDuplicateApprovedCIDR 分开:那条只比完全相同的 CIDR,理由是「不同掩码的交叠由最长前缀匹配
+// 定义得很清楚,是有意行为」。定义清楚归定义清楚,后果不轻 —— 2026-07-26 三机实测:C 宣告一条嵌套在
+// A 已批准的 172.20.10.0/24 里的 172.20.10.0/25,admin 照着 route list 批准之后,A 身后那台真实主机
+// (172.20.10.10)对**所有请求方**当场失联:最长前缀选中 C,而 C 身后根本没有这个网段 —— 请求方是 C
+// 自己时命中自指分支被丢,是第三方时投给 C 后无处可去。route list 里两条都是 approved、看不出谁盖了谁。
+//
+// 也就是说,任何允许宣告路由的客户端都能靠一条更长掩码悄悄截走别人网段里的一段。同样只告警不阻断
+// (把某个 /32 专门指给另一台网关是合理用法),但要把「谁在这段地址上胜出」当场说清楚。
+func warnOverlappingApprovedCIDR(ctx context.Context, st *store.Store, opts *globalOpts, deviceID int64, cidr string) {
+	newPfx, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+	if err != nil {
+		return
+	}
+	routes, err := st.ListRoutesByStatus(ctx, util.RouteStatusApproved)
+	if err != nil {
+		return // best-effort
+	}
+	for _, r := range routes {
+		if r.DeviceID == deviceID || r.CIDR == cidr {
+			continue // 同设备内部交叠无歧义;完全相同交给 warnDuplicateApprovedCIDR
+		}
+		oldPfx, perr := netip.ParsePrefix(strings.TrimSpace(r.CIDR))
+		if perr != nil || !oldPfx.Overlaps(newPfx) {
+			continue
+		}
+		// 交叠地址上按最长前缀定胜负(同长度已被上面的 r.CIDR == cidr 排除,不会走到平手)。
+		winner, winnerCIDR, loserCIDR := deviceID, cidr, r.CIDR
+		if oldPfx.Bits() > newPfx.Bits() {
+			winner, winnerCIDR, loserCIDR = r.DeviceID, r.CIDR, cidr
+		}
+		fmt.Fprintln(opts.stderr, opts.T("route.overlapCIDR",
+			cidr, r.DeviceID, r.CIDR, winnerCIDR, winner, loserCIDR))
+	}
 }
 
 func cmdRouteReject(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
