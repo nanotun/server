@@ -409,5 +409,13 @@ func initAuthBackend(ctx context.Context, gw *gatewayState) (cleanup func(), err
 	gw.store = st
 	gw.authVerifier = auth.NewVerifier(st)
 	logrus.WithField("db_path", dbPath).Info("已启用 PSK 模式(自托管)")
+
+	// 库文件被掉包(restore / 手工 cp 都是换 inode)时立刻退出,由 systemd 重启打开新文件。
+	// 本进程若继续跑,写的是那个已被 unlink 的旧文件:租约、审计、设备全部落进无人可读的
+	// 孤儿 inode,而登录鉴权读到的又是同一份陈旧快照 —— 全程零报错。同样的守护在
+	// nanotun-web 里也有一份,两个进程共享这一个文件。见 store/file_identity.go。
+	go st.WatchFileIdentity(ctx, 15*time.Second, func(werr error) {
+		logrus.WithError(werr).Fatal("[store] 数据库文件已被替换(多半是刚做过 restore / 手工覆盖) — 立刻退出,由 systemd 重启以打开新文件")
+	})
 	return func() { _ = st.Close() }, nil
 }

@@ -33,6 +33,11 @@ type Store struct {
 	// 先跑完去重 SELECT 再 INSERT，双双漏判撞名（MagicDNS 标签重复 / 或后写方撞
 	// SQLITE_BUSY_SNAPSHOT 登录失败）。用进程内锁把该临界区显式串行化，不再依赖池大小。
 	deviceUpsertMu sync.Mutex
+	// identity 是开库那一刻 path 上的 dev/ino,用于事后发现文件被掉包
+	// (restore / 手工 cp 都是换 inode,本进程会继续写已被 unlink 的旧文件)。
+	// identityOK=false 表示内存库或平台不支持,检测整体跳过。见 file_identity.go。
+	identity   FileIdentity
+	identityOK bool
 }
 
 // Options 用于配置 Store 行为。零值合理。
@@ -178,7 +183,9 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 		_ = os.Chmod(path+"-shm", dbFileMode)
 	}
 
-	return &Store{db: db, path: path}, nil
+	st := &Store{db: db, path: path}
+	st.identity, st.identityOK = fileIdentityOf(path)
+	return st, nil
 }
 
 // DB 返回底层 *sql.DB（仅供需要直接执行 SQL 的高级用例）。

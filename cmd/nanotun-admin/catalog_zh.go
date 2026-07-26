@@ -340,6 +340,7 @@ var catZH = map[string]string{
 	"backup.confirmRestore":  "将 %s 覆盖到 %s,继续?",
 	"backup.copyFail":        "拷贝失败: %s",
 	"backup.srcInvalid":      "拒绝恢复:源文件不是可用的 nanotun 备份(%s)。现有数据库未被改动。",
+	"backup.otherHolders":    "还有进程开着这个数据库:%s。restore 是换文件(新 inode),它们会继续往那个已被删除的旧文件里写 —— 静默且不报错。请先停掉它们(含 nanotun-web)再重试。",
 	"backup.preRestoreFail":  "恢复前保存现有数据库失败: %s(已中止,现有数据库未被改动)",
 	"backup.preRestoreSaved": "恢复前的数据库已留存于 %s(确认恢复无误后可删除)",
 	"backup.restored":        "已恢复 %s → %s。下次启动 server 时会自动迁移 schema。",

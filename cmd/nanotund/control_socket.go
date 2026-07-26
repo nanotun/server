@@ -288,8 +288,8 @@ type controlStatusResp struct {
 	SrcSpoofDrops    uint64 `json:"src_spoof_drops"`
 	TunWriteDrops    uint64 `json:"tun_write_drops"`
 	TunOversizeDrops uint64 `json:"tun_oversize_drops"`
-	MeshEnabled     bool   `json:"mesh_enabled"`
-	UserKickTotal   uint64 `json:"user_invalidate_kicks"`
+	MeshEnabled      bool   `json:"mesh_enabled"`
+	UserKickTotal    uint64 `json:"user_invalidate_kicks"`
 	// 2026-05-23:同 device_uuid 重登触发的踢旧次数(语义见 supersede.go 顶部注释)。
 	SessionSupersedeTotal uint64              `json:"session_supersede_total"`
 	LeaseGCTotal          uint64              `json:"lease_gc_total"`

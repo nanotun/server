@@ -343,6 +343,7 @@ var catEN = map[string]string{
 	"backup.confirmRestore":  "overwrite %s onto %s, continue?",
 	"backup.copyFail":        "copy failed: %s",
 	"backup.srcInvalid":      "refusing to restore: the source is not a usable nanotun backup (%s). The live DB was left untouched.",
+	"backup.otherHolders":    "other processes still have this DB open: %s. Restore swaps the file (new inode), so they would keep writing to the old, now-unlinked file — silently and with no error. Stop them first (nanotun-web included), then retry.",
 	"backup.preRestoreFail":  "failed to snapshot the current DB before restoring: %s (aborted; the live DB was left untouched)",
 	"backup.preRestoreSaved": "the pre-restore DB was kept at %s (delete it once you have confirmed the restore)",
 	"backup.restored":        "restored %s → %s. The schema will migrate automatically next time the server starts.",

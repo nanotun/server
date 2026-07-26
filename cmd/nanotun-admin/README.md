@@ -280,8 +280,24 @@ nanotun-admin restore /var/backup/nanotun-2026-05-22.db         # ⚠️ 覆盖�
 校验通过后,现库会先被硬链接到 `<db_path>.pre-restore-<时间戳>` 再覆盖,
 用于「恢复到了过旧的快照」时原样挪回来;确认无误后自行删除。
 
-`restore` 默认拒绝在 server 运行时执行(control socket 可达即判定在跑)。`--force-while-running`
-可强行覆盖,但 server 仍持有老 inode,状态会分裂 —— 正确姿势是 `systemctl stop nanotun` → `restore` → `start`。
+`restore` 默认拒绝在 server 运行时执行,判据有两条:control socket 可达(nanotund 在跑),
+以及 `/proc` 里还有别的进程开着这个库文件。
+
+**第二条必须有,因为 nanotun-web 是另一个进程,共享同一个 SQLite 文件却没有 control socket。**
+只看 control socket 时,按「`systemctl stop nanotun` → restore → start」这套流程走完,
+nanotun-web 会继续持有那个已被 unlink 的旧 inode:后台建用户照样返回成功、一次性 PSK 照样发给终端用户,
+数据却写进了没人读得到的孤儿文件,全程零报错 —— 而这正好发生在灾难恢复之后,最不容易被察觉的时刻。
+恢复前请把**所有**共享该 DB 的进程停掉:
+
+```bash
+systemctl stop nanotun nanotun-web
+nanotun-admin restore /var/backup/nanotun-2026-05-22.db
+systemctl start nanotun nanotun-web
+```
+
+兜底:nanotund 与 nanotun-web 都会每 15 秒核对库文件的 dev/ino,发现被换掉就打 ERROR 日志并退出,
+由 `Restart=on-failure` 拉起来重新打开新文件。所以即便有人绕过守栏(`--force-while-running`
+或手工 `cp`),最坏也就是一次自动重启,不会静默丢数据。
 
 ### 配置 lint(J4,2026-05-22)
 

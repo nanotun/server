@@ -142,6 +142,14 @@ func cmdRestore(opts *globalOpts, args []string) int {
 			fmt.Fprintln(opts.stderr, opts.T("backup.serverRunning"))
 			return 1
 		}
+		// control socket 只代表 nanotund。nanotun-web 是**另一个进程**,共享同一个
+		// SQLite 文件却没有 control socket —— 只探 socket 会让「stop nanotun → restore
+		// → start nanotun」这套文档流程留下一个仍持有旧 inode 的 web 进程,此后它每一次
+		// 写入都进了无人可读的孤儿文件,且全程不报错。这里再按 /proc 扫一遍真实持有者。
+		if holders := processesHoldingFile(dstAbs); len(holders) > 0 {
+			fmt.Fprintln(opts.stderr, opts.T("backup.otherHolders", strings.Join(holders, ", ")))
+			return 1
+		}
 	} else {
 		fmt.Fprintln(opts.stderr, opts.T("backup.forceWarn"))
 	}

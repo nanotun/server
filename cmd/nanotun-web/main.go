@@ -240,6 +240,18 @@ func main() {
 		logrus.WithError(err).Fatal("[web] 数据库迁移失败")
 	}
 
+	// 库文件被掉包时立刻退出(unit 是 Restart=on-failure,重启即打开新文件)。
+	// nanotun-web 与 nanotund 共享同一个 SQLite 文件,而 `nanotun-admin restore`
+	// 只探 nanotund 的 control socket —— 按文档「stop nanotun → restore → start」
+	// 走完,本进程会继续持有那个已被 unlink 的旧 inode。此时后台建用户照样返回成功、
+	// 照样把一次性 PSK 发出去,数据却写进没人读得到的文件,全程零报错。宁可重启也不静默丢数据。
+	//
+	// 这里直接 Fatal 而非优雅退出:此刻在途请求写的也是那个死文件,把它们「优雅」地
+	// 写完毫无意义,只会多丢一批数据并多给用户几条虚假的成功回执。
+	go st.WatchFileIdentity(ctx, 15*time.Second, func(err error) {
+		logrus.WithError(err).Fatal("[web] 数据库文件已被替换(多半是刚做过 restore / 手工覆盖) — 立刻退出,由 systemd 重启以打开新文件")
+	})
+
 	// 2026-05-27 第十四轮(B1):startup readiness 检测 server_dial_host 配置。
 	//
 	// 历史上只有 dashboard 顶部红 banner 提示 admin「server_dial_host 未配置」,
