@@ -1,6 +1,9 @@
 package util
 
-import "testing"
+import (
+	"net/netip"
+	"testing"
+)
 
 func TestNormalizeAdvertisedCIDR(t *testing.T) {
 	cases := []struct {
@@ -88,5 +91,39 @@ func TestRouteApproveStatus_RoundTrip(t *testing.T) {
 func TestParseRouteAdvertise_SchemaMismatch(t *testing.T) {
 	if _, err := ParseRouteAdvertise([]byte(`{"schema":999,"routes":[]}`)); err == nil {
 		t.Fatal("schema 不匹配应报错")
+	}
+}
+
+// TestNormalizeAdvertisedCIDR_RejectsLinkLocal:链路本地不得作为子网路由宣告。
+//
+// 三机实测(2026-07-26)复现的跨用户云元数据冒充:A(user testcli)宣告 169.254.169.254/32(旧白名单放行,
+// 因 32 >= 16)、admin 批准后,C(user u4,--accept-routes)装上 `169.254.169.254 dev nanotun0`(metric 0,
+// 压过 DHCP 那条 metric 100)→ C 请求 http://169.254.169.254/v1.json 拿到的是 A 身后主机伪造的内容,
+// C 自己真实的云元数据反而不可达。与 exit_guard 把 169.254/16「无条件拦」的口径直接矛盾,故移出白名单。
+func TestNormalizeAdvertisedCIDR_RejectsLinkLocal(t *testing.T) {
+	for _, cidr := range []string{
+		"169.254.0.0/16",
+		"169.254.169.254/32", // 精确到云元数据地址:实测中真正被利用的形态
+		"169.254.1.0/24",
+		"fe80::/10",
+		"fe80::1/128",
+	} {
+		if got, err := NormalizeAdvertisedCIDR(cidr); err == nil {
+			t.Errorf("NormalizeAdvertisedCIDR(%q) 应拒绝(链路本地不可宣告),却返回 %q", cidr, got)
+		}
+		// 出口语境同样不放宽:唯一放宽处只有 0/0 与 ::/0。
+		if got, err := NormalizeExitAdvertisedCIDR(cidr); err == nil {
+			t.Errorf("NormalizeExitAdvertisedCIDR(%q) 应拒绝,却返回 %q", cidr, got)
+		}
+		// 载入端同门槛:存量已批准的链路本地条目自动被挡在转发表外(不删库)。
+		if p, perr := netip.ParsePrefix(cidr); perr == nil && PrefixWithinAdvertisable(p.Masked()) {
+			t.Errorf("PrefixWithinAdvertisable(%q) 应为 false,使存量条目载入时被挡下", cidr)
+		}
+	}
+	// 对照:合法的私有段仍必须放行。
+	for _, cidr := range []string{"10.0.0.0/8", "172.20.10.0/24", "192.168.88.0/24", "100.64.0.0/10", "fd12::/64"} {
+		if _, err := NormalizeAdvertisedCIDR(cidr); err != nil {
+			t.Errorf("NormalizeAdvertisedCIDR(%q) 不该被拒: %v", cidr, err)
+		}
 	}
 }

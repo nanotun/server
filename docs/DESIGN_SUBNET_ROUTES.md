@@ -217,12 +217,39 @@ device **已被 admin 批准**的宣告网段内」（`via6SrcOwnedByConn`）。
 > ICMP 经 4via6 能通是因为客户端另有一条 ICMP echo 中继（真 ping 目标、可达才合成 EchoReply 注回），
 > 与 netstack 的 `enable_icmp(false)` 不冲突 —— 后者关的是「接口本地伪造 EchoReply」那种假通。
 
+## 5.8 链路本地曾可作子网路由宣告 → 跨用户冒充云元数据（2026-07-26 修复）
+
+`advertisableSubnetRanges` 白名单里原本明确列着 `169.254.0.0/16`（IPv4 link-local）与 `fe80::/10`，
+与出口侧的判断直接矛盾 —— `exit_guard.go` 把 169.254/16 列为「**无条件**拦」，理由正是「169.254.169.254
+一条就等于把服务器的云身份（IMDS 的 IAM 凭证 / 服务账号 token）交给每个 VPN 用户」。
+
+三机实测复现（危害不需要任何服务器漏洞，只需一次疏忽审批）：
+
+1. A（user `testcli`）宣告 `169.254.169.254/32` —— 旧白名单放行（`32 >= 16`），落成 pending；
+2. admin `route approve 1 169.254.169.254/32`（看着只是个无害的保留段，工具也不给任何提示）；
+3. C（user `u4`，`--accept-routes`）装上 `169.254.169.254 dev nanotun0`，**metric 0，压过 DHCP 装的
+   `metric 100` 那条**；
+4. C 请求 `http://169.254.169.254/v1.json` 拿到的是 A 身后主机伪造的内容，C 自己真实的云元数据
+   （`instanceid`）反而不可达。
+
+即：任一可宣告的客户端 + 一次审批 = 对全 mesh 所有 `--accept-routes` 客户端**跨用户冒充云元数据服务**。
+
+修法：把链路本地从白名单移除（v4/v6 都移）。链路本地按定义逐链路、不可路由，「我身后有一个
+169.254 / fe80 网段」没有合法语义；真要访问对端链路本地资源应走 4via6 或具体的 RFC1918 编址。
+存量已批准条目无需删库 —— `rebuildSubnetRouteTable` 载入时用 `PrefixWithinAdvertisable` 复核同一门槛，
+移除后自动被挡在转发表外。错误信息里点明「link-local is NOT advertisable」及其原因。
+
+顺带：宣告网段若与 server 自身 mesh 网段（TUN CIDR）交叠，现在在 `handleRouteAdvertiseFrame` 就地拒绝、
+不再写 pending。此前它会被收下（实测客户端宣告 `10.201.0.0/16` = mesh 网段本身，服务器照收成 pending），
+数据面早有 `meshPrefixOverlaps` 挡着所以永不生效 —— 但 admin 能 approve 并看到「approved」，
+这个「批了却永远不通」的状态纯属误导。
+
 ## 6. Open questions
 
-- 重复 CIDR(两台 device 都声明 `192.168.1.0/24`)的优先级仲裁:
-  现在 store 只保证 UNIQUE(device_id, cidr),不约束跨 device。落地数据面
-  时需要在 admin CLI 加 `--exclusive` flag,或在 server 内存 snapshot
-  里按 `approved_at desc` / round-robin 选 device。
+- ~~重复 CIDR 的优先级仲裁~~：数据面已实现确定性 tiebreak —— `lookupSubnetRoute` 最长前缀优先、
+  **同长度取最小 deviceID**（深扫#14），消除切片 / DB 行序带来的不确定。剩余的是 UX：admin 把同一
+  CIDR 批给两台设备时**没有任何提示**，较小 deviceID 静默胜出、另一台成为死重（它的 LAN 经 mesh
+  不可达，而 admin 以为两台都在服务）。加一条 approve 期告警即可，语义无需再定。
 - 路由声明 audit / 告警:首版 `route_advertise` 计数器够用;若 reject
   率高需要更细的 audit 类型(`route.reject.applied`)。
 - 安全:目前仅在登录路径要求合法 `device_uuid`,没有"路由声明权"per-user

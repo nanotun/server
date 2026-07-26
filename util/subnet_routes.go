@@ -104,14 +104,25 @@ func ParseRouteApproveStatus(data []byte) (*RouteApproveStatus, error) {
 // (内网段)和 ACL 模型一致。本 Normalize 只约束新上报的宣告、不回溯改写库里的历史 approved 条目;第十一轮
 // 深扫 MED 起,数据面 rebuildSubnetRouteTable 载入时会用 [PrefixWithinAdvertisable] 把历史遗留的公网/宽段
 // approved 条目挡在转发表外(不删库),补齐「载入端也执行同门槛」的另一半。
+// 第二十三轮(三机实测 2026-07-26)**移除链路本地**(169.254.0.0/16 / fe80::/10):它们曾在白名单里,
+// 与出口侧的判断直接矛盾 —— exit_guard.go 把 169.254/16 列为「无条件拦」,理由正是「169.254.169.254
+// 一条就等于把服务器的云身份(IMDS 的 IAM 凭证 / 服务账号 token)交给每个 VPN 用户」;而这里却把同一段
+// 列为可宣告。后果实测复现:A(user testcli)宣告 `169.254.169.254/32`(白名单放行,因 32 >= 16)、admin
+// 批准后,C(user u4,--accept-routes)装上 `169.254.169.254 dev nanotun0`(metric 0,压过 DHCP 装的
+// metric 100 那条)→ C 请求 http://169.254.169.254/v1.json 拿到的是 A 身后主机伪造的内容,C 自己真实的
+// 云元数据反而不可达。即:任一可宣告的客户端 + 一次疏忽审批 = 对全 mesh 所有接受路由的客户端**跨用户
+// 冒充云元数据服务**。
+//
+// 链路本地按定义是**逐链路、不可路由**的,「我身后有一个 169.254/fe80 网段」本身没有合法语义(真要访问
+// 对端链路本地资源,该走 4via6 或具体的 RFC1918 编址),故直接从白名单去掉,与出口侧口径对齐。
+// 存量已批准条目无需删库:rebuildSubnetRouteTable 载入时会用 PrefixWithinAdvertisable 复核同一门槛,
+// 去掉后它们自动被挡在转发表外。
 var advertisableSubnetRanges = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),     // RFC1918
 	netip.MustParsePrefix("172.16.0.0/12"),  // RFC1918
 	netip.MustParsePrefix("192.168.0.0/16"), // RFC1918
 	netip.MustParsePrefix("100.64.0.0/10"),  // RFC6598 CGNAT(mesh/隧道常用)
-	netip.MustParsePrefix("169.254.0.0/16"), // IPv4 link-local
 	netip.MustParsePrefix("fc00::/7"),       // IPv6 ULA
-	netip.MustParsePrefix("fe80::/10"),      // IPv6 link-local
 }
 
 // prefixWithinAdvertisable 判断 p(已 mask 的网络前缀)是否**整段**落在某个允许的私有/保留范围内:
@@ -162,7 +173,9 @@ func NormalizeAdvertisedCIDR(in string) (string, error) {
 	if !prefixWithinAdvertisable(masked) {
 		// 收敛到私有/保留段:公网/宽段子网路由会绕过 exit_allowed + 出口 ACL(见 advertisableSubnetRanges)。
 		return "", fmt.Errorf("cidr %q not allowed: subnet routes must be private/reserved "+
-			"(RFC1918 / CGNAT 100.64.0.0/10 / ULA fc00::/7 / link-local); use an exit node for public egress", masked)
+			"(RFC1918 / CGNAT 100.64.0.0/10 / ULA fc00::/7; link-local is NOT advertisable — "+
+			"it is per-link and non-routable, and 169.254.169.254 is the cloud metadata service); "+
+			"use an exit node for public egress", masked)
 	}
 	return masked.String(), nil
 }

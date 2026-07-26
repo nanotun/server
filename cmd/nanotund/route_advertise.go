@@ -177,7 +177,21 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 		// 归一成功即计入「当前宣告集」(非 0/0),不等 upsert——见上方 advPfx 说明。
 		if !util.IsExitDefaultRoute(norm) {
 			if p, perr := netip.ParsePrefix(norm); perr == nil {
-				advPfx = append(advPfx, p.Masked())
+				p = p.Masked()
+				// 与 server 自身 mesh 网段(TUN CIDR)交叠的宣告就地拒掉,不写 pending。
+				// rebuildSubnetRouteTable 早已用同一个 meshPrefixOverlaps 把这类条目挡在转发表外(第十八轮),
+				// 故它进库也永不生效 —— 但它照旧出现在 `route list` 里、admin 还能 approve 并看到「approved」,
+				// 这个「批了却永远不通」的状态纯属误导(三机实测 2026-07-26:客户端宣告 10.201.0.0/16 = mesh 网段本身,
+				// 服务器照收成 pending)。在入口就拒 + 明确日志,让宣告方与 admin 当场知道原因。
+				if meshPrefixOverlaps(p) {
+					routeAdvRejected.Add(1)
+					logrus.WithFields(logrus.Fields{
+						"device_id": c.deviceID,
+						"cidr":      norm,
+					}).Warn("[route_adv] 宣告网段与 server 自身 mesh 网段交叠,拒绝(该网段由 VPN 自己使用,批准也不会生效)")
+					continue
+				}
+				advPfx = append(advPfx, p)
 			}
 		}
 		if _, err := gw.store.UpsertAdvertisedRoute(dbCtx, c.deviceID, norm); err != nil {
