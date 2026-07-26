@@ -6,7 +6,7 @@ import "testing"
 // 它落在 ULA fc00::/7 白名单里,若不单独挡掉就能被宣告 + 批准(三机实测批准成功),审批面上多出一条
 // 「看起来管着全部 4via6」的记录。
 func TestNormalizeAdvertisedCIDR_RejectsVia6Space(t *testing.T) {
-	for _, c := range []string{"fdbc:4a60::/64", "fdbc:4a60::/48", "fdbc:4a60:0:0:0:5::/96"} {
+	for _, c := range []string{"fdbc:4a60::/64", "fdbc:4a60:0:0:0:5::/96", "fdbc:4a60::1/128"} {
 		if got, err := NormalizeAdvertisedCIDR(c); err == nil {
 			t.Errorf("%s 应被拒(4via6 内部空间),却归一成 %s", c, got)
 		}

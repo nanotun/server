@@ -174,7 +174,9 @@ func NormalizeAdvertisedCIDR(in string) (string, error) {
 		return "", errors.New("cidr /0 not allowed(请勿声明全网路由)")
 	}
 	masked := p.Masked()
-	if masked.Overlaps(Via6Prefix) {
+	// 只拒**落在** 4via6 /64 之内的(含等于);更宽的 ULA 超网(fc00::/7、fd00::/8 …)维持既有语义
+	// —— 它们不是「声称自己管 4via6」,与 mesh 网段的交叠另有 approve 期的 CIDROverlapsAny 兜底。
+	if Via6Prefix.Contains(masked.Addr()) && masked.Bits() >= Via6Prefix.Bits() {
 		// 4via6 是 mesh **内部合成**的地址空间(见 cmd/nanotund/via6.go):每个宣告方站点一个 siteID,
 		// 地址由 server 生成、由数据面按 siteID 直接路由。「我身后有一个 fdbc:4a60:: 网段」没有任何
 		// 合法语义 —— 与链路本地在第二十三轮被移出白名单同理,只是它恰好落在 ULA fc00::/7 里而漏过。
