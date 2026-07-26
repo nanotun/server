@@ -72,6 +72,24 @@ var validatedSettingKeys = map[string]func(string) error{
 	"rate_burst_bytes":          store.ValidateRateBurstSetting,
 }
 
+// aclSnapshotSettingKeys:被 server 缓存进**内存 ACL snapshot**的 key —— 只写 DB 不通知,
+// 数据面就一直按旧值跑,直到有人 SIGHUP / 重启。
+//
+// 2026-07-26 三机实测(与 acl allow/deny 那次 b83d4af 同一个根因,当时只补了规则那一半):
+//   - `setting set mesh_enabled false`:`setting list` 显示 false,但 /status 的 mesh_enabled
+//     仍是 true,A↔C 的 ping / MagicDNS 一路畅通,mesh_off_drops 恒为 0;`systemctl reload`
+//     之后才当场断掉。反向打开同理。
+//   - `setting set acl_default_action deny`:落库后 mesh 照通,acl_drop_total 不动。
+//
+// 这两个都是**全局**开关(前者一刀切断所有客户端互访,后者把默认动作翻成拒绝),多半是在
+// 「出事了、先断网」的场合敲的 —— 敲完看到 written: 却什么都没发生,比没有这个开关更危险。
+// 故写完主动走 notifyACLChanged(server 的 /reload?what=acl 会同时刷新规则集、default_action
+// 与 mesh_enabled,见 reload 日志里那行 "[reload] acl 规则集已刷新")。
+var aclSnapshotSettingKeys = map[string]bool{
+	"mesh_enabled":       true,
+	"acl_default_action": true,
+}
+
 // otherKnownSettingKeys:既不由系统托管、也没有专用 validator,但确实是本程序会读的 key。
 // 与上面两张表合起来构成「已知 key」全集,供 warnIfUnknownSettingKey 判断拼写。
 var otherKnownSettingKeys = []string{
@@ -235,6 +253,14 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 			return err
 		}
 		fmt.Fprintln(opts.stdout, opts.T("setting.written", key, value))
+		// 落库 ≠ 生效:有些 key 被 server 缓存在内存快照里,不通知就只是改了行 DB。见 aclSnapshotSettingKeys。
+		if aclSnapshotSettingKeys[key] {
+			if notifyACLChanged(opts) {
+				fmt.Fprintln(opts.stderr, opts.T("setting.reloaded", key))
+			} else {
+				fmt.Fprintln(opts.stderr, opts.T("setting.reloadHint", key))
+			}
+		}
 		return nil
 	case "list", "ls":
 		rows, err := st.DB().QueryContext(ctx, `SELECT key, value FROM app_settings ORDER BY key ASC`)

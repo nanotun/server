@@ -60,7 +60,10 @@ var catEN = map[string]string{
 	"setting.validateFailed": "%q validation failed: %s",
 	"setting.unknownKeyWarn": "WARNING: %q is not a setting this program knows about — the value was written verbatim, but it will have **no effect**. " +
 		"If you meant to change a known setting, the key is most likely misspelled (for rate limits use `nanotun-admin setting rate`, which also hot-pushes to live sessions).",
-	"setting.unknownKeyNear":      "         known settings with similar names: %s",
+	"setting.unknownKeyNear": "         known settings with similar names: %s",
+	"setting.reloaded":       "the running server refreshed %s; it is now in effect.",
+	"setting.reloadHint": "note: %s was written but is NOT in effect yet — the data plane reads an in-memory snapshot. " +
+		"Run `nanotun-admin reload` or `systemctl reload nanotun` to make the running process pick it up.",
 	"setting.written":             "written: %s=%s",
 	"setting.notFound":            "setting %q not found",
 	"setting.rate.flagUpMibs":     "global default upload MiB/s, 0 = clear",

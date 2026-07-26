@@ -57,7 +57,10 @@ var catZH = map[string]string{
 	"setting.validateFailed": "%q 校验失败:%s",
 	"setting.unknownKeyWarn": "警告:%q 不是本程序认识的任何设置项 —— 值已原样写入,但**不会有任何效果**。" +
 		"如果你是想改某个已知设置项,多半是 key 拼错了(限速请用 `nanotun-admin setting rate`,它还会热推给在线会话)。",
-	"setting.unknownKeyNear":      "      拼写相近的已知设置项:%s",
+	"setting.unknownKeyNear": "      拼写相近的已知设置项:%s",
+	"setting.reloaded":       "运行中的 server 已刷新 %s,即时生效。",
+	"setting.reloadHint": "提示: %s 已落库但**尚未生效** —— 数据面读的是内存快照。" +
+		"执行 `nanotun-admin reload` 或 `systemctl reload nanotun` 让运行中进程刷新。",
 	"setting.written":             "已写入：%s=%s",
 	"setting.notFound":            "未找到设置项 %q",
 	"setting.rate.flagUpMibs":     "全局上行默认 MiB/s,0 = 清除",

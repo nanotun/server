@@ -53,8 +53,11 @@ func TestSettingSet_KnownKeyNoWarn(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("set %s: code=%d stderr=%s", k, code, stderr)
 		}
-		if strings.Contains(strings.ToUpper(stderr), "WARNING") || strings.Contains(stderr, "警告") {
-			t.Errorf("已知 key %s 不该告警,得到 %q", k, stderr)
+		// 只断言「未知 key」这一类告警不出现。别用「stderr 里有没有『警告』」当判据 ——
+		// mesh_enabled / acl_default_action 落库后会去通知 server 刷快照,测试环境没有
+		// control socket,那条通知失败的告警是**预期**的,与本用例无关。
+		if strings.Contains(stderr, "不是本程序认识的") || strings.Contains(stderr, "is not a setting this program knows about") {
+			t.Errorf("已知 key %s 不该报「未知 key」,得到 %q", k, stderr)
 		}
 	}
 }
