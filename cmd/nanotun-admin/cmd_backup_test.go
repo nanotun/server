@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -138,16 +139,50 @@ func TestCmdVacuum_Smoke(t *testing.T) {
 	}
 }
 
+// newNanotunDB 建一份迁移完毕、含指定用户的真实 nanotun 库,供 restore 用例当源/目标。
+func newNanotunDB(t *testing.T, path, username string) {
+	t.Helper()
+	ctx := t.Context()
+	st, err := store.Open(ctx, path, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if username != "" {
+		if _, err := st.CreateUser(ctx, store.NewUser{Username: username, PSKHash: "h"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func usersInDB(t *testing.T, path string) []string {
+	t.Helper()
+	st, err := store.Open(t.Context(), path, store.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer st.Close()
+	us, err := st.ListUsers(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(us))
+	for _, u := range us {
+		names = append(names, u.Username)
+	}
+	return names
+}
+
 func TestCmdRestore_AtomicCopy(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src.db")
 	dst := filepath.Join(dir, "dst.db")
-	if err := os.WriteFile(src, []byte("fresh data"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dst, []byte("stale"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	newNanotunDB(t, src, "fresh")
+	newNanotunDB(t, dst, "stale")
+
 	out := &bytes.Buffer{}
 	opts := &globalOpts{stdout: out, stderr: out, stdin: os.Stdin, dbPath: dst, yes: true,
 		controlSocket: "/tmp/this-does-not-exist.sock"}
@@ -155,9 +190,81 @@ func TestCmdRestore_AtomicCopy(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d (out=%s)", code, out.String())
 	}
-	got, _ := os.ReadFile(dst)
-	if string(got) != "fresh data" {
-		t.Fatalf("expected dst=fresh data, got %q", got)
+	if got := usersInDB(t, dst); len(got) != 1 || got[0] != "fresh" {
+		t.Fatalf("expected dst to hold the snapshot's user, got %v", got)
+	}
+	// 覆盖前的现库必须留一份可回退的旁路副本。
+	saved, _ := filepath.Glob(dst + ".pre-restore-*")
+	if len(saved) != 1 {
+		t.Fatalf("expected exactly one pre-restore snapshot, got %v", saved)
+	}
+	if got := usersInDB(t, saved[0]); len(got) != 1 || got[0] != "stale" {
+		t.Fatalf("pre-restore snapshot should hold the old DB, got %v", got)
+	}
+}
+
+// 核心回归:restore 此前对源文件零校验,一个 15 字节文本文件就能把生产库覆盖成
+// 「file is not a database」并报 success。三类坏源都必须在落盘前被拦下,且 dst 分毫未动。
+func TestCmdRestore_RejectsInvalidSource(t *testing.T) {
+	cases := []struct {
+		name string
+		// build 产出源文件内容;返回 true 表示已自行写好 src。
+		build func(t *testing.T, src string)
+	}{
+		{"plain text", func(t *testing.T, src string) {
+			if err := os.WriteFile(src, []byte("hello not a db\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"empty file", func(t *testing.T, src string) {
+			if err := os.WriteFile(src, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"truncated sqlite", func(t *testing.T, src string) {
+			full := filepath.Join(filepath.Dir(src), "full.db")
+			newNanotunDB(t, full, "x")
+			raw, err := os.ReadFile(full)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// 保留合法文件头,砍掉后半 —— 模拟半截下载的备份。
+			if err := os.WriteFile(src, raw[:len(raw)/2], 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"foreign sqlite db", func(t *testing.T, src string) {
+			db, err := sql.Open("sqlite", src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec("CREATE TABLE bookmarks (id INTEGER PRIMARY KEY)"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "src.db")
+			dst := filepath.Join(dir, "dst.db")
+			tc.build(t, src)
+			newNanotunDB(t, dst, "keepme")
+
+			out := &bytes.Buffer{}
+			opts := &globalOpts{stdout: out, stderr: out, stdin: os.Stdin, dbPath: dst, yes: true,
+				controlSocket: "/tmp/this-does-not-exist.sock"}
+			if code := cmdRestore(opts, []string{src}); code == 0 {
+				t.Fatalf("expected non-zero exit for %s source, out=%s", tc.name, out.String())
+			}
+			if got := usersInDB(t, dst); len(got) != 1 || got[0] != "keepme" {
+				t.Fatalf("live DB must be untouched, got %v", got)
+			}
+			if saved, _ := filepath.Glob(dst + ".pre-restore-*"); len(saved) != 0 {
+				t.Fatalf("must not snapshot when the source is rejected, got %v", saved)
+			}
+		})
 	}
 }
 

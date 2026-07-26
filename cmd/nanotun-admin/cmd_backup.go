@@ -2,15 +2,19 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/nanotun/server/store"
+
+	_ "modernc.org/sqlite"
 )
 
 // P1#10: nanotun-admin backup / restore / vacuum
@@ -150,6 +154,24 @@ func cmdRestore(opts *globalOpts, args []string) int {
 		}
 	}
 
+	// restore 是全系统里唯一「一条命令覆盖掉整个生产库」的操作,此前对 src 不做任何校验:
+	// 半截下载的备份 / 拿错的 tar.gz / cron 生成的 0 字节文件,都会被原样盖上去并报 success,
+	// 生产库当场报废且没有回头路(实测:15 字节文本文件覆盖成功,server 随后 "file is not a database")。
+	// 落盘前先验源:SQLite 魔数 → integrity_check → 必须是 nanotun 自己的库。
+	if err := validateRestoreSource(srcAbs); err != nil {
+		fmt.Fprintln(opts.stderr, opts.T("backup.srcInvalid", err.Error()))
+		return 1
+	}
+
+	// 即便源库合法,恢复也会丢掉「上次备份之后」的全部变更。落盘前把现库挪成带时间戳的
+	// 旁路副本,给运维留一条后悔路(误恢复到过旧快照时可以原样挪回来)。
+	if saved, err := snapshotBeforeRestore(dstAbs); err != nil {
+		fmt.Fprintln(opts.stderr, opts.T("backup.preRestoreFail", err.Error()))
+		return 1
+	} else if saved != "" {
+		fmt.Fprintln(opts.stderr, opts.T("backup.preRestoreSaved", saved))
+	}
+
 	if err := copyFileAtomic(srcAbs, dstAbs); err != nil {
 		fmt.Fprintln(opts.stderr, opts.T("backup.copyFail", err.Error()))
 		return 1
@@ -180,6 +202,88 @@ func cmdVacuum(ctx context.Context, st *store.Store, opts *globalOpts, _ []strin
 	}
 	fmt.Fprintln(opts.stdout, opts.T("backup.vacuumDone"))
 	return nil
+}
+
+// sqliteMagic 是 SQLite 3 数据库文件头的固定 16 字节(含结尾 NUL)。
+const sqliteMagic = "SQLite format 3\x00"
+
+// restoreRequiredTables:判定「这是不是 nanotun 自己的库」的哨兵表。
+// 只认最早一版 migration(0001_init)就存在的核心表 —— 老快照也能通过,不会因为
+// 新加表而把合法的历史备份挡在门外(schema 落后由 server 启动时的自动迁移补齐)。
+var restoreRequiredTables = []string{"users", "devices", "app_settings"}
+
+// validateRestoreSource 在覆盖生产库之前校验源文件。三道:
+//  1. SQLite 魔数 —— 挡住文本 / tar.gz / 0 字节等「根本不是库」的文件;
+//  2. PRAGMA integrity_check —— 挡住半截下载、被截断、页损坏的备份;
+//  3. 核心表存在 —— 挡住「是个合法 SQLite 库,但不是 nanotun 的库」。第三道最关键:
+//     这种文件前两道全过,盖上去后 server 启动会把它**自动迁移**成一个空库,
+//     看起来一切正常,实际上全部用户 / 设备 / 租约凭空消失。
+func validateRestoreSource(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	hdr := make([]byte, len(sqliteMagic))
+	n, readErr := io.ReadFull(f, hdr)
+	_ = f.Close()
+	if readErr != nil || n < len(sqliteMagic) || string(hdr) != sqliteMagic {
+		return fmt.Errorf("not a SQLite database file (bad header)")
+	}
+
+	// mode=ro:只读打开,绝不在备份目录旁生成 -wal/-shm,也不会改动源文件。
+	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&_pragma=query_only(1)"}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	var res string
+	if err := db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&res); err != nil {
+		return fmt.Errorf("integrity_check: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(res), "ok") {
+		return fmt.Errorf("integrity_check: %s", strings.TrimSpace(res))
+	}
+
+	for _, t := range restoreRequiredTables {
+		var name string
+		err := db.QueryRowContext(ctx,
+			"SELECT name FROM sqlite_master WHERE type='table' AND name=?", t).Scan(&name)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("not a nanotun database (missing table %q)", t)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// snapshotBeforeRestore 在覆盖前把现库硬链接到 <dst>.pre-restore-<时间戳>,返回副本路径。
+// 用硬链接而非 rename:dst 全程在位,不存在「库文件短暂消失」的窗口。dst 不存在时返回 ""。
+// -wal 若有内容也一并留一份(--force-while-running 下现库可能有未 checkpoint 的提交)。
+func snapshotBeforeRestore(dst string) (string, error) {
+	if _, err := os.Stat(dst); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	saved := fmt.Sprintf("%s.pre-restore-%s", dst, time.Now().Format("20060102-150405"))
+	if err := os.Link(dst, saved); err != nil {
+		if os.IsExist(err) {
+			// 同一秒内重复恢复:已有一份同名副本即达成目的,不必失败。
+			return saved, nil
+		}
+		return "", err
+	}
+	if st, err := os.Stat(dst + "-wal"); err == nil && st.Size() > 0 {
+		_ = os.Link(dst+"-wal", saved+"-wal")
+	}
+	return saved, nil
 }
 
 // copyFileAtomic 把 src 拷到一个私有临时文件,fsync 后 rename → dst,保证半截文件不会被 server 拿来用。

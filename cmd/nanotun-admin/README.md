@@ -261,10 +261,27 @@ upstream_v4 = ["223.5.5.5"]
 ### 备份 / 恢复 / 压缩(P1#10)
 
 ```bash
-nanotun-admin backup  /var/backup/nanotun-$(date +%F).db   # VACUUM INTO,一致性快照
-nanotun-admin vacuum                                         # 在线 VACUUM,回收空闲页
-nanotun-admin restore /var/backup/nanotun-2026-05-22.db    # ⚠️ 覆盖现 DB(会 prompt)
+nanotun-admin backup --out /var/backup/nanotun-$(date +%F).db  # VACUUM INTO,一致性快照
+nanotun-admin vacuum                                            # 在线 VACUUM,回收空闲页
+nanotun-admin restore /var/backup/nanotun-2026-05-22.db         # ⚠️ 覆盖现 DB(会 prompt)
 ```
+
+`backup` 走 `VACUUM INTO`,是**强一致**快照:客户端在线、写入还在 WAL 里也会被完整带上,
+过程不阻塞数据面(实测 60 秒探针 0 中断)。目标文件已存在时拒绝覆盖,不会静默盖掉上一份备份。
+
+`restore` 在落盘前对源文件做三道校验,任何一道不过都**保持现库分毫不动**并以非 0 退出:
+
+| 校验 | 挡住的情况 |
+| --- | --- |
+| SQLite 文件头魔数 | 文本文件、tar.gz、0 字节(cron 备份失败常见产物) |
+| `PRAGMA integrity_check` | 半截下载 / 被截断 / 页损坏的备份 |
+| 核心表(`users`/`devices`/`app_settings`)存在 | 是合法 SQLite 库但不是 nanotun 的库 —— 这类最阴:前两道全过,盖上去后 server 启动会把它自动迁移成一个**空库**,看起来一切正常,实际全部用户/设备/租约凭空消失 |
+
+校验通过后,现库会先被硬链接到 `<db_path>.pre-restore-<时间戳>` 再覆盖,
+用于「恢复到了过旧的快照」时原样挪回来;确认无误后自行删除。
+
+`restore` 默认拒绝在 server 运行时执行(control socket 可达即判定在跑)。`--force-while-running`
+可强行覆盖,但 server 仍持有老 inode,状态会分裂 —— 正确姿势是 `systemctl stop nanotun` → `restore` → `start`。
 
 ### 配置 lint(J4,2026-05-22)
 
