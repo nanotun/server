@@ -907,10 +907,9 @@ type controlRateRefreshResp struct {
 // 落到底层 *rate.Limiter。
 //
 // 这个 helper 是 /rate/refresh 跟 /users/rate/refresh 的公共体(N2 去重):
-//   - /rate/refresh 调用前自己 GetDevice 拿最新 devUp/devDown,userUp/userDown
-//     传 c.bwUpBPS/c.bwDownBPS(登录快照);
-//   - /users/rate/refresh 调用前先 GetUser 拿最新 userUp/userDown,devUp/devDown
-//     传 c.deviceRateUpBPS/DownBPS(登录快照,本接口聚焦 user 维度)。
+// 两条接口都把 device 层与 user 层**双双从库里重读**后再传进来(见 freshUserBW /
+// freshDeviceRates 的说明):各层取 min,任一层沿用登录快照都会把另一条路径刚生效的
+// 策略静默弹回登录值。
 //
 // 返回 true 表示真刷到了 limiter;返回 false 表示 c 还没建立数据面或已 close
 // (safeRLConn() 返回 nil)、被 takeover、c 为 nil 等可跳过场景。
@@ -940,6 +939,63 @@ func applyConnRateLimit(
 	rl.SetUploadLimit(int64(up), burst)
 	rl.SetDownloadLimit(int64(down), burst)
 	return true
+}
+
+// rateSnap:一层限速的上下行字节速率快照(0 = 该层不限)。
+type rateSnap struct {
+	up, down int64
+}
+
+// freshUserBW / freshDeviceRates:两条 refresh 接口各自「另一层」的当前值。
+//
+// 两个接口原先只重读自己那一层(device 或 user),另一层沿用 Connection 上的**登录快照**。
+// 但 effectiveLinkRates 是各层取 min,而快照永远停在登录那一刻 —— 于是先 `user set-bandwidth`
+// 把配额调低(生效),之后任何一次 /rate/refresh(改某台 device 的限速、甚至只是 `setting rate`
+// 的全量刷)都会拿登录时的旧 user 配额重算 min,把刚压下去的配额**静默弹回登录值**,直到该
+// 会话重连才恢复。反向亦然(先改 device 再改 user,device 那层被弹回)。三机实测 2026-07-26:
+// user 512 KB/s 生效后改 device 为 1.5 MB/s,实测吞吐升到 1.19 MB/s —— 用户配额没了。
+//
+// 修法:两层都从库里重读,谁都不再相信对面那层的登录快照。读失败(store 不可用 / 匿名 conn /
+// 行已删)才回落调用方给的快照值,即「本次不动这一层」,与原有降级方向一致。
+// 仍**不**回写 Connection 上的快照字段(那会与 takeover 路径 race,且没有收益)。
+func freshUserBW(
+	ctx context.Context, gw *gatewayState, userID int64,
+	cache map[int64]rateSnap, fallbackUp, fallbackDown int64,
+) (int64, int64) {
+	if userID <= 0 || gw == nil || gw.store == nil {
+		return fallbackUp, fallbackDown
+	}
+	if v, ok := cache[userID]; ok {
+		return v.up, v.down
+	}
+	snap := rateSnap{up: fallbackUp, down: fallbackDown}
+	c, cancel := context.WithTimeout(ctx, 3*time.Second)
+	if u, err := gw.store.GetUser(c, userID); err == nil && u != nil {
+		snap = rateSnap{up: u.BandwidthUpBPS, down: u.BandwidthDownBPS}
+	}
+	cancel()
+	cache[userID] = snap
+	return snap.up, snap.down
+}
+
+func freshDeviceRates(
+	ctx context.Context, gw *gatewayState, deviceID int64,
+	cache map[int64]rateSnap, fallbackUp, fallbackDown int64,
+) (int64, int64) {
+	if deviceID <= 0 || gw == nil || gw.store == nil {
+		return fallbackUp, fallbackDown
+	}
+	if v, ok := cache[deviceID]; ok {
+		return v.up, v.down
+	}
+	snap := rateSnap{up: fallbackUp, down: fallbackDown}
+	c, cancel := context.WithTimeout(ctx, 3*time.Second)
+	if d, err := gw.store.GetDevice(c, deviceID); err == nil && d != nil {
+		snap = rateSnap{up: d.RateUploadBPS, down: d.RateDownloadBPS}
+	}
+	cancel()
+	cache[deviceID] = snap
+	return snap.up, snap.down
 }
 
 // controlHandleRateRefresh:0011(2026-05-23)。管理面改了 devices.rate_*_bps 或
@@ -1024,32 +1080,33 @@ func controlHandleRateRefresh(gw *gatewayState) http.HandlerFunc {
 		// device 上 N 条 conn 只查 1 次)。失败键也缓存(用 nil),避免反复重试。
 		type devSnap struct {
 			up, down int64
+			userID   int64
 		}
 		devCache := make(map[int64]devSnap, 8)
-		getDev := func(c *Connection) (int64, int64) {
+		userCache := make(map[int64]rateSnap, 8)
+		getDev := func(c *Connection) devSnap {
 			if c.deviceID == 0 || gw.store == nil {
 				// 匿名 conn 或 store 不可用 → 沿用登录快照。
-				return c.deviceRateUpBPS, c.deviceRateDownBPS
+				return devSnap{up: c.deviceRateUpBPS, down: c.deviceRateDownBPS}
 			}
 			if v, ok := devCache[c.deviceID]; ok {
-				return v.up, v.down
+				return v
 			}
-			up, down := c.deviceRateUpBPS, c.deviceRateDownBPS
+			snap := devSnap{up: c.deviceRateUpBPS, down: c.deviceRateDownBPS}
 			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 			if d, err := gw.store.GetDevice(ctx, c.deviceID); err == nil && d != nil {
-				up, down = d.RateUploadBPS, d.RateDownloadBPS
+				snap = devSnap{up: d.RateUploadBPS, down: d.RateDownloadBPS, userID: d.UserID}
 			}
 			cancel()
-			devCache[c.deviceID] = devSnap{up: up, down: down}
-			return up, down
+			devCache[c.deviceID] = snap
+			return snap
 		}
 
 		refreshed := 0
 		for _, c := range victims {
-			devUp, devDown := getDev(c)
-			// user 维度走 conn 登录快照 c.bwUpBPS/c.bwDownBPS;真正改 user bw 由
-			// /users/rate/refresh 单独刷,这里聚焦 device/settings/toml 三层。
-			if applyConnRateLimit(c, gw, devUp, devDown, defaults, c.bwUpBPS, c.bwDownBPS, burst) {
+			dev := getDev(c)
+			userUp, userDown := freshUserBW(r.Context(), gw, dev.userID, userCache, c.bwUpBPS, c.bwDownBPS)
+			if applyConnRateLimit(c, gw, dev.up, dev.down, defaults, userUp, userDown, burst) {
 				refreshed++
 			}
 		}
@@ -1079,9 +1136,10 @@ type controlUserRateRefreshReq struct {
 // controlHandleUserRateRefresh(0012, 2026-05-23):user-level bandwidth 改了之后
 // 立刻把所有该 user 下 active conn 的 limiter 同步过来。
 //
-// 与 /rate/refresh 区别:那条是按 device 维度刷,这条按 user 维度刷;两者都从 DB 重读
-// 各自层级的最新值,再走相同的 effectiveLinkRates 重算 min,最后调 rlConn.SetUploadLimit
-// 跟 SetDownloadLimit。**不**写回 Connection 上的快照字段(避免与 takeover 路径 race)。
+// 与 /rate/refresh 区别只在**选谁**(按 user 索引 vs 按 device 过滤);算限速时两条都从 DB
+// 重读 device 与 user 两层的最新值,再走相同的 effectiveLinkRates 重算 min,最后调
+// rlConn.SetUploadLimit 跟 SetDownloadLimit。**不**写回 Connection 上的快照字段
+// (避免与 takeover 路径 race)。
 //
 // user_id == 0 → 拒绝(/rate/refresh 的全量刷已经覆盖,这条接口只为按 user 局部刷)。
 func controlHandleUserRateRefresh(gw *gatewayState) http.HandlerFunc {
@@ -1144,10 +1202,11 @@ func controlHandleUserRateRefresh(gw *gatewayState) http.HandlerFunc {
 		connIDMapMu.RUnlock()
 
 		refreshed := 0
+		devCache := make(map[int64]rateSnap, 8)
 		for _, c := range victims {
-			// device 层取 conn 上的登录快照(takeover 路径同步过的)。本接口聚焦 user-level
-			// 热更,device-level 改请走 /rate/refresh(它会重读 devices 表)。
-			if applyConnRateLimit(c, gw, c.deviceRateUpBPS, c.deviceRateDownBPS, defaults, userUp, userDown, burst) {
+			devUp, devDown := freshDeviceRates(r.Context(), gw, c.deviceID, devCache,
+				c.deviceRateUpBPS, c.deviceRateDownBPS)
+			if applyConnRateLimit(c, gw, devUp, devDown, defaults, userUp, userDown, burst) {
 				refreshed++
 			}
 		}
