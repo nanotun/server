@@ -20,10 +20,13 @@ package main
 
 import (
 	"net/netip"
+
+	"github.com/nanotun/server/util"
 )
 
 // via6Prefix：4via6 的 /64 前缀。ULA fd00::/8 内的产品专属段，避开 mesh vIP 的 fd00: 段。
-var via6Prefix = netip.MustParsePrefix("fdbc:4a60::/64")
+// 定义在 util 里：宣告校验（NormalizeAdvertisedCIDR）要拿它把这段挡在可宣告集之外，两处必须是同一个值。
+var via6Prefix = util.Via6Prefix
 
 // Via6Prefix 返回 4via6 的 /64 前缀（供 routes-list 下发 / 使用方装路由 / 测试引用）。
 func Via6Prefix() netip.Prefix { return via6Prefix }

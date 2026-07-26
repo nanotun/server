@@ -117,6 +117,10 @@ func ParseRouteApproveStatus(data []byte) (*RouteApproveStatus, error) {
 // 对端链路本地资源,该走 4via6 或具体的 RFC1918 编址),故直接从白名单去掉,与出口侧口径对齐。
 // 存量已批准条目无需删库:rebuildSubnetRouteTable 载入时会用 PrefixWithinAdvertisable 复核同一门槛,
 // 去掉后它们自动被挡在转发表外。
+// Via6Prefix:4via6 合成地址空间的 /64 前缀(唯一定义处;cmd/nanotund/via6.go 的 via6Prefix 取自此)。
+// 它落在 ULA fc00::/7 白名单内,故必须单独挡在可宣告集之外 —— 见 NormalizeAdvertisedCIDR。
+var Via6Prefix = netip.MustParsePrefix("fdbc:4a60::/64")
+
 var advertisableSubnetRanges = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),     // RFC1918
 	netip.MustParsePrefix("172.16.0.0/12"),  // RFC1918
@@ -170,6 +174,19 @@ func NormalizeAdvertisedCIDR(in string) (string, error) {
 		return "", errors.New("cidr /0 not allowed(请勿声明全网路由)")
 	}
 	masked := p.Masked()
+	if masked.Overlaps(Via6Prefix) {
+		// 4via6 是 mesh **内部合成**的地址空间(见 cmd/nanotund/via6.go):每个宣告方站点一个 siteID,
+		// 地址由 server 生成、由数据面按 siteID 直接路由。「我身后有一个 fdbc:4a60:: 网段」没有任何
+		// 合法语义 —— 与链路本地在第二十三轮被移出白名单同理,只是它恰好落在 ULA fc00::/7 里而漏过。
+		//
+		// 现状不构成漏洞(三机实测 2026-07-26:C 宣告并被批准 fdbc:4a60::/64 之后,A、C 访问别人站点的
+		// 4via6 地址仍正常 —— forwardPacketToSubnetRoute 先走 is4via6 分支按 siteID 解析,压根不查最长
+		// 前缀表)。但那道防线只是**分支顺序**;审批面上放一条「看起来管着全部 4via6」的 approved 记录,
+		// 既误导 admin,也让将来任何调整顺序的改动直接变成跨站点劫持。写路径直接拒掉。
+		return "", fmt.Errorf("cidr %q not allowed: %s is the mesh-internal 4via6 space "+
+			"(synthesised per advertising site, routed by siteID) — advertise the real LAN prefix instead",
+			masked, Via6Prefix)
+	}
 	if !prefixWithinAdvertisable(masked) {
 		// 收敛到私有/保留段:公网/宽段子网路由会绕过 exit_allowed + 出口 ACL(见 advertisableSubnetRanges)。
 		return "", fmt.Errorf("cidr %q not allowed: subnet routes must be private/reserved "+
