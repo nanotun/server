@@ -402,6 +402,7 @@ var catZH = map[string]string{
 	"sessions.notBound":             "未绑",
 	"sessions.noDeviceIdTitle":      "此会话没识别出 device_id,无法绑定",
 	"sessions.noRateLimit":          "不限速",
+	"sessions.rateUnknownTitle":     "数据面 limiter 尚未建立(link_ready=false),限速状态未知",
 	"sessions.kickConfirm":          "确认踢掉此会话?客户端会立刻断开;若客户端开了 auto-reconnect 会马上重连。",
 	"sessions.kick":                 "踢",
 	"sessions.viewerNoKick":         "viewer 角色无踢权限",

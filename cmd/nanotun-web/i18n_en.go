@@ -400,6 +400,7 @@ var catEN = map[string]string{
 	"sessions.notBound":             "unbound",
 	"sessions.noDeviceIdTitle":      "This session has no recognized device_id and can't be bound",
 	"sessions.noRateLimit":          "unlimited",
+	"sessions.rateUnknownTitle":     "data-plane limiter not ready yet (link_ready=false); rate state unknown",
 	"sessions.kickConfirm":          "Kick this session? The client disconnects immediately; if it has auto-reconnect it will reconnect right away.",
 	"sessions.kick":                 "Kick",
 	"sessions.viewerNoKick":         "viewer role has no kick permission",

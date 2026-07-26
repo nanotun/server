@@ -113,8 +113,10 @@
             <td title="{{fmtTime .CreatedAt}}">{{fmtDuration .CreatedAt}}</td>
             <td>{{if .ExitAllowed}}<span class="badge ok">ON</span>{{else}}<span class="badge">OFF</span>{{end}}</td>
             <td class="muted">
-                {{if or .BWUpBPS .BWDownBPS}}
-                    ↑{{fmtBytes .BWUpBPS}}/s · ↓{{fmtBytes .BWDownBPS}}/s
+                {{if not .RateKnown}}
+                    <span title="{{T "sessions.rateUnknownTitle"}}">—</span>
+                {{else if or .EffectiveUpBPS .EffectiveDownBPS}}
+                    ↑{{fmtBytes .EffectiveUpBPS}}/s · ↓{{fmtBytes .EffectiveDownBPS}}/s
                 {{else}}
                     {{T "sessions.noRateLimit"}}
                 {{end}}

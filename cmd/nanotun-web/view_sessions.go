@@ -35,6 +35,13 @@ type sessionRowFromControl struct {
 	ExitAllowed bool     `json:"exit_allowed"`
 	BWUpBPS     int64    `json:"bw_up_bps,omitempty"`
 	BWDownBPS   int64    `json:"bw_down_bps,omitempty"`
+	// link_rate_*(nanotund 0012 加的)才是**当前真实生效**的 cap:
+	// min(device, app_settings, config.toml, user) 之后的值,admin 改任意一层热更后立刻反映。
+	// bw_* 只是**登录那一刻**凝固的 user 字段,之后再怎么改都不动。
+	// link_ready=false 时数据面 limiter 还没建起来,LinkRate* 恒为 0 —— 那个 0 不是「不限速」。
+	LinkReady       bool  `json:"link_ready"`
+	LinkRateUpBPS   int64 `json:"link_rate_up_bps,omitempty"`
+	LinkRateDownBPS int64 `json:"link_rate_down_bps,omitempty"`
 }
 
 // SessionView 是 dashboard / sessions_list 模板里直接渲染的"人话"行。
@@ -67,7 +74,23 @@ type SessionView struct {
 	ExitAllowed bool
 	BWUpBPS     int64
 	BWDownBPS   int64
+	// 见 sessionRowFromControl.LinkRate*:模板要展示的是这一对,不是 BW*。
+	LinkReady       bool
+	LinkRateUpBPS   int64
+	LinkRateDownBPS int64
 }
+
+// RateKnown:数据面 limiter 已建立,LinkRate* 的 0 才真的代表「不限速」。
+// link_ready=false 是登录路径 c.rlConn 尚未写入的亚毫秒窗口,此时不该断言限速状态。
+func (v SessionView) RateKnown() bool { return v.LinkReady }
+
+// EffectiveUpBPS / EffectiveDownBPS:当前真实生效的 link-level cap(0 = 不限)。
+//
+// 别退回 BWUpBPS/BWDownBPS —— 那是登录时凝固的 user 字段。用它渲染会让「设置页改完全局
+// 默认限速」「设备页改完 per-device 限速」在会话页上**看不出任何变化**(热更明明已经生效),
+// admin 只能怀疑自己没保存成功。
+func (v SessionView) EffectiveUpBPS() int64   { return v.LinkRateUpBPS }
+func (v SessionView) EffectiveDownBPS() int64 { return v.LinkRateDownBPS }
 
 // HasAnyFixedVIP:模板写 .HasAnyFixedVIP 比 .FixedVIPv4 or .FixedVIPv6 简洁。
 func (v SessionView) HasAnyFixedVIP() bool {
@@ -117,6 +140,10 @@ func (s *Server) collectSessionsForView(ctx context.Context, opts ...StatusOptio
 			ExitAllowed: row.ExitAllowed,
 			BWUpBPS:     row.BWUpBPS,
 			BWDownBPS:   row.BWDownBPS,
+
+			LinkReady:       row.LinkReady,
+			LinkRateUpBPS:   row.LinkRateUpBPS,
+			LinkRateDownBPS: row.LinkRateDownBPS,
 		}
 		for _, ip := range row.VIPs {
 			if strings.Contains(ip, ":") {
