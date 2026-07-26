@@ -498,8 +498,42 @@ func pushRateRefresh(opts *globalOpts, deviceID int64) error {
 // `[tun] subnets` 候选列表 —— 候选可能有三段,真正生效的只有选中的那一段,拿候选比会漏报。
 // best-effort:库里还没有快照(server 从未启动过)或读失败,就不提示,绝不因为一条提醒而挡住下发。
 func warnFixedVIPOutOfMesh(ctx context.Context, st *store.Store, opts *globalOpts, changedV4 bool, newV4 string, changedV6 bool, newV6 string) {
-	if (!changedV4 || newV4 == "") && (!changedV6 || newV6 == "") {
-		return // 两族都没改 / 都是清除 —— 没有要校验的地址
+	warnPinnedVIPsUnusable(ctx, st, opts, []pinnedVIPField{
+		{changed: changedV4, field: "fixed_vip_v4", val: newV4},
+		{changed: changedV6, field: "fixed_vip_v6", val: newV6},
+	})
+}
+
+// pinnedVIPField:一个被手工钉住的 vIP 字段(device.fixed_vip_* 或 lease.vip_*)。
+// changed=false 或 val=="" 表示本次没动这一族,跳过。
+type pinnedVIPField struct {
+	changed bool
+	field   string
+	val     string
+}
+
+// warnPinnedVIPsUnusable 在手钉的 vIP **登录路径根本用不了**时告警。
+//
+// 登录路径的 preferredVIPUsable 会把这些地址判为不可用 → 静默改走自动分配,设备拿到别的 vIP,
+// 而 CLI 只回一句「已分配」、`lease list` / `device list` 继续显示钉住的值。运维照着这个值配
+// 防火墙 / 文档 / ACL,全都对不上,却没有任何一处提示 —— 三机实测(2026-07-26):
+// `lease set 1 --v4 10.201.0.1`(网关自身)与 `--v4 10.99.0.5`(mesh 之外)CLI 都毫无异议。
+//
+// 两类不可用:
+//   - 掉出 mesh 网段(prefix.Contains 不成立);
+//   - 落在网段内但属保留地址:网关地址 / 网络地址 / IPv4 定向广播地址。
+//
+// 只 warn 不拒绝:运维可能在为计划中的换网段预置地址,硬失败会挡住合法用法(与本函数原有口径一致)。
+func warnPinnedVIPsUnusable(ctx context.Context, st *store.Store, opts *globalOpts, fields []pinnedVIPField) {
+	any := false
+	for _, f := range fields {
+		if f.changed && f.val != "" {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return
 	}
 	cidrs, err := st.GetMeshCIDRs(ctx)
 	if err != nil || len(cidrs) == 0 {
@@ -514,11 +548,7 @@ func warnFixedVIPOutOfMesh(ctx context.Context, st *store.Store, opts *globalOpt
 	if len(prefixes) == 0 {
 		return
 	}
-	for _, f := range []struct {
-		changed bool
-		flag    string
-		val     string
-	}{{changedV4, "fixed_vip_v4", newV4}, {changedV6, "fixed_vip_v6", newV6}} {
+	for _, f := range fields {
 		if !f.changed || f.val == "" {
 			continue
 		}
@@ -526,23 +556,62 @@ func warnFixedVIPOutOfMesh(ctx context.Context, st *store.Store, opts *globalOpt
 		if aerr != nil {
 			continue // 族校验已在调用方做过,这里只是防御
 		}
+		addr = addr.Unmap()
 		// 只与**同族**网段比:v6 快照不该让 v4 地址判为越界(反之亦然)。
+		var holder netip.Prefix
 		inMesh, sawSameFamily := false, false
 		for _, p := range prefixes {
-			if p.Addr().Is4() != addr.Is4() {
+			if p.Addr().Unmap().Is4() != addr.Is4() {
 				continue
 			}
 			sawSameFamily = true
 			if p.Contains(addr) {
-				inMesh = true
+				inMesh, holder = true, p
 				break
 			}
 		}
-		if !sawSameFamily || inMesh {
+		if !sawSameFamily {
 			continue // 该族压根没启用(比如没配 v6 网段)就无从判断,不提示
 		}
-		fmt.Fprintln(opts.stderr, opts.T("device.fixedOutOfMesh", f.flag, f.val, strings.Join(cidrs, ", ")))
+		if !inMesh {
+			fmt.Fprintln(opts.stderr, opts.T("device.fixedOutOfMesh", f.field, f.val, strings.Join(cidrs, ", ")))
+			continue
+		}
+		if kind := reservedVIPKind(holder, addr); kind != "" {
+			fmt.Fprintln(opts.stderr, opts.T("vip.reservedAddr", f.field, f.val, kind, holder.String()))
+		}
 	}
+}
+
+// reservedVIPKind 判断 addr 是否是 prefix 里**不能分给客户端**的保留地址,返回人类可读的类别名
+// (与 preferredVIPUsable 的三条拒绝分支一一对应);不是保留地址返回 ""。
+func reservedVIPKind(prefix netip.Prefix, addr netip.Addr) string {
+	if addr == prefix.Addr().Unmap() {
+		return "gateway"
+	}
+	if addr == prefix.Masked().Addr().Unmap() {
+		return "network"
+	}
+	if bcast, ok := ipv4DirectedBroadcastPrefix(prefix); ok && addr == bcast {
+		return "broadcast"
+	}
+	return ""
+}
+
+// ipv4DirectedBroadcastPrefix 是 nanotund 侧 ipv4DirectedBroadcast 的 CLI 副本(两个 main 包,
+// 不能互相引用)。语义必须一致:仅 IPv4 且掩码 < /31 有广播概念(RFC 3021)。
+func ipv4DirectedBroadcastPrefix(prefix netip.Prefix) (netip.Addr, bool) {
+	network := prefix.Masked().Addr().Unmap()
+	if !network.Is4() {
+		return netip.Addr{}, false
+	}
+	if prefix.Bits() < 0 || prefix.Bits() >= 31 {
+		return netip.Addr{}, false
+	}
+	b := network.As4()
+	netU := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+	bU := netU | (uint32(0xffffffff) >> uint(prefix.Bits()))
+	return netip.AddrFrom4([4]byte{byte(bU >> 24), byte(bU >> 16), byte(bU >> 8), byte(bU)}), true
 }
 
 // findFixedVIPConflict 检查 candidate vIP 是否已被其它持有者占用(0008 device 维度版)。

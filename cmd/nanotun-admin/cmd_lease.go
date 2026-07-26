@@ -189,6 +189,12 @@ func cmdLeaseSet(ctx context.Context, st *store.Store, opts *globalOpts, args []
 	// 第十四轮深扫 LOW:把「读现值 + 保留 + 写」下沉到 UpsertManualLeasePreservingEmpty 的**单事务**内
 	// (COALESCE(excluded, 现值)),消除此前「先 GetLeaseByDevice 读、再 UpsertLease 写」的非原子 RMW ——
 	// 读写之间设备恰好登录被分配另一族时,旧写会把刚分配的族又抹掉。整条释放用 `lease release`。
+	// 钉住的地址若登录路径用不上(掉出 mesh 网段 / 是网关·网络·广播这类保留地址),设备下次登录
+	// 会被静默改走自动分配 —— 而这里只会回一句「已分配」。与 device set-fixed-vip 同口径当场提示。
+	warnPinnedVIPsUnusable(ctx, st, opts, []pinnedVIPField{
+		{changed: *v4 != "", field: "vip_v4", val: *v4},
+		{changed: *v6 != "", field: "vip_v6", val: *v6},
+	})
 	l, err := st.UpsertManualLeasePreservingEmpty(ctx, deviceID, *v4, *v6, *manual)
 	if err != nil {
 		return err
