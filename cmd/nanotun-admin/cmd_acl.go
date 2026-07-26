@@ -182,7 +182,12 @@ func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args 
 		pair.DstKind, formatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi),
 		pair.Action,
 	))
-	fmt.Fprintln(opts.stderr, opts.T("acl.reloadHint"))
+	// 落库 ≠ 生效:数据面读的是内存里的 ACL snapshot。不通知就只是往列表里摆了一条没有约束力的规则。
+	if notifyACLChanged(opts) {
+		fmt.Fprintln(opts.stderr, opts.T("acl.reloaded"))
+	} else {
+		fmt.Fprintln(opts.stderr, opts.T("acl.reloadHint"))
+	}
 	return nil
 }
 
@@ -296,5 +301,12 @@ func cmdACLDelete(ctx context.Context, st *store.Store, opts *globalOpts, args [
 	_ = st.Audit(ctx, "admin-cli", "acl_delete",
 		fmt.Sprintf("acl:%d", id), "")
 	fmt.Fprintln(opts.stdout, opts.T("acl.deleted", id))
+	// 删除同样要刷 snapshot:否则被删掉的 deny 规则还会继续拦流量(而列表里已经没有它了,
+	// 排障时无从下手)。
+	if notifyACLChanged(opts) {
+		fmt.Fprintln(opts.stderr, opts.T("acl.reloaded"))
+	} else {
+		fmt.Fprintln(opts.stderr, opts.T("acl.reloadHint"))
+	}
 	return nil
 }

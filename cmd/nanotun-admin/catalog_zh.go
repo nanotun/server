@@ -351,6 +351,7 @@ var catZH = map[string]string{
 	// ===== acl =====
 	"acl.exitRequiresWildcard": "--exit 要求 <dst_user> 传 *(出口规则不指向某个用户)",
 	"acl.added":                "已新增 ACL 规则 #%d:%s -> %s kind=%s proto=%s port=%s (%s)",
+	"acl.reloaded":             "ACL snapshot 已刷新,规则即时生效。",
 	"acl.reloadHint":           "提示: 规则已落库,执行 `nanotun-admin reload` 或 `systemctl reload nanotun` 让运行中进程刷新 ACL snapshot 后即时生效。",
 	"acl.protoNeedsArg":        "--proto 需要参数",
 	"acl.portNeedsArg":         "--port 需要参数",
@@ -416,6 +417,7 @@ var catZH = map[string]string{
 	"control.offsetNonNeg":     "--offset 必须是非负整数: %s",
 	"control.notifyExitsFail":  "提示: 未能即时通知 server 复核出口(%s);改动已入库,将在客户端重连 / 下次出口上下线时生效。",
 	"control.notifyRoutesFail": "提示: 未能即时通知 server 重建子网路由表(%s);改动已入库,将在 server 重启 / 下次重建时生效。",
+	"control.notifyACLFail":    "警告: 未能即时通知 server 刷新 ACL(%s) —— 规则已入库但**尚未生效**,数据面仍按旧规则放行/拦截。",
 	"control.socketReqFail":    "control socket 请求失败 (server 是否在运行?)",
 	"control.serverReturned":   "server 返回 %d: %s",
 

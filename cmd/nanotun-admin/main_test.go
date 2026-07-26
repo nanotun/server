@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -177,6 +180,97 @@ func TestUserCRUDFlow(t *testing.T) {
 	_ = json.Unmarshal([]byte(stdout), &post)
 	if len(post) != 0 {
 		t.Fatalf("expected 0 users after delete, got %+v", post)
+	}
+}
+
+// ACL 落库 ≠ 生效:数据面读的是内存 snapshot。CLI 必须像 exits / routes 那样主动通知 server。
+//
+// 三机实测(2026-07-26):`acl deny testcli u4` 之后 `acl list` 里规则赫然在列,A→C 的
+// ping / TCP / MagicDNS 却一路畅通、acl_drop_total 恒为 0;手动 POST /reload?what=acl 才当场生效。
+// 一条摆在列表里却没有约束力的 deny 规则,比没有这条规则更危险。
+func TestACL_NotifiesServerToReload(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "aclnotify.db")
+	for _, name := range []string{"a1", "a2"} {
+		if c, _, e := runCLI(t, db, "", "user", "create", name, "--psk", "secret"); c != 0 {
+			t.Fatalf("create %s: %s", name, e)
+		}
+	}
+
+	sock := filepath.Join(t.TempDir(), "c.sock")
+	var mu sync.Mutex
+	var hits []string
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skipf("unix socket 不可用: %v", err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, r.Method+" "+r.URL.RequestURI())
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true,"rules":1,"what":"acl"}`))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	run := func(args ...string) (int, string) {
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		opts := &globalOpts{stdout: stdout, stderr: stderr, stdin: strings.NewReader("")}
+		full := append([]string{"--db-path", db, "--yes", "--lang", "zh", "--control-socket", sock}, args...)
+		rest, perr := parseGlobalFlags(full, opts)
+		if perr != nil {
+			t.Fatalf("parseGlobalFlags: %v", perr)
+		}
+		return runRoot(rest, opts), stderr.String()
+	}
+
+	code, stderr := run("acl", "deny", "a1", "a2")
+	if code != 0 {
+		t.Fatalf("acl deny 失败: %s", stderr)
+	}
+	mu.Lock()
+	got := append([]string(nil), hits...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "POST /reload?what=acl" {
+		t.Fatalf("acl deny 应通知 server 刷新 snapshot,实际请求 %v", got)
+	}
+	if !strings.Contains(stderr, "即时生效") {
+		t.Fatalf("确认生效后应明说已生效,stderr=%s", stderr)
+	}
+
+	// 删除同样要刷:否则被删掉的 deny 还会继续拦流量,而列表里已经看不到它了。
+	if code, stderr = run("acl", "del", "1"); code != 0 {
+		t.Fatalf("acl del 失败: %s", stderr)
+	}
+	mu.Lock()
+	got = append([]string(nil), hits...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("acl del 也应通知 server,实际请求 %v", got)
+	}
+}
+
+// 通知不到 server 时必须明说「规则尚未生效」,不能只留一句轻描淡写的提示就退 0。
+func TestACL_WarnsWhenNotifyFails(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "aclnotifyfail.db")
+	for _, name := range []string{"b1", "b2"} {
+		if c, _, e := runCLI(t, db, "", "user", "create", name, "--psk", "secret"); c != 0 {
+			t.Fatalf("create %s: %s", name, e)
+		}
+	}
+	stdout, errBuf := &bytes.Buffer{}, &bytes.Buffer{}
+	opts := &globalOpts{stdout: stdout, stderr: errBuf, stdin: strings.NewReader("")}
+	full := []string{"--db-path", db, "--yes", "--lang", "zh",
+		"--control-socket", filepath.Join(t.TempDir(), "nope.sock"),
+		"acl", "deny", "b1", "b2"}
+	rest, perr := parseGlobalFlags(full, opts)
+	if perr != nil {
+		t.Fatalf("parseGlobalFlags: %v", perr)
+	}
+	if code := runRoot(rest, opts); code != 0 {
+		t.Fatalf("通知失败不该让命令失败(规则已落库),code=%d", code)
+	}
+	if !strings.Contains(errBuf.String(), "尚未生效") {
+		t.Fatalf("应警告规则尚未生效,stderr=%s", errBuf.String())
 	}
 }
 

@@ -354,6 +354,7 @@ var catEN = map[string]string{
 	// ===== acl =====
 	"acl.exitRequiresWildcard": "--exit requires <dst_user> to be * (an exit rule does not point at a specific user)",
 	"acl.added":                "added ACL rule #%d: %s -> %s kind=%s proto=%s port=%s (%s)",
+	"acl.reloaded":             "the ACL snapshot has been refreshed; the rule is now in effect.",
 	"acl.reloadHint":           "hint: the rule is persisted; run `nanotun-admin reload` or `systemctl reload nanotun` to have running processes refresh the ACL snapshot and take effect immediately.",
 	"acl.protoNeedsArg":        "--proto needs an argument",
 	"acl.portNeedsArg":         "--port needs an argument",
@@ -419,6 +420,7 @@ var catEN = map[string]string{
 	"control.offsetNonNeg":     "--offset must be a non-negative integer: %s",
 	"control.notifyExitsFail":  "hint: could not notify the server to re-check exits (%s); the change is persisted and will take effect on client reconnect / next exit up-down.",
 	"control.notifyRoutesFail": "hint: could not notify the server to rebuild the subnet route table (%s); the change is persisted and will take effect on server restart / next rebuild.",
+	"control.notifyACLFail":    "WARNING: could not notify the server to refresh the ACL (%s) — the rule is persisted but is NOT in effect yet; the data plane still uses the old rules.",
 	"control.socketReqFail":    "control socket request failed (is the server running?)",
 	"control.serverReturned":   "server returned %d: %s",
 

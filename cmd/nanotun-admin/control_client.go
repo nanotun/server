@@ -75,6 +75,24 @@ func notifyRoutesChanged(opts *globalOpts) {
 	}
 }
 
+// notifyACLChanged best-effort 通知**运行中的 server** 刷新 ACL snapshot(POST /reload?what=acl),
+// 返回是否已确认生效。
+//
+// 与 exits / routes 同款。此前 ACL 是三者里唯一**不通知**的:`acl deny` 只在 stderr 打一行
+// 「提示: 规则已落库,执行 nanotun-admin reload …」就返回 0。三机实测(2026-07-26):
+// `acl deny testcli u4` 之后 `acl list` 里规则赫然在列,A→C 的 ping / TCP / MagicDNS 却一路畅通,
+// acl_drop_total 恒为 0;手动 POST /reload?what=acl 才当场生效。一条**没有约束力的 deny 规则**
+// 摆在列表里,比没有这条规则更危险 —— 管理员会以为已经拦住了。
+// (Web 后台 2026-07-19 就已改成同步 reload + 差异化文案,CLI 被落下了。)
+func notifyACLChanged(opts *globalOpts) bool {
+	cli := newControlHTTPClient(resolveControlSocketPath(opts.controlSocket))
+	if _, err := controlDo(cli, "POST", "/reload?what=acl", nil); err != nil {
+		fmt.Fprintln(opts.stderr, opts.T("control.notifyACLFail", err.Error()))
+		return false
+	}
+	return true
+}
+
 // StatusOptions(R7, 2026-05-26):跟 nanotun-web/control_client.go 的同名结构
 // 对齐,让 admin CLI / web 用同一套 pattern 表达「拉 /status 分页」意图。
 //
