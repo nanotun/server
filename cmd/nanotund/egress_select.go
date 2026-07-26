@@ -713,6 +713,9 @@ func handleEgressSelectFrame(ctx context.Context, c *Connection, payload []byte)
 	// 退回 server 自出口:总是允许(无需 exit_allowed —— 是否真能出公网由数据面 exitDeniedForPacket 裁决)。
 	if util.IsDefaultEgress(es.Egress) {
 		c.egressDeviceID.Store(0)
+		// 用户主动改回 server 出口 = 放弃原来那个出口意图,别让日后的自动接回把他拽回去。
+		c.desiredExitDeviceID.Store(0)
+		c.desiredExitUUID.Store("")
 		egressSelectAccepted.Add(1)
 		sendEgressSelectAck(c, util.EgressSelectAck{Accepted: true, Egress: util.EgressDefault})
 		return
@@ -766,6 +769,10 @@ func handleEgressSelectFrame(ctx context.Context, c *Connection, payload []byte)
 		// 变成 server 的 45.32.249.36。改为哨兵后由数据面就地丢弃,与「出口中途掉线」分支同口径;想要
 		// 便利回落的用户显式开 --exit-fallback-server,客户端收到本 ack 后会主动重发 EgressSelect{server}。
 		c.egressDeviceID.Store(egressFailClosed)
+		// 记下意图:admin 稍后批准这台出口时自动接回(见 restoreFailClosedBindings)。
+		// 「用户先选、管理员后批」与「撤销后又批回来」走同一条恢复路径。
+		c.desiredExitDeviceID.Store(0)
+		c.desiredExitUUID.Store(es.Egress)
 		egressSelectRejected.Add(1)
 		sendEgressSelectAck(c, util.EgressSelectAck{Accepted: false, Reason: "not_approved"})
 		return
@@ -782,6 +789,10 @@ func handleEgressSelectFrame(ctx context.Context, c *Connection, payload []byte)
 	// 已授权 → 绑定(在线/离线均绑)。数据面:在线在跑则走它;离线/没在跑则 fail-closed 阻断 + 它回来自动恢复
 	// (或按客户端 exit_fallback_server 回退 server)。
 	c.egressDeviceID.Store(deviceID)
+	// 记住用户点名的出口:被撤销时 egressDeviceID 会变成 -1 哨兵、丢掉设备信息,
+	// 靠这份意图才能在 admin 把它批回来时自动接上(见 revalidateExitBindings)。
+	c.desiredExitDeviceID.Store(deviceID)
+	c.desiredExitUUID.Store(es.Egress)
 	egressSelectAccepted.Add(1)
 	logrus.WithFields(logrus.Fields{
 		"user_id":        c.userID,
@@ -875,6 +886,63 @@ func deviceHasApprovedExitRoute(ctx context.Context, deviceID int64) (approved b
 	return false, true // 查过了,确实没有 approved 出口路由
 }
 
+// exitBinding 是「某会话 + 某出口设备」的配对,revalidateExitBindings 在锁内收集、锁外处理。
+type exitBinding struct {
+	c   *Connection
+	dev int64
+}
+
+// restoreFailClosedBindings 把「因出口被撤销而 fail-closed、且仍记得想要哪个出口」的会话,在该出口
+// **重新获批**时接回去,并回一帧 accepted ack 让客户端知道已恢复。
+//
+// 补的是撤销 fail-closed 的另一半:阻断本身是对的(不静默改走 server 出网),但阻断此前是**永久**的 ——
+// egressFailClosed 哨兵不携带设备 ID,admin 把出口批回来之后没有任何东西能把会话接上,连出口机重连都没用,
+// 只能挨个让终端用户重连客户端。三机实测(2026-07-26):`exit revoke 31` → `exit designate 31` 之后,
+// A 的公网流量持续超时,exit_node.forwarded 停止增长;CLI 用户至少还能看到那行提示,GUI 用户只看到「没网」。
+//
+// 这里不是降级:接回的正是用户当初点名的那个出口,且只在 admin 确认批准后发生。
+// DB 查不动(q=false)时什么都不做 —— 保持 fail-closed,下一次 reload 再试。
+func restoreFailClosedBindings(ctx context.Context, pending []exitBinding) {
+	if len(pending) == 0 {
+		return
+	}
+	// isolate 下经 peer 出口本就被禁(见 handleEgressSelectFrame),别在这条路径上绕过去。
+	if clientIsolateMode.Load() {
+		return
+	}
+	devCache := make(map[string]int64, len(pending))
+	for _, b := range pending {
+		uuid, _ := b.c.desiredExitUUID.Load().(string)
+		if uuid == "" {
+			continue
+		}
+		dev, seen := devCache[uuid]
+		if !seen {
+			// 按 UUID 重新解析:同时覆盖「批准被撤销后又批回来」与「用户先选、admin 后批」两种情形。
+			// 解析不到(仍未批准 / DB 查不动)返回 0,保持 fail-closed,下次 reload 再试。
+			if id, ok := resolveApprovedExitDeviceID(ctx, uuid); ok {
+				dev = id
+			}
+			devCache[uuid] = dev
+		}
+		if dev == 0 || (b.c.deviceID != 0 && dev == b.c.deviceID) {
+			continue // 未获批 / 选到自己(与选择期同口径)。
+		}
+		// CAS 防误伤:期间客户端可能自己改了出口(比如收到 revoked 后按 --exit-fallback-server
+		// 重选了 server),那时 egressDeviceID 已不是哨兵,不该把他拽回来。
+		if !b.c.egressDeviceID.CompareAndSwap(egressFailClosed, dev) {
+			continue
+		}
+		b.c.desiredExitDeviceID.Store(dev)
+		logrus.WithFields(logrus.Fields{
+			"user_id":        b.c.userID,
+			"conn_id":        b.c.connIDStr,
+			"exit_device_id": dev,
+		}).Info("[egress] 出口资格已获批准,本会话自动接回原选定出口(此前处于 fail-closed 阻断)")
+		sendEgressSelectAck(b.c, util.EgressSelectAck{Accepted: true, Egress: uuid})
+	}
+}
+
 // revalidateExitBindings 复核所有「已绑定出口」的会话:绑定的设备若已不再是 approved 出口(被 admin 撤销),
 // **即时**把该会话出口重置回 server 自出口(egressDeviceID=0,原子写,与数据面安全并发)+ 回一帧 EgressSelectAck{revoked}
 // 通知客户端。由 control-socket `/reload?what=exits` 触发(admin 撤销出口后调用),修「撤销对正在用的会话不实时生效」
@@ -886,30 +954,37 @@ func revalidateExitBindings(ctx context.Context) int {
 	}
 	// 快照所有「绑了出口」的会话(egressDeviceID != 0)。锁内只收集,锁外查库 + 写帧。
 	connIDMapMu.RLock()
-	type bound struct {
-		c   *Connection
-		dev int64
-	}
-	bs := make([]bound, 0, 8)
+	bs := make([]exitBinding, 0, 8)
+	// 反向:已 fail-closed 但记得「想要哪个出口」的会话。出口被批回来时把它们接上。
+	pending := make([]exitBinding, 0, 4)
 	for _, c := range connIDMap {
 		if c == nil || c.takenOver.Load() {
 			continue
+		}
+		if c.egressDeviceID.Load() == egressFailClosed {
+			if u, ok := c.desiredExitUUID.Load().(string); ok && u != "" {
+				pending = append(pending, exitBinding{c: c, dev: c.desiredExitDeviceID.Load()})
+			}
 		}
 		// 只复核**真绑了某设备**的会话(dev > 0)。dev==0 是 server 自出口;dev==egressFailClosed 是
 		// 「选择无法兑现、已 fail-closed」—— 它不对应任何 deviceID,若一并收进来,下面
 		// deviceHasApprovedExitRoute(-1) 会答「确实没批准」→ 把它 CAS 回 0(server 自出口),
 		// 等于每次 admin 改出口(reload exits)都悄悄把 fail-closed 会话放回 server 出网,正是本次要修的泄露。
 		if dev := c.egressDeviceID.Load(); dev > 0 {
-			bs = append(bs, bound{c: c, dev: dev})
+			bs = append(bs, exitBinding{c: c, dev: dev})
 		}
 	}
 	connIDMapMu.RUnlock()
-	if len(bs) == 0 {
+	if len(bs) == 0 && len(pending) == 0 {
 		return 0
 	}
 
 	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	restoreFailClosedBindings(dbCtx, pending)
+	if len(bs) == 0 {
+		return 0
+	}
 	keepCache := make(map[int64]bool, len(bs))
 	// 两段式(深扫第六轮 low):**先**把所有「确认被撤销」的会话 CAS 重置回 server —— 撤销即时生效,不被任意一个卡住
 	// 客户端的 ack 写(虽各有 5s 写超时)拖慢后续会话的重置;**再**统一回 revoked 通知。

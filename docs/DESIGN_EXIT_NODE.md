@@ -149,6 +149,18 @@
     admin 执行 `exit revoke C` → A 的出网 IP 当场变成 server 的 45.32.249.36，而 A **没有**开 `--exit-fallback-server`。
     这与选择期口径、与该开关「默认关 = 严格 fail-closed」的承诺都相反。撤销是管理员的动作，不代表用户改了主意。
     现改为置 `egressFailClosed`；想要便利回落的用户显式开开关，客户端收到 `revoked` ack 后主动重发 `EgressSelect{server}`。
+  - **fail-closed 不再是终身判决（2026-07-26 三机实测补齐）**：阻断是对的，但此前是**永久**的。
+    `egressFailClosed` 是个不携带设备信息的哨兵，`revalidateExitBindings` 又（正确地）只复核 `dev>0`，
+    于是 admin 把出口批回来之后，没有任何东西能把会话接上。实测：`exit revoke 31` → `exit designate 31`
+    之后 A 的公网流量持续超时，`exit_node.forwarded` 停止增长；**重连出口机 C 也没用**（哨兵在使用方 A 的
+    会话上，不在 C 上），只能挨个让终端用户重连客户端 —— CLI 用户至少还看得到那行提示，GUI 用户看到的
+    只是「网莫名其妙断了」，而管理员那边显示一切正常（`exit list` 有 ✓、`route list` 全 approved）。
+    修法：会话额外记住「用户点名的那个出口 UUID」(`desiredExitUUID`)，`revalidateExitBindings` 增加反向一遍 ——
+    fail-closed 且该 UUID 现在解析得到已批准设备 → CAS 接回 + 主动回 `EgressSelectAck{accepted}`（客户端已有
+    `accepted=true` 分支，GUI 横幅同步解除）。这不是降级：接回的正是用户当初的选择，且只在 admin 批准后发生。
+    同一条路径顺带覆盖「用户先选、管理员后批」（原先同样要重连才生效）。
+    用户自己改选 server（`--exit-fallback-server` 的行为）会清掉该意图，不会被拽回去。
+    `isolate` 模式下不接回（经 peer 出口本就被禁）。
   - **Phase 3**：
     - **E ✅ 出口偏好 per-profile**：`exit_egress_device` 从全局移到 `profile_store.StoredProfile`（各 server 各记各的）；连接按当前 profile 取（`resolve_active_exit_egress`）；选出口写当前 profile，仅当前连接的 profile 才实时切。
     - **F ✅ 撤销客户端提示**：CLI/GUI 对 `reason=revoked` 显示「已被管理员撤销，公网流量已 fail-closed 阻断」，

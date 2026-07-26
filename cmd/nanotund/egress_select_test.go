@@ -565,6 +565,109 @@ func TestRevalidateExitBindings_SkipsFailClosedSessions(t *testing.T) {
 	}
 }
 
+// fail-closed 是「阻断」不是「判死刑」:admin 把出口批回来之后,会话必须自动接回原选定出口。
+//
+// 三机实测(2026-07-26)复现:`exit revoke 31` → `exit designate 31` 之后,选它作出口的 A 一直超时,
+// exit_node.forwarded 不再增长;重连出口机也没用(哨兵在使用方会话上),只能让 A 自己重连客户端。
+// CLI 用户至少能看到那行提示,GUI 用户看到的只是「网莫名其妙断了」。
+func TestRevalidateExitBindings_RestoresAfterReapproval(t *testing.T) {
+	resetConnByDeviceForTest(t)
+	st := egressTestStore(t)
+	const exitUUID = "33333333-4444-4555-8666-777777777777"
+	devID := seedApprovedExitDevice(t, st, exitUUID)
+
+	fake := newFakeLinkConn()
+	a := &Connection{userID: "u1", connIDStr: "a-restore", deviceID: 11, exitAllowed: true, linkConn: fake}
+	body, err := util.MarshalEgressSelect(exitUUID)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	handleEgressSelectFrame(t.Context(), a, body)
+	if a.egressDeviceID.Load() != devID {
+		t.Fatalf("应先绑定到 %d,实际 %d", devID, a.egressDeviceID.Load())
+	}
+	connIDMapMu.Lock()
+	connIDMap[a.connIDStr] = a
+	connIDMapMu.Unlock()
+	t.Cleanup(func() {
+		connIDMapMu.Lock()
+		delete(connIDMap, a.connIDStr)
+		connIDMapMu.Unlock()
+	})
+
+	// 撤销 → fail-closed。
+	if err := st.DeleteRoute(t.Context(), devID, "0.0.0.0/0"); err != nil {
+		t.Fatalf("delete route: %v", err)
+	}
+	revalidateExitBindings(t.Context())
+	if got := a.egressDeviceID.Load(); got != egressFailClosed {
+		t.Fatalf("撤销后应 fail-closed(%d),实际 %d", egressFailClosed, got)
+	}
+
+	// 批回来 → 下一次 reload exits 应自动接回,并回一帧 accepted 让客户端/GUI 解除阻断提示。
+	if _, err := st.UpsertAdvertisedRoute(t.Context(), devID, "0.0.0.0/0"); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	if err := st.SetRouteStatus(t.Context(), devID, "0.0.0.0/0", util.RouteStatusApproved, ""); err != nil {
+		t.Fatalf("re-approve: %v", err)
+	}
+	fake.writeBuf = nil
+	revalidateExitBindings(t.Context())
+	if got := a.egressDeviceID.Load(); got != devID {
+		t.Fatalf("重新批准后应自动接回 %d,实际 %d", devID, got)
+	}
+	ack := parseLastEgressAck(t, fake)
+	if !ack.Accepted || ack.Egress != exitUUID {
+		t.Fatalf("应主动回 {accepted:true, egress:%s},实际 %+v", exitUUID, ack)
+	}
+}
+
+// 自动接回只认「用户还想要那个出口」。收到 revoked 后按 --exit-fallback-server 改选了 server 的会话,
+// 出口批回来时不得被拽回去 —— 那是替用户改主意。
+func TestRevalidateExitBindings_NoRestoreAfterUserChoseServer(t *testing.T) {
+	resetConnByDeviceForTest(t)
+	st := egressTestStore(t)
+	const exitUUID = "44444444-5555-4666-8777-888888888888"
+	devID := seedApprovedExitDevice(t, st, exitUUID)
+
+	fake := newFakeLinkConn()
+	a := &Connection{userID: "u1", connIDStr: "a-noback", deviceID: 11, exitAllowed: true, linkConn: fake}
+	body, _ := util.MarshalEgressSelect(exitUUID)
+	handleEgressSelectFrame(t.Context(), a, body)
+	connIDMapMu.Lock()
+	connIDMap[a.connIDStr] = a
+	connIDMapMu.Unlock()
+	t.Cleanup(func() {
+		connIDMapMu.Lock()
+		delete(connIDMap, a.connIDStr)
+		connIDMapMu.Unlock()
+	})
+
+	if err := st.DeleteRoute(t.Context(), devID, "0.0.0.0/0"); err != nil {
+		t.Fatalf("delete route: %v", err)
+	}
+	revalidateExitBindings(t.Context())
+
+	// 客户端改选 server(--exit-fallback-server 的行为)。
+	sbody, _ := util.MarshalEgressSelect(util.EgressDefault)
+	handleEgressSelectFrame(t.Context(), a, sbody)
+	if a.egressDeviceID.Load() != 0 {
+		t.Fatalf("改选 server 后应为 0,实际 %d", a.egressDeviceID.Load())
+	}
+
+	// 出口批回来。
+	if _, err := st.UpsertAdvertisedRoute(t.Context(), devID, "0.0.0.0/0"); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	if err := st.SetRouteStatus(t.Context(), devID, "0.0.0.0/0", util.RouteStatusApproved, ""); err != nil {
+		t.Fatalf("re-approve: %v", err)
+	}
+	revalidateExitBindings(t.Context())
+	if got := a.egressDeviceID.Load(); got != 0 {
+		t.Fatalf("用户已改选 server,不该被拽回出口,实际 %d", got)
+	}
+}
+
 // 退化:选到自己当出口 → 返回 false(回退 server 自出口,防自环)。
 func TestForwardPacketToExitNode_SelfExitFallsBack(t *testing.T) {
 	resetConnByDeviceForTest(t)

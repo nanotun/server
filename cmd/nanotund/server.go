@@ -221,6 +221,20 @@ type Connection struct {
 	// 的「出口撤销实时复核」(revalidateExitBindings)在另一 goroutine 把它重置为 0,故必须原子(数据面每包 Load,开销可忽略)。
 	egressDeviceID atomic.Int64
 
+	// exit-node:本会话**想要**的出口设备(用户当初点名的那个),与 egressDeviceID 分开存。
+	//
+	// egressDeviceID 被撤销时会写成 egressFailClosed(-1),这个哨兵不携带设备信息 —— 于是
+	// 「admin 误撤销、几秒后又批回来」之后没有任何东西能把会话接回去:revalidateExitBindings
+	// 只看 dev>0,-1 会话被跳过(它必须被跳过,否则就成了静默改走 server 出网的老 bug)。
+	// 三机实测(2026-07-26):revoke → designate 之后 A 的公网流量一直阻断,重连 C 也没用,
+	// 只能让 A 自己重连;GUI 用户看不到那行日志,表现就是「网莫名其妙断了」。
+	// 记住原始意图,批回来时才能自动接上(这正是用户当初的选择,不涉及任何降级)。
+	// 0 = 没有点名过具体出口(server 自出口)。atomic:readLoop 写、control-socket 复核读。
+	desiredExitDeviceID atomic.Int64
+	// desiredExitUUID 是上面那个设备的 UUID,回 ack 时要原样带回给客户端。
+	// atomic.Value 存 string,读写跨 goroutine 同上。
+	desiredExitUUID atomic.Value
+
 	// exit-node(M6):选定出口下线时「已通知客户端一次」的一次性闸。与 egressDeviceID 同 goroutine 读写
 	// (forwardPacketToExitNode 与 handleEgressSelectFrame 都在 readLoop),无需加锁。出口离线时数据面对
 	// **每个**包都会丢弃,但只在首个丢包时回一帧 EgressSelectAck{reason:exit_offline}+WARN,避免刷屏;
@@ -3632,6 +3646,12 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// 热切换后被误当「未批准转发者」,其合法的非 vIP 源回程流量会被 connSourceSpoofed 误丢)。
 	newConn.advertisedExitApproved.Store(oldConn.advertisedExitApproved.Load())
 	newConn.advertisedSubnetApproved.Store(oldConn.advertisedSubnetApproved.Load())
+	// 出口意图随接管过户:热切换不重发 EgressSelect,不继承的话「撤销后又批回来」的自动恢复
+	// 会在一次热切换后失效(newConn 忘了用户想要哪个出口)。
+	newConn.desiredExitDeviceID.Store(oldConn.desiredExitDeviceID.Load())
+	if u, ok := oldConn.desiredExitUUID.Load().(string); ok && u != "" {
+		newConn.desiredExitUUID.Store(u)
+	}
 	// 同理:当前宣告 CIDR 集也随接管过户(热切换不重发 RouteAdvertise),否则 newConn 集为空 → 退回布尔放行,
 	// 丢失收窄语义(虽不黑洞,但 per-CIDR 门控失效)。与 advertisedSubnetRoutes 布尔成对继承,保持二者一致。
 	newConn.advertisedRoutes.Store(oldConn.advertisedRoutes.Load())
