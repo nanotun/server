@@ -188,7 +188,46 @@ func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	} else {
 		fmt.Fprintln(opts.stderr, opts.T("acl.reloadHint"))
 	}
+	warnAllowNeedsReverse(ctx, st, opts, pair, positional[0], dstRaw)
 	return nil
+}
+
+// warnAllowNeedsReverse:默认动作是 deny 时,单加一条 `allow A B` **不足以**让 A 和 B 通 ——
+// ACL 按包判、无连接状态,回程包在数据面是独立的 B→A,还得有自己的 allow。
+//
+// 2026-07-26 三机实测:acl_default_action=deny + 只有 `allow testcli u4` 时,A→C 的 ping
+// 全丢、acl_drop_total 持续涨;补上 `allow u4 testcli` 后立刻通。命令本身打的是
+// 「已新增 ACL 规则 #16 … (allow)」,看不出还缺一半,管理员会以为 ACL 坏了或规则没生效
+// (跟 acl 落库不通知那次的观感一样,只是这次卡在语义而不是通知)。
+//
+// 只在真会踩的组合上吼:action=allow、两端都是具体用户(带 * 的通配本身就覆盖了回程)、
+// 默认动作为 deny、且当前确实没有覆盖回程的 allow。exit 规则不涉及回程方向,跳过。
+func warnAllowNeedsReverse(ctx context.Context, st *store.Store, opts *globalOpts, pair *store.ACLPair, srcRaw, dstRaw string) {
+	if pair.Action != "allow" || pair.DstKind != store.ACLDstKindUser {
+		return
+	}
+	if srcRaw == "*" || dstRaw == "*" {
+		return
+	}
+	if v, ok, err := st.SettingsGet(ctx, "acl_default_action"); err != nil || !ok || v != "deny" {
+		return
+	}
+	rules, err := st.ListACLPairs(ctx)
+	if err != nil {
+		return
+	}
+	for _, r := range rules {
+		if r.Action != "allow" || r.DstKind != store.ACLDstKindUser {
+			continue
+		}
+		// 覆盖回程 = src 侧能匹配原 dst、dst 侧能匹配原 src(0 表示通配 *)。
+		srcOK := r.SrcUserID == pair.DstUserID || r.SrcUserID == 0
+		dstOK := r.DstUserID == pair.SrcUserID || r.DstUserID == 0
+		if srcOK && dstOK {
+			return
+		}
+	}
+	fmt.Fprintln(opts.stderr, opts.T("acl.allowNeedsReverse", dstRaw, srcRaw))
 }
 
 type aclAddFlags struct {
