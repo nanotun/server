@@ -63,6 +63,9 @@ func writePrometheusMetrics(w io.Writer, gw *gatewayState) {
 	fmt.Fprintf(w, "nanotun_acl_drops_total{kind=\"mesh_off\"} %d\n", meshOffDropCount.Load())
 	// kind=src_spoof(M2 源地址反欺骗):普通会话以非本会话 vIP 作源发包被丢的总数(冒充他人 vIP / 注入伪造回包)。
 	fmt.Fprintf(w, "nanotun_acl_drops_total{kind=\"src_spoof\"} %d\n", srcSpoofDropCount.Load())
+	// kind=src_own_public:源 == 客户端自己公网 IP 的不对称回程(全隧道被互联网扫描的常态噪声,非冒充)。
+	// 单独一个 label,好让 src_spoof 的告警阈值不被这类永久匀速增长的噪声顶穿。见 srcOwnPublicDropCount。
+	fmt.Fprintf(w, "nanotun_acl_drops_total{kind=\"src_own_public\"} %d\n", srcOwnPublicDropCount.Load())
 	// kind=loopback_foreign(M1 加固):从非环回对端收到 VPN1/smux 承载被拒的总数(疑似伪造 PROXY 源地址绕过按 IP 反滥用)。
 	fmt.Fprintf(w, "nanotun_acl_drops_total{kind=\"loopback_foreign\"} %d\n", loopbackSmuxForeignRejectCount.Load())
 

@@ -285,11 +285,15 @@ type controlStatusResp struct {
 	// 一旦转发方的「已批准」豁免闸没对上,回包就在这里无声消失。三机实测(2026-07-25)撞到过一次:
 	// 出口选择 accepted、exit_node.forwarded 照常涨、两端抓包都能看到 SYN-ACK 从出口机发回,
 	// 但 A 永远收不到,而 /status 里没有任何一个计数器动 —— 只能靠两端对包排查。补上后一眼可判。
-	SrcSpoofDrops    uint64 `json:"src_spoof_drops"`
-	TunWriteDrops    uint64 `json:"tun_write_drops"`
-	TunOversizeDrops uint64 `json:"tun_oversize_drops"`
-	MeshEnabled      bool   `json:"mesh_enabled"`
-	UserKickTotal    uint64 `json:"user_invalidate_kicks"`
+	SrcSpoofDrops uint64 `json:"src_spoof_drops"`
+	// SrcOwnPublicDrops:源 == 客户端自己公网 IP 的不对称回程丢包(全隧道客户端被互联网扫描时的
+	// 常态噪声,不是冒充)。从 src_spoof_drops 里分出来,好让后者持续增长时**真的**代表有人在冒充。
+	// 见 srcOwnPublicDropCount 的长注释。
+	SrcOwnPublicDrops uint64 `json:"src_own_public_drops"`
+	TunWriteDrops     uint64 `json:"tun_write_drops"`
+	TunOversizeDrops  uint64 `json:"tun_oversize_drops"`
+	MeshEnabled       bool   `json:"mesh_enabled"`
+	UserKickTotal     uint64 `json:"user_invalidate_kicks"`
 	// 2026-05-23:同 device_uuid 重登触发的踢旧次数(语义见 supersede.go 顶部注释)。
 	SessionSupersedeTotal uint64              `json:"session_supersede_total"`
 	LeaseGCTotal          uint64              `json:"lease_gc_total"`
@@ -359,6 +363,7 @@ func controlHandleStatus(gw *gatewayState) http.HandlerFunc {
 			ExitGateDrops:                  exitGateDropCount.Load(),
 			MeshOffDrops:                   meshOffDropCount.Load(),
 			SrcSpoofDrops:                  srcSpoofDropCount.Load(),
+			SrcOwnPublicDrops:              srcOwnPublicDropCount.Load(),
 			TunWriteDrops:                  tunWriteDropCount.Load(),
 			TunOversizeDrops:               tunOversizeDropCount.Load(),
 			MeshEnabled:                    meshOn,

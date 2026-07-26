@@ -1862,9 +1862,26 @@ func forceCancelTunnel(c *Connection) {
 	}
 }
 
+// linkPeerIPFromRemote 从 "ip:port"(或裸 ip)取出对端 IP;取不到返回零值 netip.Addr。
+// v4-mapped 统一 Unmap,与 parsePacketTuple 出来的地址同族可比。
+func linkPeerIPFromRemote(remote string) netip.Addr {
+	host := remote
+	if h, _, err := net.SplitHostPort(remote); err == nil {
+		host = h
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return a.Unmap()
+}
+
 func runLinkTunnel(ctx context.Context, rw io.ReadWriteCloser, c *Connection, remote string) {
 	tunCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// 本会话链路对端(即客户端的公网出口)IP,只解析一次:用于把「全隧道客户端的不对称回程」
+	// 从真冒充里分出来,见 srcOwnPublicDropCount。remote 形如 "ip:port";解析不出就留零值(不分类)。
+	linkPeerAddr := linkPeerIPFromRemote(remote)
 	// c_tunnel_dual:暴露本 tunnel 的 cancel 给 takeover 超时分支主动逼停(见 Connection.tunnelCancel)。
 	// 退出前清空,避免调用方拿到指向已返回上下文的悬垂 cancel(cancel 幂等,清空只为语义整洁)。
 	c.tunnelCancel.Store(&cancel)
@@ -1977,7 +1994,13 @@ readLoop:
 			// 回程」流量(源是任意公网/内网地址),故豁免——它们的回程由上面的 exit-DNS 截获或按 dst-vIP 投递处理。
 			// 仅在「本会话已分配同族 vIP 却对不上」时才丢(见 connSourceSpoofed),避免误伤未分到 vIP / 无 v6 的会话。
 			if connSourceSpoofed(c, payload) {
-				srcSpoofDropCount.Add(1)
+				// 源 == 本会话链路对端 IP = 全隧道客户端的不对称回程(公网扫描打它自己的公网 IP,
+				// 回包拐进隧道),不是冒充。单独计,别把真冒充的信号淹在扫描噪声里。见 srcOwnPublicDropCount。
+				if t, ok := parsePacketTuple(payload); ok && linkPeerAddr.IsValid() && t.src == linkPeerAddr {
+					srcOwnPublicDropCount.Add(1)
+				} else {
+					srcSpoofDropCount.Add(1)
+				}
 				continue
 			}
 			// P0-1 身份反解 + fail-closed:userID 是 store.users.id(int64),从 c.userID 反解("u<id>")。

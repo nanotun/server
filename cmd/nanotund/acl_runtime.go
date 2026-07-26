@@ -107,9 +107,25 @@ var (
 	// 单独统计便于运维区分「ACL 规则丢的」与「mesh 主动关闭丢的」。
 	meshOffDropCount atomic.Uint64
 
-	// srcSpoofDropCount(M2 源地址反欺骗):普通会话以非本会话 vIP 作源发包被丢的总数。
-	// 持续增长 = 有会话在尝试冒充他人 vIP / 注入伪造回包。供 /metrics + control_socket 消费。
+	// srcSpoofDropCount(M2 源地址反欺骗):普通会话以非本会话 vIP 作源发包被丢的总数,
+	// **已剔除**下面 srcOwnPublicDropCount 那一类。持续增长 = 真有会话在尝试冒充他人 vIP /
+	// 注入伪造回包。供 /metrics + control_socket 消费。
 	srcSpoofDropCount atomic.Uint64
+
+	// srcOwnPublicDropCount:源地址恰好等于**本会话自己链路对端 IP**(即该客户端的公网出口 IP)
+	// 而被丢的总数。这不是冒充,是全隧道客户端的不对称回程:
+	//
+	// 公网某人 ping / 连客户端自己的公网 IP,包从物理网卡进来,但回包按被接管的默认路由
+	// (0.0.0.0/1 + 128.0.0.0/1 dev tun)拐进了隧道,源仍是它的公网 IP → 在这里被丢。
+	// 客户端只自动豁免「隧道建立时已存在的 sshd 连接」(per-peer /32 主机路由),其余入向连接
+	// 要靠 `--allow` 声明 —— 这是文档化的取舍,丢包本身是对的。
+	//
+	// 为什么单独计:任何暴露在公网的客户端都会被互联网扫描持续打,这类丢包会**永远匀速增长**。
+	// 与真冒充混在一个计数里,运维盯 src_spoof_drops 就永远分不清「有人在冒充」和「又被扫了」——
+	// 而 /status 的注释恰恰把 src_spoof 列为回程方向仅有的几个静默丢包点之一(2026-07-25 那次
+	// 4via6 回程整条被吞就是靠它定位的)。2026-07-26 三机实测:一台全隧道客户端空闲时该计数
+	// ~4 秒涨 1(抓包确认全是 ICMP echo reply 与 sshd SYN-ACK 发向互联网扫描源)。
+	srcOwnPublicDropCount atomic.Uint64
 
 	// aclMalformedUserDropCount(fail-closed 加固):会话**有** userID 却解析不出 int64(损坏/异常身份)
 	// 时按 fail-closed 丢包的总数。正常会话 userID 恒为 "u<id>",此计数应恒为 0;非 0 = 出现了异常身份会话。
