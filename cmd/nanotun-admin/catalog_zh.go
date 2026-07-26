@@ -54,7 +54,10 @@ var catZH = map[string]string{
 		"手改成 1 会让下次升级跳过规范化,残留非规范 VIP → 去重失配 / 双占。请勿手动设置。",
 	"setting.sysHint.meshCidrs": "本 mesh 网段(TUN 网关 CIDR)的快照,由 nanotun server 启动时写入,供 admin/web 在批准子网路由时拒绝与之交叠的网段。" +
 		"手改会让批准期的重叠检查信任一个伪造的网段。每次 server 启动都会刷新,请勿手动设置。",
-	"setting.validateFailed":      "%q 校验失败:%s",
+	"setting.validateFailed": "%q 校验失败:%s",
+	"setting.unknownKeyWarn": "警告:%q 不是本程序认识的任何设置项 —— 值已原样写入,但**不会有任何效果**。" +
+		"如果你是想改某个已知设置项,多半是 key 拼错了(限速请用 `nanotun-admin setting rate`,它还会热推给在线会话)。",
+	"setting.unknownKeyNear":      "      拼写相近的已知设置项:%s",
 	"setting.written":             "已写入：%s=%s",
 	"setting.notFound":            "未找到设置项 %q",
 	"setting.rate.flagUpMibs":     "全局上行默认 MiB/s,0 = 清除",

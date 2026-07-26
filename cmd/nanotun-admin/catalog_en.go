@@ -57,7 +57,10 @@ var catEN = map[string]string{
 		"Setting it to 1 by hand makes the next upgrade skip canonicalization, leaving non-canonical VIPs that break dedup and can double-allocate. Do not set it manually.",
 	"setting.sysHint.meshCidrs": "snapshot of the server's own mesh network (TUN gateway CIDRs), written by the nanotun server at startup so that admin/web can reject subnet-route approvals that overlap it. " +
 		"Editing it by hand would make the approval-time overlap check trust a forged network. It is refreshed on every server start; do not set it manually.",
-	"setting.validateFailed":      "%q validation failed: %s",
+	"setting.validateFailed": "%q validation failed: %s",
+	"setting.unknownKeyWarn": "WARNING: %q is not a setting this program knows about — the value was written verbatim, but it will have **no effect**. " +
+		"If you meant to change a known setting, the key is most likely misspelled (for rate limits use `nanotun-admin setting rate`, which also hot-pushes to live sessions).",
+	"setting.unknownKeyNear":      "         known settings with similar names: %s",
 	"setting.written":             "written: %s=%s",
 	"setting.notFound":            "setting %q not found",
 	"setting.rate.flagUpMibs":     "global default upload MiB/s, 0 = clear",

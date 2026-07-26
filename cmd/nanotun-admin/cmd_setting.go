@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -69,6 +70,97 @@ var validatedSettingKeys = map[string]func(string) error{
 	"rate_default_upload_bps":   store.ValidateNonNegativeInt64Setting,
 	"rate_default_download_bps": store.ValidateNonNegativeInt64Setting,
 	"rate_burst_bytes":          store.ValidateRateBurstSetting,
+}
+
+// otherKnownSettingKeys:既不由系统托管、也没有专用 validator,但确实是本程序会读的 key。
+// 与上面两张表合起来构成「已知 key」全集,供 warnIfUnknownSettingKey 判断拼写。
+var otherKnownSettingKeys = []string{
+	"setup_completed", // init 向导的完成标记(cmd_init.go)
+}
+
+// knownSettingKeys 返回已知 key 全集(排序后),用于未知 key 告警里的「相近 key」提示。
+func knownSettingKeys() []string {
+	out := make([]string, 0, len(systemManagedSettingKeys)+len(validatedSettingKeys)+len(otherKnownSettingKeys))
+	for k := range systemManagedSettingKeys {
+		out = append(out, k)
+	}
+	for k := range validatedSettingKeys {
+		out = append(out, k)
+	}
+	out = append(out, otherKnownSettingKeys...)
+	sort.Strings(out)
+	return out
+}
+
+// warnIfUnknownSettingKey:`setting set` 对未知 key 是**有意**原样落库的(给新版本 / 别的组件
+// 读的 key 留兼容口子,见下面第 3 层的注释)。代价是打错 key 也照样回报 "written:",看上去成功、
+// 实际零效果 —— 2026-07-26 实测:`setting set default_rate_down_bps 1048576` 写进去了,而真正
+// 的 key 是 rate_default_download_bps,在线会话的限速纹丝不动,控制面仍报 toml 默认值。
+//
+// 故保留写入,但在 stderr 打一行醒目告警(stdout 只留 "written:",不破坏脚本解析),并列出拼写
+// 相近的已知 key。
+func warnIfUnknownSettingKey(opts *globalOpts, key string) {
+	known := knownSettingKeys()
+	for _, k := range known {
+		if k == key {
+			return
+		}
+	}
+	var near []string
+	for _, k := range known {
+		if settingKeysLookAlike(k, key) {
+			near = append(near, k)
+		}
+	}
+	fmt.Fprintf(opts.stderr, "%s\n", opts.T("setting.unknownKeyWarn", key))
+	if len(near) > 0 {
+		fmt.Fprintf(opts.stderr, "%s\n", opts.T("setting.unknownKeyNear", strings.Join(near, ", ")))
+	}
+}
+
+// settingKeysLookAlike:两个 setting key 是否「像是同一个东西的不同写法」。
+//
+// 单纯的编辑距离在这里不够用:实测踩到的 default_rate_down_bps ↔ rate_default_download_bps
+// 距离远超阈值(词序整个颠倒了),但显然是同一个意图。故按 "_" 分词后比对词集合 —— 词相同、
+// 或一个是另一个的前缀(down ↔ download)都算命中,命中占比 ≥ 半数即判相近。
+// 编辑距离仍保留作为补充,覆盖「单纯打错几个字母」那类(rate_burst_byte ↔ rate_burst_bytes)。
+func settingKeysLookAlike(a, b string) bool {
+	if strings.Contains(a, b) || strings.Contains(b, a) || levenshtein(a, b) <= 3 {
+		return true
+	}
+	at, bt := strings.Split(a, "_"), strings.Split(b, "_")
+	hit := 0
+	for _, x := range at {
+		for _, y := range bt {
+			if x == y || strings.HasPrefix(x, y) || strings.HasPrefix(y, x) {
+				hit++
+				break
+			}
+		}
+	}
+	return hit*2 >= max(len(at), len(bt))
+}
+
+// levenshtein:标准编辑距离,只用于上面的「相近 key」提示,key 都很短,朴素 DP 足够。
+func levenshtein(a, b string) int {
+	ar, br := []rune(a), []rune(b)
+	prev := make([]int, len(br)+1)
+	cur := make([]int, len(br)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ar); i++ {
+		cur[0] = i
+		for j := 1; j <= len(br); j++ {
+			cost := 1
+			if ar[i-1] == br[j-1] {
+				cost = 0
+			}
+			cur[j] = min(min(cur[j-1]+1, prev[j]+1), prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(br)]
 }
 
 // canonicalizeValidatedSetting 把已通过校验的 validatedSettingKeys 值规范化后再落库。
@@ -137,6 +229,8 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 		// 层 3:其它 key → 原样落库。注意:acl_default_action / mesh_enabled / rate_default_* /
 		// rate_burst_bytes 已在上面 validatedSettingKeys 里做写入校验(第十/十一轮),raw 写
 		// 仍允许但会先过 validator;其余无专用校验的 key 才是真正的「原样落库」。
+		// 原样落库保留,但完全不认识的 key 要吼一声,别让打错 key 的人看着 "written:" 以为生效了。
+		warnIfUnknownSettingKey(opts, key)
 		if err := st.SettingsSet(ctx, key, value); err != nil {
 			return err
 		}
