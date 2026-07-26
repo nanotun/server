@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nanotun/server/store"
+	"github.com/nanotun/server/util"
 )
 
 // fakeLinkConn 实现 io.ReadWriteCloser + SetWriteDeadline,把所有写都丢到一个
@@ -592,5 +593,86 @@ func TestKickConnForUserInvalidate_FollowSkipsForeignUser(t *testing.T) {
 	case <-otherFake.closed:
 		t.Fatal("误踢了不属目标 user 的会话")
 	default:
+	}
+}
+
+// TestKick_AdminReasonIsTransient:管理员经 /kick 端点主动断会话时,close 帧必须是 902
+// (客户端当瞬态 → --auto-reconnect 生效),文案不能说「账号状态已变更」,audit 记 admin-kick。
+//
+// 回归自三机实测:kick session 之后开着 --auto-reconnect 的客户端直接退出不再回来,
+// 而 kick device 的既定用途(改完 fixed_vip 踢一下让客户端拿新 IP)正依赖它能自己重连。
+func TestKick_AdminReasonIsTransient(t *testing.T) {
+	gw := newTestGatewayForUserInvalidate(t)
+	ctx := t.Context()
+	user, err := gw.store.CreateUser(ctx, store.NewUser{Username: "kicked", PSKHash: "psk-kicked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeLinkConn()
+	c := &Connection{
+		connIDStr:      "conn-kicked",
+		userID:         userIDFromStoreID(user.ID),
+		linkConn:       fake,
+		pskHashAtLogin: "psk-kicked",
+		tunnelDone:     make(chan struct{}),
+		createdAt:      time.Now(),
+	}
+	installConn(t, c)
+
+	if !kickConnForUserInvalidate(ctx, gw, c, user.ID, "kicked_by_admin", kickFollowTakeover) {
+		t.Fatal("管理员踢线应成功")
+	}
+	select {
+	case <-fake.closed:
+	case <-time.After(time.Second):
+		t.Fatal("会话未被 close")
+	}
+	if !bytes.Contains(fake.writeBuf, []byte(`"code":902`)) {
+		t.Fatalf("管理员踢线应发 902(瞬态,客户端会自动重连),实际写出: %s", string(fake.writeBuf))
+	}
+	if bytes.Contains(fake.writeBuf, []byte("账号状态已变更")) {
+		t.Fatalf("账号没变,文案不该说账号状态已变更: %s", string(fake.writeBuf))
+	}
+
+	rows, err := gw.store.QueryAudit(ctx, 0, time.Now().Add(time.Hour).Unix(), 50)
+	if err != nil {
+		t.Fatalf("QueryAudit: %v", err)
+	}
+	found := false
+	for _, r := range rows {
+		if r.Actor == "admin-kick" && r.Action == "kick_session" {
+			found = true
+		}
+		if r.Actor == "user-invalidate" {
+			t.Errorf("管理员踢线不该记成自动失效: %+v", r)
+		}
+	}
+	if !found {
+		t.Fatalf("未写入 admin-kick 审计行: %+v", rows)
+	}
+}
+
+// TestKick_AccountInvalidationStaysTerminal:真正的账号失效仍必须是终止码,
+// 别被上面的 902 改动误伤 —— 被 disable 的账号自动重连回来是安全事故。
+func TestKick_AccountInvalidationStaysTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		reason string
+		want   int
+	}{
+		{"user_disabled", CloseCodeUserInvalidated},
+		{"user_deleted", CloseCodeUserInvalidated},
+		{"psk_rotated", CloseCodeUserInvalidated},
+		{"platform_denied", util.CodePlatformNotAllowed},
+	} {
+		if got := closeCodeForInvalidateReason(tc.reason); got != tc.want {
+			t.Errorf("closeCodeForInvalidateReason(%q) = %d, want %d", tc.reason, got, tc.want)
+		}
+	}
+	if got := closeCodeForInvalidateReason("kicked_via_web"); got != CloseCodeShutdown {
+		t.Errorf("Web 后台踢线应为 902,got %d", got)
+	}
+	// Web 允许管理员填自定义 reason,不能因为「不认识」就当成账号失效。
+	if got := closeCodeForInvalidateReason("维护窗口清场"); got != CloseCodeShutdown {
+		t.Errorf("自定义 reason 应按管理员踢线处理,got %d", got)
 	}
 }

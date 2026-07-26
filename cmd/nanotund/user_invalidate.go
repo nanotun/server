@@ -42,13 +42,15 @@ import (
 //           变化只用于新会话,旧会话拿历史值跑完)。
 //
 //   4. **踢线动作**:
-//        a) 写一帧 LinkTypeClose(code = CloseCodeUserInvalidated, reason 文案);
+//        a) 写一帧 LinkTypeClose(code 见 closeCodeForInvalidateReason, reason 文案);
 //        b) Close c.linkConn,触发 readLoop EOF → cleanupConnection 释放 vIP / map。
 //      cleanupConnection 内已经处理好「takenOver 路径不重复释放」,不需要在这里特判。
 //
-//   5. **审计**:每次踢线写一条 audit 行,actor="user-invalidate",
-//      action="kick_user_invalidate",target=userID,detail=reason
-//      (admin 看 audit list 能直观看到「u3 被 disable 后 8s 内踢了 2 条会话」)。
+//   5. **审计**:每次踢线写一条 audit 行,target=userID,detail=reason。
+//      自动失效 actor="user-invalidate"/action="kick_user_invalidate"
+//      (admin 看 audit list 能直观看到「u3 被 disable 后 8s 内踢了 2 条会话」);
+//      管理员经 /kick 端点主动踢的记 actor="admin-kick"/action="kick_session",
+//      两者不混淆(见 isAccountInvalidationReason)。
 //
 //   6. **测试场景**:gw.store == nil 时 startUserInvalidationLoop 直接 no-op。
 //
@@ -337,25 +339,59 @@ func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connect
 		"age":     time.Since(c.createdAt).Round(time.Second).String(),
 	}).Warn("[user-invalidate] 主动踢线")
 
-	// audit: actor 标识为「user-invalidate」让管理员能在 audit list 区分这是自动触发的。
+	// audit: 自动失效记 actor="user-invalidate",管理员主动踢记 actor="admin-kick"。
+	// 之前一律写前者 —— `audit list` 里 admin kick 与「后台扫描发现账号失效」长得一模一样,
+	// 排查「这个人是被谁踢下线的」时无从区分。
 	if gw != nil && gw.store != nil {
+		actor, action := "user-invalidate", "kick_user_invalidate"
+		if !isAccountInvalidationReason(reason) {
+			actor, action = "admin-kick", "kick_session"
+		}
 		auditCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		_ = gw.store.Audit(auditCtx, "user-invalidate", "kick_user_invalidate", userIDFromStoreID(userID), "reason="+reason+",conn="+c.connIDStr)
+		_ = gw.store.Audit(auditCtx, actor, action, userIDFromStoreID(userID), "reason="+reason+",conn="+c.connIDStr)
 	}
 	return true
+}
+
+// isAccountInvalidationReason 判定这次踢线是不是**真的账号失效**。
+//
+// 只有这四种由 userInvalidStatus / per-conn 判定产生的原因才是账号级失效;其余一律来自
+// control socket 的 /kick 端点(`nanotun-admin kick`、Web 后台「断开会话」),那是
+// **管理员主动断一条会话**,账号本身分毫未变。
+//
+// 白名单而非黑名单:Web 的 kick 允许管理员填任意 reason 字符串(handler_misc.go),
+// 黑名单会把「填了自定义原因」的踢线误判成账号失效。
+func isAccountInvalidationReason(reason string) bool {
+	switch reason {
+	case "user_disabled", "user_deleted", "psk_rotated", "platform_denied":
+		return true
+	default:
+		return false
+	}
 }
 
 // closeCodeForInvalidateReason 给踢线帧选 close code。
 //
 // platform_denied 用 910(util.CodePlatformNotAllowed)而非 905:五端已把 910 当
 // **终止码**处理(停连不重连、保留 token、显示平台受限文案);905 在各端是「先重连
-// 一轮 → 登录被 910 拒 → 才终止」,多一次无谓握手 + PoW + argon2。其余 reason
+// 一轮 → 登录被 910 拒 → 才终止」,多一次无谓握手 + PoW + argon2。其余账号失效
 // (disabled / psk_rotated / deleted)维持 905 —— 这些确实需要用户重新输入凭证 /
 // 联系管理员,客户端对 905 的语义已固化。
+//
+// 管理员主动踢(kick session/device/user)改用 902:客户端把 902 当**瞬态**处理,
+// 按 backoff 自动重连;905 及一切未知码都是终止码,`--auto-reconnect` 直接失效。
+//
+// 三机实测(2026-07-26):`nanotun-admin kick session <id>` 之后,开着 --auto-reconnect
+// 的客户端打印「账号状态已变更,请重新登录」后退出 status=1 再也不回来 —— 而账号什么都没变。
+// kick device 的既定用途(见 control_socket.go:改完 fixed_vip 踢一下让客户端拿新 IP)
+// 因此完全落空:踢下去就再也起不来了,得人工上机重连。
 func closeCodeForInvalidateReason(reason string) int {
 	if reason == "platform_denied" {
 		return util.CodePlatformNotAllowed
+	}
+	if !isAccountInvalidationReason(reason) {
+		return CloseCodeShutdown
 	}
 	return CloseCodeUserInvalidated
 }
@@ -374,6 +410,8 @@ func userInvalidateClientMsg(reason string) string {
 		// (登录被拒 / 在线被踢)看到同一句话。
 		return "此账号不支持在当前平台使用"
 	default:
-		return "账号状态已变更,请重新登录"
+		// 管理员主动断开某条会话。别再说「账号状态已变更」—— 账号没变,说了用户会去找
+		// 管理员问一个不存在的问题,而真正的账号失效(上面四种)反倒没了区分度。
+		return "本次会话已被管理员断开(账号正常),稍后将自动重连"
 	}
 }
