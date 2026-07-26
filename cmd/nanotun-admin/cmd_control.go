@@ -259,6 +259,11 @@ func printConnectionList(opts *globalOpts, body []byte) error {
 			ExitAllowed bool     `json:"exit_allowed"`
 			BWUpBPS     int64    `json:"bw_up_bps"`
 			BWDownBPS   int64    `json:"bw_down_bps"`
+			// LinkRate* 才是数据面**当下生效**的 cap(min(device, settings, toml, user) 之后);
+			// BW* 只是登录时凝固的 user 字段。link_ready=false 时 limiter 还没建,那个 0 不是「不限速」。
+			LinkReady       bool  `json:"link_ready"`
+			LinkRateUpBPS   int64 `json:"link_rate_up_bps"`
+			LinkRateDownBPS int64 `json:"link_rate_down_bps"`
 		} `json:"sessions"`
 		ACLDropTotal  uint64 `json:"acl_drop_total"`
 		ACLExitDrops  uint64 `json:"acl_exit_drops"`
@@ -282,13 +287,23 @@ func printConnectionList(opts *globalOpts, body []byte) error {
 		if !s.ExitAllowed {
 			exit = "no"
 		}
+		// 展示**生效**限速而不是 user 字段:限速可以来自 device / 全局默认 / toml 任一层,
+		// 只看 users.bandwidth_* 的话,`device set-rate` 或 `setting rate` 限出来的会话在这里
+		// 一律显示 "-"(= 不限速),与数据面实测对不上(2026-07-26 三机实测:A 下行实测被限在
+		// 60 KB/s,本表仍是 "-")。web 会话页 0012 之后已经改看 LinkRate*,CLI 这里对齐。
+		up, down := s.LinkRateUpBPS, s.LinkRateDownBPS
+		upCell, downCell := bpsOrDash(up), bpsOrDash(down)
+		if !s.LinkReady {
+			// limiter 尚未建立(登录路径亚毫秒窗口),LinkRate* 的 0 无意义 —— 别报成「不限速」。
+			upCell, downCell = "?", "?"
+		}
 		t.row(
 			s.ConnID,
 			s.UserID,
 			joinStrings(s.VIPs, ","),
 			exit,
-			bpsOrDash(s.BWUpBPS),
-			bpsOrDash(s.BWDownBPS),
+			upCell,
+			downCell,
 			ageFromUnix(s.CreatedAt),
 		)
 	}

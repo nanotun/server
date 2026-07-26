@@ -90,6 +90,24 @@ var aclSnapshotSettingKeys = map[string]bool{
 	"acl_default_action": true,
 }
 
+// rateRefreshSettingKeys:限速三件套 —— 落库之后还得推 /rate/refresh 才会落到**在线会话**的
+// rate.Limiter 上(专用 `setting rate` 走的就是这条路)。
+//
+// 2026-07-26 三机实测的坑比 mesh_enabled 那次更阴,因为它会把人**锁死**:
+//   - `setting set rate_default_download_bps 100000` → written: + `setting rate` 显示 0.10 MiB/s,
+//     而 A 经 mesh 下载实测仍有 620 KB/s(改成 200000 反而量到 299 KB/s —— 纯链路噪声,压根没限);
+//   - 想用推荐路径补救:`setting rate --down-bps 100000` → 值与库里一致 → 走 !anyChange 分支
+//     「跳过写库 / 不推刷新」,于是**唯一能生效的命令拒绝动手**;
+//   - 结果是 setting list / setting rate / web 设置页三处都显示限着,数据面全速跑,
+//     且没有任何一条命令能把两者对齐(除了改成别的值再改回来,或重启 server)。
+//
+// 故 raw 写入这三个 key 之后一律主动推一次全量刷新(device_id=0),与 `setting rate` 同口径。
+var rateRefreshSettingKeys = map[string]bool{
+	"rate_default_upload_bps":   true,
+	"rate_default_download_bps": true,
+	"rate_burst_bytes":          true,
+}
+
 // otherKnownSettingKeys:既不由系统托管、也没有专用 validator,但确实是本程序会读的 key。
 // 与上面两张表合起来构成「已知 key」全集,供 warnIfUnknownSettingKey 判断拼写。
 var otherKnownSettingKeys = []string{
@@ -261,6 +279,14 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 				fmt.Fprintln(opts.stderr, opts.T("setting.reloadHint", key))
 			}
 		}
+		// 限速三件套同理:在线会话的 rate.Limiter 是**连接上的对象**,不推 /rate/refresh 就只是改了行 DB。
+		if rateRefreshSettingKeys[key] {
+			if err := pushRateRefresh(opts, 0); err != nil {
+				fmt.Fprintln(opts.stderr, opts.T("setting.reloadHint", key))
+			} else {
+				fmt.Fprintln(opts.stderr, opts.T("setting.reloaded", key))
+			}
+		}
 		return nil
 	case "list", "ls":
 		rows, err := st.DB().QueryContext(ctx, `SELECT key, value FROM app_settings ORDER BY key ASC`)
@@ -358,6 +384,18 @@ func cmdSettingRate(ctx context.Context, st *store.Store, opts *globalOpts, args
 			strings.TrimSpace(*burstKiB) != ""
 		if anyFlag {
 			fmt.Fprintln(opts.stdout, opts.T("setting.rate.noChange"))
+			// 「值没变」不等于「在线会话已经是这个值」:库里的值可能是别的路径写进去的
+			// (raw `setting set` 的老版本 / 直接改 DB / 迁移种子),那些路径不推刷新,
+			// 于是显示限着、数据面全速跑,而本命令又因为值一致而不动手 —— 运维就此卡死
+			// (2026-07-26 三机实测)。故传了 flag 就照推一次全量刷新:幂等、代价只有一次
+			// control sock 调用,换来「跑一遍这条命令即可让库与在线会话对齐」的确定性。
+			if !*noRefresh {
+				if err := pushRateRefresh(opts, 0); err != nil {
+					fmt.Fprintln(opts.stderr, opts.T("setting.rate.refreshWarn", err.Error()))
+				} else {
+					fmt.Fprintln(opts.stdout, opts.T("setting.rate.reapplied"))
+				}
+			}
 		} else {
 			fmt.Fprintln(opts.stdout, opts.T("setting.rate.hint"))
 		}
