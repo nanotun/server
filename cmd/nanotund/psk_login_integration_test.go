@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/netip"
 	"path/filepath"
 	"testing"
 	"time"
@@ -219,11 +220,23 @@ func resetServerGlobals(t *testing.T) {
 
 	connIDMapMu.Lock()
 	connIDMap = make(map[string]*Connection)
+	// by-user / by-device 两张索引跟 connIDMap 是同一批数据的不同视角,漏清会让
+	// 下一个测试的 evictOldestSessionsLocked / findSupersededByDeviceLocked 数到上一轮的残留。
+	connByUser = make(map[string]map[string]*Connection)
+	connByDevice = make(map[int64]map[string]*Connection)
 	connIDMapMu.Unlock()
 
 	clientIPUsedMu.Lock()
 	clientIPUsed = make(map[string]bool)
 	clientIPUsedMu.Unlock()
+
+	// vIP → 归属会话 的反查表(ACL 执法用)。它只在 init() 里建过一次,此前测试间从不清:
+	// 上一个测试没等 cleanup 跑完就返回时,残留映射会让下一个测试的 ACL 断言按
+	// 上一轮的会话身份判定 —— 属于「看起来无关的测试改了顺序就红」的那类污染。
+	vipOwnerWriteMu.Lock()
+	empty := map[netip.Addr]vipOwnerEntry{}
+	vipOwnerCur.Store(&empty)
+	vipOwnerWriteMu.Unlock()
 
 	// PoW 全局状态:跨测试清空。
 	// 三层:
