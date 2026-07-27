@@ -203,6 +203,67 @@ func TestHandleUserResetPSKResultFlash_KindMismatch(t *testing.T) {
 	}
 }
 
+// -------------------------------------------------------------------------
+// happy path
+//
+// 本文件开头那段注释把 happy path 挂起了,理由是「涉及全套模板 + admin context」。
+// newMeTestServer 现在能提供这些,于是补上 —— 而且这条恰恰是最该测的一条:
+// 上面四个用例都在验证「什么时候**不**显示 PSK」,却从没验证过「该显示的时候
+// 到底显示出来没有」。这两个 flash 页是 admin 唯一一次能看到明文 PSK 的地方,
+// 模板里写错一个字段名,页面就是一张没有凭据的空壳,而 PSK 已经被消费掉了。
+// -------------------------------------------------------------------------
+
+func TestHandleUserResetPSKResultFlash_ShowsCredentialsExactlyOnce(t *testing.T) {
+	s := newMeTestServer(t)
+	admin := createTestAdmin(t, s, "opsroot", "pw-opsroot-12345")
+	u := newPRGTestUser(t, s, "erin")
+
+	payload := credentialsFlashPayload{
+		Kind:        credentialsFlashKindUserResetPSK,
+		UserID:      u.ID,
+		Username:    u.Username,
+		PSK:         "PSK-RESET-SENTINEL-9f2a",
+		CredID:      "cred-erin-001",
+		CredCreated: "2026-07-27 10:00:00",
+		CredURL:     "nanotun://join?u=erin",
+		Host:        "vpn.example.com",
+		// 整张凭据卡片(Host / Credential ID / CredURL)在模板里由 CredQRImage 把门,
+		// 留空就只剩一个光秃秃的 PSK。真实 handler 一定会生成 QR。
+		CredQRImage: template.URL("data:image/png;base64,iVBORw0KGgo="),
+	}
+	tok, err := s.credFlash.Stash(payload, admin.ID)
+	if err != nil {
+		t.Fatalf("Stash: %v", err)
+	}
+
+	get := func(tok string) *httptest.ResponseRecorder {
+		req := withAdminCtx(httptest.NewRequest(http.MethodGet,
+			"/users/"+itoa(u.ID)+"/reset-psk-result?token="+tok, nil), admin)
+		w := httptest.NewRecorder()
+		s.handleUserResetPSKResultFlash(w, req, u)
+		return w
+	}
+
+	w := get(tok)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d, 期望 200", w.Code)
+	}
+	body := w.Body.String()
+	// 这四样缺任何一个,admin 拿到的凭据就是残的 —— 而 PSK 已经不可能再取第二次。
+	for _, want := range []string{payload.PSK, payload.Username, payload.CredID, payload.Host} {
+		if !containsCaseSensitive(body, want) {
+			t.Errorf("页面没渲染出 %q", want)
+		}
+	}
+
+	// 一次性:刷新页面 / 后退再进都不能再看到 PSK,否则浏览器历史就成了 PSK 的副本。
+	if w2 := get(tok); w2.Code != http.StatusGone {
+		t.Fatalf("第二次 GET code=%d, 期望 410", w2.Code)
+	} else if containsCaseSensitive(w2.Body.String(), payload.PSK) {
+		t.Fatal("410 页面里仍然带着 PSK")
+	}
+}
+
 // containsCaseSensitive:HTTP body 字符串子串查找,避免 import "strings" 上方已经引入。
 func containsCaseSensitive(haystack, needle string) bool {
 	if len(needle) == 0 || len(haystack) < len(needle) {
