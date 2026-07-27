@@ -69,6 +69,36 @@ echo "── 退出码:ENV 存在时为 2,优先于 FAIL 的 1 ──"
 e2e_report >/dev/null 2>&1; rc=$?
 expect "退出码" 2 "$rc"
 
+# 静态检查。bash 会把紧跟在 $var 后面的多字节标点首字节并进变量名,set -u 下
+# 当场报 unbound variable(见 e389798)。这个坑踩过两次 —— 第二次就是在写崩溃
+# 恢复阶段时又写了一个 —— 靠人记不住,挡在这里。
+echo "── 静态检查:\$var 后面不能紧跟非 ASCII 字符 ──"
+offenders="$(python3 - "$HERE" <<'PY'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+pat = re.compile(rb'\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]')
+out = []
+seen = set()
+for pattern in ('*.sh', 'lib/*.sh', 'phases/*.sh'):
+    for p in sorted(root.glob(pattern)):
+        if p in seen:
+            continue
+        seen.add(p)
+        for i, line in enumerate(p.read_bytes().split(b'\n'), 1):
+            if pat.search(line):
+                out.append('%s:%d: %s' % (p.relative_to(root), i,
+                                          line.decode('utf-8', 'replace').strip()))
+print('\n'.join(out))
+PY
+)"
+if [[ -n "$offenders" ]]; then
+  printf '  BAD  以下位置要改成 ${var}:\n'
+  printf '       %s\n' "$offenders"
+  fails=1
+else
+  echo '  ok   没有裸 $var 紧跟全角标点'
+fi
+
 rm -f "$E2E_ENVLOG"
 echo
 if (( fails )); then
