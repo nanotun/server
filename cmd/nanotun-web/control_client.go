@@ -53,6 +53,15 @@ func newControlClient(socketPath string) *controlClient {
 
 // do 发起 unix HTTP 请求。host 必须随意填一个合法值(http.NewRequest 会校验)。
 func (c *controlClient) do(ctx context.Context, method, path string, body any) ([]byte, int, error) {
+	// nil receiver 兜底。今天走不到:newControlClient 不返回 nil,main.go 也恒装一个,
+	// 所以生产里 s.control 必非 nil —— 这不是在修线上。但 handleRuntimeReload /
+	// handleRuntimeMeshToggle 是直接 s.control.ReloadACL(ctx),没有 tryReloadRoutesBackground
+	// 那样的入口判空,一旦哪天有构造 Server 的路径没装 client(测试里就是这么构造的),
+	// 症状是解引用 panic 而非一句「控制面不可用」。守卫放在 do 而不是逐个方法上:
+	// 所有调用最终都经过这里,新增方法自动受保护。
+	if c == nil {
+		return nil, 0, fmt.Errorf("control socket 未配置")
+	}
 	var reqBody io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -435,6 +444,13 @@ type DeviceSession struct {
 // 千级在线时 JSON 体积小 1000× 倍。老版本(没该 query)server 会回全量,这里再过滤一次
 // 保底兼容(虽然 web 和 server 同步部署,理论上版本永远对齐)。
 func (c *controlClient) DeviceSessions(ctx context.Context, deviceID int64) ([]DeviceSession, error) {
+	// nil = 未配 control socket。同族的 try*Background 都在入口挡了这一手,调 RateConfig
+	// 的 handler 也先查 s.control != nil,唯独 set-fixed-vip 那条路径直连本方法 —— 真出现
+	// nil 就是解引用崩。返回 error 而非 panic,调用方的 `derr != nil` 分支正好是文档写明的
+	// 「保守地不踢」。今天 main.go 恒装非 nil client 走不到这儿,属于补一致性、不是修线上。
+	if c == nil {
+		return nil, fmt.Errorf("control socket 未配置")
+	}
 	path := fmt.Sprintf("/status?device_id=%d", deviceID)
 	body, _, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
