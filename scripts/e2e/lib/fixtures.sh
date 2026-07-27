@@ -83,9 +83,9 @@ both_clients_online() { [[ "$(conn_count)" == "2" ]]; }
 # 看不出设备层/全局层参与 min 之后的结果(历史上 connection list 就是显示错了这个)。
 conn_rate_down() {
   # 传成登录名时下面的匹配永远落空,表现为「限速没生效」——一个指向完全错误的
-  # 假故障。当场说清楚,别让调用方去猜。
+  # 假故障。判成环境问题而不是断言失败,别让调用方去追产品代码。
   if [[ ! "$1" =~ ^[0-9]+$ ]]; then
-    echo "conn_rate_down: 需要 device_id(数字),收到 '$1'" >&2
+    env_error "conn_rate_down 需要 device_id(数字),收到 '$1' —— 限速相关断言全部无效"
     echo "?"
     return 1
   fi

@@ -66,6 +66,7 @@ cleanup() {
   local rc=$?
   (( KEEP_TARGET )) || target_stop
   e2e_ssh_cleanup
+  rm -f "$E2E_ENVLOG"
   exit $rc
 }
 trap cleanup EXIT INT TERM
@@ -92,7 +93,9 @@ else
   done
 fi
 
-state_snapshot || echo "警告:未能取得开跑前的状态快照,收尾的残留比对将被跳过。" >&2
+# 快照拿不到时收尾的残留比对就整个失效了。这是覆盖被悄悄削掉一块,
+# 不该只印一行滚过去的警告 —— 归为环境问题,让退出码把它顶出来。
+state_snapshot || env_error "未能取得开跑前的状态快照,收尾的残留比对已失效"
 
 for e in "${selected[@]}"; do
   fn="${e#*:}"; fn="${fn%%:*}"
