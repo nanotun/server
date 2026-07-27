@@ -106,6 +106,41 @@ else:
 # 等待有效限速收敛到期望值:限速下发要经过控制套接字,不是同步的。
 rate_is() { [[ "$(conn_rate_down "$1")" == "$2" ]]; }
 
+# session_vips <device_id> → 该设备当前会话的 vIP,多个按字典序逗号连接。
+# 用于崩溃前后比对:vIP 变了就说明粘性租约没扛住重启,ACL 与用户侧固定地址会一起失效。
+session_vips() {
+  if [[ ! "$1" =~ ^[0-9]+$ ]]; then
+    env_error "session_vips 需要 device_id(数字),收到 '$1'"
+    echo "?"
+    return 1
+  fi
+  srv_status_json 2>/dev/null | python3 -c '
+import json,sys
+dev = int(sys.argv[1])
+for s in json.load(sys.stdin).get("sessions", []):
+    if s.get("device_id") == dev:
+        v = s.get("vips")
+        print(",".join(sorted(v)) if isinstance(v, list) and v else "?")
+        break
+else:
+    print("?")
+' "$1"
+}
+
+# ipt_main_count <iptables|ip6tables> → 带 nanotun_main 注释的规则条数。
+#
+# nanotund 装的每条规则都带这个注释,启动时先按注释 sweep 掉上次的残留再重装
+# (network_setup_linux.go 的「重启 = 干净安装」)。崩溃前后条数应当相等:
+# 变成两倍就说明 sweep 没生效,残留在一轮轮累积。
+ipt_main_count() {
+  s "$1-save 2>/dev/null | grep -c nanotun_main" | tr -d '[:space:]'
+}
+
+srv_main_pid() { s "systemctl show nanotun -p MainPID --value" | tr -d '[:space:]'; }
+
+srv_is_active()  { [[ "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')" == "active" ]]; }
+srv_control_ok() { [[ -n "$(srv_field conn_count 2>/dev/null)" ]]; }
+
 # ── 状态快照 ────────────────────────────────────────────────────────────────
 # 每个阶段都应当自己收尾,但「忘了收尾」恰恰是人工回归最容易出的错,
 # 而且它的代价是下一轮跑在一个被污染的环境上、结论不可信。

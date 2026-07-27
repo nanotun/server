@@ -30,7 +30,8 @@ ALL_PHASES=(00:phase_00_baseline:"基线"
             30:phase_30_subnet:"子网路由与 4via6"
             40:phase_40_lease_account:"租约与账号状态"
             50:phase_50_ops:"运维面"
-            60:phase_60_web:"端口转发与 Web 安全边界")
+            60:phase_60_web:"端口转发与 Web 安全边界"
+            70:phase_70_crash:"硬崩溃恢复")
 
 usage() {
   echo "用法: $0 [--list] [--keep-target] [阶段号...]"
