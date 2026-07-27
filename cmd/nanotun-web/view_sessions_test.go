@@ -21,7 +21,8 @@ func serveFakeControl(t *testing.T, body string) *controlClient {
 		t.Fatalf("mkdtemp: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	ln, err := net.Listen("unix", filepath.Join(dir, "c.sock"))
+	sock := filepath.Join(dir, "c.sock")
+	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)
 	}
@@ -33,7 +34,7 @@ func serveFakeControl(t *testing.T, body string) *controlClient {
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
-	return newControlClient(ln.Addr().String())
+	return newControlClient(sock)
 }
 
 // newEmptyStore:collectSessionsForView 会 join store 拿 username/device,给它一个空库即可。
