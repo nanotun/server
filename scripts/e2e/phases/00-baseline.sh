@@ -13,7 +13,7 @@ phase_00_baseline() {
     _fail "服务端控制面可达" "connection list --json 无输出,后续阶段不可信"
     return 1
   fi
-  _pass "服务端控制面可达（$srv_ver，uptime $(srv_field uptime)）"
+  _pass "服务端控制面可达（${srv_ver}，uptime $(srv_field uptime)）"
 
   # 版本对齐:客户端与服务端不同版本时,协议层的差异会伪装成功能 bug。
   local want="${E2E_EXPECT_VERSION:-}"
@@ -35,7 +35,7 @@ phase_00_baseline() {
   wait_until "两个客户端会话在线" 45 both_clients_online || return 1
 
   target_start || { _fail "C 上的 HTTP 靶站启动失败"; return 1; }
-  _pass "C 上的 HTTP 靶站就绪（:$E2E_TARGET_PORT）"
+  _pass "C 上的 HTTP 靶站就绪（:${E2E_TARGET_PORT}）"
 
   # 基线四条路径。任意一条不通,后面的「阻断/恢复」类断言都无法解读。
   wait_until "基线 · A 可达公网（经出口 C）" 30 probe_egress_is "$E2E_C_HOST"

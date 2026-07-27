@@ -95,7 +95,7 @@ wait_until() {
   while :; do
     if "$@" >/dev/null 2>&1; then
       elapsed=$(( $(date +%s) - start ))
-      _pass "$desc（${elapsed}s）"
+      _pass "${desc}（${elapsed}s）"
       return 0
     fi
     elapsed=$(( $(date +%s) - start ))
@@ -116,7 +116,7 @@ wait_while() {
   while :; do
     if ! "$@" >/dev/null 2>&1; then
       elapsed=$(( $(date +%s) - start ))
-      _pass "$desc（${elapsed}s）"
+      _pass "${desc}（${elapsed}s）"
       return 0
     fi
     elapsed=$(( $(date +%s) - start ))

@@ -19,7 +19,7 @@ phase_50_ops() {
   local devcnt
   devcnt="$(s "sqlite3 $bk 'select count(*) from devices;'" | tr -d '[:space:]')"
   if [[ "$devcnt" =~ ^[0-9]+$ ]] && (( devcnt > 0 )); then
-    _pass "备份包含实际数据（devices=$devcnt）"
+    _pass "备份包含实际数据（devices=${devcnt}）"
   else
     _fail "备份内容为空" "devices=$devcnt"
   fi

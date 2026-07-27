@@ -105,7 +105,7 @@ phase_60_web() {
   local vuser="${E2E_VIEWER_USER:-nte2e_viewer}" vpass="${E2E_VIEWER_PASS:-Nt-E2E-Viewer-2026!x}"
   st="$(wa "post /admins/new username=$vuser role=viewer password='$vpass' password_confirm='$vpass'" | tail -1)"
   if [[ "$st" != "303" ]]; then
-    skip "RBAC（创建 viewer 账号失败,返回 $st）"
+    skip "RBAC（创建 viewer 账号失败,返回 ${st}）"
   else
     st="$(wv "login --user $vuser --password '$vpass'" | tail -1)"
     check "viewer 登录成功" "200" "$st"

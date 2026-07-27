@@ -47,10 +47,10 @@ phase_30_subnet() {
   note "C 的 siteID=$site,4via6 目标=$v6target"
 
   # ── 三种寻址方式都要通 ────────────────────────────────────────────────────
-  wait_until "IPv4 子网可达（$E2E_C_LAN4_HOST）"      20 probe_ping  a "$E2E_C_LAN4_HOST"
+  wait_until "IPv4 子网可达（${E2E_C_LAN4_HOST}）"      20 probe_ping  a "$E2E_C_LAN4_HOST"
   wait_until "IPv4 子网 HTTP 200"                      20 probe_http_ok a "http://$E2E_C_LAN4_HOST:$E2E_TARGET_PORT/"
-  wait_until "ULA 子网可达（$E2E_C_LAN6_HOST）"        20 probe_ping6 a "$E2E_C_LAN6_HOST"
-  wait_until "4via6 可达（$v6target）"                 20 probe_ping6 a "$v6target"
+  wait_until "ULA 子网可达（${E2E_C_LAN6_HOST}）"        20 probe_ping6 a "$E2E_C_LAN6_HOST"
+  wait_until "4via6 可达（${v6target}）"                 20 probe_ping6 a "$v6target"
   wait_until "4via6 HTTP 200"                          20 probe_http_ok a "http://[$v6target]:$E2E_TARGET_PORT/"
 
   # ── 4via6 两道守卫 ────────────────────────────────────────────────────────
@@ -62,7 +62,7 @@ phase_30_subnet() {
   sleep 2
   after_na="$(subnet_counter dropped_not_approved)"
   if (( after_na > before_na )); then
-    _pass "4via6 · 未批准的 v4 被拒并计入 dropped_not_approved（$before_na→$after_na）"
+    _pass "4via6 · 未批准的 v4 被拒并计入 dropped_not_approved（${before_na}→${after_na}）"
   else
     _fail "4via6 · 未批准的 v4 未计入 dropped_not_approved" "计数器停在 $after_na"
   fi
@@ -73,7 +73,7 @@ phase_30_subnet() {
   sleep 2
   after_ns="$(subnet_counter dropped_no_site)"
   if (( after_ns > before_ns )); then
-    _pass "4via6 · 不存在的站点被拒并计入 dropped_no_site（$before_ns→$after_ns）"
+    _pass "4via6 · 不存在的站点被拒并计入 dropped_no_site（${before_ns}→${after_ns}）"
   else
     _fail "4via6 · 不存在的站点未计入 dropped_no_site" "计数器停在 $after_ns"
   fi
