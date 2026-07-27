@@ -35,6 +35,23 @@ func openStoreForTest(t *testing.T, dbPath string) *store.Store {
 	return st
 }
 
+// newInitializedDB 在 dir 下造一个已建好 schema 的空库,返回其路径。
+//
+// 写子命令不再「库不存在就建」—— 只有 init / user create 两个首次部署入口保留
+// bootstrap 语义(见 subCanBootstrapDB)。此前不少测试借 `setting set` 之类的写命令
+// 顺带把库建出来,而那条捷径恰恰就是被堵掉的静默造库行为:敲错 --db-path 或跑错
+// 目录时会留下一个空库,之后所有命令都对着它跑,还显示得像成功。
+//
+// 需要一个「已存在的库」的测试改用这个,别再依赖副作用建库。
+func newInitializedDB(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	st := openStoreForTest(t, p)
+	// 关掉:后续 CLI 调用会重新 store.Open 同一个文件。
+	_ = st.Close()
+	return p
+}
+
 // openStoreNewUser 造一个 store.NewUser 时常需要预先 hash PSK，封装一下让测试更紧凑。
 func openStoreNewUser(username string) store.NewUser {
 	hash, err := auth.HashPSK("p")
@@ -615,6 +632,66 @@ func TestReadOnlySubcommandsRefuseToCreateDB(t *testing.T) {
 			}
 		})
 	}
+}
+
+// 写子命令同样不该凭空造库 —— 上面那条守的是只读那一半(2026-07-25 修),这条守另一半。
+//
+// 2026-07-26 实测:`nanotun-admin device set-rate`(一个参数都没给,纯用法错误)会先在
+// /root 下建出 184 KB 的 data/nanotun.db 并把 schema 迁完,然后才打 usage。之后在同一
+// 目录里忘带 --db-path 的命令就都对着这个空库跑,看到的是「没有用户」这类**貌似成功**
+// 的输出。现在只有 init / user create 两个首次部署入口保留 bootstrap 语义。
+func TestWriteSubcommandsRefuseToCreateDB(t *testing.T) {
+	for _, args := range [][]string{
+		{"setting", "set", "setup_completed", "1"},
+		{"acl", "allow", "1", "2"},
+		{"device", "set-alias", "1", "laptop"},
+		{"device", "set-rate", "1", "--up-mibs", "10"},
+		{"lease", "set", "1", "--v4", "10.0.0.5"},
+		{"user", "disable", "alice"},
+		{"user", "set-max-sessions", "alice", "3"},
+		// 事故现场那条:纯用法错误,连参数都不合法,更不该留下副产物。
+		{"device", "set-rate"},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			missing := filepath.Join(t.TempDir(), "nope.db")
+
+			code, stdout, stderr := runCLI(t, missing, "", args...)
+			if code == 0 {
+				t.Fatalf("库不存在时竟然成功了;stdout=%q stderr=%q", stdout, stderr)
+			}
+			// 关键断言:不留下任何空库(以及 WAL / shm 副产物)。
+			// 退出码是几不重要 —— 用法错误和「库不存在」都可以,重要的是别造库。
+			for _, suffix := range []string{"", "-wal", "-shm"} {
+				if _, err := os.Stat(missing + suffix); err == nil {
+					t.Fatalf("写子命令 %v 仍创建了 %s —— 之后同目录里漏带 --db-path 的命令都会对着这个空库跑,"+
+						"还显示得像成功", args, missing+suffix)
+				}
+			}
+		})
+	}
+}
+
+// init 与 user create 是仅有的两个「库不存在就建」入口,别把上面那条加固做过头
+// 而把首次部署的路堵死。
+func TestBootstrapEntriesStillCreateDB(t *testing.T) {
+	t.Run("user_create", func(t *testing.T) {
+		fresh := filepath.Join(t.TempDir(), "fresh.db")
+		if code, _, stderr := runCLI(t, fresh, "", "user", "create", "alice", "--psk", "secret"); code != 0 {
+			t.Fatalf("user create 应能在空目录里建库;code=%d stderr=%s", code, stderr)
+		}
+		if _, err := os.Stat(fresh); err != nil {
+			t.Errorf("user create 没有建出库: %v", err)
+		}
+	})
+	t.Run("init", func(t *testing.T) {
+		fresh := filepath.Join(t.TempDir(), "fresh.db")
+		if code, _, stderr := runCLI(t, fresh, "", "init"); code != 0 {
+			t.Fatalf("init 应能在空目录里建库;code=%d stderr=%s", code, stderr)
+		}
+		if _, err := os.Stat(fresh); err != nil {
+			t.Errorf("init 没有建出库: %v", err)
+		}
+	})
 }
 
 // 「文件在但不是 nanotun 库」也必须被明确挡下:打错 --db-path 之后目录里常留着一个 SQLite

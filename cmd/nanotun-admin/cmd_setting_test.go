@@ -20,7 +20,7 @@ import (
 
 func TestSettingSet_RejectsSystemManagedKeys(t *testing.T) {
 	dir := t.TempDir()
-	db := filepath.Join(dir, "guard.db")
+	db := newInitializedDB(t, dir, "guard.db")
 	// runCLI 内 runWithStore 会 Open + Migrate,无需先 init。
 
 	for _, tc := range []struct {
@@ -51,7 +51,7 @@ func TestSettingSet_RejectsSystemManagedKeys(t *testing.T) {
 // 护(rate / advertised_host 各自有专用 CLI / 校验,不在 setting set 路径)。
 func TestSettingSet_AllowsNormalKeys(t *testing.T) {
 	dir := t.TempDir()
-	db := filepath.Join(dir, "ok.db")
+	db := newInitializedDB(t, dir, "ok.db")
 
 	c, stdout, stderr := runCLI(t, db, "", "setting", "set", "setup_completed", "1")
 	if c != 0 {
@@ -91,7 +91,7 @@ func TestSettingSet_AllowsNormalKeys(t *testing.T) {
 // 关键不变量:任何一类非法值都不能落到 app_settings.advertised_host(防御性 read-back)。
 func TestSettingSet_ValidatedKey_AdvertisedHost_RejectsInvalid(t *testing.T) {
 	dir := t.TempDir()
-	db := filepath.Join(dir, "validated.db")
+	db := newInitializedDB(t, dir, "validated.db")
 
 	cases := []struct {
 		name string
@@ -124,7 +124,7 @@ func TestSettingSet_ValidatedKey_AdvertisedHost_RejectsInvalid(t *testing.T) {
 // TestSettingSet_ValidatedKey_AdvertisedHost_AcceptsValid:合法值正常落库 — 不能"误伤"。
 func TestSettingSet_ValidatedKey_AdvertisedHost_AcceptsValid(t *testing.T) {
 	dir := t.TempDir()
-	db := filepath.Join(dir, "valid.db")
+	db := newInitializedDB(t, dir, "valid.db")
 
 	c, stdout, stderr := runCLI(t, db, "", "setting", "set", "advertised_host", "203.0.113.10")
 	if c != 0 {
@@ -154,7 +154,7 @@ func TestSettingSet_ValidatedKey_AdvertisedHost_AcceptsValid(t *testing.T) {
 // 拒拼写错 / 非数字 / 负数,放行合法值并确认落库。防「拼错落库 → 数据面兜底成别的行为」。
 func TestSettingSet_ValidatedKey_ACLMeshRate(t *testing.T) {
 	dir := t.TempDir()
-	db := filepath.Join(dir, "aclmeshrate_validated.db")
+	db := newInitializedDB(t, dir, "aclmeshrate_validated.db")
 
 	// 拒:拼写错 / 非法值,且不落库。
 	for _, tc := range []struct{ key, val string }{
@@ -221,7 +221,7 @@ func TestSettingSet_ValidatedKey_ACLMeshRate(t *testing.T) {
 // 客户端导入后会触发 `Invalid NETunnelNetworkSettings tunnelRemoteAddress` 隧道挂掉。
 func TestSettingSet_ValidatedKey_ServerDialHost_RejectsInvalid(t *testing.T) {
 	dir := t.TempDir()
-	db := filepath.Join(dir, "dialhost_validated.db")
+	db := newInitializedDB(t, dir, "dialhost_validated.db")
 
 	cases := []struct {
 		name string
@@ -273,7 +273,7 @@ func TestSettingSet_ValidatedKey_ServerDialHost_RejectsInvalid(t *testing.T) {
 // 这里只列**真正公网可路由**的 IPv4 / IPv6 + RFC1918 私网(自托管场景合法)。
 func TestSettingSet_ValidatedKey_ServerDialHost_AcceptsValid(t *testing.T) {
 	dir := t.TempDir()
-	db := filepath.Join(dir, "dialhost_valid.db")
+	db := newInitializedDB(t, dir, "dialhost_valid.db")
 
 	for _, val := range []string{
 		"203.0.113.10",    // 公网 IPv4

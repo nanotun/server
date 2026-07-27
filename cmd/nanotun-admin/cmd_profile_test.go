@@ -1631,10 +1631,12 @@ func TestProfileShow_ServerIDPersistsAcrossUsers(t *testing.T) {
 //  2. 该模式下**不需要**任何 VPN user 行存在(只 create config + 跑命令,users 表空)。
 func TestProfileShow_ServerLevelNoUsername(t *testing.T) {
 	dir := t.TempDir()
-	db := filepath.Join(dir, "noser.db")
+	db := newInitializedDB(t, dir, "noser.db")
 	cfg := writeFixtureConfig(t, dir)
-	// `profile show` 只读不跑 Migrate,先用 `setting set` 触发一次写 → Migrate
-	// + ensureServerID 生效;模拟运维通常流程:先 init,再扫 QR。
+	// `profile show` 只读不跑 Migrate,所以库要先建好(newInitializedDB)。
+	// 这一步 `setting set` 只为写 setup_completed —— 它曾经兼职把库建出来,
+	// 但写子命令已不再「库不存在就建」(见 subCanBootstrapDB)。
+	// 模拟运维通常流程:先 init,再扫 QR。
 	if c, _, e := runCLI(t, db, "", "setting", "set", "setup_completed", "1"); c != 0 {
 		t.Fatalf("seed migrate: %s", e)
 	}
@@ -1662,10 +1664,10 @@ func TestProfileShow_ServerLevelNoUsername(t *testing.T) {
 // 「显式名字 → 校验存在 → 才生成 cert」习惯。
 func TestProfileShow_LegacyPerUserStillValidates(t *testing.T) {
 	dir := t.TempDir()
-	db := filepath.Join(dir, "leg.db")
+	db := newInitializedDB(t, dir, "leg.db")
 	cfg := writeFixtureConfig(t, dir)
-	// 触发 Migrate(同上 TestProfileShow_ServerLevelNoUsername 注释),否则
-	// users 表不存在会先报 "no such table",混淆「user 不存在」的预期错误。
+	// 库由 newInitializedDB 建好(含 users 表),否则 "no such table" 会盖过
+	// 「user 不存在」这个预期错误。这一步只是顺带写个 setting。
 	if c, _, e := runCLI(t, db, "", "setting", "set", "setup_completed", "1"); c != 0 {
 		t.Fatalf("seed migrate: %s", e)
 	}
@@ -1690,7 +1692,7 @@ func TestProfileShow_LegacyPerUserStillValidates(t *testing.T) {
 // `profile show <user> <extra>` 的拼写错误悄悄通过)。
 func TestProfileShow_TwoPositionalArgsRejected(t *testing.T) {
 	dir := t.TempDir()
-	db := filepath.Join(dir, "two.db")
+	db := newInitializedDB(t, dir, "two.db")
 	cfg := writeFixtureConfig(t, dir)
 	if c, _, e := runCLI(t, db, "", "setting", "set", "setup_completed", "1"); c != 0 {
 		t.Fatalf("seed migrate: %s", e)

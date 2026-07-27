@@ -37,6 +37,10 @@ type globalOpts struct {
 	yes           bool
 	lang          string // "en"(默认)/ "zh";--lang 或 env NANOTUN_LANG
 
+	// bootstrapDB:本次子命令是否允许「库不存在就建」。由 runRoot 按 subCanBootstrapDB 置一次,
+	// 不是命令行开关。放在 opts 上是为了不给十几处 runWithStore 调用点加参数。
+	bootstrapDB bool
+
 	stdout io.Writer // 默认 os.Stdout；测试可替换
 	stderr io.Writer
 	stdin  io.Reader
@@ -65,6 +69,7 @@ func main() {
 // runRoot 是 main 的可测试入口：返回退出码而不是直接 os.Exit。
 func runRoot(args []string, opts *globalOpts) int {
 	subcmd, rest := args[0], args[1:]
+	opts.bootstrapDB = subCanBootstrapDB(subcmd, rest)
 
 	switch subcmd {
 	case "help", "-h", "--help":
@@ -265,6 +270,28 @@ func credentialsIsReadOnly(rest []string) bool {
 	return true
 }
 
+// subCanBootstrapDB:这个子命令是否属于「库不存在就建」的**首次部署入口**。
+//
+// 只有两个:
+//   - `init`   —— install-self-hosted.sh 用的正式入口;
+//   - `user create` —— 文档里给出的「不跑 init 直接起库」便捷路径。
+//
+// 其余写子命令(device / acl / route / exit / setting / kick ...)一律要求库已存在。此前它们
+// 全都能凭空造库,于是任何拿错 --db-path、跑错 cwd、甚至纯用法错误的命令都会静默留下一个空库:
+// 2026-07-26 实测 `nanotun-admin device set-rate`(一个参数都没给)在 /root 下建出 184 KB 的
+// data/nanotun.db 并把 schema 迁移完,然后才打 usage。之后在同一目录忘带 --db-path 的命令就都
+// 对着这个空库跑,看到的是「没有用户」这类**貌似成功**的输出 —— 与只读路径 2026-07-25 修过的
+// 静默造库同一个根因(当时只补了只读那一半)。
+func subCanBootstrapDB(subcmd string, rest []string) bool {
+	switch subcmd {
+	case "init":
+		return true
+	case "user":
+		return len(rest) > 0 && rest[0] == "create"
+	}
+	return false
+}
+
 // runWithStore 打开 SQLite + 跑 migration，再交给 fn；任何错误打到 stderr。
 //
 // readOnly=true 时启动 SQLite query_only,只读子命令(list / show / audit list 等)
@@ -274,9 +301,9 @@ func credentialsIsReadOnly(rest []string) bool {
 func runWithStore(opts *globalOpts, readOnly bool, fn func(ctx context.Context, st *store.Store) error) int {
 	// 默认:非只读路径跑 migration(写路径负责推进 schema);只读路径不跑(query_only 拒 CREATE TABLE)。
 	//
-	// mustExist=readOnly:只读子命令绝不该凭空造库。写路径(init / user create 等)保留
-	// 「库不存在就建」的 bootstrap 语义 —— 那是首次部署的正常入口。
-	return runWithStoreOpts(opts, readOnly, !readOnly, readOnly, fn)
+	// mustExist:只读子命令绝不该凭空造库;写子命令里只有 init / user create 两个**首次部署入口**
+	// 保留「库不存在就建」的 bootstrap 语义,其余写子命令一律要求库已存在(见 subCanBootstrapDB)。
+	return runWithStoreOpts(opts, readOnly, !readOnly, !opts.bootstrapDB, fn)
 }
 
 // runWithStoreNoMigrate 打开 read-write 连接但**不跑 Migrate**。用于 backup:
@@ -306,7 +333,7 @@ func runWithStoreOpts(opts *globalOpts, readOnly, migrate, mustExist bool, fn fu
 			if errors.Is(statErr, fs.ErrNotExist) {
 				fmt.Fprintf(opts.stderr,
 					"db not found: %s\n"+
-						"read-only subcommands never create a database. Check --db-path (or $NANOTUN_DB); "+
+						"only `nanotun-admin init` creates a database. Check --db-path (or $NANOTUN_DB); "+
 						"run `nanotun-admin init` first for a new deployment.\n",
 					opts.dbPath)
 				return 2
