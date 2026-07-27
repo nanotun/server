@@ -51,6 +51,30 @@ func startHealthHTTPServer(addr string, gw *gatewayState) (cleanup func()) {
 		logrus.Warnf("[health] health 端点监听非环回地址 %s（通过 %s 强制开启）—— 外网可探测 TUN/store 就绪状态,建议改为 127.0.0.1:port + 内部反代", addr, healthAllowPublicEnv)
 	}
 
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           newHealthMux(gw),
+		ReadHeaderTimeout: 5 * time.Second,
+		// /health 本身就是探活,允许复用 keep-alive 减少 monitoring 对端的 TCP overhead。
+		IdleTimeout: 60 * time.Second,
+	}
+
+	go safeGlobalGoroutine("healthHTTP", globalContextCancel, func() {
+		logrus.Infof("[health] /health endpoint 监听 %s", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logrus.WithError(err).Warn("[health] HTTP 服务退出")
+		}
+	})
+
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}
+}
+
+// newHealthMux 建 /health 与 /metrics 的路由。单独抽出来是为了能不占端口地测处理器本身。
+func newHealthMux(gw *gatewayState) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -78,30 +102,18 @@ func startHealthHTTPServer(addr string, gw *gatewayState) (cleanup func()) {
 		writePrometheusMetrics(w, gw)
 	})
 
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		// /health 本身就是探活,允许复用 keep-alive 减少 monitoring 对端的 TCP overhead。
-		IdleTimeout: 60 * time.Second,
-	}
-
-	go safeGlobalGoroutine("healthHTTP", globalContextCancel, func() {
-		logrus.Infof("[health] /health endpoint 监听 %s", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logrus.WithError(err).Warn("[health] HTTP 服务退出")
-		}
-	})
-
-	return func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-	}
+	return mux
 }
 
 func isLoopbackHost(host string) bool {
-	if host == "localhost" || host == "" {
+	// 空 host 是 ":8081" 这种简写解析出来的,含义是**绑所有网卡**,不是环回。
+	// 此前它被当成环回放行,于是 P1-9 那道「非环回拒启」只挡得住显式写的
+	// 0.0.0.0:8081 / [::]:8081,却对最常用的 :8081 视而不见 —— 正是它要防的那种误配。
+	// (addr 整体为空的情况调用方已先行返回,走不到这里。)
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
 		return true
 	}
 	ip := net.ParseIP(host)
