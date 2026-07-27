@@ -3554,6 +3554,11 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// 复检保证只有先完成过户者胜出。放锁后的失败分支不再持锁(unlockTakeover 幂等,故不重复调用)。
 	unlockTakeover()
 
+	// 测试注入点:此刻锁已放、argon2 未跑,正是下方复验要防的那扇窗口。生产恒为 nil。
+	if hook := takeoverArgon2WindowHookForTest; hook != nil {
+		hook()
+	}
+
 	// 在 secret 匹配通过之后,**再加一层 PSK 验证**:防止只持有 (session_id, secret) 的
 	// 攻击者(从客户端内存 / 抓包 / log dump 拿到)不知道 PSK 也能接管会话。
 	//

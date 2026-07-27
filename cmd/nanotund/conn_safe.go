@@ -58,6 +58,16 @@ var loginRateWindowHookForTest func()
 // (连 safeRLConnNilCount 都不会 +1),窗口比主登录路径更难察觉。钩子在进表之前调用。
 var takeoverRateWindowHookForTest func()
 
+// takeoverArgon2WindowHookForTest 仅测试注入:接管路径在「takeoverMu 已放、argon2 verify 尚未开始」
+// 的那一刻调用一次。生产恒为 nil。
+//
+// 存在理由:这扇窗口是接管里最危险的一段 —— 为了不让 argon2(数十 ms,还受全局信号量排队)
+// 把 victim 的清理钉死,secret 校验通过后必须放锁再验 PSK,于是 oldConn 在这期间可能被清理 /
+// 被另一次接管抢先 / 被 supersede。代码靠重加锁后的复验兜住,而那条复验只有在**确定地**停在
+// 窗口里才验得到:靠 sleep 去猜 argon2 的时长,机器一快就滑出窗口,测试转而命中别的分支
+// 静默变成另一条路径的重复用例。
+var takeoverArgon2WindowHookForTest func()
+
 // 本文件:Connection 字段的并发安全读 helper。
 //
 // 背景(2026-05-23 N38 race fix → 2026-05-24 atomic.Pointer 升级):
