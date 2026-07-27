@@ -440,6 +440,101 @@ func TestRulePortIndeterminate_L4Unresolved_FailsClosed(t *testing.T) {
 	}
 }
 
+// ipv4TCPFragment 造一个 IPv4/TCP 报文,fragOff 以 8 字节为单位(0=首片)。
+//
+// 净荷头 4 字节**故意**摆成「源口 0x1000 / 目的口 22」的样子:非首片里这 4 字节是
+// 用户数据而不是 TCP 头,解析器要是照位置取端口,就会把它当成 22 —— 这正是分片
+// 绕过端口 ACL 的形状,所以用它做诱饵。
+func ipv4TCPFragment(fragOff uint16, mf bool) []byte {
+	p := make([]byte, 24)
+	p[0] = 0x45 // version=4, IHL=5(20B)
+	p[2], p[3] = 0x00, 24
+	flags := fragOff & 0x1fff
+	if mf {
+		flags |= 0x2000 // More Fragments
+	}
+	p[6], p[7] = byte(flags>>8), byte(flags&0xff)
+	p[8] = 64 // TTL
+	p[9] = 6  // TCP
+	copy(p[12:16], []byte{1, 2, 3, 4})
+	copy(p[16:20], []byte{10, 0, 0, 9})
+	copy(p[20:24], []byte{0x10, 0x00, 0x00, 0x16}) // 诱饵:看起来像 dst port 22
+	return p
+}
+
+// 第四轮深扫 MED 的定点回归:IPv4 **非首片**不含 L4 头,净荷不能被当成端口。
+//
+// IPv6 那两条(首片/非首片)早有用例,IPv4 这条一直只有实现没有测试 —— 而它才是
+// 更常见的分片绕过方向。守卫一旦失效,净荷里凑出一个放行端口就能穿过 default-deny。
+func TestParsePacketTuple_IPv4Fragment(t *testing.T) {
+	// 非首片(offset != 0):proto 仍是 tcp,但端口不可信。
+	nonFirst, ok := parsePacketTuple(ipv4TCPFragment(37, true))
+	if !ok {
+		t.Fatal("parsePacketTuple should accept a well-formed IPv4 fragment")
+	}
+	if nonFirst.proto != "tcp" {
+		t.Fatalf("non-first fragment should still resolve proto=tcp, got %+v", nonFirst)
+	}
+	if nonFirst.hasL4Ports {
+		t.Fatalf("non-first fragment carries no L4 header, hasL4Ports must be false, got %+v", nonFirst)
+	}
+	if nonFirst.dstPort != 0 || nonFirst.srcPort != 0 {
+		t.Fatalf("non-first fragment payload must not be read as ports, got src=%d dst=%d",
+			nonFirst.srcPort, nonFirst.dstPort)
+	}
+
+	// 首片(offset == 0,MF=1):**含**完整 L4 头,端口必须照常解析 —— 守卫不能宽到
+	// 把所有分片一律当作无端口,否则合法的分片流量会被端口规则整体误判。
+	first, ok := parsePacketTuple(ipv4TCPFragment(0, true))
+	if !ok {
+		t.Fatal("parsePacketTuple should accept an IPv4 first fragment")
+	}
+	if first.proto != "tcp" || first.dstPort != 22 || !first.hasL4Ports {
+		t.Fatalf("first fragment must parse ports normally, got %+v", first)
+	}
+}
+
+// IPv4 非首片撞上**端口 deny** 时必须 fail-closed。
+//
+// ruleMatchesPacket 对缺端口的报文一律判「不命中」,在 default=allow 下这会变成绕过:
+// 把发往被封端口的流量分片,非首片就落到 default allow 上。挡住它的是
+// rulePortIndeterminate,这里钉住 IPv4 这条路径(此前只覆盖了 IPv6 扩展头耗尽)。
+func TestRulePortIndeterminate_IPv4NonFirstFragment_FailsClosed(t *testing.T) {
+	frag, ok := parsePacketTuple(ipv4TCPFragment(37, true))
+	if !ok {
+		t.Fatal("parsePacketTuple should accept a well-formed IPv4 fragment")
+	}
+
+	portDeny := ruleEntry{action: store.ACLDeny, hasPorts: true, portLo: 22, portHi: 22}
+	// 前提:端口 deny 对这个报文「不命中」—— 正因如此才需要下面的 fail-closed 兜底。
+	if ruleMatchesPacket(portDeny, frag) {
+		t.Fatal("port rule should not match a fragment without trustworthy L4 ports")
+	}
+	if !rulePortIndeterminate(portDeny, frag) {
+		t.Fatal("IPv4 non-first fragment + port deny must be indeterminate (fail-closed)")
+	}
+
+	protoScopedDeny := ruleEntry{action: store.ACLDeny, proto: "tcp", hasPorts: true, portLo: 22, portHi: 22}
+	if !rulePortIndeterminate(protoScopedDeny, frag) {
+		t.Fatal("proto-scoped port deny must also fail closed on an IPv4 non-first fragment")
+	}
+
+	// 端口 allow 仍按「缺端口=不命中」处理,不因分片而放宽。
+	portAllow := ruleEntry{action: store.ACLAllow, hasPorts: true, portLo: 22, portHi: 22}
+	if rulePortIndeterminate(portAllow, frag) {
+		t.Fatal("port ALLOW is never indeterminate (only deny fails closed)")
+	}
+
+	// 首片带着完整端口,走正常判定,不该被当成不可判定。
+	first, _ := parsePacketTuple(ipv4TCPFragment(0, true))
+	if rulePortIndeterminate(portDeny, first) {
+		t.Fatal("first fragment carries real ports, must not be indeterminate")
+	}
+	if !ruleMatchesPacket(portDeny, first) {
+		t.Fatal("first fragment to port 22 must match the port deny rule normally")
+	}
+}
+
 // ipv6WithDestOptChain 造一个 IPv6 报文:40B 定长头 + n 个 8B Dest-Options(60)扩展头,
 // 每个 next-header 仍指向 60(永不到 L4)。n≥9 时可让 8 跳封顶的解析器耗尽跳数而放弃(l4Unresolved)。
 func ipv6WithDestOptChain(n int) []byte {
