@@ -54,8 +54,13 @@ func cmdAuditList(ctx context.Context, st *store.Store, opts *globalOpts, args [
 	if *since <= 0 {
 		return errors.New(opts.T("audit.sinceMustPositive"))
 	}
-	endAt := time.Now().Unix()
-	startAt := endAt - int64(since.Seconds())
+	// QueryAudit 的上界是开区间(SQL `at < endAt`),而 audit 行的 at 精度只到秒:
+	// 直接用 time.Now().Unix() 会把「本秒内刚写的记录」整批排除,表现为改完立刻
+	// `audit list` 查不到 —— 运维脚本「改配置 → 立即核对审计」必然落空。
+	// web 的 /audit 与 dashboard 早已各自 +1 补偿(handler_misc.go / handler_dashboard.go),
+	// 只有 CLI 这条漏了。
+	endAt := time.Now().Unix() + 1
+	startAt := endAt - 1 - int64(since.Seconds())
 	// 当 --action 不为空时,把过滤下推到 store(让 LIMIT 在过滤后的结果集生效,
 	// 避免「先取前 100 条 → 再 client-side 过滤 → 实际剩 3 条」的反直觉行为)。
 	var (
