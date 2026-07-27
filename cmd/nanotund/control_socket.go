@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -271,9 +272,11 @@ type controlStatusResp struct {
 	SessionsLimit  int                  `json:"sessions_limit"`
 	Sessions       []controlSessionInfo `json:"sessions"`
 	// RaceWindowTotal(可观测, 2026-05-24):safeRLConn() 返回 nil 累计次数,
-	// 代表 N38 类「c 已进 map 但 rlConn 还没写」窗口期被撞中的次数。
-	// 一般预期 0;非 0 可定量评估 race 在生产实际出现频率,Prometheus 抓为
-	// race_window_total 指标。
+	// 代表 N38 类「c 已进 map 但 rlConn 还没写」窗口期被撞中的次数,
+	// Prometheus 抓为 race_window_total 指标。
+	//
+	// 这里原本写「一般预期 0」—— 2026-07-27 并发压测证明不是:/status 轮询够频繁时
+	// 撞上登录中的连接是常态。它是频率观测量,**不要配成非 0 即告警**。详见 conn_safe.go。
 	RaceWindowTotal uint64 `json:"race_window_total"`
 	ACLDropTotal    uint64 `json:"acl_drop_total"`
 	ACLExitDrops    uint64 `json:"acl_exit_drops"`
@@ -941,6 +944,61 @@ func applyConnRateLimit(
 	return true
 }
 
+// rateConfigGen:限速配置的代次。两条 refresh 接口在**开始扫连接之前** +1。
+//
+// 要堵的漏是这样一条时序(2026-07-27 并发压测发现):
+//
+//	认证    取 device/user 限速快照到 Connection 上(server.go:2936-2941)
+//	①      连接进 connIDMap,对 /rate/refresh 可见(server.go:2949)
+//	         ├─ 管理员改库 + 推 refresh
+//	         └─ refresh 扫到本连接,但 safeRLConn() 是 nil → 跳过,不重试也不报错
+//	③      按**认证阶段那份旧快照**装上 limiter(server.go:3293)
+//
+// 两头都不管:refresh 以为跳过的是条无关紧要的连接,连接自己以为快照是最新的。
+// 结果这条会话一直跑在旧限速上直到重连,而管理员那边只看到「已下发」,毫无异常。
+// ①→③ 之间要过 supersede 等清理(最长 5s)、抢 connectionsMu 分配 vIP、写 lease,
+// 窗口可以宽到秒级 —— 重连风暴时尤其容易撞上。
+//
+// 修法:登录在认证**之前**记下代次,③ 之后比一下;变过就按 DB 最新值重算一遍。
+// 没变时零开销(一次 atomic load),变了才多几次轻量 SQLite 读。
+var rateConfigGen atomic.Uint64
+
+// reapplyRateAfterLogin 按 DB 最新值重算并应用一次本连接的限速,用于登录尾部补刷。
+//
+// 刻意不复用 applyConnRateLimit:那个函数给 effectiveLinkRates 传的 platform 是空串
+// (refresh 接口拿不到登录时的 platform),而登录路径传的是 loginReq.Platform。
+// 补刷若跟着传空串,会把 toml 里 rate_limit_by_platform 那一层丢掉 —— 本意是纠正限速,
+// 反倒可能把它放宽。这里要求调用方把 platform 一并带进来。
+func reapplyRateAfterLogin(ctx context.Context, gw *gatewayState, c *Connection, platform string) {
+	if gw == nil || c == nil {
+		return
+	}
+	rl := c.safeRLConn()
+	if rl == nil {
+		return // 调用点在 rlConn.Store 之后,理论上不会走到
+	}
+
+	defaults := storeRateDefaultsView{}
+	if gw.store != nil {
+		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		if d, err := gw.store.GetRateDefaults(cctx); err == nil {
+			defaults = storeRateDefaultsView{UploadBPS: d.UploadBPS, DownloadBPS: d.DownloadBPS, BurstBytes: d.BurstBytes}
+		}
+		cancel()
+	}
+	devCache := make(map[int64]rateSnap, 1)
+	devUp, devDown := freshDeviceRates(ctx, gw, c.deviceID, devCache, c.deviceRateUpBPS, c.deviceRateDownBPS)
+	userCache := make(map[int64]rateSnap, 1)
+	userUp, userDown := freshUserBW(ctx, gw, parseUserIDStr(c.userID), userCache, c.bwUpBPS, c.bwDownBPS)
+
+	up, down := effectiveLinkRates(gw, platform, devUp, devDown, defaults)
+	up = minPositiveBPS(up, userUp)
+	down = minPositiveBPS(down, userDown)
+	burst := effectiveBurst(defaults.BurstBytes)
+	rl.SetUploadLimit(int64(up), burst)
+	rl.SetDownloadLimit(int64(down), burst)
+}
+
 // rateSnap:一层限速的上下行字节速率快照(0 = 该层不限)。
 type rateSnap struct {
 	up, down int64
@@ -1027,6 +1085,10 @@ func controlHandleRateRefresh(gw *gatewayState) http.HandlerFunc {
 			http.Error(w, "gateway not initialized", http.StatusServiceUnavailable)
 			return
 		}
+		// 代次要在**扫连接之前**就 +1:正在登录、还没轮到 rlConn.Store 的连接会被
+		// 下面的扫描跳过,靠它在登录尾部比对代次自己补刷回来(见 rateConfigGen)。
+		rateConfigGen.Add(1)
+
 		var req controlRateRefreshReq
 		// body 允许空(全量刷)。bad json 不阻塞 — 允许走 query 兜底。
 		// 第四轮深扫 MED:此前仅在 ContentLength>0 时才 MaxBytesReader;chunked / 未知长度(ContentLength==-1)
@@ -1152,6 +1214,9 @@ func controlHandleUserRateRefresh(gw *gatewayState) http.HandlerFunc {
 			http.Error(w, "gateway not initialized", http.StatusServiceUnavailable)
 			return
 		}
+		// 同 /rate/refresh:代次先于扫描 +1,让窗口期被跳过的连接能在登录尾部自己补刷。
+		rateConfigGen.Add(1)
+
 		var req controlUserRateRefreshReq
 		// 无条件封顶请求体(见 /rate/refresh 同款说明,第四轮深扫 MED):chunked/未知长度也不再绕过上限。
 		r.Body = http.MaxBytesReader(w, r.Body, controlMaxBodyBytes)

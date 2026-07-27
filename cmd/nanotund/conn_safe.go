@@ -10,12 +10,26 @@ import (
 // safeRLConnNilCount(可观测, 2026-05-24 → 2026-05-25 Q8 文档强化):
 // safeRLConn() 返回 nil 的累计次数,Prometheus 抓为 race_window_total。
 //
-// 生产语义(纯净):
+// 生产语义:
 //
 //	atomic.Pointer.Store 是 monotonic write — 一旦 c.rlConn.Store(rwc) 跑过,
 //	后续 Load 永远返非 nil 直到 GC。cleanupConnection 也只 delete map 不会 Store(nil)。
 //	所以 counter 真实只反映「c 已进 connIDMap 但 c.rlConn.Store(rwc) 还没跑」
-//	这个 N38 race window 在生产被撞到的次数,**生产预期严格 0**。
+//	这个 N38 race window 被撞到的次数。
+//
+// 这里**曾经**写着「生产预期严格 0」,2026-07-27 的并发压测推翻了它:
+// 只要有观测者(/status 轮询、dashboard、rate refresh)在登录期间扫连接,撞上就只是
+// 时间问题 —— 实测几千次 /status 扫描能撞出几百次。窗口宽度取决于 supersede 等清理
+// (最长 5s)、抢 connectionsMu 分配 vIP、lease 落库,重连风暴时可以宽到秒级。
+// 所以**不要**把这个指标配成「非 0 即告警」,它是频率观测量,不是错误计数。
+//
+// 撞到本身无害,取决于观测者怎么处理 nil:
+//   - /status:显示为限速未就绪即可(nanotun-admin connection list 会打 "?");
+//   - /rate/refresh:曾经会**静默跳过**该连接,导致这条会话永久停在旧限速上 ——
+//     已由 rateConfigGen 的登录尾部补刷修掉(见 control_socket.go)。
+//
+// 新增读 rlConn 的路径时,请照这个思路想清楚「拿到 nil 该怎么办」,
+// 跳过通常不是正确答案。
 //
 // 测试噪声警告:
 //
@@ -30,6 +44,19 @@ import (
 // 调用方调 SetUploadLimit on closed rwc 是 no-op,不会 panic — 这部分由
 // rateLimitedConn 内部 ctx 控制。
 var safeRLConnNilCount atomic.Uint64
+
+// loginRateWindowHookForTest 仅测试注入:登录路径在「连接已进 connIDMap、rlConn 尚未
+// 就绪」的窗口正中间调用一次。生产恒为 nil(只有 _test.go 会赋值)。
+//
+// 存在理由:这扇窗口的宽度取决于 supersede 等清理、vIP 分配抢锁、lease 落库等一串
+// 时序,靠并发压测撞它既慢又不稳定。回归测试需要能**确定地**停在窗口里,才能验证
+// 「窗口期错过的限速刷新会被登录尾部补上」这条不变量。
+var loginRateWindowHookForTest func()
+
+// takeoverRateWindowHookForTest 同上,但打的是 takeover 路径的窗口:接管时 newConn 在
+// rlConn.Store 之后才进 connIDMap,这段时间它对 /rate/refresh **完全不可见**
+// (连 safeRLConnNilCount 都不会 +1),窗口比主登录路径更难察觉。钩子在进表之前调用。
+var takeoverRateWindowHookForTest func()
 
 // 本文件:Connection 字段的并发安全读 helper。
 //

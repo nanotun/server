@@ -2848,6 +2848,11 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		"transport": loginReq.Transport,
 	}).Info("收到登录请求")
 
+	// 限速代次要在认证**之前**记:device/user 两层的限速就是在 authenticateLogin 里
+	// 快照到 Connection 上的,晚于此处取的代次会漏掉「快照之后、装 limiter 之前」这段
+	// 时间里发生的刷新。登录尾部据此判断要不要补刷一次,详见 rateConfigGen。
+	rateGenAtLogin := rateConfigGen.Load()
+
 	authResult, authErr := authenticateLogin(gw, loginReq, connIDStr)
 	if authErr != nil {
 		// 日志保留原始 message(截断防爆),便于服务端排查;**不**透传给客户端,
@@ -3258,6 +3263,12 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		return
 	}
 
+	// 测试注入点:此刻 c 已在 connIDMap 里(对 /rate/refresh 可见)、rlConn 仍为 nil,
+	// 正是 N38 窗口的正中间。生产恒为 nil,见 loginRateWindowHookForTest。
+	if hook := loginRateWindowHookForTest; hook != nil {
+		hook()
+	}
+
 	var uploadLimiter, downloadLimiter *rate.Limiter
 	// 0011(2026-05-23):effective rate = min_positive(device, settings, toml-platform, toml-global, user-bw)
 	// 先查 settings.default(SQLite,~us);store 不可用 / 查询失败时降级为零值(等于不在 settings 层强制)。
@@ -3292,6 +3303,13 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	c.linkConn = rwc
 	c.rlConn.Store(rwc) // 0011 control-sock /rate/refresh 热更直接用,免去 type assert
 	c.linkWrMu.Unlock()
+
+	// 补刷:rlConn 就绪之前来的 /rate/refresh 一定跳过了本连接(safeRLConn 返 nil),
+	// 而上面这份 limiter 用的是认证阶段的旧快照 —— 不补的话这条会话会一直不受限。
+	// 代次没变(绝大多数登录)时只花一次 atomic load。详见 rateConfigGen。
+	if rateConfigGen.Load() != rateGenAtLogin {
+		reapplyRateAfterLogin(context.Background(), gw, c, loginReq.Platform)
+	}
 
 	dnsV4 := util.SanitizeDNSServersV4(gw.cfg.TUN.DNSServersV4)
 	var dnsV6 []string
@@ -3510,6 +3528,12 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	//   - 完整跑 argon2id verify(authenticatePSK)。
 	//   - 校验 result.UserID == oldConn.userID,防跨用户 takeover(攻击者用自己账号的 PSK
 	//     + 偷来的 session_id+secret 来接管别人的会话)。
+	// 限速代次:与主登录路径同理(见 rateConfigGen),记在取 device/user 限速快照之前。
+	// takeover 这边窗口的形状不一样 —— newConn 是在 rlConn.Store **之后**才进 connIDMap 的,
+	// 所以窗口期的 /rate/refresh 根本看不见它(连 race_window_total 都不会 +1),
+	// 比主登录路径更隐蔽。补刷点放在进 connIDMap 之后。
+	rateGenAtTakeover := rateConfigGen.Load()
+
 	authResult, authErr := authenticatePSK(gw, loginReq)
 	if authErr != nil {
 		logrus.WithFields(logrus.Fields{
@@ -3765,6 +3789,12 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	newConn.rlConn.Store(rwc) // 0011 /rate/refresh 用
 	newConn.linkWrMu.Unlock()
 
+	// 测试注入点:此刻 newConn 的 limiter 已装好、但还没进 connIDMap,
+	// 对 /rate/refresh 不可见 —— 正是 takeover 侧那扇窗口。生产恒为 nil。
+	if hook := takeoverRateWindowHookForTest; hook != nil {
+		hook()
+	}
+
 	// 第十九轮深扫 MED:给**新链路**的 LoginResp + ConvSalt 写钉有界写超时。PoW 通过后 raw 的 pre-login
 	// deadline 已被清(见 SetDeadline(time.Time{})),而这两次写**全程持 oldConn.takeoverMu** —— 停读 / 卡死的
 	// 新客户端会让写无限阻塞 → takeoverMu 永久挂住 → cleanupConnection(oldConn) 阻塞 → 该会话 vIP / connIDMap
@@ -3876,6 +3906,14 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	connByDeviceDeleteLocked(oldConn)
 	connByDeviceAddLocked(newConn)
 	connIDMapMu.Unlock()
+
+	// 补刷:进 connIDMap 之前 newConn 对 /rate/refresh 是不可见的,那段时间来的刷新
+	// 只会作用在即将被丢弃的 oldConn 上,newConn 装的却是接管前那份旧快照。
+	// 补刷点必须在**进表之后**:放在 rlConn.Store 旁边的话,Store 到进表之间来的刷新
+	// 照样会漏。代次没变时只花一次 atomic load。详见 rateConfigGen。
+	if rateConfigGen.Load() != rateGenAtTakeover {
+		reapplyRateAfterLogin(context.Background(), gw, newConn, loginReq.Platform)
+	}
 
 	// H2(B3): 接管转移已完成(newConn 进 connIDMap/connByUser/connByDevice + oldConn.takenOver=true),
 	// 后续 close + tunnelDone 等待都是清理 oldConn 而非取消接管。从这里开始,newConn 的生命周期由
