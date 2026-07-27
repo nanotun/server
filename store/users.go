@@ -91,13 +91,17 @@ func IsExitCapablePlatform(platform string) bool {
 //   - 逗号分隔,逐项 TrimSpace + ToLower;
 //   - 空输入 → 返回 ""(= 不设限,存 NULL);
 //   - 每个 token 必须属于 CanonicalPlatforms,否则返回 ErrInvalid(附非法 token);
-//   - 去重后按输入顺序拼回,保证「设了白名单」时至少有一个合法 token。
+//   - 去重后按 CanonicalPlatforms 的顺序拼回,保证「设了白名单」时至少有一个合法 token。
+//
+// 输出走 canonical 顺序而非输入顺序:平台白名单是集合,顺序无语义,但如果保留输入
+// 顺序,同一个集合就会有多种字符串形态(`linux,router` vs `router,linux`)。Web 详情页
+// 的复选框固定按 canonical 顺序渲染,管理员什么都不改、只点一次保存,存进去的串就会
+// 跟原来不同 —— 审计里凭空多出一条「白名单变更」,而权限其实一个字都没动。
 func NormalizePlatformCSV(input string) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return "", nil
 	}
 	seen := make(map[string]bool, len(CanonicalPlatforms))
-	var out []string
 	for _, raw := range strings.Split(input, ",") {
 		tok := strings.ToLower(strings.TrimSpace(raw))
 		if tok == "" {
@@ -114,9 +118,12 @@ func NormalizePlatformCSV(input string) (string, error) {
 			return "", fmt.Errorf("store: unknown platform %q (allowed: %s): %w",
 				tok, strings.Join(CanonicalPlatforms, ","), ErrInvalid)
 		}
-		if !seen[tok] {
-			seen[tok] = true
-			out = append(out, tok)
+		seen[tok] = true
+	}
+	out := make([]string, 0, len(seen))
+	for _, c := range CanonicalPlatforms {
+		if seen[c] {
+			out = append(out, c)
 		}
 	}
 	if len(out) == 0 {

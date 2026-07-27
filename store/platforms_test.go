@@ -16,6 +16,11 @@ func TestNormalizePlatformCSV(t *testing.T) {
 		{" MacOS , IOS ", "macos,ios", false},
 		{"router,router", "router", false}, // 去重
 		{"macos,ios,android,windows,linux,router", "macos,ios,android,windows,linux,router", false},
+		// 输出恒为 canonical 顺序:同一个集合只有一种字符串形态,否则「打开页面点保存」
+		// 就会因为顺序变化写出一条假的白名单变更(详见 NormalizePlatformCSV 注释)。
+		{"router,macos", "macos,router", false},
+		{"linux,router,windows", "windows,linux,router", false},
+		{"ios,MACOS,ios", "macos,ios", false},
 		{"iphone", "", true},    // 非法 token
 		{"macos,foo", "", true}, // 含一个非法即整体拒
 	}
