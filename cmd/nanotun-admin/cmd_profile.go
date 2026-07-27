@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/crypto/curve25519"
 
@@ -656,7 +657,7 @@ func parseGatewayTLSInsecureFlag(s string, gwTLS *bool) (*bool, error) {
 
 func buildReality(in buildProfileInput) (*profileSchemaReality, error) {
 	port := in.realityPort
-	var serverName, pubKey, shortID string
+	var serverName, pubKey, shortID, mldsaVerify string
 
 	if cfg := in.serverCfg; cfg != nil {
 		rc := &cfg.Reality
@@ -683,6 +684,21 @@ func buildReality(in buildProfileInput) (*profileSchemaReality, error) {
 				}
 				pubKey = base64.StdEncoding.EncodeToString(pub)
 			}
+			// ML-DSA-65 验签公钥由服务端 seed 派生,seed 是机密、公钥没有别的下发通道:
+			// 不写进 profile,客户端 mldsa65_verify 就是空,rust_reality 直接跳过叶证书
+			// 扩展校验 —— 服务端签了、客户端不验,抗量子那层白开且无任何报错。
+			// 代价:公钥 1952 字节(b64 2604),profile URL 涨约 3.5 KB,开了 PQ 就出不了
+			// 二维码(与多入口同类取舍),故仅在真配了 seed 时导出。
+			if strings.TrimSpace(rc.Mldsa65SeedBase64) != "" {
+				seed, err := config.DecodeRealityMldsa65Seed(rc.Mldsa65SeedBase64)
+				if err != nil {
+					return nil, fmt.Errorf("%s: %w", newLocErr("profile.parseRealityMldsaSeed").Error(), err)
+				}
+				var seed32 [32]byte
+				copy(seed32[:], seed)
+				vk, _ := mldsa65.NewKeyFromSeed(&seed32)
+				mldsaVerify = base64.StdEncoding.EncodeToString(vk.Bytes())
+			}
 		}
 	}
 
@@ -701,12 +717,13 @@ func buildReality(in buildProfileInput) (*profileSchemaReality, error) {
 	}
 
 	r := &profileSchemaReality{
-		Port:        port,
-		ServerName:  serverName,
-		PublicKey:   pubKey,
-		ShortID:     shortID,
-		ShortIDs:    shortIDs,
-		Fingerprint: "chrome",
+		Port:          port,
+		ServerName:    serverName,
+		PublicKey:     pubKey,
+		ShortID:       shortID,
+		ShortIDs:      shortIDs,
+		Fingerprint:   "chrome",
+		Mldsa65Verify: mldsaVerify,
 	}
 	// 全空（host 为空 + 公钥为空 + ServerName 为空 + ShortID 为空 + 仅默认 port）时不输出 reality 段。
 	if r.PublicKey == "" && r.ServerName == "" && r.ShortID == "" && len(r.ShortIDs) == 0 && in.realityPort == 0 {

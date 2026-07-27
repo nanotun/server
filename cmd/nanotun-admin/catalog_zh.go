@@ -289,6 +289,7 @@ var catZH = map[string]string{
 	"profile.gatewayTLSInsecureBad":   "--gateway-tls-insecure 仅接受 true | false | auto，得到 %q",
 	"profile.parseRealityPriv":        "解析 reality private_key",
 	"profile.deriveRealityPub":        "派生 reality public_key",
+	"profile.parseRealityMldsaSeed":   "解析 reality mldsa65_seed_base64",
 	"profile.issueHy2Cert":            "签发 Hy2 客户端 mTLS 证书（CA %q）",
 	"profile.openOutput":              "打开 --output %q",
 	"profile.realityPrivLen":          "reality private_key 长度须为 32 字节，得到 %d",

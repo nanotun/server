@@ -292,6 +292,7 @@ var catEN = map[string]string{
 	"profile.gatewayTLSInsecureBad":   "--gateway-tls-insecure only accepts true | false | auto, got %q",
 	"profile.parseRealityPriv":        "parse reality private_key",
 	"profile.deriveRealityPub":        "derive reality public_key",
+	"profile.parseRealityMldsaSeed":   "parse reality mldsa65_seed_base64",
 	"profile.issueHy2Cert":            "issue Hy2 client mTLS cert (CA %q)",
 	"profile.openOutput":              "open --output %q",
 	"profile.realityPrivLen":          "reality private_key must be 32 bytes, got %d",
