@@ -105,6 +105,22 @@ type loginIPEntry struct {
 
 var globalLoginIPLimiter = &loginIPLimiter{limits: make(map[string]*loginIPEntry)}
 
+// ResetForTest 测试间清空 per-IP 表并关掉限速。生产路径不应该调。
+//
+// 与 powIPLimiter.ResetForTest 同理:桶是按 IP 攒的,跨测试不清就会串台 —— 上一个
+// 测试把某个来源的 burst 用光,下一个测试用同一个来源的第一次登录就吃 429,报出来的
+// 却是「限速被做成全局的了」这种完全不相干的结论。
+func (l *loginIPLimiter) ResetForTest() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.limits = make(map[string]*loginIPEntry)
+	l.callsSeq = 0
+	l.capExceeded = 0
+	l.capExceededWarnAt.Store(0)
+	l.capExceededSinceWarn.Store(0)
+	l.ratePerMin.Store(0)
+}
+
 // SetRatePerMin 配置每 IP 每分钟登录尝试上限(0 = 不限制)。
 //
 // main 启动时按 [server].login_rate_limit_per_min 调一次;SIGHUP 热更时再调。

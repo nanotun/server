@@ -249,6 +249,10 @@ func resetServerGlobals(t *testing.T) {
 	globalPoWIPLimiter.ResetForTest()
 	ResetGlobalPoWIssueLimiterForTest()
 
+	// 登录限速同理:桶按来源 IP 攒,跨测试不清会串台。默认速率是 0(不限),
+	// 只有显式拨开限速的测试才建 entry,但它建下的桶会一直留到下一个测试。
+	globalLoginIPLimiter.ResetForTest()
+
 	// 给 globalContext 一个干净的根；handleVPNLink 用到时会自己回退到 Background()，
 	// 但显式赋值避免不同测试之间 cancel 信号串台。
 	prevCancel := globalContextCancel
