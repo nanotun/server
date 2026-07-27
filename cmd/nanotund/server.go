@@ -689,26 +689,31 @@ func isProductionLinuxRoot() bool {
 	return os.Geteuid() == 0
 }
 
-// parseListenPort 从 ":port" 或 "host:port" 解析 1–65535，用于 node_login 上报 tcp_port。
-func parseListenPort(listenAddr, defaultAddr string) int {
+// parseListenPortValue 是 parseListenPort 的纯函数内核:只做解析与取值判定,不退进程。
+// 与 health.go 的 isLoopbackHost 同一路数 —— 决策可穷举单测,FatalExit 留在薄壳里。
+func parseListenPortValue(listenAddr, defaultAddr string) (int, error) {
 	la := strings.TrimSpace(listenAddr)
 	if la == "" {
 		la = defaultAddr
 	}
-	host, port, err := net.SplitHostPort(la)
+	_, port, err := net.SplitHostPort(la)
 	if err != nil {
-		if strings.HasPrefix(la, ":") {
-			p, err2 := strconv.Atoi(strings.TrimPrefix(la, ":"))
-			if err2 == nil && p >= 1 && p <= 65535 {
-				return p
-			}
-		}
-		util.FatalExit(util.ExitConfigParse, logrus.Fields{"listen_addr": listenAddr}, "[server] 无法从 listen 地址 %q 解析端口: %v", listenAddr, err)
+		// ":8080" 走不到这里(SplitHostPort 对它返回 port="8080" 且无错);
+		// 落到这里的是冒号过多之类的畸形值,直接报错。
+		return 0, fmt.Errorf("无法从 listen 地址 %q 解析端口: %w", listenAddr, err)
 	}
-	_ = host
 	p, err := strconv.Atoi(port)
 	if err != nil || p < 1 || p > 65535 {
-		util.FatalExit(util.ExitConfigParse, logrus.Fields{"port": port}, "[server] 无效端口 %q", port)
+		return 0, fmt.Errorf("无效端口 %q", port)
+	}
+	return p, nil
+}
+
+// parseListenPort 从 ":port" 或 "host:port" 解析 1–65535，用于 node_login 上报 tcp_port。
+func parseListenPort(listenAddr, defaultAddr string) int {
+	p, err := parseListenPortValue(listenAddr, defaultAddr)
+	if err != nil {
+		util.FatalExit(util.ExitConfigParse, logrus.Fields{"listen_addr": listenAddr}, "[server] %v", err)
 	}
 	return p
 }
@@ -740,43 +745,70 @@ func normalizeLoopbackHost(listenAddr string) string {
 // IsLoopback,埋了坑)。localhost 已在调用前由 normalizeLoopbackHost 归一为 127.0.0.1。
 // 非法/不可达值一律 fail-fast,把误配暴露在启动期而非运行期。
 func validateVPNListenAddr(listenAddr string) {
+	verdict, host := classifyVPNListenAddr(listenAddr)
+	switch verdict {
+	case vpnListenReachable:
+		return
+	case vpnListenUnparsable:
+		util.FatalExit(util.ExitConfigParse, logrus.Fields{"listen_addr": listenAddr},
+			"[server] 无法解析 listen 地址 %q", listenAddr)
+	case vpnListenHostNotIP:
+		util.FatalExit(util.ExitConfigParse, logrus.Fields{"listen_addr": listenAddr, "host": host},
+			"[server] listen 地址 host %q 不是合法 IP;请用 127.0.0.1(推荐)/ 0.0.0.0 / :: / 省略 host / localhost", host)
+	case vpnListenOtherLoopback:
+		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"listen_addr": listenAddr, "host": host},
+			"[server] listen_addr 绑到回环地址 %q,但内部 hy2/REALITY 环回桥接固定拨 127.0.0.1,"+
+				"该地址收不到该拨号 → 数据面会静默中断;请改用 127.0.0.1:<port>", host)
+	default:
+		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"listen_addr": listenAddr, "host": host},
+			"[server] listen_addr 绑到非回环具体 IP %q,会导致 hy2/REALITY 环回桥接(拨 127.0.0.1)连接被拒;"+
+				"请改用 127.0.0.1:<port>(推荐)或 0.0.0.0:<port>", host)
+	}
+}
+
+// vpnListenVerdict 是 classifyVPNListenAddr 的判定结果。
+type vpnListenVerdict int
+
+const (
+	vpnListenReachable     vpnListenVerdict = iota // 127.0.0.1 的环回拨号收得到 → 放行
+	vpnListenUnparsable                            // 拆不出 host:port(冒号过多等畸形值)
+	vpnListenHostNotIP                             // host 拆出来了,但不是合法 IP
+	vpnListenOtherLoopback                         // 127.0.0.2 / ::1 这类「是回环但收不到 127.0.0.1」
+	vpnListenSpecificIP                            // 非回环具体 IP
+)
+
+// classifyVPNListenAddr 是 validateVPNListenAddr 的纯函数内核,返回判定与拆出的 host。
+func classifyVPNListenAddr(listenAddr string) (vpnListenVerdict, string) {
 	la := strings.TrimSpace(listenAddr)
 	host, _, err := net.SplitHostPort(la)
 	if err != nil {
-		// ":8080" 这类无 host 的写法:SplitHostPort 报错但语义是「所有网卡」,放行。
-		if strings.HasPrefix(la, ":") {
-			return
-		}
-		util.FatalExit(util.ExitConfigParse, logrus.Fields{"listen_addr": listenAddr},
-			"[server] 无法解析 listen 地址 %q: %v", listenAddr, err)
+		// 注意 ":8080" 这类无 host 的写法**不会**走到这里 —— SplitHostPort 对它返回
+		// host="" 且无错,由下面的空 host 分支放行。能落到这里的只有 "::" / ":80:90"
+		// 这种冒号过多的畸形值,它们连 net.Listen 都绑不上,必须在启动期就报出来。
+		return vpnListenUnparsable, ""
 	}
 	host = strings.TrimSpace(host)
 	switch host {
 	case "", "0.0.0.0", "::":
 		// 空 host / IPv4 通配 / IPv6 通配:listener 覆盖所有网卡(含回环),
 		// 127.0.0.1 环回拨号必达(:: 在 dual-stack 下也收 IPv4-mapped 127.0.0.1)。
-		return
+		return vpnListenReachable, host
 	case "127.0.0.1":
 		// 环回桥接固定拨 127.0.0.1,精确匹配 → 可达。
-		return
+		return vpnListenReachable, host
 	}
 	addr, perr := netip.ParseAddr(host)
 	if perr != nil {
-		util.FatalExit(util.ExitConfigParse, logrus.Fields{"listen_addr": listenAddr, "host": host},
-			"[server] listen 地址 host %q 不是合法 IP;请用 127.0.0.1(推荐)/ 0.0.0.0 / :: / 省略 host / localhost", host)
+		return vpnListenHostNotIP, host
 	}
 	if addr.IsUnspecified() {
 		// 防御:理论上已被上面的 "0.0.0.0" / "::" 分支覆盖。
-		return
+		return vpnListenReachable, host
 	}
 	if addr.IsLoopback() {
-		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"listen_addr": listenAddr, "host": host},
-			"[server] listen_addr 绑到回环地址 %q,但内部 hy2/REALITY 环回桥接固定拨 127.0.0.1,"+
-				"该地址收不到该拨号 → 数据面会静默中断;请改用 127.0.0.1:<port>", host)
+		return vpnListenOtherLoopback, host
 	}
-	util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"listen_addr": listenAddr, "host": host},
-		"[server] listen_addr 绑到非回环具体 IP %q,会导致 hy2/REALITY 环回桥接(拨 127.0.0.1)连接被拒;"+
-			"请改用 127.0.0.1:<port>(推荐)或 0.0.0.0:<port>", host)
+	return vpnListenSpecificIP, host
 }
 
 // probeLoopbackVPNReachable 在监听建立后做一次「环回自拨」自检:hy2/REALITY 终结后
