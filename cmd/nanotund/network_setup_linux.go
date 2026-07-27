@@ -401,8 +401,7 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 		deviceName = "tun0"
 	}
 
-	clientIsolate := exitMode == "isolate"
-	allowExitWAN := exitMode != "off"
+	clientIsolate, allowExitWAN := exitModePolicy(exitMode)
 	logrus.WithFields(logrus.Fields{
 		"exit_mode":      exitMode,
 		"client_isolate": clientIsolate,
@@ -573,8 +572,7 @@ func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpCon
 		deviceName = "tun0"
 	}
 
-	clientIsolate := exitMode == "isolate"
-	allowExitWAN := exitMode != "off"
+	clientIsolate, allowExitWAN := exitModePolicy(exitMode)
 	logrus.WithFields(logrus.Fields{
 		"exit_mode":      exitMode,
 		"client_isolate": clientIsolate,
@@ -689,17 +687,7 @@ func insertTUNForwardPortDrops(bin, deviceName string, blockBT, blockTracker6969
 	if deviceName == "" {
 		deviceName = "tun0"
 	}
-	var rules [][]string
-	if blockBT {
-		rules = append(rules, []string{"-p", "tcp", "--dport", "6881:6889", "-j", "DROP"})
-		rules = append(rules, []string{"-p", "udp", "--dport", "6881:6889", "-j", "DROP"})
-	}
-	if blockTracker6969 {
-		rules = append(rules, []string{"-p", "tcp", "--dport", "6969", "-j", "DROP"})
-	}
-	if blockSMTP25 {
-		rules = append(rules, []string{"-p", "tcp", "--dport", "25", "-j", "DROP"})
-	}
+	rules := tunForwardPortDropRules(blockBT, blockTracker6969, blockSMTP25)
 	for _, extra := range rules {
 		if err := iptablesLikeInsertForward(bin, deviceName, extra); err != nil {
 			return err
