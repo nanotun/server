@@ -47,23 +47,23 @@ phase_20_acl_rate() {
   # 主要断言看 connection list 里的**有效**限速值而不是实测吞吐:实测受公网
   # 抖动影响,做成硬断言必然 flaky。吞吐另有一条宽松的数量级检查兜底。
   adm "setting rate --down-bps 1000000 --up-bps 1000000" >/dev/null
-  wait_until "限速 · 全局默认 1000000 下发到在线会话" 20 rate_is "$E2E_A_USER" 1000000
+  wait_until "限速 · 全局默认 1000000 下发到在线会话" 20 rate_is "$E2E_A_DEVICE_ID" 1000000
 
   adm "device set-rate $E2E_A_DEVICE_ID --down-bps 300000" >/dev/null
-  wait_until "限速 · 设备层更严时取设备值（min）" 20 rate_is "$E2E_A_USER" 300000
+  wait_until "限速 · 设备层更严时取设备值（min）" 20 rate_is "$E2E_A_DEVICE_ID" 300000
 
   adm "user set-bandwidth $E2E_A_USER --down-bps 150000" >/dev/null
-  wait_until "限速 · 用户层最严时取用户值（min）" 20 rate_is "$E2E_A_USER" 150000
+  wait_until "限速 · 用户层最严时取用户值（min）" 20 rate_is "$E2E_A_DEVICE_ID" 150000
 
   # 回归 Bug 11:把设备层放宽到远大于用户层,有效值必须仍是用户层的 150000。
   # 若这里变回 300000 或 5000000,说明刷新时又用上了登录期的陈旧快照。
   # 这里用固定等待而非轮询 —— 要断言的是「一直没变」,轮询会把中途的错误值放过去。
   adm "device set-rate $E2E_A_DEVICE_ID --down-bps 5000000" >/dev/null
   sleep 5
-  check "限速 · 放宽设备层不复活旧快照（Bug 11 回归）" "150000" "$(conn_rate_down "$E2E_A_USER")"
+  check "限速 · 放宽设备层不复活旧快照（Bug 11 回归）" "150000" "$(conn_rate_down "$E2E_A_DEVICE_ID")"
 
   adm "user set-bandwidth $E2E_A_USER --down-bps 0" >/dev/null
-  wait_until "限速 · 清空用户层后回落到全局值" 20 rate_is "$E2E_A_USER" 1000000
+  wait_until "限速 · 清空用户层后回落到全局值" 20 rate_is "$E2E_A_DEVICE_ID" 1000000
 
   # 吞吐只做数量级校验:限到 1MB/s 时不应该跑出远超该值的速度。
   local speed
