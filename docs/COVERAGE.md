@@ -175,6 +175,35 @@ sysctl 编排、systemd 通知、出口守卫这些，单测结构上就摸不�
 | 10 | `util` ws 流适配 + 证书闸口 + wire 助手；`auth` 限流版 verify | util 70.1% → 90.5%，auth → 78.8% | — |
 | 11 | `cmd/nanotun-web` 分发表 / 凭证 QR / 会话联表 / 私钥落盘 | 80.2% → 81.5% | — |
 | 12 | `certs` 客户端证书签发闸口 | 71.4% → 91.7% | — |
+| 13 | `store/web_admins*.go` 入参闸门 + DB 故障传播 | 97 条 → 12 条,store 79.8% → 84.3% | 33 抓 32,1 个等价 |
+
+第 13 轮引入了两个可复用的手段,后面几轮都在用:
+
+- **`Options{ReadOnly:true}` / 已 Close 的 store** 两级故障注入。只读库让第一条写语句失败,
+  已关库让 `BeginTx` 就失败 —— 两者覆盖的错误分支不同。要验的不变量很朴素:库挂了或只读时
+  **没有任何一个 DAL 函数报成功**,也不能把存储故障归一成 `ErrNotFound`(那会让 handler 显示
+  「账号不存在」而不是「存储不可写」,排查方向全错)。
+- **`RAISE(ABORT)` 触发器**做精准故障注入(`abortOn` 助手)。前两种手段都只能让**第一条**语句
+  失败,而最该验的是「事务里第二条失败要整体回滚」:改密的 UPDATE 成了但撤销旧会话的 DELETE
+  失败,不回滚就是「密码已改、旧 cookie 仍有效」—— 改密根本没把攻击者踢下线。在 `web_sessions`
+  / `web_admin_recovery_codes` 上装 BEFORE DELETE/INSERT 触发器就能精确制造这种失败。
+  注意 BEFORE 触发器在**匹配 0 行时不触发**,构造时要确认目标行真的存在。
+
+另外用「往 INTEGER 列写 TEXT」(SQLite 非 STRICT 表允许)模拟手工改库 / 迁移写坏。这类用例
+的价值不在覆盖率:`failed_logins` 扫不出来若被静默当成 0,等于把已锁定的账号自动解锁。
+
+第 13 轮的变异逃逸值得记一笔,四条里三条是**用例没隔离干净**——报的错来自另一道闸:
+`CreateFirstWebAdmin` 的空用户名撞的是 `ErrSetupClosed`(库里已有 admin)、
+`SetWebAdminRoleEnsuringAdmin` 的非法 role 撞的是 `ErrLastAdmin`(只有一个 admin)、
+`EnableWebAdminTOTP` 的空恢复码撞的是 CAS 的 `ErrNotFound`(没设过 secret)。
+三条都拆成独立用例、先把「别的闸不会响」布置好再断言。**光看行数变亮完全发现不了这类问题。**
+唯一的等价变异是 `CreateWebSession` 的 `AdminID<=0`:外键 `REFERENCES web_admins(id)` 兜住了
+同样的不变量,DAL 那道判断的价值只是给出一条清楚的错误。
+
+剩下 12 条全是驱动层错误(`Commit()` / `PrepareContext()` / `LastInsertId()` / `RowsAffected()`
+失败),用 SQLite 自身的手段构造不出来,要一个会注入故障的 `database/sql/driver` 包装。全包这类
+包装只有 7 处,而 `if err := tx.Commit(); err != nil { return err }` 判错的风险极低 —— 性价比低
+于去啃别的文件里的语义分支,暂时留着。
 
 第 4 轮的等价变异记一下，省得下次重打一遍：`t < 20` 被 `ihl >= 20 && ihl <= t`
 蕴含；`startWSSDataPlaneKeepalive` 自己也挡 `interval <= 0` 和 `missThreshold <= 0`，
