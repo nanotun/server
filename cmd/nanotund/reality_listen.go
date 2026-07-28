@@ -218,54 +218,68 @@ func startRealityVPNListener(cfg *config.Config, smuxPool *loopbackSmuxPool, loo
 
 	startAccept = func() {
 		go safeGlobalGoroutine("realityAccept", globalContextCancel, func() {
-			// I6: 区分 temporary error 与 fatal error。
-			//
-			// 之前任何 Accept 错误都直接退监听 → 整个 REALITY 入口对所有客户端不可用。
-			// 但实际上很多 Accept 错误是 transient(典型场景):
-			//   - EMFILE / ENFILE: 进程或系统 fd 用尽,过几秒回收后能恢复;
-			//   - ECONNABORTED: 客户端在 listen backlog 里就 RST,本次 Accept 失败但 listen 仍健康;
-			//   - "too many open files": 同 EMFILE。
-			// 这些都应该继续 Accept,只是需要 backoff 避免 hot-spin 把 CPU 拉满。
-			//
-			// 真正 fatal 的(应该退出 accept loop)是 listener 自己 Close —— Close 后 Accept 返
-			// 回 net.ErrClosed。globalContext.Done 时我们会主动 ln.Close,这条路径正确退出;
-			// 其它任何错误都 backoff 重试,让 REALITY 服务高可用。
-			var backoff time.Duration
-			const maxBackoff = 1 * time.Second
-			for {
-				c, err := ln.Accept()
-				if err != nil {
-					if errors.Is(err, net.ErrClosed) {
-						// 主动 Close 路径:静默退出,这是正常 shutdown。
-						logrus.Info("REALITY Accept: listener 已关闭,退出 accept loop")
-						return
-					}
-					// transient error:logrus.Warn 后短暂 backoff 再继续。
-					if backoff == 0 {
-						backoff = 5 * time.Millisecond
-					} else {
-						backoff *= 2
-						if backoff > maxBackoff {
-							backoff = maxBackoff
-						}
-					}
-					logrus.WithError(err).Warnf("REALITY Accept 失败,%s 后重试(transient)", backoff)
-					select {
-					case <-time.After(backoff):
-					case <-globalContext.Done():
-						return
-					}
-					continue
-				}
-				backoff = 0 // 成功 Accept 重置 backoff
-				go safeGoroutine("realityBridge/"+c.RemoteAddr().String(), func() {
-					bridgeRealityToPlainVPN(c, vpnLoop, wsPath, smuxPool, loopbackWSTLS)
-				})
-			}
+			runRealityAcceptLoop(ln, func(c net.Conn) {
+				bridgeRealityToPlainVPN(c, vpnLoop, wsPath, smuxPool, loopbackWSTLS)
+			})
 		})
 	}
 
 	return func() { _ = ln.Close() }, startAccept, tcpPort, nil
+}
+
+// runRealityAcceptLoop 是 REALITY 的 accept 主循环,handle 处理每条握手完成的连接。
+//
+// I6: 区分 temporary error 与 fatal error。
+//
+// 之前任何 Accept 错误都直接退监听 → 整个 REALITY 入口对所有客户端不可用。
+// 但实际上很多 Accept 错误是 transient(典型场景):
+//   - EMFILE / ENFILE: 进程或系统 fd 用尽,过几秒回收后能恢复;
+//   - ECONNABORTED: 客户端在 listen backlog 里就 RST,本次 Accept 失败但 listen 仍健康;
+//   - "too many open files": 同 EMFILE。
+//
+// 这些都应该继续 Accept,只是需要 backoff 避免 hot-spin 把 CPU 拉满。
+//
+// 真正 fatal 的(应该退出 accept loop)是 listener 自己 Close —— Close 后 Accept 返
+// 回 net.ErrClosed。globalContext.Done 时我们会主动 ln.Close,这条路径正确退出;
+// 其它任何错误都 backoff 重试,让 REALITY 服务高可用。
+func runRealityAcceptLoop(ln net.Listener, handle func(net.Conn)) {
+	var backoff time.Duration
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				// 主动 Close 路径:静默退出,这是正常 shutdown。
+				logrus.Info("REALITY Accept: listener 已关闭,退出 accept loop")
+				return
+			}
+			// transient error:logrus.Warn 后短暂 backoff 再继续。
+			backoff = nextRealityAcceptBackoff(backoff)
+			logrus.WithError(err).Warnf("REALITY Accept 失败,%s 后重试(transient)", backoff)
+			select {
+			case <-time.After(backoff):
+			case <-globalContext.Done():
+				return
+			}
+			continue
+		}
+		backoff = 0 // 成功 Accept 重置 backoff
+		go safeGoroutine("realityBridge/"+c.RemoteAddr().String(), func() { handle(c) })
+	}
+}
+
+// nextRealityAcceptBackoff 指数退避:首次 5ms,之后翻倍,封顶 1s。
+// 封顶是为了让 fd 耗尽这类可恢复故障在最坏情况下也能每秒重试一次(而不是退到分钟级,
+// 那样 fd 早就回收了监听却还在睡)。
+func nextRealityAcceptBackoff(prev time.Duration) time.Duration {
+	const maxBackoff = 1 * time.Second
+	if prev <= 0 {
+		return 5 * time.Millisecond
+	}
+	next := prev * 2
+	if next > maxBackoff {
+		return maxBackoff
+	}
+	return next
 }
 
 const (

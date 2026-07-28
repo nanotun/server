@@ -409,6 +409,51 @@ fire-and-forget 一条 `broadcastExitsList`,它读 `gatewayInstance`,而子测�
 等那一帧到达 —— 既建立了 happens-before,又顺带把「撤回后必须立刻重算并推送」钉成
 断言(否则已撤回的出口要留在别人的下拉里直到它下线)。
 
+### 第 24 轮:两个入站监听器(REALITY / hy2)
+
+原以为这两块「要真握手所以测不了」,实际只有握手本身测不了 —— 外面的启动编排、accept
+循环、环回桥接全都能在进程内跑通。`reality_listen.go` 64 → 6、`hysteria.go` 44 → 19,
+包覆盖 81.6% → 82.8%,变异 32 项全抓。
+
+能测到这个程度靠两件事。一是既有测试里已经有一份 **WS + smux 回声服务端**的脚手架
+(`loopback_smux_test.go`),把它抽成 helper 之后,「桥接到环回数据面」这条主路就能整条
+跑起来 —— 而这条路上此前一条断言都没有,失败面倒是钉得挺全。二是把埋在闭包里的
+accept 循环抽成 `runRealityAcceptLoop(ln, handle)`,注入假 listener 才能造出 EMFILE。
+
+这一轮钉住的、错了又完全不报错的性质:
+
+- **可恢复的 Accept 错误不能当致命。** fd 耗尽(EMFILE)、客户端在 backlog 里就 RST
+  (ECONNABORTED)过几秒就好;当成致命退出循环,整个 REALITY 入口对所有客户端**永久**
+  消失 —— 进程还活着、别的入口还在服务,监控大概也不会响。唯一的致命错误是自己
+  `Close` 后的 `net.ErrClosed`。
+- **退避要归零,而且不能是 0。** 返回 0 会让持续报错变成 hot-spin 吃满 CPU;成功一次
+  之后不归零,则一段早已过去的抖动会长期给每次接入加上封顶延迟。后者的断言得量
+  「出错到下次 Accept」的实际间隔 —— 只看「循环还活着」是抓不住的。
+- **上报的端口必须是真在听的那个。** `listen_addr` 用 `:0` 时内核分配端口,这个值经
+  node_login 发给客户端。报错了的现象是「服务一切正常但没人连得上」,服务端日志里
+  什么错都没有。断言方式是拿上报的端口去 bind,占不上才算对。
+- **失败路径必须把已绑的端口还回去。** hy2 启动的后半段(建 server config / NewServer)
+  失败时若不关 packetConn,后续重试会看到「端口已被占用」的假象,排查方向直接被带偏。
+- **真实客户端地址必须透传到环回。** hy2 拿不到客户端地址(hysteria 的
+  `Outbound.TCP(reqAddr)` 不透出),靠 relay 在 RequestHook→EventLogger→Outbound 三步间
+  用一次性 token 传递。传不到不报错,只是**所有** hy2 客户端塌进 127.0.0.1 这一个桶:
+  `loginIPLimiter` / `powIPLimiter` 都按 remoteAddr 的 host 分桶,单个滥用者就能把全部
+  hy2 用户一起限死,而客户端 `transport=auto` 优先选的正是 hy2。
+- **reqAddr 绝不能当 dial 目标。** 这是「hy2 不得退化成任意 TCP 开放代理」的硬约束。
+  既有用例只验了「pool 为 nil 时报错」—— 那条路上 reqAddr 压根没机会被使用。新用例在
+  reqAddr 里放一个**活着**的诱饵监听:一旦实现拿它去拨,诱饵就会收到连接。
+- **握手 deadline 进桥接后必须清掉。** `realityAcceptDeadlineListener` 给每条 conn 套了
+  15s,不清的话业务数据一旦有 15s 空闲就被砍 —— 表现成「连上能用一会儿然后莫名断线」。
+  断言方式是进桥接前故意套一个 300ms 的短 deadline,再等过它才收发。
+
+两条形状教训(又是变异测试指出来的):**假 listener 报错时也返回 nil conn,那么「返回 c」
+与「返回 nil」就无从区分**,得让剧本同时给出 conn 和错误;以及**验「成功后重置」的剧本,
+成功之后不能紧接就是关机** —— 那条路径上退避有没有归零看不出来。
+
+剩下的 25 条(reality 6 / hysteria 19)分三类:握手后才走到的桥接调用(归 e2e)、被
+`Validate` 挡在前面的防御分支、以及需要 Linux + root 的端口跳跃 iptables 路径。还有两处
+是「OpenStream 成功之后、写 PROXY 头之前断链」那个瞬间窗口,单测开不出来。
+
 ## 单测这一侧的现状（2026-07-28 晚，Linux 实测）
 
 零覆盖函数已经清空，只剩三个 `main` —— 那三个各有子进程冒烟测试（`nanotund` 靠 e2e）。

@@ -222,6 +222,21 @@ func buildHysteriaServerConfig(hc *config.HysteriaConfig, cert tls.Certificate, 
 	return out, nil
 }
 
+// buildHy2TCPOutbound 选 hy2 的 TCP 出口,并在走 smux 那条路时一并建好地址中转。
+//
+// 返回的 relay 必须**就是**交给 outbound 的那一个:两个不同实例会让 outbound 去一张没人写的
+// 表里查 token,于是恒取不到、悄悄退回 LOCAL 头 —— 所有 hy2 客户端又塌回同一个限流桶。
+// 调用方还要把它挂到 hyserver.Config 的 RequestHook/EventLogger 上(见 buildHysteriaServerConfig)。
+func buildHy2TCPOutbound(smuxPool *loopbackSmuxPool, loopbackWSURL string, dialTimeout time.Duration, loopbackWSTLS *tls.Config) (hyserver.Outbound, *hy2ClientAddrRelay) {
+	if smuxPool != nil {
+		relay := newHy2ClientAddrRelay()
+		return &vpnSmuxStreamOutbound{pool: smuxPool, relay: relay}, relay
+	}
+	// 每流直拨环回 WebSocket 的路径(未配 [smux] 时)没有「stream 开头一个 PROXY 头」的约定,
+	// 真实源无处安放,故仍按环回归因。发布的 config.toml 默认带 [smux],走上面的分支。
+	return &vpnLocalOutbound{wsURL: loopbackWSURL, timeout: dialTimeout, tlsClient: loopbackWSTLS}, nil
+}
+
 func udpPortFromPacketConn(c net.PacketConn) (int, error) {
 	addr := c.LocalAddr()
 	u, ok := addr.(*net.UDPAddr)
@@ -302,16 +317,7 @@ func startEmbeddedHysteria(cfg *config.Config, vpnListenAddr string, loopbackWSU
 	if hc.ForwardDialTimeoutSec == 0 {
 		dialTimeout = 15 * time.Second
 	}
-	var tcpOb hyserver.Outbound
-	var addrRelay *hy2ClientAddrRelay
-	if smuxPool != nil {
-		addrRelay = newHy2ClientAddrRelay()
-		tcpOb = &vpnSmuxStreamOutbound{pool: smuxPool, relay: addrRelay}
-	} else {
-		// 每流直拨环回 WebSocket 的路径(未配 [smux] 时)没有「stream 开头一个 PROXY 头」的约定,
-		// 真实源无处安放,故仍按环回归因。发布的 config.toml 默认带 [smux],走上面的分支。
-		tcpOb = &vpnLocalOutbound{wsURL: loopbackWSURL, timeout: dialTimeout, tlsClient: loopbackWSTLS}
-	}
+	tcpOb, addrRelay := buildHy2TCPOutbound(smuxPool, loopbackWSURL, dialTimeout, loopbackWSTLS)
 	hyCfg, err := buildHysteriaServerConfig(hc, cert, tcpOb, addrRelay)
 	if err != nil {
 		_ = packetConn.Close()
