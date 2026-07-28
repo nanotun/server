@@ -120,3 +120,25 @@ Linux 上只有 59.3%，加上 e2e 到 79.3%，其中 1506 条**只有**真实�
 补完必须做变异验证：把被测逻辑定点改坏，确认测试真的会红。只跑一遍看行数变亮不算数
 ——`listen_addr` 那个校验漏洞就是变异逃逸暴露出来的，测试照过，一查才发现那个分支
 从来没被自己的用例走到过。
+
+## 基线之后补掉的
+
+按上面的排序逐块清理 `cmd/nanotund`。记在这里是为了下次不用翻 git log 反推进度。
+
+| 轮次 | 目标 | 补掉 | 变异 |
+|---|---|---:|---|
+| 1 | `magic_dns.go` / `acl_runtime.go` 出口裁决 / `server.go` 地址助手 | 160 条 | 挖出 `listen_addr` 校验漏洞（已修） |
+| 2 | `handleTakeoverLogin` 八条拒绝分支 + 两处竞态复验 | — | 21 个全抓住 |
+| 3 | `handleVPNLink` 四道闸 + panic 隔离 + vIP 耗尽 | — | 16 抓 14，2 个是空转代码 |
+| 4 | `runLinkTunnel` 帧分发与数据面执法链 | 71 条 | 24 抓 24 |
+| 4 | `util.IPPacketTotalLen` / `TrimIPPacketToTotalLen` | 大门此前零测试 | 12 抓 9，3 个等价 |
+
+第 4 轮的等价变异记一下，省得下次重打一遍：`t < 20` 被 `ihl >= 20 && ihl <= t`
+蕴含；`startWSSDataPlaneKeepalive` 自己也挡 `interval <= 0` 和 `missThreshold <= 0`，
+调用侧那两处判断拆掉也没有可观察差异。`runLinkTunnel` 门口的 `ValidIPPacket` 与 ACL
+对「解不出 tuple」的 fail-closed 互为兜底，拆掉任意一层畸形包都还是进不了 TUN——
+门本身的边界钉在 `util` 那侧的用例里。
+
+`runLinkTunnel` 还剩 4 条未覆盖，都是 `interceptExitDNSResponseIfPending` /
+`forwardPacketToSubnetRoute` / `forwardPacketToExitNode` / `serverSelfEgressV6FastFail`
+的 true 分支，这四个函数各有专门用例，从 readLoop 再走一遍是重复劳动。
