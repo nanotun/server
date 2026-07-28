@@ -200,6 +200,7 @@ web / admin 的 `main()` 此前只有 e2e 摸得到，现在子进程冒烟测�
 | 20 | web 零散块:`handler_misc` / `portforward` / `tls_cert` / `session` / `acl` / `control_client` / `config` / `render` / `captcha` / `pow` / `totp` / `ip_failures` | web 80.2% → 96.8% | — |
 | 21 | `cmd/nanotun-web/main.go` 启动编排(含子进程冒烟) | 107 条 → 少数 | — |
 | 22 | `cmd/nanotun-admin` 全面收口(见下节) | 80.5% → **96.7%**,未覆盖 98 条 | 35 抓 34,1 条无法确定性构造 |
+| 23 | `cmd/nanotund` 数据面「静默出错」那一档:ACL 快照重建 / 出口裁决 / 出口列表 | `acl_runtime` 40→29、`egress_select` 53→38、`exits_list` 46→8,包 79.0% → 79.7%(macOS) | 21 抓 20,逃逸的那条见下 |
 
 第 14/15 轮把 `store` 从 79.8% 推到 95.4%(未覆盖 86 / 1879 条)。剩下的基本进不去:驱动层的
 `LastInsertId()` / `Commit()` / `RowsAffected()` 失败、`listMigrations` 对 embed FS 的防御分支
@@ -340,6 +341,39 @@ stderr **空**,而紧接着的 `acl delete` 打了「ACL snapshot has been refre
 测试接缝(函数改包级变量、`rand.Read` 改 `randRead`,默认值不变)与一处等价重构
 (`main.go` 的 PoW GC 内联 goroutine 收成 `runPoWGC` 方法),阶段 0/6/7 的全绿也顺带确认了
 这些接缝没有改变启动编排与 Web 面的行为。
+
+### 第 23 轮:`cmd/nanotund` 的「静默出错」那一档
+
+按「补空白的顺序」第 1 条挑的:ACL 快照重建、出口裁决、出口列表。这三处判错都不报错、
+不掉线,只表现成用户那头「网怪怪的」，所以优先级排在条数多得多的 `main` 启动编排前面。
+
+真正值得记的是**断言该断在哪**:
+
+- **「读不出设置」与「这个 key 没设过」必须分开。** `reloadACLSnapshotFromStore` 里两者
+  的正确行为恰好相反 —— 前者要返回 err 且**原样保留旧快照**,后者落到内置默认 allow。
+  只断 `err != nil` 是不够的:一个「先把快照换成空规则 + allow、再返回 err」的实现同样
+  满足它,而那正是最坏的结果(default-deny 被一次 DB 抖动翻成全放行,且无告警)。用例断的
+  是**快照指针不变** + 旧的 deny 规则仍在拦。
+- **fail-closed 兜底只能由手抠 DB 触发。** `acl_default_action` 写路径自己就拒非法值,
+  所以用例得直写 SQL 才进得去那条分支 —— 顺手把「写路径确实在拦」也钉成断言,这样两层
+  防御各自的责任都写在测试里。
+- **「查不动」不是「未批准」。** `resolveApprovedExitDeviceID` /
+  `deviceHasApprovedExitRoute` 都返回 `(值, ok)`,ok=false 意味着无法判定。混为一谈的话,
+  一次 DB 抖动就会撤销仍然有效的出口绑定,或把用户想避开的 server 自出口静默给他。
+  三种入口(无 store、deviceID=0、DB 报错)分别钉。
+
+两次变异逃逸都出在同一种写法上,值得当模板记住:**用例里让同一个对象同时满足正反两边,
+去掉判定后结果不变**。第一次是「同一台设备既宣告了 LAN 段又宣告了出口」——去掉
+`IsExitDefaultRoute` 过滤照样解析到同一个 device;改成「只批了 192.168 段的设备绝不能
+被解析成出口」才抓得住。`buildExitsList` 第 ④ 步那条一模一样。
+
+`isRunningExitConn` 是这一轮唯一动的产品代码:`buildExitsList` 的 ① 快照与 ③ 复核本来
+手抄了两遍同一判据,而 ① 还多查一个 `deviceID != 0`,属于随时会漂移的重复。抽成一处之后
+判据本身可以直测。
+
+还剩一条变异逃逸,是结构性的:③ 复核守的是「② 查 DB 期间会话状态翻转」那个窗口,
+单线程单测开不出来 —— 要么给生产代码加一个纯为开窗存在的钩子。判据抽出来后至少
+「判据认不认这几种失效状态」钉住了,调用时序靠 e2e 里出口接管/重登那几条。
 
 ## 单测这一侧的现状（2026-07-28 晚，Linux 实测）
 

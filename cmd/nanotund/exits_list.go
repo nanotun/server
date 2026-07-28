@@ -30,6 +30,18 @@ import (
 // 每条候选 conn 仍在 map(同一指针)、仍 advertisedExit、未被接管,才收进列表。② 期间出口可能下线/被接管/撤销声明,
 // 不复核就会把已离场的出口塞进列表、并可能覆盖更新的 broadcastExitsList(Bugbot #1)。复核到「发送」之间仍有极小窗口,
 // 由 broadcastExitsList 的串行化(exitsBroadcastMu)进一步收敛。
+// isRunningExitConn 报告某会话现在是否算「真在跑出口」—— buildExitsList 的 ① 快照与
+// ③ 复核用的是同一判据,所以抽成一处。此前两边各写一遍,而且 ① 多查了一个 deviceID != 0:
+// 判据一旦漂移,列表就会在「快照收了、复核又漏掉」之间产生不一致。
+//
+// superseded 这一条容易漏:被同 device fresh 重登踢旧 / 会话超限踢除的旧 conn,仍然
+// advertisedExit && !takenOver,但链路即将关闭。把它当在线出口列出去,请求方下拉里
+// 会看到一个 Online 的出口而其链路已死 —— 选中即黑洞,且因为显示在线,用户不会怀疑出口。
+func isRunningExitConn(c *Connection) bool {
+	return c != nil && c.advertisedExit.Load() && c.deviceID != 0 &&
+		!c.takenOver.Load() && !c.superseded.Load()
+}
+
 func buildExitsList(ctx context.Context) []util.ExitInfo {
 	gw := gatewayInstance
 	if gw == nil || gw.store == nil {
@@ -43,9 +55,7 @@ func buildExitsList(ctx context.Context) []util.ExitInfo {
 	connIDMapMu.RLock()
 	cands := make([]cand, 0, 4)
 	for _, c := range connIDMap {
-		// !superseded：被同 device fresh 重登踢旧 / 会话超限踢除的旧 conn，虽仍 advertisedExit&&!takenOver 但即将关闭，
-		// 不应作为「在线出口」列出（否则请求方下拉显示该出口 Online 而其链路已死、出口流量黑洞）。见 Connection.superseded。
-		if c != nil && c.advertisedExit.Load() && c.deviceID != 0 && !c.takenOver.Load() && !c.superseded.Load() {
+		if isRunningExitConn(c) {
 			cands = append(cands, cand{conn: c, deviceID: c.deviceID, uuid: c.deviceUUID})
 		}
 	}
@@ -83,8 +93,7 @@ func buildExitsList(ctx context.Context) []util.ExitInfo {
 		if seen[cd.deviceID] || !approved[cd.deviceID] {
 			continue
 		}
-		if cur, ok := connIDMap[cd.conn.connIDStr]; !ok || cur != cd.conn ||
-			!cd.conn.advertisedExit.Load() || cd.conn.takenOver.Load() || cd.conn.superseded.Load() {
+		if cur, ok := connIDMap[cd.conn.connIDStr]; !ok || cur != cd.conn || !isRunningExitConn(cd.conn) {
 			continue // 该会话已离场 / 不再是在跑出口 / 已被踢除待清理
 		}
 		seen[cd.deviceID] = true
