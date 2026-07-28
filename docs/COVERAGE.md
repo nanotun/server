@@ -132,6 +132,7 @@ Linux 上只有 59.3%，加上 e2e 到 79.3%，其中 1506 条**只有**真实�
 | 3 | `handleVPNLink` 四道闸 + panic 隔离 + vIP 耗尽 | — | 16 抓 14，2 个是空转代码 |
 | 4 | `runLinkTunnel` 帧分发与数据面执法链 | 71 条 | 24 抓 24 |
 | 4 | `util.IPPacketTotalLen` / `TrimIPPacketToTotalLen` | 大门此前零测试 | 12 抓 9，3 个等价 |
+| 5 | `jump_host_firewall.go` 白名单 + ipset/iptables 编排 | 91 条 | 34 抓 31，3 个等价 |
 
 第 4 轮的等价变异记一下，省得下次重打一遍：`t < 20` 被 `ihl >= 20 && ihl <= t`
 蕴含；`startWSSDataPlaneKeepalive` 自己也挡 `interval <= 0` 和 `missThreshold <= 0`，
@@ -142,3 +143,11 @@ Linux 上只有 59.3%，加上 e2e 到 79.3%，其中 1506 条**只有**真实�
 `runLinkTunnel` 还剩 4 条未覆盖，都是 `interceptExitDNSResponseIfPending` /
 `forwardPacketToSubnetRoute` / `forwardPacketToExitNode` / `serverSelfEgressV6FastFail`
 的 true 分支，这四个函数各有专门用例，从 readLoop 再走一遍是重复劳动。
+
+第 5 轮为了可测性动了生产代码：`jump_host_firewall.go` 里所有 `exec.Command` 与
+`runtime.GOOS` 判断收进 `jumpFWExec` / `jumpFWOnLinux` 两个变量。这段编排只在生产的
+Linux 上执行，开发机没有真 iptables、三机 e2e 也没开这个开关，所以「装出来的规则集
+长什么样」此前从没被验证过——而它判错既不报错也看不出来。等价变异同样记一下：
+`net.IP.String()` 自己就会把 v4-mapped 归一，所以 `To4().String()` 换成 `String()`
+没有可观察差异；`teardownImpl` 的非 Linux 判断被 `installed` 标志盖住（非 Linux 上
+`installed` 恒为 false）；`Teardown` 的 `sync.Once` 同理。

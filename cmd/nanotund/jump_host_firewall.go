@@ -20,6 +20,23 @@ const (
 	jumpHostRuleCmt   = "nanotun:jump_fw"
 )
 
+// jumpFWExec 与 jumpFWOnLinux 是这套 ipset/iptables 编排仅有的两处外部依赖。抽成变量
+// 只为让编排本身可测:装出来的规则集长什么样、失败时回滚到哪一步 —— 这两件事判错都不会
+// 报错,只是受保护端口悄悄对全网敞开,或者反过来把本机锁在门外。真 iptables 在开发机上
+// 跑不了,而这段代码恰恰只在生产的 Linux 上执行。生产值就是 exec 与 runtime.GOOS。
+var (
+	jumpFWExec = func(name string, args ...string) ([]byte, error) {
+		return exec.Command(name, args...).CombinedOutput()
+	}
+	jumpFWOnLinux = func() bool { return runtime.GOOS == "linux" }
+)
+
+// jumpFWProbe 只关心命令成不成功(iptables -C / ipset list 这类存在性探测)。
+func jumpFWProbe(name string, args ...string) error {
+	_, err := jumpFWExec(name, args...)
+	return err
+}
+
 // jumpHostPortSpec 描述一个被 jump_host_firewall 保护的端口/段。
 //
 // C6_full(2026-05-22):之前只能保护单个 TCP 端口(默认 8080 / WSS gateway),
@@ -101,7 +118,7 @@ func (f *jumpHostFirewall) Replace(ips []string) error {
 	if !f.enabled {
 		return nil
 	}
-	if runtime.GOOS != "linux" {
+	if !jumpFWOnLinux() {
 		if atomic.CompareAndSwapUint32(&f.nonLinuxLogged, 0, 1) {
 			logrus.Warn("[server] jump_host_firewall 仅支持 Linux，已忽略")
 		}
@@ -115,13 +132,13 @@ func (f *jumpHostFirewall) Replace(ips []string) error {
 		logrus.Errorf("[server] jump_host_firewall 安装失败（已跳过本次刷新，避免误伤端口）: %v", err)
 		return fmt.Errorf("jump_host_firewall 安装失败(受保护端口当前**未**受限): %w", err)
 	}
-	if out, err := exec.Command("ipset", "flush", jumpHostIPSetName).CombinedOutput(); err != nil {
+	if out, err := jumpFWExec("ipset", "flush", jumpHostIPSetName); err != nil {
 		logrus.Errorf("[server] ipset flush %s: %v (%s)，尝试回滚防火墙规则", jumpHostIPSetName, err, strings.TrimSpace(string(out)))
 		f.rollbackJumpFirewallLocked()
 		return fmt.Errorf("ipset flush %s 失败,已回滚(受保护端口当前**未**受限): %w", jumpHostIPSetName, err)
 	}
 	for _, ip := range sanitized {
-		if out, err := exec.Command("ipset", "add", jumpHostIPSetName, ip).CombinedOutput(); err != nil {
+		if out, err := jumpFWExec("ipset", "add", jumpHostIPSetName, ip); err != nil {
 			logrus.Errorf("[server] ipset add %s %q: %v (%s)，尝试回滚（避免端口在空 ipset 下被全 DROP）", jumpHostIPSetName, ip, err, strings.TrimSpace(string(out)))
 			f.rollbackJumpFirewallLocked()
 			return fmt.Errorf("ipset add %s %q 失败,已回滚(受保护端口当前**未**受限): %w", jumpHostIPSetName, ip, err)
@@ -144,7 +161,7 @@ func (f *jumpHostFirewall) teardownImpl() {
 	if !f.enabled {
 		return
 	}
-	if runtime.GOOS != "linux" {
+	if !jumpFWOnLinux() {
 		return
 	}
 	f.mu.Lock()
@@ -169,13 +186,13 @@ func (f *jumpHostFirewall) removeJumpFirewallRulesLocked() {
 	// 防御性循环防止 iptables 同一规则被加多次时只删一次的边缘 case。
 	for _, spec := range f.protectedPorts {
 		inputRule := f.inputJumpRuleArgsFor(spec)
-		for exec.Command("iptables", append([]string{"-C", "INPUT"}, inputRule...)...).Run() == nil {
-			_ = exec.Command("iptables", append([]string{"-D", "INPUT"}, inputRule...)...).Run()
+		for jumpFWProbe("iptables", append([]string{"-C", "INPUT"}, inputRule...)...) == nil {
+			_, _ = jumpFWExec("iptables", append([]string{"-D", "INPUT"}, inputRule...)...)
 		}
 	}
-	_ = exec.Command("iptables", "-F", jumpHostChainName).Run()
-	_ = exec.Command("iptables", "-X", jumpHostChainName).Run()
-	_ = exec.Command("ipset", "destroy", jumpHostIPSetName).Run()
+	_, _ = jumpFWExec("iptables", "-F", jumpHostChainName)
+	_, _ = jumpFWExec("iptables", "-X", jumpHostChainName)
+	_, _ = jumpFWExec("ipset", "destroy", jumpHostIPSetName)
 }
 
 // inputJumpRuleArgsFor 给单个 spec 生成 iptables INPUT 跳转规则参数。
@@ -216,25 +233,25 @@ func (f *jumpHostFirewall) ensureInstalledLocked() error {
 			f.removeJumpFirewallRulesLocked()
 		}
 	}()
-	if exec.Command("ipset", "list", jumpHostIPSetName).Run() != nil {
-		out, err := exec.Command("ipset", "create", jumpHostIPSetName, "hash:ip", "family", "inet", "hashsize", "1024", "maxelem", "65536").CombinedOutput()
+	if jumpFWProbe("ipset", "list", jumpHostIPSetName) != nil {
+		out, err := jumpFWExec("ipset", "create", jumpHostIPSetName, "hash:ip", "family", "inet", "hashsize", "1024", "maxelem", "65536")
 		if err != nil {
 			return fmt.Errorf("ipset create: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
 	}
-	if exec.Command("iptables", "-L", jumpHostChainName, "-n").Run() != nil {
-		out, err := exec.Command("iptables", "-N", jumpHostChainName).CombinedOutput()
+	if jumpFWProbe("iptables", "-L", jumpHostChainName, "-n") != nil {
+		out, err := jumpFWExec("iptables", "-N", jumpHostChainName)
 		if err != nil {
 			return fmt.Errorf("iptables -N %s: %w (%s)", jumpHostChainName, err, strings.TrimSpace(string(out)))
 		}
 	}
-	_ = exec.Command("iptables", "-F", jumpHostChainName).Run()
+	_, _ = jumpFWExec("iptables", "-F", jumpHostChainName)
 	chainRuleA := []string{"-A", jumpHostChainName, "-m", "set", "--match-set", jumpHostIPSetName, "src", "-j", "ACCEPT"}
-	if out, err := exec.Command("iptables", chainRuleA...).CombinedOutput(); err != nil {
+	if out, err := jumpFWExec("iptables", chainRuleA...); err != nil {
 		return fmt.Errorf("iptables %v: %w (%s)", chainRuleA, err, strings.TrimSpace(string(out)))
 	}
 	chainRuleB := []string{"-A", jumpHostChainName, "-j", "DROP"}
-	if out, err := exec.Command("iptables", chainRuleB...).CombinedOutput(); err != nil {
+	if out, err := jumpFWExec("iptables", chainRuleB...); err != nil {
 		return fmt.Errorf("iptables %v: %w (%s)", chainRuleB, err, strings.TrimSpace(string(out)))
 	}
 	// 给每个 spec 安一条 INPUT 跳转规则。-I INPUT 1 让它们都放到最前,
@@ -242,9 +259,9 @@ func (f *jumpHostFirewall) ensureInstalledLocked() error {
 	// 已存在(-C 成功)则不重复 -I,保证幂等。
 	for _, spec := range f.protectedPorts {
 		inputArgs := f.inputJumpRuleArgsFor(spec)
-		if exec.Command("iptables", append([]string{"-C", "INPUT"}, inputArgs...)...).Run() != nil {
+		if jumpFWProbe("iptables", append([]string{"-C", "INPUT"}, inputArgs...)...) != nil {
 			insert := append([]string{"-I", "INPUT", "1"}, inputArgs...)
-			if out, err := exec.Command("iptables", insert...).CombinedOutput(); err != nil {
+			if out, err := jumpFWExec("iptables", insert...); err != nil {
 				return fmt.Errorf("iptables %v: %w (%s)", insert, err, strings.TrimSpace(string(out)))
 			}
 		}
