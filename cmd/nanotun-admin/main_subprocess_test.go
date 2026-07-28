@@ -59,9 +59,13 @@ func buildAdminBinary(t *testing.T) string {
 // runAdminBinary 跑一次二进制,返回退出码与合并输出。
 func runAdminBinary(t *testing.T, args ...string) (int, string) {
 	t.Helper()
+	// 先编再计时:见 nanotun-web 侧 runWebBinary 的同款说明 —— 60s 是给「跑一次 CLI」
+	// 的预算,不该包含整轮只做一次的编译。开了 -cover 时在 1 核机器上编一次要 ~3 分钟,
+	// 混在一起会让第一条子测试以 "context deadline exceeded" 假失败。
+	bin := buildAdminBinary(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, buildAdminBinary(t), args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = os.Environ()
 	if dir := os.Getenv(adminSubprocCoverDirEnv); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

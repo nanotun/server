@@ -266,9 +266,15 @@ func subprocEnv(t *testing.T, env []string) []string {
 // runWebBinary 跑一次二进制并等它自己退出,返回退出码与合并输出。
 func runWebBinary(t *testing.T, args []string, env []string, timeout time.Duration) (int, string) {
 	t.Helper()
+	// 先把二进制编出来,**再**开始计时。timeout 要约束的是「这次运行」,而
+	// buildWebBinary 是整轮只做一次的编译 —— 把它算进预算的话,第一个用到二进制的
+	// 用例就得替全部编译时间买单。开了 -cover 要插桩整个 module,在 1 核机器上编一次
+	// 要将近 3 分钟,于是那条用例以 "context deadline exceeded" 假失败,而它本来
+	// 只是想验一个退出码。
+	bin := buildWebBinary(t)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, buildWebBinary(t), args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = append(os.Environ(), subprocEnv(t, env)...)
 	out, err := cmd.CombinedOutput()
 	code := 0
