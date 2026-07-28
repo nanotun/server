@@ -53,10 +53,10 @@ func TestForwardPacketToExitNode_NilConnAndUnparsablePacket(t *testing.T) {
 	a.egressDeviceID.Store(77) // 已绑出口:确保不是被 egress==0 那条提前挡下的
 
 	for name, pkt := range map[string][]byte{
-		"空包":          {},
-		"只有一个字节":      {0x45},
+		"空包":           {},
+		"只有一个字节":       {0x45},
 		"声称是 v4 但不足头长": {0x45, 0, 0, 0, 0},
-		"版本号是 7":      append([]byte{0x75}, make([]byte, 30)...),
+		"版本号是 7":       append([]byte{0x75}, make([]byte, 30)...),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if forwardPacketToExitNode(a, pkt) {

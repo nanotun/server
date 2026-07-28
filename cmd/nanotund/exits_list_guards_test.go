@@ -177,8 +177,8 @@ func TestBuildExitsList_DBUnavailableListsNothing(t *testing.T) {
 func TestBuildExitsList_StaleConnStatesExcluded(t *testing.T) {
 	ctx := context.Background()
 	cases := map[string]func(t *testing.T, c *Connection){
-		"已被接管": func(t *testing.T, c *Connection) { c.takenOver.Store(true) },
-		"已被顶掉": func(t *testing.T, c *Connection) { c.superseded.Store(true) },
+		"已被接管":    func(t *testing.T, c *Connection) { c.takenOver.Store(true) },
+		"已被顶掉":    func(t *testing.T, c *Connection) { c.superseded.Store(true) },
 		"撤回了出口声明": func(t *testing.T, c *Connection) { c.advertisedExit.Store(false) },
 	}
 	for name, mark := range cases {
@@ -277,10 +277,10 @@ func TestIsRunningExitConn(t *testing.T) {
 		t.Fatal("在跑出口的会话应判为 true")
 	}
 	cases := map[string]func(*Connection){
-		"nil 会话":     nil, // 单独处理
-		"撤回了出口声明":    func(c *Connection) { c.advertisedExit.Store(false) },
-		"已被接管":       func(c *Connection) { c.takenOver.Store(true) },
-		"已被顶掉":       func(c *Connection) { c.superseded.Store(true) },
+		"nil 会话":      nil, // 单独处理
+		"撤回了出口声明":     func(c *Connection) { c.advertisedExit.Store(false) },
+		"已被接管":        func(c *Connection) { c.takenOver.Store(true) },
+		"已被顶掉":        func(c *Connection) { c.superseded.Store(true) },
 		"没有 deviceID": func(c *Connection) { c.deviceID = 0 },
 	}
 	for name, tweak := range cases {
