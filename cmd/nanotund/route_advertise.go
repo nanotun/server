@@ -233,8 +233,11 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 		// 已批准 → 它现在是「在线在跑的出口」,广播让出口下拉实时增项。DB 查不动(q=false)时不广播(待下次)。
 		approved, q := deviceHasApprovedExitRoute(dbCtx, c.deviceID)
 		// M2 豁免闸:只有**已确切查到且已批准**才允许该出口会话以非 vIP 源发包(见 connSourceSpoofed)。
-		// q=false(DB 查不动)时保守置 false —— 宁可对一个可能合法的出口多做一次 vIP 源校验(它以自身 vIP
-		// 作源的正常流量本就放行),也不放开一个未确证的豁免。
+		// q=false(DB 查不动)时**不改写**闸门,保留上次已知值 —— 与下面子网侧
+		// `subnetRouteTableLoaded()` 那条同一个哲学:一次 DB 抖动不该翻动豁免闸。
+		// 两个方向都别做:擅自打开是凭未确证的判断放开源地址校验;擅自关闭会把出口的 LAN 回程
+		// 流量(非自身 vIP 作源)当伪装丢掉,一次抖动换一段连接中断。新建会话零值即 false,
+		// 所以「从未确证过」的情形本来就是关着的。
 		if q {
 			c.advertisedExitApproved.Store(approved)
 		}
