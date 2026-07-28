@@ -18,10 +18,47 @@ import (
 	"fmt"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/nanotun/server/store"
 	"github.com/nanotun/server/util"
 )
+
+// awaitExitsBroadcast 等「撤回出口」触发的那条 `go broadcastExitsList` 落地。
+//
+// 两个作用。一是断言:出口撤回后必须**立刻**重算并推给所有 exit_allowed 会话,否则它们下拉里
+// 那台已经不转发的出口要留到下次上下线才消失,期间选中它就是黑洞。二是同步:那条 goroutine 会读
+// gatewayInstance,不等它就在 t.Cleanup 里把值改回去,是一个真实的 data race(-race 下必挂)。
+// 收到帧即证明读已完成 —— fake 的写在它自己的锁里,和这里的读构成 happens-before。
+func awaitExitsBroadcast(t *testing.T, watcher *routeFakeConn) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(watcher.bytes()) > 0 {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("等不到出口列表广播 —— 已撤回的出口会一直留在别人的下拉里,直到它下线")
+}
+
+// registerExitsWatcher 挂一条只用来收广播的 exit_allowed 会话。它**不是**宣告方,所以它的
+// fake 上只会出现广播帧,不会混进宣告方那条同步回的 route status 帧。
+func registerExitsWatcher(t *testing.T) *routeFakeConn {
+	t.Helper()
+	fake := &routeFakeConn{}
+	const sid = "exits-watcher"
+	w := &Connection{userID: "watcher", connIDStr: sid, linkConn: fake, exitAllowed: true}
+	connIDMapMu.Lock()
+	connIDMap[sid] = w
+	connIDMapMu.Unlock()
+	t.Cleanup(func() {
+		connIDMapMu.Lock()
+		delete(connIDMap, sid)
+		connIDMapMu.Unlock()
+	})
+	return fake
+}
 
 // exitAdvertiseFrame 造一帧 Exit=true 的宣告(MarshalRouteAdvertise 不带 Exit 字段)。
 func exitAdvertiseFrame(t *testing.T, routes []string) []byte {
@@ -163,9 +200,13 @@ func TestHandleRouteAdvertiseFrame_WithdrawalClearsExemptionGatesEvenIfDBFails(t
 				}
 			}
 			beforeFailed := routeAdvFailed.Load()
+			watcher := registerExitsWatcher(t)
 
 			body, _ := util.MarshalRouteAdvertise(nil)
 			handleRouteAdvertiseFrame(ctx, c, body)
+			// 即使删库失败也必须广播:撤回是客户端单方面的事实,账面删不掉不是别人下拉里
+			// 留着一台黑洞出口的理由。
+			awaitExitsBroadcast(t, watcher)
 
 			if breakDB && routeAdvFailed.Load() != beforeFailed+1 {
 				t.Fatal("删 pending 失败应记 routeAdvFailed(否则运维看不到账面不一致)")

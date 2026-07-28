@@ -375,6 +375,40 @@ stderr **空**,而紧接着的 `acl delete` 打了「ACL snapshot has been refre
 单线程单测开不出来 —— 要么给生产代码加一个纯为开窗存在的钩子。判据抽出来后至少
 「判据认不认这几种失效状态」钉住了,调用时序靠 e2e 里出口接管/重登那几条。
 
+后半轮接着补 `route_advertise.go`(49 → 17)与 MagicDNS 一家四个文件
+(`magic_dns.go` 93 → 42、`_exit.go` 36 → 19、`_cache.go` 30 → 12、`_intercept.go` 15 → 7),
+包覆盖 80.3% → 81.6%。这半轮的教训集中在**「用例形状对不对」**上,变异测试基本全是替我
+指出这一点:
+
+- **重名裁决必须绕开去重那道口子才测得到。** `lookupMagicHost` 对同名设备取 device_id
+  最小的那台,但 `UpsertDevice` 会给撞名的自动追 `-1`,走它根本造不出两台同名。得直写
+  SQL —— 而这恰好也是这段代码真正服务的场景:唯一性强制生效**之前**登记的存量重名。
+  断言还要跑多次,因为「取遍历顺序第一个」的实现会随两台机器 last_seen 的更新来回漂移。
+- **「返回了 cleanup」证不了「没起 listener」。** `startMagicDNS` 的六条 no-op 路径,
+  只断 cleanup 非 nil 的话,一个「非法 listen_addr 照样绑」的实现也能过 —— 而
+  `addr.IP=nil` 会被 `ListenUDP` 当成 `0.0.0.0`,把本该只在 TUN 上听的内网 DNS 摆到
+  所有网卡,包括公网口。改成调完立刻去 bind 那个端口:绑得上才说明真的没起。
+  「未启用」那条还得把端口显式写成探测端口 —— 留空会走默认 53,而「绑 53 需要 root」
+  会让「其实起了 listener」的实现**碰巧**也失败,用例就空过了。
+- **验「取最小」的用例里,几个值必须不相等。** `parseExitDNSResult` /
+  `parseRawDNSMeta` 都取答复区最小 TTL,原来的用例每条答复给同一个 TTL,于是取最大的
+  实现结果一样。改成 300/45/90 三条、最小值刻意放中间,顺带排除「取最后一条」。
+- **越界检查要在**足够长**的包上验。** `dnsQuestionEnd` 拒绝 question 段里的压缩指针;
+  短包里去掉这道检查,`0xc0` 会被当成长度 192、一步跨过包尾,照样落到「越界」那条
+  `return false` —— 两种实现结果相同。得给一个 220 字节的包、让指针跳到的位置恰好是
+  0 字节,缺检查的实现才会返回一个在界内的**假**偏移。
+
+两条判定为等价、不再追的:`tryResolvePublicViaExit` 里对 fail-closed 哨兵的显式判定
+(去掉后 `lookupRunningExitConnByDevice(-1)` 也查不到,结果相同 —— 它是可读性分支,
+不是唯一防线),以及拦截路径上关联端口的区间预筛(waiter 只可能登记在区间内,真正的
+门是那次 map 查找)。
+
+`route_advertise` 那半轮还暴露了一个**测试自身**的 data race:撤回出口会
+fire-and-forget 一条 `broadcastExitsList`,它读 `gatewayInstance`,而子测试的
+`t.Cleanup` 同时把值改回去。修法不是加 sleep,而是挂一条只收广播的 exit_allowed 会话、
+等那一帧到达 —— 既建立了 happens-before,又顺带把「撤回后必须立刻重算并推送」钉成
+断言(否则已撤回的出口要留在别人的下拉里直到它下线)。
+
 ## 单测这一侧的现状（2026-07-28 晚，Linux 实测）
 
 零覆盖函数已经清空，只剩三个 `main` —— 那三个各有子进程冒烟测试（`nanotund` 靠 e2e）。
