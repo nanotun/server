@@ -69,7 +69,7 @@ scripts/coverage/merge-coverage.py unit-linux.cov e2e.cov coverage-gaps.txt
 输出按包分「两边都覆盖 / 仅单测 / 仅 e2e / 都没有」四类。**只有「都没有」那一列
 才是真正该补的空白**，`coverage-gaps.txt` 里是精确到语句块的完整清单。
 
-## 三个坑（都踩过）
+## 四个坑（都踩过）
 
 **`GOCOVERDIR` 不能放 `/root`。** `nanotun.service` 和 `nanotun-web.service` 都开着
 `ProtectHome=yes`，`/root` 在它们的 mount namespace 里根本不存在，覆盖数据被静默拒写，
@@ -84,27 +84,62 @@ scripts/coverage/merge-coverage.py unit-linux.cov e2e.cov coverage-gaps.txt
 
 **改了源码，旧剖面就作废。** 合并是按 `文件:起止行.列` 匹配语句块的。哪怕只是在
 文件中间插入一个函数，其后所有行号位移，那个文件的 key 全部对不上，合并结果会把它
-整片误算成「仅单侧覆盖」。改完代码要两边重新采集，别拿旧剖面凑。
+整片误算成「仅单侧覆盖」。改完代码要两边重新采集，别拿旧剖面凑。校验很简单：两份
+`.cov` 的行数应当完全相同（当前是 11953）。
 
-## 基线（2026-07-27）
+**拼剖面的输出别落在 `*.cov` 的通配范围里。** `{ for f in $COV/*.cov; do tail -n +2
+$f; done; } > $COV/unit-linux.cov` 看着没问题，实际上输出文件自己也匹配那个通配，
+`tail` 读自己写自己，几分钟就把 23G 根分区写满了。更阴的是 `rm` 掉之后 `df` 还是
+100% —— 有个 `sftp-server` 还开着那个已删除的句柄，`du` 只算出 7G 而 `df` 报 23G，
+得 `lsof | grep deleted` 找出来杀掉才回收。输出放到 `$COV` 外面就没这事。
 
-全仓 18163 条语句，合并覆盖 **77.5%**，4078 条两边都没碰过。
+## 当前基线（2026-07-28）
+
+全仓 18182 条语句，合并覆盖 **84.8%**，2758 条两边都没碰过。
 
 | 包 | 总语句 | 两边 | 仅单测 | 仅 e2e | 都没有 | 合并覆盖 |
 |---|---:|---:|---:|---:|---:|---:|
-| `cmd/nanotund` | 7526 | 2803 | 1662 | 1506 | 1555 | 79.3% |
-| `cmd/nanotun-web` | 4524 | 1117 | 2360 | 111 | 936 | 79.3% |
-| `cmd/nanotun-admin` | 3001 | 643 | 1408 | 186 | 764 | 74.5% |
-| `store` | 1879 | 587 | 705 | 80 | 507 | 73.0% |
-| `util` | 675 | 145 | 302 | 88 | 140 | 79.3% |
-| `config` | 337 | 116 | 71 | 32 | 118 | 65.0% |
-| `auth` | 137 | 78 | 20 | 5 | 34 | 75.2% |
-| `certs` | 84 | 0 | 60 | 0 | 24 | 71.4% |
+| `config` | 337 | 148 | 189 | 0 | 0 | 100.0% |
+| `certs` | 84 | 0 | 77 | 0 | 7 | 91.7% |
+| `util` | 675 | 233 | 378 | 0 | 64 | 90.5% |
+| `cmd/nanotund` | 7545 | 3357 | 2226 | 955 | 1007 | 86.7% |
+| `cmd/nanotun-web` | 4524 | 1145 | 2543 | 101 | 735 | 83.8% |
+| `cmd/nanotun-admin` | 3001 | 791 | 1630 | 38 | 542 | 81.9% |
+| `store` | 1879 | 667 | 832 | 5 | 375 | 80.0% |
+| `auth` | 137 | 83 | 26 | 0 | 28 | 79.6% |
 
-「仅 e2e」合计 2008 条，是三机 e2e 不可替代的贡献。`cmd/nanotund` 尤其明显：单测在
-Linux 上只有 59.3%，加上 e2e 到 79.3%，其中 1506 条**只有**真实流量才触达得到。
+采集时 e2e 两轮共 138 项断言全过（113 + 25，拆成两次服务生命周期是为了绕开阶段 70
+的 `kill -9`，见下面第二个坑）。单测那一侧在 Linux 上跑，全仓 78.8%。
 
-采集这份基线时 e2e 三轮共 379 项断言全过（128 + 113 + 25 + 113，含重跑）。
+「仅 e2e」合计 1099 条。它主要是 `cmd/nanotund` 的 955 条 —— 启动期的 iptables /
+sysctl 编排、systemd 通知、出口守卫这些，单测结构上就摸不到。这一列比上一版
+（2008 条）少了，不是 e2e 退步了，是那部分代码现在单测也覆盖到了，从「仅 e2e」
+挪进了「两边」。
+
+### 与上一版（2026-07-27，77.5%）的差
+
+| | 上一版 | 现在 |
+|---|---:|---:|
+| 合并覆盖 | 77.5% | 84.8% |
+| 两边都没碰过 | 4078 | 2758 |
+| 全仓零覆盖函数 | 数十个 | 3 个（都是 `main`） |
+
+中间做的事记在下面「基线之后补掉的」表里。
+
+### 剩下的 2758 条在哪
+
+按文件排（完整清单在 `coverage-gaps.txt`，精确到语句块）：
+
+| 条数 | 文件 | 性质 |
+|---:|---|---|
+| 147 | `cmd/nanotund/server.go` | 大半是 `main` 的启动编排与 IO 错误分支 |
+| 102 | `cmd/nanotund/network_setup_linux.go` | 需要真 WAN 网卡 / 特定内核配置的分支 |
+| 68 | `store/web_admins.go` | 罕见的 DB 错误路径 |
+| 57 | `cmd/nanotund/magic_dns.go` | 上游超时、并发缓存竞争这类难构造的时序 |
+| 50 | `cmd/nanotun-admin/cmd_profile.go` | profile 导出的各种格式组合 |
+
+再往下是长尾，单文件都在 45 条以内。这些的共同点是「构造成本高、判错了会立刻报错
+而不是静默出错」—— 按下面「补空白的顺序」那三条筛，优先级都不高了。
 
 ## 补空白的顺序
 
@@ -159,24 +194,44 @@ Linux 上执行，开发机没有真 iptables、三机 e2e 也没开这个开关
 没有可观察差异；`teardownImpl` 的非 Linux 判断被 `installed` 标志盖住（非 Linux 上
 `installed` 恒为 false）；`Teardown` 的 `sync.Once` 同理。
 
-## 单测这一侧的现状（2026-07-28，macOS）
+## 单测这一侧的现状（2026-07-28，Linux）
 
 零覆盖函数已经清空，只剩三个 `main` —— 那是进程启动编排，用 e2e 覆盖比写单测划算。
 
-| 包 | 单测覆盖 | 零覆盖函数 |
-|---|---:|---|
-| `config` | 100.0% | 0 |
-| `util` | 90.5% | 0 |
-| `certs` | 91.7% | 0 |
-| `cmd/nanotun-web` | 81.5% | 只有 `main` |
-| `cmd/nanotun-admin` | 80.5% | 只有 `main` |
-| `store` | 79.8% | 0 |
-| `cmd/nanotund` | 78.8% | 只有 `main` |
-| `auth` | 78.8% | 0 |
+| 包 | Linux | macOS | 差额来自 |
+|---|---:|---:|---|
+| `config` | 100.0% | 100.0% | — |
+| `certs` | 91.7% | 91.7% | — |
+| `util` | 90.5% | 90.5% | — |
+| `cmd/nanotun-web` | 81.5% | 81.5% | `sysmon_linux.go` 已被测到 |
+| `cmd/nanotun-admin` | 80.7% | 80.5% | `db_holders_linux.go` |
+| `store` | 79.8% | 79.8% | — |
+| `auth` | 79.6% | 78.8% | argon2 并发路径 |
+| `cmd/nanotund` | **74.0%** | 78.8% | `network_setup_linux.go` 等 |
 
-这是 macOS 上的数字，不含 `*_linux.go`。要拿准数还是得按上面「一、单测这一侧」的
-办法在 Linux 上重采，再和 e2e 合并。
+只有 `cmd/nanotund` 两边差得明显：macOS 上 `*_linux.go` 根本不参与编译，那 700 多条
+语句既不进分子也不进分母。**报数要报 Linux 的那一列**，macOS 的数偏乐观。
+
+那些 Linux-only 的空白基本都被 e2e 接住了（合并后 `cmd/nanotund` 到 86.7%）：
+
+| 文件 | 单测 | 说明 |
+|---|---:|---|
+| `network_setup_linux.go` | 大部分 0% | 启动期 iptables / sysctl 编排，e2e 每次起服务都走 |
+| `iptables_sweep_linux.go` | 0% | 启动 sweep，阶段 70 专门验它 |
+| `sdnotify_linux.go` | 0% | 只在 systemd 下有意义 |
+| `exit_guard_linux.go` | 0% | 出口私网守卫，需要真 WAN 网卡 |
 
 为可测性动过的生产代码（都是薄壳/接缝，不改行为）：`cmd/nanotund/port_forward.go`
 的 `pfExec`（`ip route` / `iptables` 收进一个变量）、`cmd/nanotun-web/main.go` 的
 `sessionGCInterval`（原本硬编码 10 分钟，测不到清理体）、`auth` 侧的 `ResetForTest`。
+
+## 采集脚本
+
+`scripts/coverage/` 下三个脚本把上面的流程固化了：
+
+| 脚本 | 在哪跑 | 干什么 |
+|---|---|---|
+| `run-linux-unit.sh` | Linux 机 | 逐包跑交叉编译好的测试二进制，拼出 `unit-linux.cov` |
+| `deploy-instrumented.sh` | SRV | 换插桩二进制 + 接好 `GOCOVERDIR` + admin wrapper |
+| `restore-plain.sh` | SRV | 上一条的逆操作，采集完务必执行 |
+| `merge-coverage.py` | 本机 | 合并两侧，出四象限表和精确空白清单 |
