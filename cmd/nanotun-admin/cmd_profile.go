@@ -829,9 +829,14 @@ func attachIssuedHy2ClientCert(h *profileSchemaHy2, in buildProfileInput, caRelP
 	return nil
 }
 
+// profileRandRead 是 crypto/rand.Read 的测试接缝。CN 后缀是「这张 mTLS 证书出自哪次
+// issuance」的唯一线索,取不到随机数时必须整条失败,而不是退回固定后缀 —— 那样多次签发
+// 的证书在服务端审计日志里长得一模一样,吊销时分不清该吊哪张。
+var profileRandRead = rand.Read
+
 func hy2ClientCertCommonName(username string) (string, error) {
 	var b [4]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := profileRandRead(b[:]); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("vpnport-%s-%s", username, hex.EncodeToString(b[:])), nil

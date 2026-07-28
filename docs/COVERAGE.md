@@ -178,6 +178,13 @@ sysctl 编排、systemd 通知、出口守卫这些，单测结构上就摸不�
 | 13 | `store/web_admins*.go` 入参闸门 + DB 故障传播 | 97 条 → 12 条,store 79.8% → 84.3% | 33 抓 32,1 个等价 |
 | 14 | `store` 大头:`acl` / `leases` / `devices` / `users(+helper)` | 各自 21→2 / 27→5 / 40→10 / 49→6,store → 90.4% | 与 15 轮合并跑 |
 | 15 | `store` 尾巴:`migrations` / `canonicalize_vips` / `via6` / `subnet_routes` / `rate_settings` / `audit` / `port_forwards` / `server_id` / `sqlite` | store 90.4% → **95.4%**,未覆盖 86 条 | 61 抓 57 → 收紧断言后 5/5 全抓 |
+| 16 | `cmd/nanotun-web` 登录入口:`handler_auth.go` 的拒绝面 | 94 条 → 19 条 | 20 抓 20 |
+| 17 | `handler_me.go`(自助改密 / TOTP 绑定) | 77 条 → 11 条 | — |
+| 18 | `handler_users.go` + `handler_admins.go` | 66→4 / 55→0 | 36 抓 36 |
+| 19 | `handler_server_qr.go` / `handler_devices.go` / `handler_routes.go` | 65→2 / 56→0 / 59→4 | 65 抓 65 |
+| 20 | web 零散块:`handler_misc` / `portforward` / `tls_cert` / `session` / `acl` / `control_client` / `config` / `render` / `captcha` / `pow` / `totp` / `ip_failures` | web 80.2% → 96.8% | — |
+| 21 | `cmd/nanotun-web/main.go` 启动编排(含子进程冒烟) | 107 条 → 少数 | — |
+| 22 | `cmd/nanotun-admin` 全面收口(见下节) | 80.5% → **96.7%**,未覆盖 98 条 | 35 抓 34,1 条无法确定性构造 |
 
 第 14/15 轮把 `store` 从 79.8% 推到 95.4%(未覆盖 86 / 1879 条)。剩下的基本进不去:驱动层的
 `LastInsertId()` / `Commit()` / `RowsAffected()` 失败、`listMigrations` 对 embed FS 的防御分支
@@ -252,6 +259,49 @@ sysctl 编排、systemd 通知、出口守卫这些，单测结构上就摸不�
 `forwardPacketToSubnetRoute` / `forwardPacketToExitNode` / `serverSelfEgressV6FastFail`
 的 true 分支，这四个函数各有专门用例，从 readLoop 再走一遍是重复劳动。
 
+### 第 22 轮:`cmd/nanotun-admin`(80.5% → 96.7%)
+
+CLI 的坏法与 handler 不同:它没有 HTTP 状态码,只有**退出码 + 两条流**。所以这一轮的
+断言几乎都围绕三件事:
+
+- **退出码不许随环境漂移**。`kick user`(参数敲错)在 server 可达与不可达时都必须是 2。
+  此前有几条命令先拨 control socket 再校验参数,于是「用法错」被报成「连不上」(exit 1),
+  脚本没法判断。
+- **落库 ≠ 生效**。ACL / 限速 / mesh 这些键都缓存在 server 内存快照里,不通知就只是改了行 DB。
+  这一轮在 `acl add --json` 上抓到一个真缺陷:`--json` 分支直接 return,把通知 server、
+  reload 提示、缺回程告警一并跳过 —— 脚本化加规则拿到一条「已创建」的 JSON,而数据面
+  的 ACL 快照从没刷过,规则静默不生效;同一文件里的 `acl del` 反倒一直通知,两条路口径相反。
+  修法是把通知/提示移出分叉(它们全走 stderr,不污染 `--json` 的机器可读 stdout)。
+- **确定性的输出失败必须发生在落库之前**。`credentials --rotate-psk` 一旦落库,旧 PSK 立刻作废;
+  之后才发现 `--output` 的目录不存在 = PSK 已换、明文从未交付,用户当场断连而运维手里也没有新密钥。
+  `preflightCredentialsOutput` 的每一条判定都对着这个不变量。
+
+故障注入这一侧新加了两个手法:
+
+- **只挡一个 key 的写**(`abortSettingWrite`)。整表挡 `app_settings` 的 INSERT 会先把
+  migration 挡掉 —— 命令在到达被测那行之前就 exit 1,用例照样"通过",但验的其实是
+  migration 失败。这正是 `init` 的 `setup_completed` 那条变异逃逸的原因。
+- **放宽 NOT NULL 后塞 NULL**(`relaxAppSettingsValue`)。`SettingsGet` 往 `string` 扫会报错,
+  这是模拟「真·读故障」的唯一办法 —— 与「这个 key 没设过」(`ok=false`,不是 error)是两回事。
+  `route approve` 读不出 mesh 网段时必须**拒**(交叠检查是 fail-closed)就是靠它验的。
+
+为可测性动的生产代码只有一处接缝:`cmd_setting.go` 把 DNS 与 ICMP 探测收进
+`probeLookupIPAddr` / `probeDialHost` 两个包级变量。`probe-dial-host` 的价值全在
+**结果分类**(DNS 硬错 / 无记录 / 解到不可拨的特殊地址 / ICMP 软失败)上,而真去查网络
+会让用例随宿主网络红绿漂移。
+
+`main()` 本体(读 `os.Args`、`os.Exit`)照 `nanotun-web` 的路数用子进程冒烟测试覆盖:
+设了 `NANOTUN_SUBPROC_COVERDIR` 就用 `go build -cover` 编,计数落进 `GOCOVERDIR` 并进合并账。
+
+剩下的 98 条基本进不去,分三类:`crypto/rand` / `json.Marshal` 一个固定结构失败这类
+「机器已经坏了」的分支;`copyFileAtomic` 的 `Chmod`/`Sync`/`Close` 失败(要一个写满的
+文件系统);以及**代码里就走不到的空分支** —— `confirm()` 永远返回 `nil` error、
+`openProfileOutput()` 的 error 恒为 `nil`,它们的 `if err != nil` 判断有六七处调用点,
+真正该做的是把这两个函数的签名收掉,不是给它们编测试。
+
+唯一一条抓不住的变异是 `writeFileTight` 里 `os.Link` 换成 `os.Rename`:两者只在
+「Lstat 与落盘之间被抢建」这个 race 窗口里有区别,没有可移植的确定性测法。它靠注释与 review 守。
+
 第 5 轮为了可测性动了生产代码：`jump_host_firewall.go` 里所有 `exec.Command` 与
 `runtime.GOOS` 判断收进 `jumpFWExec` / `jumpFWOnLinux` 两个变量。这段编排只在生产的
 Linux 上执行，开发机没有真 iptables、三机 e2e 也没开这个开关，所以「装出来的规则集
@@ -260,20 +310,27 @@ Linux 上执行，开发机没有真 iptables、三机 e2e 也没开这个开关
 没有可观察差异；`teardownImpl` 的非 Linux 判断被 `installed` 标志盖住（非 Linux 上
 `installed` 恒为 false）；`Teardown` 的 `sync.Once` 同理。
 
-## 单测这一侧的现状（2026-07-28，Linux）
+## 单测这一侧的现状（2026-07-28，第 22 轮后）
 
-零覆盖函数已经清空，只剩三个 `main` —— 那是进程启动编排，用 e2e 覆盖比写单测划算。
+零覆盖函数已经清空，只剩三个 `main` —— 那三个各有子进程冒烟测试（`nanotund` 靠 e2e）。
 
-| 包 | Linux | macOS | 差额来自 |
+| 包 | macOS | Linux（上次实测） | 差额来自 |
 |---|---:|---:|---|
 | `config` | 100.0% | 100.0% | — |
+| `cmd/nanotun-web` | **97.4%** | 待重采 | `sysmon_linux.go` 已被测到 |
+| `cmd/nanotun-admin` | **96.7%** | 待重采 | `db_holders_linux.go` |
+| `store` | 95.4% | 95.4% | 第 13–15 轮补完,见上表 |
 | `certs` | 91.7% | 91.7% | — |
 | `util` | 90.5% | 90.5% | — |
-| `cmd/nanotun-web` | 81.5% | 81.5% | `sysmon_linux.go` 已被测到 |
-| `cmd/nanotun-admin` | 80.7% | 80.5% | `db_holders_linux.go` |
-| `store` | 95.4% | 95.4% | 第 13–15 轮补完,见上表 |
-| `auth` | 79.6% | 78.8% | argon2 并发路径 |
-| `cmd/nanotund` | **74.0%** | 78.8% | `network_setup_linux.go` 等 |
+| `auth` | 78.8% | 79.6% | argon2 并发路径 |
+| `cmd/nanotund` | 78.8% | **74.0%** | `network_setup_linux.go` 等 |
+
+web / admin 两个包的 Linux 列还是第 20 轮之前的数（81.5% / 80.7%），第 16–22 轮补的
+全是平台无关代码，Linux 上应当同幅上涨，但**报数前要按上面的流程重采**。
+
+跑全量回归时注意 `-race` 下 `cmd/nanotun-web` 要 **12 分钟**（子进程编译 + 探测等待），
+超过 `go test` 默认的 10 分钟 timeout。用 `go test ./... -race -timeout 25m`，
+否则会看到一个纯粹由 timeout 造成的假失败。
 
 只有 `cmd/nanotund` 两边差得明显：macOS 上 `*_linux.go` 根本不参与编译，那 700 多条
 语句既不进分子也不进分母。**报数要报 Linux 的那一列**，macOS 的数偏乐观。

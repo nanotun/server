@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha1"
 	"crypto/subtle"
 	"encoding/base32"
@@ -66,7 +65,7 @@ const (
 // 重试,不要兜底用伪随机 — TOTP secret 一旦弱随机,就被时间空间内全部 6 位码暴力。
 func GenerateTOTPSecret() (string, error) {
 	raw := make([]byte, totpSecretLen)
-	if _, err := rand.Read(raw); err != nil {
+	if _, err := randRead(raw); err != nil {
 		return "", fmt.Errorf("totp: rand: %w", err)
 	}
 	// NoPadding 是 RFC 6238 + Google Authenticator 都接受的格式;但有些老 app
@@ -243,7 +242,7 @@ func GenerateRecoveryCodes() (plain []string, hashes []string, err error) {
 	hashes = make([]string, 0, recoveryCodeCount)
 	for i := 0; i < recoveryCodeCount; i++ {
 		raw := make([]byte, recoveryCodeRawBytes)
-		if _, err := rand.Read(raw); err != nil {
+		if _, err := randRead(raw); err != nil {
 			return nil, nil, fmt.Errorf("totp: recovery rand: %w", err)
 		}
 		// base32 5 bytes = 8 字符(无 padding);切成 4-4 用 '-' 分组方便手抄。

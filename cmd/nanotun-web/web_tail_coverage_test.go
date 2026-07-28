@@ -110,13 +110,20 @@ func TestRunSessionGC_ActuallyPrunesAndStopsWithTheContext(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); s.runSessionGC(gctx) }()
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := s.store.GetWebSession(ctx, deadSID); err != nil {
-			break
+	// 用直查行数而不是 GetWebSession 判断:后者对过期会话本来就报「找不到」,
+	// 拿它当判据的话,一个从不清扫的 GC 也能过测 —— 而那正是表无界增长的样子。
+	rowStillThere := func() bool {
+		var n int
+		if err := s.store.DB().QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM web_sessions WHERE id = ?`, deadSID).Scan(&n); err != nil {
+			t.Fatalf("查会话行: %v", err)
 		}
+		return n > 0
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for rowStillThere() {
 		if time.Now().After(deadline) {
-			t.Fatal("等了 5 秒过期会话还在 —— GC 循环没真的跑清理")
+			t.Fatal("等了 5 秒过期会话的行还在 —— GC 循环没真的删库里的行")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

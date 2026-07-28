@@ -51,6 +51,15 @@ const (
 	stepUpMaxFailures = 5
 )
 
+// probeServerDialHost 是 [store.ProbeServerDialHost] 的间接层,只为可测性,生产行为不变。
+//
+// 拨测的结果取决于 DNS、ICMP 权限和对端 firewall:沙箱里既慢(每个不通的地址要等
+// ping 超时)又不稳定,而「四种拨测结果 × 勾没勾 skip_probe」这张分流表恰恰是本
+// handler 最容易改错的地方 —— 尤其 default 那条未分类分支:真实 Probe 只会返回 DNS 或
+// ICMP 两个哨兵,那条分支在生产里根本走不到,却决定了「将来 Probe 多返回一种错时,
+// 是默认放行还是默认拦下」。留一个只在测试里被替换的接缝,把这张表整体钉住。
+var probeServerDialHost = store.ProbeServerDialHost
+
 // handleServerQR 是 GET /server-qr 的密码输入页面。
 //
 // 已登录用户访问,显示一个 password input 表单 + 警告说明。
@@ -609,7 +618,7 @@ func (s *Server) handleSettingsServerDialHostSet(w http.ResponseWriter, r *http.
 		// 域名上必触发 parent ctx DeadlineExceeded → 503 假阴性。20s 给运维余地,
 		// admin 在浏览器上等 ≤20s 拿真实结果,远好于"看到 503 不知道是地址还是系统"。
 		probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		perr := store.ProbeServerDialHost(probeCtx, newHost)
+		perr := probeServerDialHost(probeCtx, newHost)
 		cancel()
 		// literal IP 路径在 ProbeServerDialHost 内部不走 DNS lookup(直接 pingOnce),
 		// 用 [store.ParseLiteralIP] 唯一来源(剥 `[]` 再 ParseIP),避免 bracket

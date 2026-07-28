@@ -23,7 +23,12 @@ import (
 //     登录爆破的 RAM 消耗封顶。
 
 // HashWebPassword 与 auth.HashPSK 等价,仅为可读性保留独立名字。
-func HashWebPassword(plaintext string) (string, error) {
+//
+// 写成变量而非函数只为可测性(同 credentials_flash.go 的 flashGenerateToken):hash 失败
+// 只可能来自 crypto/rand 故障,而它触发的分支上「不许留下半成品账号 / 不许把空 hash 写进库」
+// 是必须钉住的不变量 —— 空 hash 落库等于该账号任何密码都验不过(或更糟,取决于 verify 实现)。
+// 生产路径行为不变。
+var HashWebPassword = func(plaintext string) (string, error) {
 	return auth.HashPSK(plaintext)
 }
 

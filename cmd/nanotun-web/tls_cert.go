@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -30,6 +31,14 @@ import (
 //
 // 生产环境推荐前置 nginx/caddy + Let's Encrypt,把本进程绑 127.0.0.1:7443,
 // 让反向代理处理 TLS。本函数提供的 self-signed 适合 dev + 内网。
+
+// certRand 是自签证书生成过程用的随机源,写成变量只为可测性,生产恒为 rand.Reader。
+//
+// 密钥生成 / 序列号 / 签名这三步都取随机数,任一步失败都必须「一个文件都不留」——
+// 半个证书目录会让下次启动撞上「半残目录」而拒绝起服务(见 ensureTLSCert),
+// 更糟的是留下一把无对应证书的私钥。真实的 crypto/rand 故障没法在测试里制造,
+// 没有这个接缝就无法验证这条不变量。
+var certRand io.Reader = rand.Reader
 
 const (
 	certFileName = "cert.pem"
@@ -134,11 +143,11 @@ func collectSANs(extra []string) []string {
 }
 
 func generateSelfSignedCert(certPath, keyPath string, sans []string) error {
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), certRand)
 	if err != nil {
 		return fmt.Errorf("generate ecdsa key: %w", err)
 	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	serial, err := rand.Int(certRand, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return fmt.Errorf("rand serial: %w", err)
 	}
@@ -172,7 +181,7 @@ func generateSelfSignedCert(certPath, keyPath string, sans []string) error {
 		}
 	}
 
-	derBytes, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	derBytes, err := x509.CreateCertificate(certRand, tmpl, tmpl, &priv.PublicKey, priv)
 	if err != nil {
 		return fmt.Errorf("create certificate: %w", err)
 	}

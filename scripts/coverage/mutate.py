@@ -3,7 +3,9 @@
 
 变异清单写在一个 JSON 文件里,每项:
   {"desc": "...", "file": "store/web_admins.go", "old": "...", "new": "...",
-   "nth": 0, "test": "./store/"}
+   "nth": 0, "test": "./store/", "run": "TestFoo|TestBar"}
+
+"run" 可选,把该条变异的验证收窄到相关用例(整包跑三十条变异要一小时)。填写时宁宽勿窄。
 
 nth 是当 old 在文件里出现多次时选第几个(默认 0)。逃逸(测试照过)的项会被单独列出——
 那说明这段逻辑虽然被执行过,但没有任何断言真正检查它的结果。
@@ -46,9 +48,13 @@ def main():
             print(f"[{i}/{len(muts)}] 找不到锚点,跳过: {desc}", flush=True)
             continue
         try:
-            proc = subprocess.run(
-                ["go", "test", m.get("test", "./..."), "-count=1", "-timeout", timeout],
-                capture_output=True, text=True)
+            cmd = ["go", "test", m.get("test", "./..."), "-count=1", "-timeout", timeout]
+            # 可选 "run":把这条变异的验证收窄到相关用例上。整包跑一轮动辄一两分钟,
+            # 三十条变异就是一小时;收窄后是分钟级。填写时要**宁宽勿窄** —— 漏掉真正
+            # 会抓住它的用例会得出"逃逸"的假结论。
+            if m.get("run"):
+                cmd += ["-run", m["run"]]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode == 0:
                 escaped.append(desc)
                 mark = "逃逸 ✗"

@@ -3,14 +3,12 @@ package main
 import (
 	"bytes"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"html/template"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -105,7 +103,7 @@ var flashHMACKey = mustRandomKey(32)
 
 func mustRandomKey(n int) []byte {
 	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := randRead(b); err != nil {
 		panic("nanotun-web: 初始化 flash hmac key 失败: " + err.Error())
 	}
 	return b
@@ -468,7 +466,7 @@ func netHostnameOrLocal() (string, error) {
 }
 
 func netLookupSelf() (string, error) {
-	addrs, err := net.LookupAddr("127.0.0.1")
+	addrs, err := lookupAddrOS("127.0.0.1")
 	if err != nil {
 		return "", err
 	}

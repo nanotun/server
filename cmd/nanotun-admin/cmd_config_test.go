@@ -91,26 +91,45 @@ func TestConfigLint_MissingFile_Exit1(t *testing.T) {
 }
 
 // e_config_lint:语义非法的配置(字段名都对、值不合法)以前会误报 OK。现应 exit 3。
+//
+// 每条 fixture 都要带 wantErr —— lintSemantic 是一串顺序 return,只断言 exit 3 会让用例
+// 空过:第十六轮加进来的 ValidateTUNSubnets(「subnets 与 subnets6 皆空 → 启动 Fatal」)排在
+// pow / TLS / 跳板机三条之前,而这些 fixture 原本都不带 [tun] 段 —— 于是它们全在 subnets
+// 那一步就退出了,pow_difficulty_out_of_range 之类根本没验到 pow。下面的 fixture 一律自带
+// [tun],并按报错内容钉住「是哪条校验拦下的」。
 func TestConfigLint_SemanticInvalid_Exit3(t *testing.T) {
-	cases := map[string]string{
-		"negative_rate": `
+	const validTUN = "\n[tun]\nsubnets = [\"10.201.0.0/16\"]\n"
+	cases := map[string]struct {
+		cfg string
+		// wantErr 是 stderr 里必须出现的片段,用来钉住「拦下它的是哪条校验」。
+		wantErr string
+	}{
+		"negative_rate": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 upload_rate = -1
-`,
-		"bad_cidr": `
+`, wantErr: "upload_rate"},
+		"bad_cidr": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 [tun]
 subnets = ["not-a-cidr"]
-`,
-		"bad_exit_mode": `
+`, wantErr: "not-a-cidr"},
+		"bad_exit_mode": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 [tun]
+subnets = ["10.201.0.0/16"]
 exit_mode = "isolat"
-`,
-		"hy2_out_of_range": `
+`, wantErr: "exit_mode"},
+		// hy2 三件套只配了 password:runtime 起不了 hy2 监听,而 lint 从前不看。
+		"hy2_credentials_half_set": {cfg: `
+[server]
+listen_addr = "0.0.0.0:443"
+[hysteria]
+password = "0123456789abcdef01"
+`, wantErr: "tls_cert_file"},
+		"hy2_out_of_range": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 [hysteria]
@@ -118,80 +137,163 @@ password = "0123456789abcdef01"
 tls_cert_file = "/tmp/c.pem"
 tls_key_file = "/tmp/k.pem"
 mtu = 100
-`,
-		// 第七轮深扫 MED:以下四条都是启动期 Fatal(ExitConfigSemantic)但 lint 从前漏查的。
+`, wantErr: "mtu"},
+		// REALITY 启用(listen_addr 非空)但 private_key 缺:握手起不来。
+		"reality_missing_key": {cfg: `
+[server]
+listen_addr = "0.0.0.0:443"
+[reality]
+listen_addr = ":8443"
+dest = "www.microsoft.com:443"
+server_names = ["www.microsoft.com"]
+`, wantErr: "reality"},
+		// exit_dns_redirect 拼错("of"):runtime 会静默回退 auto —— 想关 DNS 接管反而打开了。
+		"bad_exit_dns_redirect": {cfg: `
+[server]
+listen_addr = "0.0.0.0:443"
+[tun]
+subnets = ["10.201.0.0/16"]
+exit_dns_redirect = "of"
+`, wantErr: "exit_dns_redirect"},
+		"bad_exit_deny_private": {cfg: `
+[server]
+listen_addr = "0.0.0.0:443"
+[tun]
+subnets = ["10.201.0.0/16"]
+exit_deny_private = "link-loca"
+`, wantErr: "exit_deny_private"},
+		// subnets 与 subnets6 皆空 → 启动期 Fatal。
+		"tun_subnets_all_empty": {cfg: `
+[server]
+listen_addr = "0.0.0.0:443"
+`, wantErr: "subnets"},
+		// 第七轮深扫 MED:以下都是启动期 Fatal(ExitConfigSemantic)但 lint 从前漏查的。
 		// PoW 难度越界(30 > 上限 22)。
-		"pow_difficulty_out_of_range": `
+		"pow_difficulty_out_of_range": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 [server.pow]
 base_difficulty = 30
-`,
+`, wantErr: "difficulty"},
 		// PoW 顺序倒置:ramp(8) < base(10),自适应升级失效。
-		"pow_order_inverted": `
+		"pow_order_inverted": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 [server.pow]
 base_difficulty = 10
 ramp_difficulty = 8
-`,
+`, wantErr: "ramp_difficulty"},
 		// [server] TLS 半配:只填 cert 不填 key,HTTPS/WSS 监听起不来。
-		"server_tls_half_set": `
+		"server_tls_half_set": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 tls_cert_file = "/tmp/c.pem"
-`,
+`, wantErr: "tls_key_file"},
 		// jump_host_firewall 开启却空名单 = 全网开放陷阱。
-		"jump_host_no_allowed_ips": `
+		"jump_host_no_allowed_ips": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 jump_host_firewall = true
-`,
+`, wantErr: "jump_host_allowed_ips"},
 		// 第七轮:jump_host_protected_ports 拼错(proto 写成 "tc")→ runtime 会静默跳过 → 漏保护。
-		"jump_host_protected_ports_typo": `
+		"jump_host_protected_ports_typo": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 jump_host_firewall = true
 jump_host_allowed_ips = ["10.0.0.1"]
 jump_host_protected_ports = ["tc/8443", "udp/443"]
-`,
+`, wantErr: "jump_host_protected_ports"},
 		// 第十四轮深扫 LOW(为第十三轮 ValidateJumpHostFirewall 逐条 IPv4 校验补 lint 回归):
 		// allowed_ips 含非法条目(runtime sanitizeJumpHostIPv4s 会静默丢弃 → 预期跳板机被挡死)。
-		"jump_host_allowed_ips_not_ip": `
+		"jump_host_allowed_ips_not_ip": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 jump_host_firewall = true
 jump_host_allowed_ips = ["10.0.0.1", "not-an-ip"]
-`,
+`, wantErr: "not-an-ip"},
 		// allowed_ips 只支持纯 IPv4:CIDR 不认(runtime 会丢)。
-		"jump_host_allowed_ips_cidr": `
+		"jump_host_allowed_ips_cidr": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 jump_host_firewall = true
 jump_host_allowed_ips = ["10.0.0.0/24"]
-`,
+`, wantErr: "10.0.0.0/24"},
 		// allowed_ips 只支持 IPv4:IPv6 不认(runtime 会丢)。
-		"jump_host_allowed_ips_ipv6": `
+		"jump_host_allowed_ips_ipv6": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 jump_host_firewall = true
 jump_host_allowed_ips = ["fd00::1"]
-`,
+`, wantErr: "fd00::1"},
 		// allowed_ips 全空白项 → 有效项为 0,等于只允许 127.0.0.1 → 预期跳板机被挡死。
-		"jump_host_allowed_ips_all_blank": `
+		"jump_host_allowed_ips_all_blank": {cfg: `
 [server]
 listen_addr = "0.0.0.0:443"
 jump_host_firewall = true
 jump_host_allowed_ips = ["  ", ""]
-`,
+`, wantErr: "jump_host_allowed_ips"},
 	}
-	for name, cfg := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			cfg := tc.cfg
+			// 除了专门测 subnets 的那条,其余都补一段合法 [tun] —— 否则 ValidateTUNSubnets
+			// 会先把它们拦掉,后面几条校验一次都走不到,用例变成空过。
+			if !strings.Contains(cfg, "[tun]") && name != "tun_subnets_all_empty" {
+				cfg += validTUN
+			}
 			code, _, errMsg := runConfigLint(t, writeTOML(t, cfg))
 			if code != 3 {
 				t.Fatalf("语义非法配置应 exit 3, got %d, stderr=%q", code, errMsg)
 			}
+			if !strings.Contains(errMsg, tc.wantErr) {
+				t.Fatalf("报错里没提 %q —— 可能是被别的校验先拦下了,这条其实没验到:\n%s",
+					tc.wantErr, errMsg)
+			}
 		})
+	}
+}
+
+// config lint 的用法门:参数个数不对时给 usage + exit 2,而不是拿第一个参数硬试。
+func TestConfigLint_ArityGuard(t *testing.T) {
+	p := writeTOML(t, "[server]\nlisten_addr = \"0.0.0.0:443\"\n[tun]\nsubnets = [\"10.201.0.0/16\"]\n")
+	for _, args := range [][]string{
+		{"lint"},
+		{"lint", p, p},
+	} {
+		code, _, stderr := func() (int, string, string) {
+			var stdout, errb bytes.Buffer
+			opts := &globalOpts{stdout: &stdout, stderr: &errb, lang: langZH}
+			return cmdConfig(opts, args), stdout.String(), errb.String()
+		}()
+		if code != 2 {
+			t.Errorf("config %v 应 exit 2, got %d", args, code)
+		}
+		if !strings.Contains(stderr, "config lint") {
+			t.Errorf("config %v 没给出 usage: %q", args, stderr)
+		}
+	}
+}
+
+// config 的派发门:不给子命令 / 未知子命令 → exit 2 + usage;help → exit 0。
+func TestCmdConfig_Dispatch(t *testing.T) {
+	run := func(args ...string) (int, string, string) {
+		var stdout, errb bytes.Buffer
+		opts := &globalOpts{stdout: &stdout, stderr: &errb, lang: langZH}
+		return cmdConfig(opts, args), stdout.String(), errb.String()
+	}
+
+	if code, _, stderr := run(); code != 2 || strings.TrimSpace(stderr) == "" {
+		t.Errorf("不给子命令: code=%d stderr=%q", code, stderr)
+	}
+	if code, _, stderr := run("check"); code != 2 {
+		t.Errorf("未知子命令: code=%d stderr=%q", code, stderr)
+	} else if !strings.Contains(stderr, "check") {
+		t.Errorf("未知子命令没回显敲错的那个词: %q", stderr)
+	}
+	for _, h := range []string{"help", "-h", "--help"} {
+		if code, stdout, _ := run(h); code != 0 || strings.TrimSpace(stdout) == "" {
+			t.Errorf("config %s: code=%d stdout=%q", h, code, stdout)
+		}
 	}
 }
 

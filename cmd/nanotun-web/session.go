@@ -61,6 +61,16 @@ const (
 	pending2FATTLSec     = int64(5 * 60)
 )
 
+// randRead 是 crypto/rand.Read 的间接层,只为可测性,生产行为不变。
+// session / pending-2FA / captcha / PoW / TOTP 这几处的随机数生成共用它。
+//
+// 每一处随机数失败都通往一条「不许静默降级」的分支:四个 HMAC key 生成失败必须
+// panic —— 全零 key 意味着任何人都能伪造 pending-2FA / captcha / PoW / CSRF token;
+// session id、pending nonce、TOTP secret、恢复码生成失败必须让整个操作失败 ——
+// 半截或空凭据会把「未鉴权」变成「已登录」,或造出一个谁都能算出码的 TOTP。
+// 这些分支在生产里几乎不会走到,却是安全性的地基,没有接缝就无从验证。
+var randRead = rand.Read
+
 // SessionService 包装 session 管理操作。零依赖 net/http,handler 用之。
 type SessionService struct {
 	store        *store.Store
@@ -122,19 +132,19 @@ type SessionService struct {
 // TOTP 启用了的 admin 将永远登不上,直接拉警报让运维知道。
 func NewSessionService(st *store.Store, cfg Config) *SessionService {
 	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
+	if _, err := randRead(key); err != nil {
 		panic("nanotun-web: 无法初始化 pending hmac key: " + err.Error())
 	}
 	capKey := make([]byte, 32)
-	if _, err := rand.Read(capKey); err != nil {
+	if _, err := randRead(capKey); err != nil {
 		panic("nanotun-web: 无法初始化 captcha hmac key: " + err.Error())
 	}
 	powKey := make([]byte, 32)
-	if _, err := rand.Read(powKey); err != nil {
+	if _, err := randRead(powKey); err != nil {
 		panic("nanotun-web: 无法初始化 pow hmac key: " + err.Error())
 	}
 	csrfKey := make([]byte, 32)
-	if _, err := rand.Read(csrfKey); err != nil {
+	if _, err := randRead(csrfKey); err != nil {
 		panic("nanotun-web: 无法初始化 csrf hmac key: " + err.Error())
 	}
 	return &SessionService{
@@ -322,7 +332,7 @@ func (s *SessionService) IssueTOTPPending(w http.ResponseWriter, adminID int64, 
 		return errors.New("pending2fa: bad admin id")
 	}
 	nonce := make([]byte, 16)
-	if _, err := rand.Read(nonce); err != nil {
+	if _, err := randRead(nonce); err != nil {
 		return err
 	}
 	exp := nowUnix() + pending2FATTLSec
@@ -557,7 +567,7 @@ func generateRandomToken(n int) (string, error) {
 		return "", errors.New("token length must > 0")
 	}
 	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := randRead(buf); err != nil {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil

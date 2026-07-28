@@ -91,6 +91,15 @@ type sysmonDataResp struct {
 	VPNError  string `json:"vpn_error,omitempty"`
 }
 
+// sysmonSample 是 collectSysmonSnapshot 的间接层,只为可测性,生产行为不变。
+//
+// 采样失败分两类,handler 对它们的处置不同:ErrSysmonUnsupported(非 Linux)是
+// 「本来就没有」,静默给一句说明;其余错误(/proc 读不动、cgroup 布局意外)是
+// 「本该有却拿不到」,除了回错误横幅还要打 warn 日志留痕。而采样结果由宿主机
+// 内核决定 —— 在 Linux 上它总成功,在 macOS 上又总是 unsupported,没有任何
+// 外部输入能让它给出「第三类错误」。留这个接缝,测试才能验证那条分支确实存在。
+var sysmonSample = collectSysmonSnapshot
+
 func (s *Server) handleSysmonData(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -105,7 +114,7 @@ func (s *Server) handleSysmonData(w http.ResponseWriter, r *http.Request) {
 		TimestampMS: time.Now().UnixMilli(),
 	}
 
-	host, hostErr := collectSysmonSnapshot()
+	host, hostErr := sysmonSample()
 	if hostErr != nil {
 		if errors.Is(hostErr, ErrSysmonUnsupported) {
 			resp.HostError = trErr(r, ErrSysmonUnsupported)

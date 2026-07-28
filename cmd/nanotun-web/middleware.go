@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"net/http"
 	"strings"
@@ -72,7 +71,7 @@ func cspNonceFromCtx(ctx context.Context) string {
 // (宁可这一页降级,也不放开 XSS 兜底)。
 func newCSPNonce() string {
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := randRead(b); err != nil {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(b)

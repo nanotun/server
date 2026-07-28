@@ -22,7 +22,6 @@ package main
 import (
 	"bytes"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -112,7 +111,7 @@ func (s *SessionService) IssueCaptcha(w http.ResponseWriter) (CaptchaChallenge, 
 		return CaptchaChallenge{}, err
 	}
 	nonce := make([]byte, 16)
-	if _, err := rand.Read(nonce); err != nil {
+	if _, err := randRead(nonce); err != nil {
 		return CaptchaChallenge{}, err
 	}
 	exp := nowUnix() + captchaTTLSec
@@ -442,7 +441,7 @@ func randomDigits(n int) (string, error) {
 		return "", errors.New("captcha: bad digit count")
 	}
 	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := randRead(buf); err != nil {
 		return "", err
 	}
 	var sb strings.Builder

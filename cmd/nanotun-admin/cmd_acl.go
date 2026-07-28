@@ -169,19 +169,26 @@ func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args 
 		fmt.Sprintf("action=%s src=%s dst=%s kind=%s proto=%s port=%s",
 			pair.Action, positional[0], dstRaw, pair.DstKind,
 			formatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi)))
+	// 第二十二轮:此前 --json 在这里直接 return,把后面的**通知 server + reload 提示 + 缺回程告警**
+	// 一并跳过了 —— 脚本化加规则(CI / 编排工具)于是拿到一条「已创建」的 JSON,而数据面的 ACL
+	// snapshot 从没刷过,规则静默不生效;同一文件里的 acl del 反倒一直通知,两条路口径相反。
+	// 这些输出全在 stderr,不会污染 --json 的机器可读 stdout,没有理由分叉。
 	if opts.json {
-		return printJSON(opts.stdout, pair)
+		if err := printJSON(opts.stdout, pair); err != nil {
+			return err
+		}
+	} else {
+		dstCell := formatACLEnd(pair.DstUserID, dstRaw)
+		if pair.DstKind == store.ACLDstKindExit {
+			dstCell = "<exit>"
+		}
+		fmt.Fprintln(opts.stdout, opts.T("acl.added",
+			pair.ID,
+			formatACLEnd(pair.SrcUserID, positional[0]), dstCell,
+			pair.DstKind, formatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi),
+			pair.Action,
+		))
 	}
-	dstCell := formatACLEnd(pair.DstUserID, dstRaw)
-	if pair.DstKind == store.ACLDstKindExit {
-		dstCell = "<exit>"
-	}
-	fmt.Fprintln(opts.stdout, opts.T("acl.added",
-		pair.ID,
-		formatACLEnd(pair.SrcUserID, positional[0]), dstCell,
-		pair.DstKind, formatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi),
-		pair.Action,
-	))
 	// 落库 ≠ 生效:数据面读的是内存里的 ACL snapshot。不通知就只是往列表里摆了一条没有约束力的规则。
 	if notifyACLChanged(opts) {
 		fmt.Fprintln(opts.stderr, opts.T("acl.reloaded"))

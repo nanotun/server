@@ -36,7 +36,6 @@ package main
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -206,7 +205,7 @@ func (s *SessionService) IssueChallenge(d int) (PoWChallenge, error) {
 		d = powMaxDifficulty
 	}
 	cidBuf := make([]byte, 16)
-	if _, err := rand.Read(cidBuf); err != nil {
+	if _, err := randRead(cidBuf); err != nil {
 		return PoWChallenge{}, err
 	}
 	// 用 base64url 而不是 UUID 格式 — challenge_id 只是不可碰撞的 token,
@@ -214,7 +213,7 @@ func (s *SessionService) IssueChallenge(d int) (PoWChallenge, error) {
 	cid := base64.RawURLEncoding.EncodeToString(cidBuf)
 
 	salt := make([]byte, powSaltBytes)
-	if _, err := rand.Read(salt); err != nil {
+	if _, err := randRead(salt); err != nil {
 		return PoWChallenge{}, err
 	}
 	saltB64 := base64.StdEncoding.EncodeToString(salt)
@@ -277,13 +276,20 @@ func (s *SessionService) VerifyPoWProof(p PoWProof, serverWants int) error {
 	return nil
 }
 
+// powGCInterval 是 runPoWGC 的清扫间隔。写成变量只为可测性:按分钟计的 tick
+// 在测试里等不起,而「GC 真的会周期性清掉过期项」和「收到 stop 就退出」是两条
+// 不同的路径 —— 只验后者的话,一个永远不清扫的 GC 也能过。
+var powGCInterval = 60 * time.Second
+
 // runPoWGC 是 main.go 启动时 go 出去的 goroutine,定期清扫已过期的
 // challenge_id 记录,避免长时间运行内存无界增长。
 //
 // 实测:5min TTL × 哪怕 100 req/s 也只有 30000 条 entry × ~80B/entry ≈ 2.4 MB
 // 完全用不到 GC;但加上保险,跑了几天还是干净的。
-func (s *SessionService) runPoWGC(stop <-chan struct{}) {
-	tick := time.NewTicker(60 * time.Second)
+// extra 是挂在 Server 而不是 SessionService 上的 IP 失败计数器(step-up 那一个)。
+// 它们与 PoW 是同一个尺度的滑动窗口,跟着这一个 ticker 走就够,不必再起 goroutine。
+func (s *SessionService) runPoWGC(stop <-chan struct{}, extra ...*IPFailureTracker) {
+	tick := time.NewTicker(powGCInterval)
 	defer tick.Stop()
 	for {
 		select {
@@ -291,6 +297,10 @@ func (s *SessionService) runPoWGC(stop <-chan struct{}) {
 			return
 		case <-tick.C:
 			s.pruneExpiredPoW()
+			s.ipFailures.Prune()
+			for _, t := range extra {
+				t.Prune()
+			}
 		}
 	}
 }

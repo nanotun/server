@@ -306,23 +306,10 @@ func main() {
 
 	// PoW GC:定期清理已消费的 challenge_id 与陈旧的 IP 失败计数。
 	// 共用一个 goroutine,内部 ticker 60s,不会跟 SessionGC 抢锁。
+	// step-up 计数器跟主登录用的是两个隔离实例,prune 同样跟着 PoW GC 走,
+	// 避免再起一个 goroutine 维护同尺度的 sliding window。
 	powStop := make(chan struct{})
-	go func() {
-		tick := time.NewTicker(60 * time.Second)
-		defer tick.Stop()
-		for {
-			select {
-			case <-powStop:
-				return
-			case <-tick.C:
-				srv.sess.pruneExpiredPoW()
-				srv.sess.ipFailures.Prune()
-				// step-up 计数器跟主登录隔离实例,prune 同样跟着 PoW GC 走,
-				// 避免再起一个 goroutine 维护同尺度的 sliding window。
-				srv.stepUpFailures.Prune()
-			}
-		}
-	}()
+	go srv.sess.runPoWGC(powStop, srv.stepUpFailures)
 	defer close(powStop)
 
 	certPath, keyPath, err := ensureTLSCert(cfg.CertDir, cfg.ExtraSANs)
@@ -377,9 +364,17 @@ func main() {
 // 模板命名规则:templates/foo/bar.html 在 t.Lookup 时叫 "foo/bar.html"。
 // html/template.ParseFS 默认会用 filepath.Base 作为模板名,这会让
 // "login.html" 与 "partials/login.html" 冲突,所以这里手动 ReadFile + t.New(name).Parse。
+// templateSourceFS 是模板的来源,写成变量只为可测性,生产恒为 embed 出来的 templatesFS。
+//
+// loadTemplates 的失败分支(遍历出错、读文件出错、模板语法错)在生产里都走不到 ——
+// embed 的内容在编译期就定型了,编译过了就说明模板都能读、能 parse。但这些分支决定
+// 的是「启动时发现模板坏了」与「跑起来之后某个页面 500」的差别:前者被 systemd
+// 拦在 Restart 循环里、运维立刻看得见,后者要等用户点到那一页才暴露。
+var templateSourceFS fs.FS = templatesFS
+
 func loadTemplates() (*template.Template, error) {
 	t := template.New("").Funcs(templateFuncs())
-	err := fs.WalkDir(templatesFS, "templates", func(path string, d fs.DirEntry, walkErr error) error {
+	err := fs.WalkDir(templateSourceFS, "templates", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -389,7 +384,7 @@ func loadTemplates() (*template.Template, error) {
 		if !strings.HasSuffix(d.Name(), ".html") {
 			return nil
 		}
-		body, err := fs.ReadFile(templatesFS, path)
+		body, err := fs.ReadFile(templateSourceFS, path)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}

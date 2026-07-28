@@ -137,7 +137,7 @@ func (s *Server) handleUserNew(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 自动生成 PSK,创建成功后一次性展示给管理员(不入审计 detail)。
-		psk, err := util.GeneratePSK()
+		psk, err := generateUserPSK()
 		if err != nil {
 			// 第八轮深扫 LOW:内部错误详情进服务端日志,页面只回通用文案(不外泄 err 原文)。
 			s.renderInternalError(w, r, "user_new:gen_psk", err)
@@ -399,7 +399,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 				tr(r, "users.pskResetUserDisabled", segs[1]))
 			return
 		}
-		psk, err := util.GeneratePSK()
+		psk, err := generateUserPSK()
 		if err != nil {
 			s.renderInternalError(w, r, "users:reset_gen_psk", err)
 			return
@@ -653,9 +653,17 @@ func (s *Server) requireAdminRole(w http.ResponseWriter, r *http.Request) bool {
 
 // HashPSKForUser:nanotun 数据面 PSK 走 auth.HashPSK,这里转一层是为了让
 // 未来若想换算法时只改一处。
-func HashPSKForUser(plain string) (string, error) {
-	return HashWebPassword(plain) // 同一 argon2id 参数,逻辑一致。
-}
+//
+// generateUserPSK / HashPSKForUser 都是变量:见 HashWebPassword 处的说明 —— 这两步
+// 只会因 crypto/rand 故障失败,而失败分支上「不许建出没有可用 PSK 的账号、不许把
+// 已 rotate 的 PSK 弄丢」是必须钉住的不变量,没有接缝就无法验证。
+var (
+	generateUserPSK = util.GeneratePSK
+
+	HashPSKForUser = func(plain string) (string, error) {
+		return HashWebPassword(plain) // 同一 argon2id 参数,逻辑一致。
+	}
+)
 
 // credentialsQRPixels:PNG 边长(像素)。256 与 admin CLI 默认值对齐,Medium 纠错
 // 级别下手机摄像头能稳定扫到;更大会让 dataURL base64 体积涨到几 KB,模板渲染慢。

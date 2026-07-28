@@ -29,7 +29,6 @@ package main
 //   - 不引第三方 session 库免得 supply chain 多一层 attack surface,审计简单。
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"html/template"
@@ -126,9 +125,14 @@ func newCredentialsFlashStore(stop <-chan struct{}) *credentialsFlashStore {
 	return s
 }
 
+// credentialsFlashGCInterval 是 runGC 的清扫间隔。写成变量只为可测性:按分钟计的
+// tick 在测试里等不起,而「过期的一次性凭据真的会被清掉」与「收到 stop 会退出」是
+// 两条不同的路径 —— 只验后者的话,一个从不清扫、把 PSK 一直留在内存里的 GC 也能过。
+var credentialsFlashGCInterval = time.Minute
+
 // runGC:每分钟扫一次 map,删过期 entry。频率不高,锁持有时间短。
 func (s *credentialsFlashStore) runGC(stop <-chan struct{}) {
-	t := time.NewTicker(time.Minute)
+	t := time.NewTicker(credentialsFlashGCInterval)
 	defer t.Stop()
 	for {
 		select {
@@ -214,9 +218,13 @@ func (s *credentialsFlashStore) Len() int {
 	return len(s.entries)
 }
 
-func flashGenerateToken() (string, error) {
+// flashGenerateToken 是个变量而非函数,只为可测性:crypto/rand 故障是真实但极罕见的情形,
+// 而它触发的那条路径(user create / reset-psk 拿不到 token)恰恰是**绝不能**退化成
+// 「在 POST 响应里直接渲染 PSK」的 —— 那样刷新页面就会重发 POST、再 rotate 一次,
+// 用户刚抄下的 PSK 当场失效。没有接缝就没法验证这条,故留一个只在测试里被替换的间接层。
+var flashGenerateToken = func() (string, error) {
 	buf := make([]byte, credentialsFlashTokenBytes)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := randRead(buf); err != nil {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil

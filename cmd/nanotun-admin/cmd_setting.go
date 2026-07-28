@@ -458,6 +458,15 @@ func cmdSettingRate(ctx context.Context, st *store.Store, opts *globalOpts, args
 //
 // 三类失败用文本前缀区分(`✗ DNS 失败` / `⚠ ICMP 不通` / `✗ 语法校验失败`),
 // 不细分自定义 exit code,避免与全局 main 退出码语义打架。
+// 探测的两个外部依赖做成包级变量:DNS 与 ICMP 的结果取决于跑测试的机器能不能上网、
+// 出口 ICMP 有没有被安全组 ban。真去查网络会让本文件的用例在离线 / 受限网络下随机红,
+// 而这里要验的是**分支怎么分类结果**(DNS 硬错 / 无记录 / 特殊地址 / ICMP 软失败),
+// 与真实网络无关。只有测试替换它们。
+var (
+	probeLookupIPAddr = net.DefaultResolver.LookupIPAddr
+	probeDialHost     = store.ProbeServerDialHost
+)
+
 func cmdSettingProbeDialHost(ctx context.Context, opts *globalOpts, args []string) error {
 	fs := flag.NewFlagSet("setting probe-dial-host", flag.ContinueOnError)
 	fs.SetOutput(opts.stderr)
@@ -496,7 +505,7 @@ func cmdSettingProbeDialHost(ctx context.Context, opts *globalOpts, args []strin
 		}
 		dnsCtx, cancel := context.WithTimeout(ctx, *timeout)
 		defer cancel()
-		ips, dnsErr := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
+		ips, dnsErr := probeLookupIPAddr(dnsCtx, host)
 		if dnsErr != nil {
 			fmt.Fprintln(opts.stdout, opts.T("setting.probe.dnsFail", dnsErr.Error()))
 			return dnsErr
@@ -520,7 +529,7 @@ func cmdSettingProbeDialHost(ctx context.Context, opts *globalOpts, args []strin
 
 	probeCtx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
-	probeErr := store.ProbeServerDialHost(probeCtx, host)
+	probeErr := probeDialHost(probeCtx, host)
 	if probeErr == nil {
 		fmt.Fprintln(opts.stdout, opts.T("setting.probe.allOK"))
 		return nil
