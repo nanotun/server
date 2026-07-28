@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/nanotun/server/config"
 )
 
 // 这两个函数决定 ipset 里最终装哪些源 IP —— 也就是「谁能连到 VPN 入口端口」。
@@ -149,6 +151,51 @@ func TestParseJumpHostProtectedPorts_BadEndPortDropsTheWholeRange(t *testing.T) 
 				if got[i] != tc.want[i] {
 					t.Fatalf("[%d] got %+v want %+v", i, got[i], tc.want[i])
 				}
+			}
+		})
+	}
+}
+
+// TestJumpHostPortSyntax_LintAndRuntimeAcceptTheSameSet 钉住一条跨包不变量。
+//
+// config 那边的 ValidateJumpHostProtectedPorts 是给 `config lint` 用的语法闸,这边的
+// parseJumpHostProtectedPorts 是运行期真正解析。两者必须接受**同一个集合** ——
+// 它们分别写了一遍相同的语法规则,而语法规则是最容易改一处忘一处的东西。
+//
+// 一旦漂移:lint 放行、runtime 静默跳过,那个端口就在运维毫不知情的情况下失去保护。
+// 反向漂移(lint 拒、runtime 能认)危害小些,但会让一份能跑的配置过不了检查。
+func TestJumpHostPortSyntax_LintAndRuntimeAcceptTheSameSet(t *testing.T) {
+	corpus := []string{
+		// 合法
+		"tcp/8443", "udp/443", "udp/5000-5002", "tcp/9000:9002",
+		"TCP/8443", "  udp/443  ", "tcp/1", "tcp/65535",
+		// 非法
+		"", "   ", "tcp8443", "/8443", "tcp/", "sctp/8443", "icmp/0",
+		"tcp/http", "tcp/0", "tcp/65536", "tcp/-1",
+		"udp/5000-99999", "udp/5000-0", "udp/5000-abc", "tcp/5000:0",
+		"tcp/5000-", "tcp//8443", "8443", "tcp/8443/extra",
+	}
+
+	for _, in := range corpus {
+		t.Run(strings.ReplaceAll(in, "/", "_"), func(t *testing.T) {
+			// 空白项两边都当「跳过」处理,不算分歧。
+			if strings.TrimSpace(in) == "" {
+				return
+			}
+			lintRejects := config.ServerConfig{
+				JumpHostFirewall:       true,
+				JumpHostProtectedPorts: []string{in},
+			}.ValidateJumpHostProtectedPorts() != nil
+
+			runtimeSkips := len(parseJumpHostProtectedPorts([]string{in})) == 0
+
+			if lintRejects != runtimeSkips {
+				verdict := "lint 放行但运行期会静默跳过 —— 这个端口不会被保护,而 lint 说配置没问题"
+				if lintRejects {
+					verdict = "lint 拒绝但运行期认得 —— 一份实际能用的配置过不了检查"
+				}
+				t.Fatalf("%q:两边语法判定不一致(lint 拒=%v,runtime 跳过=%v)\n%s",
+					in, lintRejects, runtimeSkips, verdict)
 			}
 		})
 	}
