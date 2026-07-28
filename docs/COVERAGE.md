@@ -310,6 +310,22 @@ Linux 上执行，开发机没有真 iptables、三机 e2e 也没开这个开关
 没有可观察差异；`teardownImpl` 的非 Linux 判断被 `installed` 标志盖住（非 Linux 上
 `installed` 恒为 false）；`Teardown` 的 `sync.Once` 同理。
 
+### 第 22 轮的修复在三机上复核过（2026-07-28）
+
+`acl add/deny --json` 漏通知是单测抓到的，但它的**后果**只在跨进程这一层可见 —— 单测能证明
+「通知函数被调了」，证不了「数据面真的开始拦」。所以在阶段 20 补了三条断言：`--json` 的
+stdout 仍是可解析 JSON、规则同样即时生效、提示确实走 stderr（`2>` 重定向后 stdout 干净）。
+
+部署前先在服务端拿旧二进制实测了一次,算是对缺陷判断的独立确认:`acl deny … --json` 的
+stderr **空**,而紧接着的 `acl delete` 打了「ACL snapshot has been refreshed」—— 同一命令族
+两条路口径相反,与代码读出来的结论一致。换上 `c8751d4` 的二进制后 stderr 有提示、stdout
+不变。
+
+随后跑了全量:132 项断言全过,退出码 0,6.5 分钟。这一轮改的产品代码除 `cmd_acl.go` 外都是
+测试接缝(函数改包级变量、`rand.Read` 改 `randRead`,默认值不变)与一处等价重构
+(`main.go` 的 PoW GC 内联 goroutine 收成 `runPoWGC` 方法),阶段 0/6/7 的全绿也顺带确认了
+这些接缝没有改变启动编排与 Web 面的行为。
+
 ## 单测这一侧的现状（2026-07-28，第 22 轮后）
 
 零覆盖函数已经清空，只剩三个 `main` —— 那三个各有子进程冒烟测试（`nanotund` 靠 e2e）。

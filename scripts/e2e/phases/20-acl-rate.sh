@@ -43,6 +43,27 @@ phase_20_acl_rate() {
   _acl_del_all
   wait_until "删除区间规则后恢复" 20 probe_http_ok a "$url"
 
+  # ── --json 路径也必须通知运行中的 server ──────────────────────────────────
+  # 2026-07-28 回归:`acl add/deny --json` 打完 JSON 就 return 了,把「通知 server 重建
+  # ACL 快照」连同缺回程告警一起跳过。命令返回一条「已创建」的 JSON、库里也确实有这条
+  # 规则,但数据面读的是内存快照,于是流量照过 —— 最坏的一种失败模式:调用方拿到的是成功。
+  # 踩这条的只有脚本化配 ACL 的路径(CI / 编排工具),人手敲的不带 --json 一直是好的,
+  # 所以上面那几条断言永远发现不了。加这条是因为它只在跨进程这一层可见。
+  local jout
+  jout="$(adm "acl deny $E2E_A_USER $E2E_C_USER --port $E2E_TARGET_PORT --proto tcp --json 2>/tmp/nte2e-acl.err")"
+  # 顺带钉住「告警走 stderr、没污染 stdout」:JSON 解析得动,这半边才算成立。
+  # 注意字段名是 Go 风格的 Action —— add/deny 打的是裸 store.ACLPair,
+  # 而 acl list --json 是带 snake_case tag 的另一套形状,此处按现状钉。
+  check "acl deny --json · stdout 是可解析的 JSON" "deny" \
+    "$(printf '%s' "$jout" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("Action","字段缺失"))
+except Exception as e: print("解析失败: %s" % e)')"
+  wait_until "acl deny --json · 规则同样即时生效(无需 reload)" 20 probe_http_blocked a "$url"
+  check "acl deny --json · reload 提示走的是 stderr" "0" \
+    "$(s "test -s /tmp/nte2e-acl.err" && echo 0 || echo 1)"
+  _acl_del_all
+  wait_until "删除 --json 规则后端口恢复" 20 probe_http_ok a "$url"
+
   # ── 三层限速的 min 语义 ───────────────────────────────────────────────────
   # 主要断言看 connection list 里的**有效**限速值而不是实测吞吐:实测受公网
   # 抖动影响,做成硬断言必然 flaky。吞吐另有一条宽松的数量级检查兜底。
