@@ -176,6 +176,43 @@ sysctl 编排、systemd 通知、出口守卫这些，单测结构上就摸不�
 | 11 | `cmd/nanotun-web` 分发表 / 凭证 QR / 会话联表 / 私钥落盘 | 80.2% → 81.5% | — |
 | 12 | `certs` 客户端证书签发闸口 | 71.4% → 91.7% | — |
 | 13 | `store/web_admins*.go` 入参闸门 + DB 故障传播 | 97 条 → 12 条,store 79.8% → 84.3% | 33 抓 32,1 个等价 |
+| 14 | `store` 大头:`acl` / `leases` / `devices` / `users(+helper)` | 各自 21→2 / 27→5 / 40→10 / 49→6,store → 90.4% | 与 15 轮合并跑 |
+| 15 | `store` 尾巴:`migrations` / `canonicalize_vips` / `via6` / `subnet_routes` / `rate_settings` / `audit` / `port_forwards` / `server_id` / `sqlite` | store 90.4% → **95.4%**,未覆盖 86 条 | 61 抓 57 → 收紧断言后 5/5 全抓 |
+
+第 14/15 轮把 `store` 从 79.8% 推到 95.4%(未覆盖 86 / 1879 条)。剩下的基本进不去:驱动层的
+`LastInsertId()` / `Commit()` / `RowsAffected()` 失败、`listMigrations` 对 embed FS 的防御分支
+(文件名非法 / 版本号重复 —— 编译期就固定了)、以及 `ProbeServerDialHost` 需要真 DNS + ICMP 回包
+的那几条。要再动就得引一个注入故障的 `database/sql/driver` 包装,性价比不如去啃 `cmd/*`。
+
+这两轮里真正抓到东西的用例(不是补行数的):
+
+- **事务半途失败必须整体回滚**。删设备 / 删用户时,清孤儿 `port_forwards` 那步失败却照样把行删掉,
+  剩下的转发会被下一个注册同 UUID 的账号静默继承——外网入口换了主人,两边界面都看不出来。
+  `SetDeviceFixedVIP` 同理:`--force` 释放对方 lease 失败却把地址钉上去,就是双占。
+- **`RotateUserPSKAndEnsureCredential` 的原子性**。补 `credential_id` 失败时 `psk_hash` 必须跟着回滚,
+  否则旧 PSK 已作废、新 QR 又生成不出来,用户被锁在门外而 admin 只看到一句报错。
+- **迁移出错时版本号不许前进**,而且「版本号读不出来」绝不能当成 0 ——当成 0 会把非幂等的历史迁移
+  (`ALTER TABLE ADD COLUMN`)重放一遍,比启动失败严重得多。构造手法是把 `schema_version` 往回拨一格
+  再跑 `Migrate`。
+- **存量 VIP 归一的跨表撞车**:`leases.vip_v6` 归一后撞上别的设备已钉的 `devices.fixed_vip_v6` 时要跳过 +
+  把完成标记留在 `'0'`,下次启动重跑。落 `'1'` 就等于永久 no-op,残留的非规范写法再不会被处理。
+- **`SettingsSet` 的纵深校验**。`mesh_enabled` 拼成 `flase` 时读路径兜底是 **true**(fail-open),
+  「想关 mesh」会静默保持互通;限速键写歪则被静默当 0(= 不限)。这些校验不能只留在 CLI 那一层。
+- **列表读到坏行要整体报错**,不能少一行。管理员看不到某个账号 / 某条已批准的网段,就以为它不存在,
+  而它照样在生效。
+
+新增的两个手法:
+
+- `abortOnWhen(table, op, when)` —— 带 `WHEN` 的 `RAISE(ABORT)` 触发器。用来分辨「同一事务里第几步失败」,
+  比如 `SetRateDefaults` 三个键各失败一次,验的都是同一个不变量:三个键同生同死,不留撕裂态。
+- 往 INTEGER 列写 **REAL**(而不是 TEXT)。TEXT 在 SQLite 里排在所有数字之后,`WHERE at >= ? AND at < ?`
+  会把坏行直接滤掉,`Scan` 根本走不到;写 `1000.5` 则留在数值域内,过得了 WHERE、卡在 `Scan` ——
+  这才是 `QueryAudit` 那条扫描错误分支的构造方式。
+
+变异逃逸这次同样是**用例没隔离干净**:拿不到迁移锁、坏 `device_id`、读不出版本号这三条,报的错
+都来自另一道闸(SQLite 自己的写失败 / 外键 / 后续语句),把断言收紧到「报错原因必须是这一道」之后
+全部抓住。剩一条 `SetRateDefaults` 第一个键失败时提前 commit 是等价变异——那时还没写任何东西;
+换成第二、第三个键失败就立刻被抓。
 
 第 13 轮引入了两个可复用的手段,后面几轮都在用:
 
@@ -234,7 +271,7 @@ Linux 上执行，开发机没有真 iptables、三机 e2e 也没开这个开关
 | `util` | 90.5% | 90.5% | — |
 | `cmd/nanotun-web` | 81.5% | 81.5% | `sysmon_linux.go` 已被测到 |
 | `cmd/nanotun-admin` | 80.7% | 80.5% | `db_holders_linux.go` |
-| `store` | 79.8% | 79.8% | — |
+| `store` | 95.4% | 95.4% | 第 13–15 轮补完,见上表 |
 | `auth` | 79.6% | 78.8% | argon2 并发路径 |
 | `cmd/nanotund` | **74.0%** | 78.8% | `network_setup_linux.go` 等 |
 
