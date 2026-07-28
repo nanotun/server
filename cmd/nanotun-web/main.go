@@ -420,9 +420,13 @@ func buildLangTemplates(base *template.Template) (map[string]*template.Template,
 	return out, nil
 }
 
+// sessionGCInterval 是过期 session 的清理周期。变量而非常量:测试需要把它调快,
+// 否则这个循环的实际清理逻辑只能靠等十分钟才跑得到。
+var sessionGCInterval = 10 * time.Minute
+
 // runSessionGC 周期性清理过期 session,避免 web_sessions 表无限增长。
 func (s *Server) runSessionGC(ctx context.Context) {
-	tk := time.NewTicker(10 * time.Minute)
+	tk := time.NewTicker(sessionGCInterval)
 	defer tk.Stop()
 	for {
 		select {

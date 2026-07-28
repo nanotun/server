@@ -529,6 +529,15 @@ func (m *portForwardManager) delRoute(ip netip.Addr) {
 	m.routeRef[key] = n - 1
 }
 
+// pfExec 是本文件所有外部命令（`ip route` / `iptables` / `ip6tables`）的唯一出口。
+//
+// 抽成变量是为了让测试能验证**规则本身长什么样**：v4 该配 /32、v6 该配 /128 且要带 -6，
+// 放行规则要插到 INPUT 首位（否则排在 ufw 的 DROP 后面等于没放行）。这些参数拼错时命令
+// 照样返回成功，只是规则不生效 —— 没有接缝就只能靠上生产机去看。
+var pfExec = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
+}
+
 // hostRouteCmd 执行 `ip [-6] route add|del <ip>/32(/128) dev <tun>`。
 func hostRouteCmd(op string, ip netip.Addr, dev string) error {
 	if dev == "" {
@@ -543,7 +552,7 @@ func hostRouteCmd(op string, ip netip.Addr, dev string) error {
 		args = append([]string{"-6"}, args...)
 	}
 	args = append(args, cidr, "dev", dev)
-	out, err := exec.Command("ip", args...).CombinedOutput()
+	out, err := pfExec("ip", args...)
 	if err != nil {
 		return fmt.Errorf("ip %v: %v (%s)", args, err, string(out))
 	}
@@ -567,7 +576,7 @@ func firewallRuleArgs(op string, port int) []string {
 // delFirewallRuleAll 反复删同一条规则直到不再匹配（清掉可能的重复），best-effort。
 func delFirewallRuleAll(bin string, port int) {
 	for i := 0; i < 8; i++ {
-		if err := exec.Command(bin, firewallRuleArgs("-D", port)...).Run(); err != nil {
+		if _, err := pfExec(bin, firewallRuleArgs("-D", port)...); err != nil {
 			return // 没有更多匹配规则
 		}
 	}
@@ -578,7 +587,7 @@ func delFirewallRuleAll(bin string, port int) {
 func openFirewallPort(port int) {
 	for _, bin := range []string{"iptables", "ip6tables"} {
 		delFirewallRuleAll(bin, port)
-		if out, err := exec.Command(bin, firewallRuleArgs("-I", port)...).CombinedOutput(); err != nil {
+		if out, err := pfExec(bin, firewallRuleArgs("-I", port)...); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"bin": bin, "port": port, "out": strings.TrimSpace(string(out))}).
 				Warn("[port-forward] 放行公网端口失败（外部可能连不上，请手动放行或检查 iptables）")
 		}
@@ -601,7 +610,7 @@ func closeFirewallPort(port int) {
 // → 陈旧规则删不掉。改为「解析出端口 → 用与添加时一致的规范参数删」，对两种渲染都稳。
 func flushStalePortForwardFirewallRules() {
 	for _, bin := range []string{"iptables", "ip6tables"} {
-		out, err := exec.Command(bin, "-S", "INPUT").Output()
+		out, err := pfExec(bin, "-S", "INPUT")
 		if err != nil {
 			continue
 		}

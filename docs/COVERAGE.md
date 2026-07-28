@@ -133,6 +133,13 @@ Linux 上只有 59.3%，加上 e2e 到 79.3%，其中 1506 条**只有**真实�
 | 4 | `runLinkTunnel` 帧分发与数据面执法链 | 71 条 | 24 抓 24 |
 | 4 | `util.IPPacketTotalLen` / `TrimIPPacketToTotalLen` | 大门此前零测试 | 12 抓 9，3 个等价 |
 | 5 | `jump_host_firewall.go` 白名单 + ipset/iptables 编排 | 91 条 | 34 抓 31，3 个等价 |
+| 6 | `config` 全包（启动期配置闸、REALITY dest、smux、hysteria 凭证与调参） | 到 100% | 21 抓 19，2 个等价 |
+| 7 | `store` 零覆盖函数（TOTP 重放、会话生命周期、PSK CAS 轮换、审计查询） | 零覆盖 33 → 0 | 26 抓 24 |
+| 8 | `cmd/nanotund` 控制面 socket + 端口转发编排 + hysteria outbound + 后台循环 | 73.8% → 78.8% | — |
+| 9 | `cmd/nanotun-admin` 写路径 / 控制面命令 / 列表视图 | 68.1% → 80.5%，零覆盖只剩 `main` | — |
+| 10 | `util` ws 流适配 + 证书闸口 + wire 助手；`auth` 限流版 verify | util 70.1% → 90.5%，auth → 78.8% | — |
+| 11 | `cmd/nanotun-web` 分发表 / 凭证 QR / 会话联表 / 私钥落盘 | 80.2% → 81.5% | — |
+| 12 | `certs` 客户端证书签发闸口 | 71.4% → 91.7% | — |
 
 第 4 轮的等价变异记一下，省得下次重打一遍：`t < 20` 被 `ihl >= 20 && ihl <= t`
 蕴含；`startWSSDataPlaneKeepalive` 自己也挡 `interval <= 0` 和 `missThreshold <= 0`，
@@ -151,3 +158,25 @@ Linux 上执行，开发机没有真 iptables、三机 e2e 也没开这个开关
 `net.IP.String()` 自己就会把 v4-mapped 归一，所以 `To4().String()` 换成 `String()`
 没有可观察差异；`teardownImpl` 的非 Linux 判断被 `installed` 标志盖住（非 Linux 上
 `installed` 恒为 false）；`Teardown` 的 `sync.Once` 同理。
+
+## 单测这一侧的现状（2026-07-28，macOS）
+
+零覆盖函数已经清空，只剩三个 `main` —— 那是进程启动编排，用 e2e 覆盖比写单测划算。
+
+| 包 | 单测覆盖 | 零覆盖函数 |
+|---|---:|---|
+| `config` | 100.0% | 0 |
+| `util` | 90.5% | 0 |
+| `certs` | 91.7% | 0 |
+| `cmd/nanotun-web` | 81.5% | 只有 `main` |
+| `cmd/nanotun-admin` | 80.5% | 只有 `main` |
+| `store` | 79.8% | 0 |
+| `cmd/nanotund` | 78.8% | 只有 `main` |
+| `auth` | 78.8% | 0 |
+
+这是 macOS 上的数字，不含 `*_linux.go`。要拿准数还是得按上面「一、单测这一侧」的
+办法在 Linux 上重采，再和 e2e 合并。
+
+为可测性动过的生产代码（都是薄壳/接缝，不改行为）：`cmd/nanotund/port_forward.go`
+的 `pfExec`（`ip route` / `iptables` 收进一个变量）、`cmd/nanotun-web/main.go` 的
+`sessionGCInterval`（原本硬编码 10 分钟，测不到清理体）、`auth` 侧的 `ResetForTest`。
