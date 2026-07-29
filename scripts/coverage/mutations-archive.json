@@ -2591,5 +2591,243 @@
     "old": "func cleanupConnection(c *Connection) {\n\tif c == nil {\n\t\treturn\n\t}",
     "new": "func cleanupConnection(c *Connection) {\n\tif c == nil {\n\t\tc = &Connection{}\n\t\t_ = c\n\t}",
     "test": "./cmd/nanotund/ -run TestCleanupConnection_"
+  },
+  {
+    "desc": "[mut33] MagicDNS:ACL 判定不再 fail-open(快照未装好就拦解析)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\tsnap := aclCurrent.Load()\n\tif snap == nil {\n\t\treturn false\n\t}\n\tvip, ok := netipAddrFromUDP(peer)",
+    "new": "\tsnap := aclCurrent.Load()\n\tif snap == nil {\n\t\treturn true\n\t}\n\tvip, ok := netipAddrFromUDP(peer)",
+    "test": "./cmd/nanotund/ -run TestMagicNameDeniedByACL_"
+  },
+  {
+    "desc": "[mut33] MagicDNS:反查不到查询方归属就拦(新会话解析不出任何名字)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "func magicNameDeniedByACL(ctx context.Context, gw *gatewayState, peer *net.UDPAddr, name, suffix string) bool {\n\tsnap := aclCurrent.Load()\n\tif snap == nil {\n\t\treturn false\n\t}\n\tvip, ok := netipAddrFromUDP(peer)\n\tif !ok {\n\t\treturn false\n\t}\n\tsrcUser, ok := lookupVIPOwner(vip)\n\tif !ok || srcUser == 0 {\n\t\treturn false\n\t}",
+    "new": "func magicNameDeniedByACL(ctx context.Context, gw *gatewayState, peer *net.UDPAddr, name, suffix string) bool {\n\tsnap := aclCurrent.Load()\n\tif snap == nil {\n\t\treturn false\n\t}\n\tvip, ok := netipAddrFromUDP(peer)\n\tif !ok {\n\t\treturn false\n\t}\n\tsrcUser, ok := lookupVIPOwner(vip)\n\tif !ok || srcUser == 0 {\n\t\treturn true\n\t}",
+    "test": "./cmd/nanotund/ -run TestMagicNameDeniedByACL_"
+  },
+  {
+    "desc": "[mut33] MagicDNS:同用户自查也走 ACL 判定(连自己的设备名都解析不出来)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\tif !ok || dstUser == 0 || dstUser == srcUser {\n\t\treturn false\n\t}\n\treturn !aclAllows(srcUser, dstUser)",
+    "new": "\tif !ok || dstUser == 0 {\n\t\treturn false\n\t}\n\treturn !aclAllows(srcUser, dstUser)",
+    "test": "./cmd/nanotund/ -run TestMagicNameDeniedByACL_"
+  },
+  {
+    "desc": "[mut33] MagicDNS:ACL 真判不可达时仍解析(泄漏对方 vIP 与存在性)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\treturn !aclAllows(srcUser, dstUser)\n}",
+    "new": "\t_ = aclAllows(srcUser, dstUser)\n\treturn false\n}",
+    "test": "./cmd/nanotund/ -run TestMagicNameDeniedByACL_"
+  },
+  {
+    "desc": "[mut33] MagicDNS:归属反查不认 store=nil(基于凭空的 user 做 ACL 判定)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "func magicNameOwnerUserID(ctx context.Context, st *store.Store, name, suffix string) (int64, bool) {\n\tif st == nil {\n\t\treturn 0, false\n\t}",
+    "new": "func magicNameOwnerUserID(ctx context.Context, st *store.Store, name, suffix string) (int64, bool) {\n\tif st == nil {\n\t\treturn 1, true\n\t}",
+    "test": "./cmd/nanotund/ -run TestMagicNameOwnerUserID_"
+  },
+  {
+    "desc": "[mut33] MagicDNS:用户查不到也报出归属(假 user 进入 ACL 判定)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\tu, err := st.GetUserByUsername(opCtx, user)\n\tif err != nil || u == nil {\n\t\treturn 0, false\n\t}\n\treturn u.ID, true",
+    "new": "\tu, err := st.GetUserByUsername(opCtx, user)\n\tif err != nil || u == nil {\n\t\treturn 1, true\n\t}\n\treturn u.ID, true",
+    "test": "./cmd/nanotund/ -run TestMagicNameOwnerUserID_"
+  },
+  {
+    "desc": "[mut33] MagicDNS:A 应答不过滤地址族(遇 v6 地址 As4() 直接 panic)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\t\tcase dnsmessage.TypeA:\n\t\t\tif !a.Is4() && !a.Is4In6() {\n\t\t\t\tcontinue\n\t\t\t}",
+    "new": "\t\tcase dnsmessage.TypeA:\n\t\t\tif false {\n\t\t\t\tcontinue\n\t\t\t}",
+    "test": "./cmd/nanotund/ -run TestBuildMagicDNSAnswer_"
+  },
+  {
+    "desc": "[mut33] MagicDNS:AAAA 应答不过滤地址族(答出 ::ffff:10.x,客户端发 v6 必不通)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\t\tcase dnsmessage.TypeAAAA:\n\t\t\tif a.Is4() || a.Is4In6() {\n\t\t\t\tcontinue\n\t\t\t}",
+    "new": "\t\tcase dnsmessage.TypeAAAA:\n\t\t\tif false {\n\t\t\t\tcontinue\n\t\t\t}",
+    "test": "./cmd/nanotund/ -run TestBuildMagicDNSAnswer_"
+  },
+  {
+    "desc": "[mut33] 路由批准:在线宣告方的出口豁免闸不刷新(合法回程被丢到下次重连)",
+    "file": "cmd/nanotund/route_advertise.go",
+    "old": "\t\tif c.advertisedExit.Load() {\n\t\t\tif approved, ok := deviceHasApprovedExitRoute(ctx, c.deviceID); ok {\n\t\t\t\tc.advertisedExitApproved.Store(approved)\n\t\t\t}\n\t\t}",
+    "new": "\t\tif false && c.advertisedExit.Load() {\n\t\t\tif approved, ok := deviceHasApprovedExitRoute(ctx, c.deviceID); ok {\n\t\t\t\tc.advertisedExitApproved.Store(approved)\n\t\t\t}\n\t\t}",
+    "test": "./cmd/nanotund/ -run TestBroadcastRouteApproveStatus_"
+  },
+  {
+    "desc": "[mut33] 路由批准:撤销时不收紧豁免闸(只敢开不敢关)",
+    "file": "cmd/nanotund/route_advertise.go",
+    "old": "\t\t\tif approved, ok := deviceHasApprovedExitRoute(ctx, c.deviceID); ok {\n\t\t\t\tc.advertisedExitApproved.Store(approved)\n\t\t\t}",
+    "new": "\t\t\tif approved, ok := deviceHasApprovedExitRoute(ctx, c.deviceID); ok && approved {\n\t\t\t\tc.advertisedExitApproved.Store(approved)\n\t\t\t}",
+    "test": "./cmd/nanotund/ -run TestBroadcastRouteApproveStatus_"
+  },
+  {
+    "desc": "[mut33] 路由批准:广播不看门控(给已接管/已顶替的死链路同步写,顶住 kick)",
+    "file": "cmd/nanotund/route_advertise.go",
+    "old": "\t\tif c != nil && !c.takenOver.Load() && !c.superseded.Load() && (c.advertisedExit.Load() || c.advertisedSubnetRoutes.Load()) {",
+    "new": "\t\tif c != nil {",
+    "test": "./cmd/nanotund/ -run TestBroadcastRouteApproveStatus_"
+  },
+  {
+    "desc": "[mut33] 路由批准:only 过滤失效(把设备名下所有历史路由都回给客户端)",
+    "file": "cmd/nanotund/route_advertise.go",
+    "old": "\t\tif len(filter) > 0 {\n\t\t\tif _, ok := filter[r.CIDR]; !ok {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t}",
+    "new": "\t\tif false {\n\t\t\tif _, ok := filter[r.CIDR]; !ok {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t}",
+    "test": "./cmd/nanotund/ -run TestSendRouteApproveStatusForDevice_"
+  },
+  {
+    "desc": "[mut33] 路由批准:匿名会话也发状态帧(帧内容属于别人或为空)",
+    "file": "cmd/nanotund/route_advertise.go",
+    "old": "\tif gw == nil || gw.store == nil || c == nil || c.deviceID == 0 {\n\t\treturn nil\n\t}",
+    "new": "\tif gw == nil || gw.store == nil || c == nil {\n\t\treturn nil\n\t}",
+    "test": "./cmd/nanotund/ -run TestSendRouteApproveStatusForDevice_"
+  },
+  {
+    "desc": "[mut33] ACL:IHL 下界不查(把 IP 头自身字节当端口匹配规则)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\t\tif ihl < 20 || ihl > len(p) {\n\t\t\treturn pktTuple{}, false\n\t\t}",
+    "new": "\t\tif ihl > len(p) {\n\t\t\treturn pktTuple{}, false\n\t\t}",
+    "test": "./cmd/nanotund/ -run TestParsePacketTuple_"
+  },
+  {
+    "desc": "[mut33] ACL:IHL 上界不查(按越界偏移读端口)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\t\tif ihl < 20 || ihl > len(p) {\n\t\t\treturn pktTuple{}, false\n\t\t}",
+    "new": "\t\tif ihl < 20 {\n\t\t\treturn pktTuple{}, false\n\t\t}",
+    "test": "./cmd/nanotund/ -run TestParsePacketTuple_"
+  },
+  {
+    "desc": "[mut33] ACL:不认 IPv4 ICMP(icmp deny 规则形同不存在,ping 照通)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\t\tcase 1:\n\t\t\tout.proto = \"icmp\"",
+    "new": "\t\tcase 1:\n\t\t\tout.proto = \"\"",
+    "test": "./cmd/nanotund/ -run TestParsePacketTuple_"
+  },
+  {
+    "desc": "[mut33] ACL:不认 ICMPv6(v6 ping 绕过 proto 维度裁决)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\t\t\tcase 58: // ICMPv6\n\t\t\t\tout.proto = \"icmpv6\"\n\t\t\t\tresolved = true",
+    "new": "\t\t\tcase 58: // ICMPv6\n\t\t\t\tout.proto = \"\"\n\t\t\t\tresolved = true",
+    "test": "./cmd/nanotund/ -run TestParsePacketTuple_"
+  },
+  {
+    "desc": "[mut33] ACL:白名单语义失效(default=deny 但无 user 规则时全放行)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\t\tif !snap.hasUserRules {\n\t\t\tif snap.defaultAction == store.ACLDeny {",
+    "new": "\t\tif !snap.hasUserRules {\n\t\t\tif false {",
+    "test": "./cmd/nanotund/ -run TestACLDropDirected_"
+  },
+  {
+    "desc": "[mut33] ACL:快照未装好就丢包(服务刚起来那一下全网不通)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\tsnap := aclCurrent.Load()\n\tif snap == nil {\n\t\treturn false\n\t}\n\tt, ok := parsePacketTuple(packet)",
+    "new": "\tsnap := aclCurrent.Load()\n\tif snap == nil {\n\t\treturn true\n\t}\n\tt, ok := parsePacketTuple(packet)",
+    "test": "./cmd/nanotund/ -run TestACLDropDirected_"
+  },
+  {
+    "desc": "[mut33] ACL:解析不出的包放行(绕过整个裁决)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\t\taclDropCount.Add(1)\n\t\trecordACLDrop(\"unparsable\", srcUserID, 0, \"\", 0)\n\t\treturn true",
+    "new": "\t\treturn false",
+    "test": "./cmd/nanotund/ -run TestACLDropDirected_"
+  },
+  {
+    "desc": "[mut33] ACL:无 user 上下文也裁决(内部流量按跨用户规则误丢)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "func aclDropPacketDirected(srcUserID int64, packet []byte) bool {\n\tif srcUserID == 0 {\n\t\treturn false\n\t}",
+    "new": "func aclDropPacketDirected(srcUserID int64, packet []byte) bool {\n\tif srcUserID == -1 {\n\t\treturn false\n\t}",
+    "test": "./cmd/nanotund/ -run TestACLDropDirected_"
+  },
+  {
+    "desc": "[mut33b] 丢包审计:基数上限失效(一次端口扫描塞进六万多个桶)",
+    "file": "cmd/nanotund/acl_drop_audit.go",
+    "old": "\tif aclDropAuditBucketCount.Load() >= aclDropAuditMaxBuckets {",
+    "new": "\tif false {",
+    "test": "./cmd/nanotund/ -run TestRecordACLDrop_"
+  },
+  {
+    "desc": "[mut33b] 丢包审计:一律折叠(审计里再也看不出谁到谁被丢)",
+    "file": "cmd/nanotund/acl_drop_audit.go",
+    "old": "\tif aclDropAuditBucketCount.Load() >= aclDropAuditMaxBuckets {",
+    "new": "\tif true {",
+    "test": "./cmd/nanotund/ -run TestRecordACLDrop_"
+  },
+  {
+    "desc": "[mut33b] 丢包审计:折叠桶不计数(丢包数目丢失)",
+    "file": "cmd/nanotund/acl_drop_audit.go",
+    "old": "\t\taclDropBucketBump(v.(*aclDropBucket))\n\t\treturn\n\t}\n\tv, loaded := aclDropAggBuckets.LoadOrStore(key, &aclDropBucket{})",
+    "new": "\t\treturn\n\t}\n\tv, loaded := aclDropAggBuckets.LoadOrStore(key, &aclDropBucket{})",
+    "test": "./cmd/nanotund/ -run TestRecordACLDrop_"
+  },
+  {
+    "desc": "[mut33b] 丢包审计:interval 非正数不夹取(NewTicker(0) 直接 panic 带走进程)",
+    "file": "cmd/nanotund/acl_drop_audit.go",
+    "old": "\tif interval <= 0 {\n\t\tinterval = aclDropAuditFlushInterval\n\t}",
+    "new": "\tif interval < 0 {\n\t\tinterval = aclDropAuditFlushInterval\n\t}",
+    "test": "./cmd/nanotund/ -run TestStartACLDropAuditFlusher_"
+  },
+  {
+    "desc": "[mut33b] 丢包审计:定时那一下不 flush(长跑服务只有退出时那批统计)",
+    "file": "cmd/nanotund/acl_drop_audit.go",
+    "old": "\t\tcase <-t.C:\n\t\t\tflushACLDropAggregates(ctx, st)",
+    "new": "\t\tcase <-t.C:",
+    "test": "./cmd/nanotund/ -run TestRunACLDropAuditFlushLoop_"
+  },
+  {
+    "desc": "[mut33b] 丢包审计:nil ctx 不兜底(直接 nil 解引用)",
+    "file": "cmd/nanotund/acl_drop_audit.go",
+    "old": "\tif ctx == nil {\n\t\tctx = context.Background()\n\t}",
+    "new": "\tif ctx == nil {\n\t\t_ = ctx\n\t}",
+    "test": "./cmd/nanotund/ -run TestRunACLDropAuditFlushLoop_"
+  },
+  {
+    "desc": "[mut33b] 丢包审计:overflow 桶的 target 不特殊标记(排障看不出维度已合并)",
+    "file": "cmd/nanotund/acl_drop_audit.go",
+    "old": "\tif k.kind == \"overflow\" {\n\t\treturn \"<overflow>\"",
+    "new": "\tif false {\n\t\treturn \"<overflow>\"",
+    "test": "./cmd/nanotund/ -run TestACLDropAuditTarget_"
+  },
+  {
+    "desc": "[mut33b] 丢包审计:出口类丢包 target 记成用户(排障查错方向)",
+    "file": "cmd/nanotund/acl_drop_audit.go",
+    "old": "\tif k.kind == \"exit_acl\" || k.kind == \"exit_gate\" {\n\t\tdst = \"<exit>\"\n\t}",
+    "new": "\tif false {\n\t\tdst = \"<exit>\"\n\t}",
+    "test": "./cmd/nanotund/ -run TestACLDropAuditTarget_"
+  },
+  {
+    "desc": "[mut33b] ACL:端口不可判定时不再 fail-closed(分片绕过端口封锁)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\t\t\tif rulePortIndeterminate(e, t) {\n\t\t\t\tdenyHit = true\n\t\t\t\treturn\n\t\t\t}",
+    "new": "\t\t\tif false {\n\t\t\t\tdenyHit = true\n\t\t\t\treturn\n\t\t\t}",
+    "test": "./cmd/nanotund/ -run 'TestEvaluateUser_|TestParsePacketTuple_'"
+  },
+  {
+    "desc": "[mut33b] ACL:命中 allow 例外被 default 吃掉(白名单里的放行项失效)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\tif !denyHit {\n\t\tcheck(snap.userAll)\n\t}\n\tif denyHit {\n\t\treturn store.ACLDeny\n\t}\n\tif allowHit {\n\t\treturn store.ACLAllow\n\t}\n\treturn snap.defaultAction",
+    "new": "\tif !denyHit {\n\t\tcheck(snap.userAll)\n\t}\n\tif denyHit {\n\t\treturn store.ACLDeny\n\t}\n\treturn snap.defaultAction",
+    "test": "./cmd/nanotund/ -run TestEvaluateUser_"
+  },
+  {
+    "desc": "[mut33b] 子网路由:mesh 关掉仍放行(整网锁死开关失效)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\tif !snap.meshEnabled {\n\t\treturn true\n\t}\n\tt, ok := parsePacketTuple(packet)\n\tif !ok {\n\t\t// 第十四轮深扫 LOW:改 fail-closed(拒)。同 aclDropPacketDirected —— 已过 ValidIPPacket 仍解不出的畸形包宁拒不放。\n\t\treturn true\n\t}",
+    "new": "\tt, ok := parsePacketTuple(packet)\n\tif !ok {\n\t\treturn true\n\t}",
+    "test": "./cmd/nanotund/ -run TestACLDeniesSubnetRoute_"
+  },
+  {
+    "desc": "[mut33b] 子网路由:解析不出的包放行(绕过裁决)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\tt, ok := parsePacketTuple(packet)\n\tif !ok {\n\t\t// 第十四轮深扫 LOW:改 fail-closed(拒)。同 aclDropPacketDirected —— 已过 ValidIPPacket 仍解不出的畸形包宁拒不放。\n\t\treturn true\n\t}",
+    "new": "\tt, ok := parsePacketTuple(packet)\n\tif !ok {\n\t\treturn false\n\t}",
+    "test": "./cmd/nanotund/ -run TestACLDeniesSubnetRoute_"
+  },
+  {
+    "desc": "[mut33b] 反欺骗:冒充他人 vIP 的判定放到豁免之后(已批准出口可注入伪造回包)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\tif _, owned := lookupVIPOwner(src); owned {",
+    "new": "\tif _, owned := lookupVIPOwner(src); owned && !c.advertisedExitApproved.Load() && !c.advertisedSubnetApproved.Load() {",
+    "test": "./cmd/nanotund/ -run TestConnSourceSpoofed_"
   }
 ]
