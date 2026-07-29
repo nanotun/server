@@ -2370,8 +2370,8 @@
   {
     "desc": "[mut32] TUN 读:ctx 取消时不关设备(shutdown 被阻塞的 Read 拖住)",
     "file": "cmd/nanotund/server.go",
-    "old": "\t\t\tcase <-globalContext.Done():\n\t\t\t\t_ = dev.Close()\n\t\t\tcase <-done:",
-    "new": "\t\t\tcase <-globalContext.Done():\n\t\t\tcase <-done:",
+    "old": "\t\t\tcase <-gctx.Done():\n\t\t\t\t_ = dev.Close()\n\t\t\tcase <-done:",
+    "new": "\t\t\tcase <-gctx.Done():\n\t\t\tcase <-done:",
     "test": "./cmd/nanotund/",
     "run": "TestTunReadLoop"
   },
@@ -2976,5 +2976,124 @@
     "old": "\tsubnetRouteDroppedFull.Add(1)\n\treturn false\n}",
     "new": "\tsubnetRouteDroppedFull.Add(1)\n\treturn true\n}",
     "test": "./cmd/nanotund/ -run TestDeliverServerOriginatedToDevice_"
+  },
+  {
+    "desc": "[mut35] 出口 DNS:解析不出的应答回退 server 本地上游(地理污染)",
+    "file": "cmd/nanotund/magic_dns_exit.go",
+    "old": "\te, ok := resolveExitDNSRawCached(key, exitConn, query)\n\tif !ok {\n\t\twriteExitDNSServfail(conn, peer, qid, q)",
+    "new": "\te, ok := resolveExitDNSRawCached(key, exitConn, query)\n\tif !ok {\n\t\t_ = e\n\t\treturn false",
+    "test": "./cmd/nanotund/ -run TestExitDNS_"
+  },
+  {
+    "desc": "[mut35] 出口 DNS:答复区解析失败仍当成功(半条答案落共享缓存)",
+    "file": "cmd/nanotund/magic_dns_exit.go",
+    "old": "\t\trcode, ttl, pok := parseRawDNSMeta(raw)\n\t\tif !pok {\n\t\t\treturn nil, errExitDNSResolveFailed\n\t\t}",
+    "new": "\t\trcode, ttl, _ := parseRawDNSMeta(raw)",
+    "test": "./cmd/nanotund/ -run TestExitDNS_"
+  },
+  {
+    "desc": "[mut35] 出口 DNS:A/AAAA 答复区解析失败仍当成功",
+    "file": "cmd/nanotund/magic_dns_exit.go",
+    "old": "\t\taddrs, rcode, ttl, pok := parseExitDNSResult(raw)\n\t\tif !pok {\n\t\t\treturn nil, errExitDNSResolveFailed\n\t\t}",
+    "new": "\t\taddrs, rcode, ttl, _ := parseExitDNSResult(raw)",
+    "test": "./cmd/nanotund/ -run TestExitDNS_"
+  },
+  {
+    "desc": "[mut35] 出口 DNS:无 v4 网关时不 SERVFAIL 而是回退本地上游",
+    "file": "cmd/nanotund/magic_dns_exit.go",
+    "old": "\tg := serverGatewayAddrs.Load()\n\tif g == nil || !g.v4.IsValid() {\n\t\treturn nil, false",
+    "new": "\tg := serverGatewayAddrs.Load()\n\tif g == nil {\n\t\treturn nil, false",
+    "test": "./cmd/nanotund/ -run TestExitDNS_"
+  },
+  {
+    "desc": "[mut35] 出口 DNS:关联端口耗尽时复用已占用端口(两条查询应答互串)",
+    "file": "cmd/nanotund/magic_dns_exit.go",
+    "old": "\t\tif _, used := exitDNSWaiters[p]; used {\n\t\t\tcontinue\n\t\t}",
+    "new": "",
+    "test": "./cmd/nanotund/ -run TestExitDNS_"
+  },
+  {
+    "desc": "[mut35] 出口 DNS:peer 地址畸形时报告已作答(客户端干等超时)",
+    "file": "cmd/nanotund/magic_dns_exit.go",
+    "old": "\tvip, ok := netipAddrFromUDP(peer)\n\tif !ok {\n\t\treturn false\n\t}\n\tegress := exitDeviceForClientVIP(vip)\n\tif egress == 0 {\n\t\treturn false // 未选 peer 出口 → 本地上游解析即可\n\t}\n\tif egress == egressFailClosed {\n\t\twriteExitDNSServfail(conn, peer, qid, q) // 出口无法兑现 → 同「出口离线」，见 tryResolvePublicViaExit",
+    "new": "\tvip, ok := netipAddrFromUDP(peer)\n\tif !ok {\n\t\twriteExitDNSServfail(conn, peer, qid, q)\n\t\treturn true\n\t}\n\tegress := exitDeviceForClientVIP(vip)\n\tif egress == 0 {\n\t\treturn false // 未选 peer 出口 → 本地上游解析即可\n\t}\n\tif egress == egressFailClosed {\n\t\twriteExitDNSServfail(conn, peer, qid, q) // 出口无法兑现 → 同「出口离线」，见 tryResolvePublicViaExit",
+    "test": "./cmd/nanotund/ -run TestExitDNS_"
+  },
+  {
+    "desc": "[mut35] MagicDNS:HTTPS/SVCB 不走出口(ipv4hint 仍被 server 地理污染)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\t\tif q.Class == dnsmessage.ClassINET && (q.Type == dnsmessage.TypeHTTPS || q.Type == dnsmessage.TypeSVCB) {",
+    "new": "\t\tif false {",
+    "test": "./cmd/nanotund/ -run TestHandleMagicDNSPacket_RoutesHTTPS"
+  },
+  {
+    "desc": "[mut35] MagicDNS:任意类型都绕一趟出口(MX 等白占 2s 在途位)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\t\tif q.Class == dnsmessage.ClassINET && (q.Type == dnsmessage.TypeHTTPS || q.Type == dnsmessage.TypeSVCB) {",
+    "new": "\t\tif q.Class == dnsmessage.ClassINET {",
+    "test": "./cmd/nanotund/ -run TestHandleMagicDNSPacket_RoutesHTTPS"
+  },
+  {
+    "desc": "[mut35] ICMPv6:不裁到 1280(错误帧在路上被丢,客户端仍干等)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tdata := orig\n\tif len(data) > maxData {\n\t\tdata = data[:maxData]\n\t}",
+    "new": "\tdata := orig\n\t_ = maxData",
+    "test": "./cmd/nanotund/ -run 'TestBuildICMPv6|TestSendICMPv6'"
+  },
+  {
+    "desc": "[mut35] ICMPv6:构造失败仍投半成品",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tpkt, ok := buildICMPv6DestUnreach(orig)\n\tif !ok {\n\t\treturn\n\t}\n\tdeliverIPPacketToConn(c, pkt)",
+    "new": "\tpkt, _ := buildICMPv6DestUnreach(orig)\n\tdeliverIPPacketToConn(c, pkt)",
+    "test": "./cmd/nanotund/ -run 'TestBuildICMPv6|TestSendICMPv6'"
+  },
+  {
+    "desc": "[mut35] 出口复核:被接管的旧会话也参与(给客户端发错撤销通知)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tfor _, c := range connIDMap {\n\t\tif c == nil || c.takenOver.Load() {\n\t\t\tcontinue\n\t\t}\n\t\tif c.egressDeviceID.Load() == egressFailClosed {",
+    "new": "\tfor _, c := range connIDMap {\n\t\tif c == nil {\n\t\t\tcontinue\n\t\t}\n\t\tif c.egressDeviceID.Load() == egressFailClosed {",
+    "test": "./cmd/nanotund/ -run TestRevalidateExitBindings_"
+  },
+  {
+    "desc": "[mut35] 端口转发:v6 mesh 网段不解析(v6 vIP 目标被当成 LAN)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\tif sharedTUNGatewayV6 != \"\" {\n\t\tif p, err := netip.ParsePrefix(sharedTUNGatewayV6); err == nil {\n\t\t\tm.meshV6 = p.Masked()\n\t\t}\n\t}",
+    "new": "",
+    "test": "./cmd/nanotund/ -run TestStartPortForwardManager_"
+  },
+  {
+    "desc": "[mut35] 端口转发:mesh 网段不做 Masked(Contains 判据错位)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\tif p, err := netip.ParsePrefix(sharedTUNGateway); err == nil {\n\t\tm.meshV4 = p.Masked()\n\t}",
+    "new": "\tif p, err := netip.ParsePrefix(sharedTUNGateway); err == nil {\n\t\tm.meshV4 = p\n\t}",
+    "test": "./cmd/nanotund/ -run TestStartPortForwardManager_"
+  },
+  {
+    "desc": "[mut35] 端口转发:不清崩溃残留放行规则(端口一直对公网开着)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\tflushStalePortForwardFirewallRules()\n\tportForwardMgr.Store(m)",
+    "new": "\tportForwardMgr.Store(m)",
+    "test": "./cmd/nanotund/ -run TestStartPortForwardManager_"
+  },
+  {
+    "desc": "[mut35] 端口转发:管理器不发布成全局单例(改映射要重启才生效)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\tflushStalePortForwardFirewallRules()\n\tportForwardMgr.Store(m)\n\tm.reload(context.Background())",
+    "new": "\tflushStalePortForwardFirewallRules()\n\tm.reload(context.Background())",
+    "test": "./cmd/nanotund/ -run TestStartPortForwardManager_"
+  },
+  {
+    "desc": "[mut35] 端口转发:主机路由不看引用计数就删(同 IP 的另一条映射当场断)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\tn := m.routeRef[key]\n\tif n <= 1 {",
+    "new": "\tn := m.routeRef[key]\n\tif true {",
+    "test": "./cmd/nanotund/ -run TestPortForwardDelRoute_"
+  },
+  {
+    "desc": "[mut35] 端口转发:v6 iptables 失败就跳过 v4 放行",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\tfor _, bin := range []string{\"iptables\", \"ip6tables\"} {\n\t\tdelFirewallRuleAll(bin, port)\n\t\tif out, err := pfExec(bin, firewallRuleArgs(\"-I\", port)...); err != nil {",
+    "new": "\tfor _, bin := range []string{\"ip6tables\"} {\n\t\tdelFirewallRuleAll(bin, port)\n\t\tif out, err := pfExec(bin, firewallRuleArgs(\"-I\", port)...); err != nil {",
+    "test": "./cmd/nanotund/ -run TestPortForwardFirewall_"
   }
 ]
