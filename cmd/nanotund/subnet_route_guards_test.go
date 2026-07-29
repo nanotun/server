@@ -264,6 +264,55 @@ func TestVia6SrcOwnedByConn_FailsOpenOnlyWhileTheTablesAreCold(t *testing.T) {
 	})
 }
 
+// TestRebuild_KeepsPlainSubnetRoutingWhenTheVia6SideOfTheDatabaseIsBroken
+// 4via6 那半边查不动时,普通子网路由必须照常装上,已生效的 site 映射也不许被清空。
+//
+// 重建这件事一次干两张表:子网路由表和 siteID→device 映射表。后者要查 via6_sites,而这次查询失败
+// (库被 restore 到旧 schema、表被手工动过、磁盘 I/O 抖动)属于「一半坏」:如果实现按「整轮失败」
+// 处理,那么每次 admin 批准 / 撤销路由触发的 reload 都会把**全部**子网路由从表里抹掉 —— 所有跨网段
+// 互访当场中断,而故障原因是一个跟它们毫无关系的 4via6 辅助表。
+// 反过来,已生效的 site 映射也不能因为这次查不到就置空:那会让在跑的 4via6 流量集体变成 DroppedNoSite。
+func TestRebuild_KeepsPlainSubnetRoutingWhenTheVia6SideOfTheDatabaseIsBroken(t *testing.T) {
+	gw := newRouteTestGateway(t)
+	oldGW := gatewayInstance
+	gatewayInstance = gw
+	t.Cleanup(func() { gatewayInstance = oldGW })
+	prevTbl := subnetRouteTable.Load()
+	prevVia6 := via6SiteTable.Load()
+	t.Cleanup(func() { subnetRouteTable.Store(prevTbl); via6SiteTable.Store(prevVia6) })
+	setServerGatewayAddrs("10.201.0.1/16", "")
+	t.Cleanup(func() { serverGatewayAddrs.Store(nil) })
+
+	_, deviceID := mustCreateUserAndDevice(t, gw, "grace")
+	if _, err := gw.store.DB().ExecContext(t.Context(),
+		`INSERT INTO subnet_routes(device_id, cidr, status, advertised_at, approved_at)
+		 VALUES(?,?,?,strftime('%s','now'),strftime('%s','now'))`,
+		deviceID, "192.168.44.0/24", util.RouteStatusApproved); err != nil {
+		t.Fatalf("直写 approved 路由: %v", err)
+	}
+
+	// 先装一份「已生效」的 site 映射,用来验它不会被这次半坏的重建抹掉。
+	const liveSite uint16 = 11
+	live := map[uint16]int64{liveSite: deviceID}
+	via6SiteTable.Store(&live)
+
+	// 把 4via6 那半边弄坏:表没了,GetOrAssignSiteID 与 ListVia6Sites 都会失败,
+	// 而 subnet_routes 自己照常可读。
+	if _, err := gw.store.DB().ExecContext(t.Context(), `DROP TABLE via6_sites`); err != nil {
+		t.Skipf("这套 schema 没有 via6_sites 表,跳过: %v", err)
+	}
+
+	rebuildSubnetRouteTable(t.Context())
+
+	if dev, ok := lookupSubnetRoute(netip.MustParseAddr("192.168.44.9")); !ok || dev != deviceID {
+		t.Fatalf("4via6 辅助表坏掉,普通子网路由却没装上(got %d,%v)—— 每次 reload 都会把所有跨网段互访打断,"+
+			"而原因跟它们毫无关系", dev, ok)
+	}
+	if dev, ok := lookupVia6Site(liveSite); !ok || dev != deviceID {
+		t.Errorf("已生效的 site 映射被这次半坏的重建抹掉了(got %d,%v)—— 在跑的 4via6 流量会集体变成 DroppedNoSite", dev, ok)
+	}
+}
+
 // mk4via6Addr 造一个 4via6 地址(siteID + 内嵌 v4),复用数据面自己的编码器,避免测试与实现
 // 各写一份编码而悄悄对不上。
 func mk4via6Addr(t *testing.T, siteID uint16, v4 netip.Addr) netip.Addr {

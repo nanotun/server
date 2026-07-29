@@ -1,0 +1,130 @@
+[
+  {
+    "desc": "[mut46] 接管:落定后不再复核继承来的出口(撤销撞上接管 → 那台客户端继续从已撤销的出口出网)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tif newConn.egressDeviceID.Load() > 0 {\n\t\t// 第十四轮深扫 MED:异步补扫包 safeGoroutine —— 一次性任务,panic 只 log 不应拖垮整进程(不触发关停)。\n\t\tgo safeGoroutine(\"revalidateExitBindings/takeover\", func() { revalidateExitBindings(context.Background()) })\n\t}",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_RevalidatesAnInheritedExitBindingRightAfterTheHandover"
+  },
+  {
+    "desc": "[mut46] 登录:不给客户端 prepend MagicDNS 网关(公网 DNS 先答 NXDOMAIN,内网名字解析不了)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tif extra := magicDNSExtraDNS(gw, gatewayAddrFromCIDR(sharedTUNGateway)); extra != \"\" {\n\t\tdnsV4 = append([]string{extra}, dnsV4...)\n\t}\n\tsaltBody, err := util.MarshalConvSaltLiteJSON(assignmentsForMsg,",
+    "new": "\tsaltBody, err := util.MarshalConvSaltLiteJSON(assignmentsForMsg,",
+    "test": "./cmd/nanotund/",
+    "run": "TestLogin_PutsTheMagicDNSGatewayFirstInTheDNSList"
+  },
+  {
+    "desc": "[mut46] 登录:网关追加到 DNS 列表末尾而非顶部(排在公网解析器后面 = 永远轮不到它)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tdnsV4 = append([]string{extra}, dnsV4...)\n\t}\n\tsaltBody, err := util.MarshalConvSaltLiteJSON(assignmentsForMsg,",
+    "new": "\t\tdnsV4 = append(dnsV4, extra)\n\t}\n\tsaltBody, err := util.MarshalConvSaltLiteJSON(assignmentsForMsg,",
+    "test": "./cmd/nanotund/",
+    "run": "TestLogin_PutsTheMagicDNSGatewayFirstInTheDNSList"
+  },
+  {
+    "desc": "[mut46] 接管:重连后不再 prepend MagicDNS 网关(平时能用,断线重连一次内网名字集体失效)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tif extra := magicDNSExtraDNS(gw, gatewayAddrFromCIDR(sharedTUNGateway)); extra != \"\" {\n\t\tdnsV4 = append([]string{extra}, dnsV4...)\n\t}\n\t// S1(2026-05-26)",
+    "new": "\t// S1(2026-05-26)",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_PutsTheMagicDNSGatewayFirstInTheDNSList"
+  },
+  {
+    "desc": "[mut46] 接管:重连后不下发 v6 解析器(热切换之后客户端 v6 侧解析整体变黑)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tif sharedTUNGatewayV6 != \"\" {\n\t\t// 与登录路径同语义:server 无 v6 公网出网时剔除公网 v6 解析器(见 egress_select.go)。\n\t\tdnsV6 = dnsV6ServersForClient(util.SanitizeDNSServersV6(gw.cfg.TUN.DNSServersV6))\n\t}",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_PutsTheMagicDNSGatewayFirstInTheDNSList"
+  },
+  {
+    "desc": "[mut46] MagicDNS:非 53 端口也照样 prepend 网关(客户端 stub 只打 :53,每次解析先白等一轮超时)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\tr := resolveMagicDNSConfig(gw.cfg.Server.MagicDNS)\n\tif r.port != 53 {\n\t\tmagicDNSNonStdPortWarnOnce.Do(func() {",
+    "new": "\tr := resolveMagicDNSConfig(gw.cfg.Server.MagicDNS)\n\tif false {\n\t\tmagicDNSNonStdPortWarnOnce.Do(func() {",
+    "test": "./cmd/nanotund/",
+    "run": "TestLogin_LeavesTheDNSListAloneWhenMagicDNSListensOffPort53"
+  },
+  {
+    "desc": "[mut46] MagicDNS:经出口解析已作答后继续回落本地上游(server 地理的答案污染客户端缓存)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\tif tryResolvePublicViaExit(conn, peer, query, q, hdr.ID) {\n\t\treturn\n\t}",
+    "new": "\ttryResolvePublicViaExit(conn, peer, query, q, hdr.ID)",
+    "test": "./cmd/nanotund/",
+    "run": "TestMagicDNS_AnExitBoundSessionNeverFallsBackToTheLocalUpstream"
+  },
+  {
+    "desc": "[mut46] hy2:端口并集解析不出来也照启(主端口落成 0 → 内核随便给个临时端口,客户端全连不上)",
+    "file": "cmd/nanotund/hysteria.go",
+    "old": "\tprimaryPort, err := util.PrimaryPortFromUDPListenAddr(udpAddr)\n\tif err != nil {\n\t\treturn nil, 0, nil, err\n\t}",
+    "new": "\tprimaryPort, _ := util.PrimaryPortFromUDPListenAddr(udpAddr)",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartEmbeddedHysteria_RefusesAListenAddrWhosePortsCannotBeParsed"
+  },
+  {
+    "desc": "[mut46] 热更:限速表 diff 只比键不比值(改了数值被判成「没改动」,reload 静默丢掉这次变更)",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\tv2, ok := b[k]\n\t\tif !ok || v != v2 {\n\t\t\treturn false\n\t\t}",
+    "new": "\t\t_, ok := b[k]\n\t\tif !ok {\n\t\t\treturn false\n\t\t}\n\t\t_ = v",
+    "test": "./cmd/nanotund/",
+    "run": "TestSameRateLimitMap_TellsApartTwoMapsWithTheSameKeys"
+  },
+  {
+    "desc": "[mut46] 用户失效扫描:by-user 索引里的 nil 表项不跳过(取字段当场 panic,这一轮剩下的用户全部漏扫)",
+    "file": "cmd/nanotund/user_invalidate.go",
+    "old": "\t\tfor _, c := range sub {\n\t\t\tif c == nil {\n\t\t\t\tcontinue\n\t\t\t}",
+    "new": "\t\tfor _, c := range sub {",
+    "test": "./cmd/nanotund/",
+    "run": "TestScanAndKickInvalidUsers_SkipsJunkEntriesAndStillHandlesTheRealOne"
+  },
+  {
+    "desc": "[mut46] 用户失效扫描:键不是数字的表项也照扫(uid=0 查不到用户 → 按「已删号」把那批会话全踢)",
+    "file": "cmd/nanotund/user_invalidate.go",
+    "old": "\t\tuid := parseUserIDStr(userIDStr)\n\t\tif uid <= 0 {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tuid := parseUserIDStr(userIDStr)",
+    "test": "./cmd/nanotund/",
+    "run": "TestScanAndKickInvalidUsers_SkipsJunkEntriesAndStillHandlesTheRealOne"
+  },
+  {
+    "desc": "[mut46] 4via6:站点表还没建起来就直接解引用(启动窗口内每条 4via6 查询都 panic 在 DNS goroutine 上)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tm := via6SiteTable.Load()\n\tif m == nil {\n\t\treturn 0, false\n\t}",
+    "new": "\tm := via6SiteTable.Load()",
+    "test": "./cmd/nanotund/",
+    "run": "TestLookupVia6Site_AnswersBeforeTheTableIsEverBuilt"
+  },
+  {
+    "desc": "[mut46] /status:子网路由条数恒报 0(运维照这个数字去查审批和客户端宣告,方向从一开始就错)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tn := 0\n\tif tbl := subnetRouteTable.Load(); tbl != nil {\n\t\tn = len(*tbl)\n\t}",
+    "new": "\tn := 0",
+    "test": "./cmd/nanotund/",
+    "run": "TestSnapshotSubnetRouteStats_ReportsHowManyRoutesAreLoaded"
+  },
+  {
+    "desc": "[mut46] 子网路由重建:4via6 辅助表查不动就整轮放弃(每次 reload 打断所有跨网段互访)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tif sites, serr := gw.store.ListVia6Sites(dbCtx); serr != nil {\n\t\tlogrus.WithError(serr).Warn(\"[subnet-route] 重建 4via6 site 表失败，保留旧表\")\n\t} else {",
+    "new": "\tif sites, serr := gw.store.ListVia6Sites(dbCtx); serr != nil {\n\t\tlogrus.WithError(serr).Warn(\"[subnet-route] 重建 4via6 site 表失败，保留旧表\")\n\t\treturn\n\t} else {",
+    "test": "./cmd/nanotund/",
+    "run": "TestRebuild_KeepsPlainSubnetRoutingWhenTheVia6SideOfTheDatabaseIsBroken"
+  },
+  {
+    "desc": "[mut46] 子网路由重建:4via6 查不动时把已生效的 site 映射清空(在跑的 4via6 流量集体 DroppedNoSite)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tvar newVia6 *map[uint16]int64\n\tif sites, serr := gw.store.ListVia6Sites(dbCtx); serr != nil {",
+    "new": "\tvar newVia6 *map[uint16]int64\n\tempty := map[uint16]int64{}\n\tnewVia6 = &empty\n\tif sites, serr := gw.store.ListVia6Sites(dbCtx); serr != nil {",
+    "test": "./cmd/nanotund/",
+    "run": "TestRebuild_KeepsPlainSubnetRoutingWhenTheVia6SideOfTheDatabaseIsBroken"
+  },
+  {
+    "desc": "[mut46] 启动:建不起表也照样把库挂上继续跑(端口能听,每次登录都在查不存在的表)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\tif err := st.Migrate(ctx); err != nil {\n\t\t_ = st.Close()\n\t\treturn nil, err\n\t}",
+    "new": "\t_ = st.Migrate(ctx)",
+    "test": "./cmd/nanotund/",
+    "run": "TestInitAuthBackend_RefusesToRunOnADatabaseItCannotMigrate"
+  }
+]

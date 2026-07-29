@@ -177,6 +177,43 @@ func TestStartEmbeddedHysteria_ObfsInitFailureUnwindsThePortAndTheRules(t *testi
 	_ = probe.Close()
 }
 
+// TestStartEmbeddedHysteria_RefusesAListenAddrWhosePortsCannotBeParsed 端口写错必须拒启,不能悄悄换个端口听。
+//
+// listen_addr 的端口位允许写并集("443"、"8443,443"、"5000-5100,443"),所以它不是简单的整数解析 ——
+// 拆 host:port 那一步对 "443x" 之类是**放过**的,只有并集解析才认得出来。这道闸没拦住的话主端口会落成 0,
+// 而 0 交给内核就是「随便给个临时端口」:hy2 于是在一个谁都不知道的高位端口上监听,node_login 上报的
+// 也是那个号,而客户端配的是 443 —— 服务端日志一片正常,所有 hy2 客户端连不上,现场看起来像被墙。
+func TestStartEmbeddedHysteria_RefusesAListenAddrWhosePortsCannotBeParsed(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := writeTestHy2ServerTLS(t, dir)
+	spy := &hopSpy{}
+	spy.install(t)
+
+	// ":0" 不在此列 —— 它是**刻意**支持的(让内核挑口,实际端口由第二个返回值上报给 node_login)。
+	for _, addr := range []string{"127.0.0.1:44e3", "127.0.0.1:,", "127.0.0.1:-"} {
+		t.Run(addr, func(t *testing.T) {
+			cfg := testHysteriaConfig(t, addr, "0123456789abcdef", certFile, keyFile)
+			srv, gotPort, cleanup, err := startEmbeddedHysteria(&cfg, "", "ws://127.0.0.1:8080/vpn", nil, nil)
+			if err == nil {
+				if srv != nil {
+					_ = srv.Close()
+				}
+				if cleanup != nil {
+					cleanup()
+				}
+				t.Fatalf("listen_addr=%q 的端口位解析不出来,却启动成功了(端口 %d)—— 客户端按配置里的端口发包,"+
+					"那些包没人接,而服务端日志一切正常", addr, gotPort)
+			}
+			if srv != nil || gotPort != 0 || cleanup != nil {
+				t.Errorf("失败时不能返回半成品(srv=%v port=%d cleanup==nil:%v)", srv, gotPort, cleanup == nil)
+			}
+			if spy.installs.Load() != 0 {
+				t.Errorf("端口都还没定下来就装了跳跃规则(%d 次)", spy.installs.Load())
+			}
+		})
+	}
+}
+
 // TestVPNHybridOutbound_UDPHandsOutARealSocket 开了 udp_relay 时 UDP 出口要真给一个可用 socket。
 //
 // 这条 outbound 只在 config.udp_relay_enabled=true 时装上(nanotun 默认关,开了等于把 hy2 当通用

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
 	"net/netip"
@@ -40,12 +41,26 @@ func runTakeoverOK(t *testing.T, fx *takeoverFixture, req *util.LoginReq) *util.
 	default:
 		close(fx.oldConn.tunnelDone)
 	}
+	resp, _ := startTakeoverOK(t, fx, req)
+	return resp
+}
+
+// runTakeoverOKWithSalt 同 runTakeoverOK,另外把紧随 LoginResp 的 ConvSalt 解出来 ——
+// 接管下发的 DNS 列表就在里面(登录路径有 dualStackLogin 做同样的事)。
+func runTakeoverOKWithSalt(t *testing.T, fx *takeoverFixture, req *util.LoginReq) (*util.LoginResp, *util.ConvSaltLite) {
+	t.Helper()
+	select {
+	case <-fx.oldConn.tunnelDone:
+	default:
+		close(fx.oldConn.tunnelDone)
+	}
 	return startTakeoverOK(t, fx, req)
 }
 
 // startTakeoverOK 与 runTakeoverOK 相同,但**不动** oldConn.tunnelDone ——
 // 「老链路迟迟不退出」那组用例要验的正是那段等待本身。
-func startTakeoverOK(t *testing.T, fx *takeoverFixture, req *util.LoginReq) *util.LoginResp {
+// 第二个返回值是紧随 LoginResp 的 ConvSalt(code != 0 时为 nil)。
+func startTakeoverOK(t *testing.T, fx *takeoverFixture, req *util.LoginReq) (*util.LoginResp, *util.ConvSaltLite) {
 	t.Helper()
 	// 接管成功后 handler 会 defer cleanupConnection,而清理要往 registerTunReadChan 投递并**等确认**。
 	// 没有消费者的话它永远卡在那里 —— 表现就是「关掉链路 handler 也不退出」。
@@ -69,7 +84,23 @@ func startTakeoverOK(t *testing.T, fx *takeoverFixture, req *util.LoginReq) *uti
 	})
 	resp := readResp(t, clientConn)
 	// net.Pipe 无缓冲:LoginResp 之后紧跟的 ConvSalt 没人读的话 handler 就卡在写上,
-	// 后面的 connIDMap 注册压根跑不到。起个读者一路吸干,直到链路被 cleanup 关掉。
+	// 后面的 connIDMap 注册压根跑不到。先把它读出来(顺带给调用方),再起读者一路吸干,
+	// 直到链路被 cleanup 关掉。
+	var salt *util.ConvSaltLite
+	if resp != nil && resp.Code == 0 {
+		typ, payload, err := readLinkFrameWithDeadline(clientConn, 15*time.Second)
+		if err != nil {
+			t.Fatalf("读 ConvSalt: %v", err)
+		}
+		if typ != util.LinkTypeConvSaltMsg {
+			t.Fatalf("LoginResp 之后应是 ConvSalt,got typ=%d", typ)
+		}
+		var cs util.ConvSaltLite
+		if err := json.Unmarshal(payload, &cs); err != nil {
+			t.Fatalf("解 ConvSalt: %v", err)
+		}
+		salt = &cs
+	}
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -78,7 +109,7 @@ func startTakeoverOK(t *testing.T, fx *takeoverFixture, req *util.LoginReq) *uti
 			}
 		}
 	}()
-	return resp
+	return resp, salt
 }
 
 // currentConnForSID 取接管后 connIDMap 里那条**新**连接。注册与写回应是两个步骤,给它一个有界窗口。

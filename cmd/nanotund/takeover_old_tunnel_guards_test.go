@@ -54,7 +54,7 @@ func TestTakeover_ForcesTheOldTunnelDownWhenItOverstays(t *testing.T) {
 		close(fx.oldConn.tunnelDone)
 	}()
 
-	resp := startTakeoverOK(t, fx, takeoverReq(fx, "victim", victimPSK))
+	resp, _ := startTakeoverOK(t, fx, takeoverReq(fx, "victim", victimPSK))
 	if resp.Code != 0 {
 		t.Fatalf("合法接管应成功: %+v", resp)
 	}
@@ -81,7 +81,7 @@ func TestTakeover_StillHandsOverWhenTheOldTunnelIgnoresTheCancel(t *testing.T) {
 	withShortTakeoverGrace(t, 150*time.Millisecond, 150*time.Millisecond)
 	oldCtx := armOldTunnelCtx(t, fx.oldConn)
 
-	resp := startTakeoverOK(t, fx, takeoverReq(fx, "victim", victimPSK))
+	resp, _ := startTakeoverOK(t, fx, takeoverReq(fx, "victim", victimPSK))
 	if resp.Code != 0 {
 		t.Fatalf("老链路不退出不该让接管失败: %+v", resp)
 	}
