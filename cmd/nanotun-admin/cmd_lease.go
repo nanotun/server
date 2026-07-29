@@ -62,8 +62,7 @@ func cmdLeaseGc(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 		if err != nil {
 			return err
 		}
-		ok, _ := confirm(opts, opts.T("lease.confirmGc", n, (*idle).String()))
-		if !ok {
+		if !confirm(opts, opts.T("lease.confirmGc", n, (*idle).String())) {
 			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
 			return nil
 		}

@@ -1,0 +1,58 @@
+[
+  {
+    "desc": "[mut47b] confirm 读不到输入(EOF / stdin 被关)时当成确认 —— 危险操作在非交互环境里无声执行",
+    "file": "cmd/nanotun-admin/confirm.go",
+    "old": "\tif err != nil {\n\t\treturn false\n\t}",
+    "new": "\tif err != nil {\n\t\treturn true\n\t}",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestConfirm|TestCmdUserDelete|TestCmdDeviceDelete"
+  },
+  {
+    "desc": "[mut47b] confirm 把任意输入都当成确认(默认支变 true) —— 敲 n 也照样删",
+    "file": "cmd/nanotun-admin/confirm.go",
+    "old": "\tdefault:\n\t\treturn false\n\t}",
+    "new": "\tdefault:\n\t\treturn true\n\t}",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestConfirm|TestCmdUserDelete|TestCmdDeviceDelete"
+  },
+  {
+    "desc": "[mut47b] 去返回值时把 route del 的确认判据写反(敲 y 反而取消、敲 n 照删)",
+    "file": "cmd/nanotun-admin/cmd_route.go",
+    "old": "if !confirm(opts, opts.T(\"route.confirmDelete\", deviceID, cidr)) {",
+    "new": "if confirm(opts, opts.T(\"route.confirmDelete\", deviceID, cidr)) {",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestCmdRoute"
+  },
+  {
+    "desc": "[mut47b] 去返回值时把 device del 的确认判据写反",
+    "file": "cmd/nanotun-admin/cmd_device.go",
+    "old": "if !confirm(opts, opts.T(\"device.confirmDelete\", d.ID, d.DeviceUUID)) {",
+    "new": "if confirm(opts, opts.T(\"device.confirmDelete\", d.ID, d.DeviceUUID)) {",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestCmdDevice"
+  },
+  {
+    "desc": "[mut47b] 去返回值时把 user del 的确认判据写反",
+    "file": "cmd/nanotun-admin/cmd_user.go",
+    "old": "if !confirm(opts, opts.T(\"user.confirmDelete\", u.Username)) {",
+    "new": "if confirm(opts, opts.T(\"user.confirmDelete\", u.Username)) {",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestCmdUser"
+  },
+  {
+    "desc": "[mut47b] 去返回值时把 exit revoke 的确认判据写反",
+    "file": "cmd/nanotun-admin/cmd_exit.go",
+    "old": "if !confirm(opts, opts.T(\"exit.confirmRevoke\", id, d.DeviceUUID)) {",
+    "new": "if confirm(opts, opts.T(\"exit.confirmRevoke\", id, d.DeviceUUID)) {",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestCmdExit|TestExit"
+  },
+  {
+    "desc": "[mut47b] openProfileOutput 去返回值时空路径不再走 fallback(profile 打不到 stdout)",
+    "file": "cmd/nanotun-admin/cmd_profile.go",
+    "old": "\tif strings.TrimSpace(path) == \"\" {\n\t\treturn fallback, func() error { return nil }\n\t}",
+    "new": "",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestOpenProfileOutput|TestCmdProfile"
+  }
+]

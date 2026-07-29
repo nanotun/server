@@ -298,11 +298,7 @@ func cmdRouteDelete(ctx context.Context, st *store.Store, opts *globalOpts, args
 		return usageErrorWrap(opts.usage("nanotun-admin route delete <device_id> <cidr>"), err)
 	}
 	if !opts.yes {
-		ok, err := confirm(opts, opts.T("route.confirmDelete", deviceID, cidr))
-		if err != nil {
-			return err
-		}
-		if !ok {
+		if !confirm(opts, opts.T("route.confirmDelete", deviceID, cidr)) {
 			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
 			return nil
 		}

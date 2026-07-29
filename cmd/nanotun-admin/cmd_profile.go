@@ -360,10 +360,7 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 // emitProfile 按 --format 写出 profile；qr / qr-png 编码 nanotun:// URL（非裸 JSON）。
 func emitProfile(p *profileSchema, format, outputPath string, force bool, opts *globalOpts) error {
 	if opts.json {
-		out, closeOut, err := openProfileOutput(outputPath, opts.stdout, force)
-		if err != nil {
-			return err
-		}
+		out, closeOut := openProfileOutput(outputPath, opts.stdout, force)
 		if err := writeJSONCompact(out, p); err != nil {
 			return err
 		}
@@ -392,10 +389,7 @@ func emitProfile(p *profileSchema, format, outputPath string, force bool, opts *
 		fmt.Fprintln(opts.stdout, opts.T("profile.qrScanHint"))
 		return writeQRTerminal(opts, opts.stdout, url)
 	default:
-		out, closeOut, err := openProfileOutput(outputPath, opts.stdout, force)
-		if err != nil {
-			return err
-		}
+		out, closeOut := openProfileOutput(outputPath, opts.stdout, force)
 		if err := writeProfile(out, p, format, false); err != nil {
 			return err
 		}
@@ -882,9 +876,13 @@ func validFormat(s string) bool {
 //
 // 调用方约定:先写 writer,再**检查 closer() 返回值**(不要 `defer closeOut()` 把错误丢掉);写失败时直接
 // 返回、不调 closer(不产出半截文件)。
-func openProfileOutput(path string, fallback io.Writer, force bool) (io.Writer, func() error, error) {
+// 不返回 error:含密产物先攒在内存里,真正碰磁盘的是 closer 里那次 writeFileTight ——
+// 「打开」这一步没有任何会失败的动作。2026-07-30 去掉了那个恒为 nil 的返回值,四个调用点的
+// `if err != nil { return err }` 是死代码,留着会让人以为路径不可写在这里就能发现
+// (实际上要到 closer 才知道,而那是写完 stdout 之后的事)。
+func openProfileOutput(path string, fallback io.Writer, force bool) (io.Writer, func() error) {
 	if strings.TrimSpace(path) == "" {
-		return fallback, func() error { return nil }, nil
+		return fallback, func() error { return nil }
 	}
 	buf := &bytes.Buffer{}
 	closer := func() error {
@@ -893,7 +891,7 @@ func openProfileOutput(path string, fallback io.Writer, force bool) (io.Writer, 
 		}
 		return nil
 	}
-	return buf, closer, nil
+	return buf, closer
 }
 
 func writeProfile(w io.Writer, p *profileSchema, format string, jsonGlobal bool) error {

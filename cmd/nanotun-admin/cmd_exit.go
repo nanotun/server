@@ -302,11 +302,7 @@ func cmdExitRevoke(ctx context.Context, st *store.Store, opts *globalOpts, args 
 		return opts.notFoundErr(err, "device.notFound", id)
 	}
 	if !opts.yes {
-		ok, cerr := confirm(opts, opts.T("exit.confirmRevoke", id, d.DeviceUUID))
-		if cerr != nil {
-			return cerr
-		}
-		if !ok {
+		if !confirm(opts, opts.T("exit.confirmRevoke", id, d.DeviceUUID)) {
 			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
 			return nil
 		}

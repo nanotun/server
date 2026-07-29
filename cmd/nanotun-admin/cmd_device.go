@@ -300,11 +300,7 @@ func cmdDeviceDelete(ctx context.Context, st *store.Store, opts *globalOpts, arg
 		return opts.notFoundErr(err, "device.notFound", id)
 	}
 	if !opts.yes {
-		ok, err := confirm(opts, opts.T("device.confirmDelete", d.ID, d.DeviceUUID))
-		if err != nil {
-			return err
-		}
-		if !ok {
+		if !confirm(opts, opts.T("device.confirmDelete", d.ID, d.DeviceUUID)) {
 			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
 			return nil
 		}

@@ -369,11 +369,7 @@ func TestConfirm_OnlyYesMeansYes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%q", tc.in), func(t *testing.T) {
 			opts, out := newConfirmOpts(tc.in)
-			got, err := confirm(opts, "真的要删吗")
-			if err != nil {
-				t.Fatalf("err=%v", err)
-			}
-			if got != tc.want {
+			if got := confirm(opts, "真的要删吗"); got != tc.want {
 				t.Fatalf("got %v want %v —— 危险操作上把「不确定」当成确认是不可接受的", got, tc.want)
 			}
 			if !strings.Contains(out.String(), "真的要删吗") {

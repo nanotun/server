@@ -26,10 +26,7 @@ func TestOpenProfileOutput_SyncsBeforeClose(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "p.json")
 
-	w, closer, err := openProfileOutput(path, nil, false)
-	if err != nil {
-		t.Fatalf("openProfileOutput: %v", err)
-	}
+	w, closer := openProfileOutput(path, nil, false)
 	const payload = `{"k":"v"}`
 	if _, err := w.Write([]byte(payload)); err != nil {
 		t.Fatalf("write: %v", err)
@@ -54,10 +51,7 @@ func TestOpenProfileOutput_SyncsBeforeClose(t *testing.T) {
 
 	// 也验证空路径走 fallback 分支不 panic。
 	var fallback strings.Builder
-	w2, closer2, err := openProfileOutput("", &fallback, false)
-	if err != nil {
-		t.Fatalf("fallback path: %v", err)
-	}
+	w2, closer2 := openProfileOutput("", &fallback, false)
 	_, _ = w2.Write([]byte("x"))
 	if err := closer2(); err != nil {
 		t.Fatalf("fallback closer: %v", err)
@@ -647,11 +641,8 @@ func TestOpenProfileOutput_RefusesExistingUnlessForce(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old-secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// 默认:open 不报错(缓冲写),但 closer 落盘时拒绝覆盖。
-	w, closer, err := openProfileOutput(path, nil, false)
-	if err != nil {
-		t.Fatalf("openProfileOutput(force=false): %v", err)
-	}
+	// 默认:open 不碰磁盘(缓冲写),拒绝覆盖发生在 closer 落盘那一步。
+	w, closer := openProfileOutput(path, nil, false)
 	_, _ = w.Write([]byte("new-secret"))
 	if err := closer(); err == nil {
 		t.Fatal("closer 应拒绝覆盖已存在文件(默认)")
@@ -661,10 +652,7 @@ func TestOpenProfileOutput_RefusesExistingUnlessForce(t *testing.T) {
 		t.Fatalf("拒绝覆盖后原文件应保持不变,got %q", b)
 	}
 	// force 允许覆盖。
-	w2, closer2, err := openProfileOutput(path, nil, true)
-	if err != nil {
-		t.Fatalf("force 应允许覆盖: %v", err)
-	}
+	w2, closer2 := openProfileOutput(path, nil, true)
 	_, _ = w2.Write([]byte("new"))
 	if err := closer2(); err != nil {
 		t.Fatalf("force closer: %v", err)

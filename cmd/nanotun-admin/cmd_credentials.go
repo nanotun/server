@@ -146,8 +146,7 @@ func cmdCredentialsShow(ctx context.Context, st *store.Store, opts *globalOpts, 
 		// 「危险操作需 --yes 二次确认」契约一致。--yes / -y 跳过(供 provisioning 脚本)。确认放在
 		// preflight 之后:确定性的输出前置失败仍先于交互提示短路,不让用户白确认一场。
 		if !opts.yes {
-			ok, _ := confirm(opts, opts.T("credentials.confirmRotate", u.Username))
-			if !ok {
+			if !confirm(opts, opts.T("credentials.confirmRotate", u.Username)) {
 				fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
 				return nil
 			}
@@ -308,10 +307,7 @@ func preflightCredentialsOutput(format, output string, force bool, opts *globalO
 func emitCredentials(c *credentialsSchema, format, outputPath string, force bool, opts *globalOpts) error {
 	// 全局 --json 强制 compact JSON,与其它子命令脚本管线一致。
 	if opts.json {
-		out, closeOut, err := openProfileOutput(outputPath, opts.stdout, force)
-		if err != nil {
-			return err
-		}
+		out, closeOut := openProfileOutput(outputPath, opts.stdout, force)
 		if err := writeCredentialsJSONCompact(out, c); err != nil {
 			return err
 		}
@@ -340,10 +336,7 @@ func emitCredentials(c *credentialsSchema, format, outputPath string, force bool
 		fmt.Fprintln(opts.stdout, opts.T("credentials.qrScanHint"))
 		return writeQRTerminal(opts, opts.stdout, url)
 	default:
-		out, closeOut, err := openProfileOutput(outputPath, opts.stdout, force)
-		if err != nil {
-			return err
-		}
+		out, closeOut := openProfileOutput(outputPath, opts.stdout, force)
 		if err := writeCredentials(out, c, format); err != nil {
 			return err
 		}

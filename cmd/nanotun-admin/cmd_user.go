@@ -471,11 +471,7 @@ func cmdUserDelete(ctx context.Context, st *store.Store, opts *globalOpts, args 
 		return opts.notFoundErr(err, "user.notFound", args[0])
 	}
 	if !opts.yes {
-		ok, err := confirm(opts, opts.T("user.confirmDelete", u.Username))
-		if err != nil {
-			return err
-		}
-		if !ok {
+		if !confirm(opts, opts.T("user.confirmDelete", u.Username)) {
 			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
 			return nil
 		}
@@ -515,8 +511,7 @@ func cmdUserResetPSK(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	// 「危险操作(删用户 / 重置 PSK)需 --yes 二次确认」的契约点名要求它像 user delete 一样先确认。
 	// 此前直接执行,误打用户名会静默把**错的人**的凭证换掉。--yes / -y 跳过(供脚本/自动化)。
 	if !opts.yes {
-		ok, _ := confirm(opts, opts.T("user.confirmResetPSK", u.Username))
-		if !ok {
+		if !confirm(opts, opts.T("user.confirmResetPSK", u.Username)) {
 			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
 			return nil
 		}

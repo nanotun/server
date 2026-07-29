@@ -155,8 +155,7 @@ func cmdRestore(opts *globalOpts, args []string) int {
 	}
 
 	if !opts.yes {
-		ok, _ := confirm(opts, opts.T("backup.confirmRestore", srcAbs, dstAbs))
-		if !ok {
+		if !confirm(opts, opts.T("backup.confirmRestore", srcAbs, dstAbs)) {
 			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
 			return 0
 		}
@@ -195,8 +194,7 @@ func cmdRestore(opts *globalOpts, args []string) int {
 // cmdVacuum:`nanotun-admin vacuum`
 func cmdVacuum(ctx context.Context, st *store.Store, opts *globalOpts, _ []string) error {
 	if !opts.yes {
-		ok, _ := confirm(opts, opts.T("backup.confirmVacuum"))
-		if !ok {
+		if !confirm(opts, opts.T("backup.confirmVacuum")) {
 			// 第八轮深扫 LOW:用户主动取消不是错误 → 打印「已取消」并 exit 0,与 restore 取消路径一致
 			// (此前返回 error → exit 1,脚本会误判为失败)。
 			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
