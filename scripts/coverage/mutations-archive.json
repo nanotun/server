@@ -3560,5 +3560,107 @@
     "new": "\t\t\t_ = 0",
     "test": "./cmd/nanotund/",
     "run": "TestInterceptExitBoundDNS_"
+  },
+  {
+    "desc": "[mut40] panic 兜底:per-connection panic 静默 recover(这条连接凭空消失,没人知道为什么)",
+    "file": "cmd/nanotund/safego.go",
+    "old": "\t\t\tlogrus.WithFields(logrus.Fields{\n\t\t\t\t\"goroutine\": name,\n\t\t\t\t\"panic\":     r,\n\t\t\t\t\"stack\":     string(debug.Stack()),\n\t\t\t}).Error(\"[safeGoroutine] goroutine panic,已捕获,**不**关闭进程\")",
+    "new": "\t\t\t_ = r",
+    "test": "./cmd/nanotund/",
+    "run": "TestSafeGoroutine_"
+  },
+  {
+    "desc": "[mut40] panic 兜底:关键 goroutine panic 不触发 graceful shutdown(进程活着、数据面已停)",
+    "file": "cmd/nanotund/safego.go",
+    "old": "\t\t\tif cancel != nil {\n\t\t\t\tcancel()\n\t\t\t}",
+    "new": "\t\t\tif cancel != nil && false {\n\t\t\t\tcancel()\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSafeGlobalGoroutine_"
+  },
+  {
+    "desc": "[mut40] panic 兜底:正常返回也触发 graceful shutdown(后台循环收尾把整机带下来)",
+    "file": "cmd/nanotund/safego.go",
+    "old": "func safeGlobalGoroutine(name string, cancel func(), fn func()) {\n\tdefer func() {\n\t\tif r := recover(); r != nil {",
+    "new": "func safeGlobalGoroutine(name string, cancel func(), fn func()) {\n\tdefer func() {\n\t\tif r := recover(); true {",
+    "test": "./cmd/nanotund/",
+    "run": "TestSafeGlobalGoroutine_"
+  },
+  {
+    "desc": "[mut40] supersede:victim 不去重(同一条连接被 close 两次、被等两次)",
+    "file": "cmd/nanotund/supersede.go",
+    "old": "\tfor _, c := range supersededVictims {\n\t\tif c == nil {\n\t\t\tcontinue\n\t\t}\n\t\tif _, dup := seen[c]; dup {\n\t\t\tcontinue\n\t\t}",
+    "new": "\tfor _, c := range supersededVictims {\n\t\tif c == nil {\n\t\t\tcontinue\n\t\t}\n\t\tif _, dup := seen[c]; dup && false {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestDedupVictims_"
+  },
+  {
+    "desc": "[mut40] supersede:victim 列表里的 nil 不跳过(登录路径上当场 panic)",
+    "file": "cmd/nanotund/supersede.go",
+    "old": "\tfor _, c := range evictedVictims {\n\t\tif c == nil {\n\t\t\tcontinue\n\t\t}",
+    "new": "\tfor _, c := range evictedVictims {\n\t\tif c == nil && false {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestDedupVictims_"
+  },
+  {
+    "desc": "[mut40] supersede:逐条各等一个超时(多条卡住 → 5s×N,新连接握手被拖到客户端超时)",
+    "file": "cmd/nanotund/supersede.go",
+    "old": "\t\ttimer := time.NewTimer(time.Until(deadline))",
+    "new": "\t\t_ = deadline\n\t\ttimer := time.NewTimer(supersedeWaitTimeout)",
+    "test": "./cmd/nanotund/",
+    "run": "TestWaitConnsCleanup_"
+  },
+  {
+    "desc": "[mut40] supersede:没有 cleanupDone 通道的 victim 也去等(每次重登白等一个超时)",
+    "file": "cmd/nanotund/supersede.go",
+    "old": "\t\tif v == nil || v.cleanupDone == nil {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tif v == nil {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestWaitConnsCleanup_"
+  },
+  {
+    "desc": "[mut40] supersede:等超时不打 WARN(「这次重登为什么换了 IP」无迹可寻)",
+    "file": "cmd/nanotund/supersede.go",
+    "old": "\t\t\t}).Warn(\"[supersede] 等老 conn cleanup 超时,继续登录(新 conn 可能拿到不同 vIP,与无 supersede 行为退化等价)\")",
+    "new": "\t\t\t}).Debug(\"[supersede] 等老 conn cleanup 超时\")",
+    "test": "./cmd/nanotund/",
+    "run": "TestWaitConnsCleanup_"
+  },
+  {
+    "desc": "[mut40] 出口列表推送:不加写超时(一个写阻塞的客户端占住 exitsBroadcastMu,拖住所有广播)",
+    "file": "cmd/nanotund/exits_list.go",
+    "old": "\tif dl, ok := c.linkConn.(interface{ SetWriteDeadline(time.Time) error }); ok {\n\t\t_ = dl.SetWriteDeadline(time.Now().Add(5 * time.Second))\n\t\tdefer func() { _ = dl.SetWriteDeadline(time.Time{}) }()\n\t}",
+    "new": "\t_ = 0",
+    "test": "./cmd/nanotund/",
+    "run": "TestSendExitsListTo_|TestBroadcastExitsList|TestPushInitialExitsList"
+  },
+  {
+    "desc": "[mut40] 出口列表推送:写完不撤写超时(之后数据面下行写到点开始失败)",
+    "file": "cmd/nanotund/exits_list.go",
+    "old": "\t\tdefer func() { _ = dl.SetWriteDeadline(time.Time{}) }()",
+    "new": "\t\t_ = dl",
+    "test": "./cmd/nanotund/",
+    "run": "TestSendExitsListTo_|TestBroadcastExitsList|TestPushInitialExitsList"
+  },
+  {
+    "desc": "[mut40] 出口列表推送:非 exit_allowed 也推(把可用出口告诉无权用出口的用户)",
+    "file": "cmd/nanotund/exits_list.go",
+    "old": "\tif c == nil || !c.exitAllowed || c.safeLinkConn() == nil {",
+    "new": "\tif c == nil || c.safeLinkConn() == nil {",
+    "test": "./cmd/nanotund/",
+    "run": "TestSendExitsListTo_|TestBroadcastExitsList|TestPushInitialExitsList"
+  },
+  {
+    "desc": "[mut40] 出口列表:两道权限闸同拆(初始推送 + 单条推送都不看 exit_allowed → 情报真外泄)",
+    "file": "cmd/nanotund/exits_list.go",
+    "old": "\tif c == nil || !c.exitAllowed || c.safeLinkConn() == nil {",
+    "new": "\tif c == nil || c.safeLinkConn() == nil {",
+    "also": [
+      [
+        "func pushInitialExitsList(ctx context.Context, c *Connection) {\n\tif c == nil || !c.exitAllowed {\n\t\treturn\n\t}",
+        "func pushInitialExitsList(ctx context.Context, c *Connection) {\n\tif c == nil {\n\t\treturn\n\t}"
+      ]
+    ],
+    "test": "./cmd/nanotund/",
+    "run": "TestPushInitialExitsList_|TestSendExitsListTo_"
   }
 ]

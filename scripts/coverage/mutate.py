@@ -33,13 +33,20 @@ def write(path, text):
 # 否则一次没还原干净就会连环出错:后一条变异的锚点在被改过的文件里找不到,被报成「锚点失效」
 # (于是看起来是清单写错了,其实是工具漏了),而它随手拍下的"原始内容"里已经带着上一条变异,
 # 一路传下去,最后把某条变异留在工作树里 —— 那是会被当成真代码提交掉的。
-def patch(path, pristine, old, new, nth):
-    idx = -1
-    for _ in range(nth + 1):
-        idx = pristine.find(old, idx + 1)
-        if idx < 0:
-            return False
-    write(path, pristine[:idx] + new + pristine[idx + len(old):])
+def patch(path, pristine, old, new, nth, also=()):
+    text = pristine
+    # "also" 是给「冗余防线」用的:两处各自都足以挡住同一个错误,单拆任何一层另一层就补上了,
+    # 于是单条变异永远逃逸,看起来像没测,其实是测了。要证明这对防线真实存在(而不是两层都是空的),
+    # 只能同时拆掉。edits 顺序施加,每一步都以上一步的结果为基准。
+    edits = [(old, new, nth)] + [(o, n, 0) for o, n in also]
+    for o, n, k in edits:
+        idx = -1
+        for _ in range(k + 1):
+            idx = text.find(o, idx + 1)
+            if idx < 0:
+                return False
+        text = text[:idx] + n + text[idx + len(o):]
+    write(path, text)
     return True
 
 
@@ -126,7 +133,7 @@ def restore_all(pristine):
 def run_all(muts, pristine, timeout, caught, escaped, broken, nocompile):
     for i, m in enumerate(muts, 1):
         desc, path = m["desc"], m["file"]
-        if not patch(path, pristine[path], m["old"], m["new"], m.get("nth", 0)):
+        if not patch(path, pristine[path], m["old"], m["new"], m.get("nth", 0), m.get("also", ())):
             broken.append(desc)
             print(f"[{i}/{len(muts)}] 找不到锚点,跳过: {desc}", flush=True)
             actual = diagnose(pristine[path], m["old"])
