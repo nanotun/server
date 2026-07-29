@@ -3095,5 +3095,124 @@
     "old": "\tfor _, bin := range []string{\"iptables\", \"ip6tables\"} {\n\t\tdelFirewallRuleAll(bin, port)\n\t\tif out, err := pfExec(bin, firewallRuleArgs(\"-I\", port)...); err != nil {",
     "new": "\tfor _, bin := range []string{\"ip6tables\"} {\n\t\tdelFirewallRuleAll(bin, port)\n\t\tif out, err := pfExec(bin, firewallRuleArgs(\"-I\", port)...); err != nil {",
     "test": "./cmd/nanotund/ -run TestPortForwardFirewall_"
+  },
+  {
+    "desc": "[mut36] PoW 限速:表满直接拒新 IP(不先清陈旧项,填满表就挡住所有后来用户)",
+    "file": "cmd/nanotund/pow_limiter.go",
+    "old": "\t\tif len(l.limits) >= powIPRLMaxEntries {\n\t\t\tl.forceGCLocked(now)\n\t\t\tif len(l.limits) >= powIPRLMaxEntries {",
+    "new": "\t\tif len(l.limits) >= powIPRLMaxEntries {\n\t\t\tif len(l.limits) >= powIPRLMaxEntries {",
+    "test": "./cmd/nanotund/ -run TestPoWLimiter_"
+  },
+  {
+    "desc": "[mut36] PoW 限速:表满仍收新 IP(内存无上界)",
+    "file": "cmd/nanotund/pow_limiter.go",
+    "old": "\t\t\t\treturn false, host\n\t\t\t}\n\t\t}\n\t\te = &powIPEntry{lim: rate.NewLimiter(powIPRLRate, powIPRLBurst)}",
+    "new": "\t\t\t}\n\t\t}\n\t\te = &powIPEntry{lim: rate.NewLimiter(powIPRLRate, powIPRLBurst)}",
+    "test": "./cmd/nanotund/ -run TestPoWLimiter_"
+  },
+  {
+    "desc": "[mut36] PoW 限速:超频不拒(单 IP 可无限灌出题)",
+    "file": "cmd/nanotund/pow_limiter.go",
+    "old": "\tif !e.lim.Allow() {\n\t\te.denySinceWarn++",
+    "new": "\tif false {\n\t\te.denySinceWarn++",
+    "test": "./cmd/nanotund/ -run TestPoWLimiter_"
+  },
+  {
+    "desc": "[mut36] PoW 限速:按 IP:port 归并(换源端口即绕过)",
+    "file": "cmd/nanotund/pow_limiter.go",
+    "old": "\thost, _, err := net.SplitHostPort(remoteAddr)\n\tif err != nil {\n\t\thost = remoteAddr\n\t}",
+    "new": "\thost := remoteAddr",
+    "test": "./cmd/nanotund/ -run TestPoWLimiter_"
+  },
+  {
+    "desc": "[mut36] audit GC:进来不先跑一次(interval 24h 的部署重启一次等一天)",
+    "file": "cmd/nanotund/audit_gc.go",
+    "old": "\tdoOnce()\n\tt := time.NewTicker(interval)",
+    "new": "\tt := time.NewTicker(interval)",
+    "test": "./cmd/nanotund/ -run 'TestRunAuditGCLoop_|TestStartAuditGC_'"
+  },
+  {
+    "desc": "[mut36] audit GC:一次 DB 失败就退出循环(之后永不回收)",
+    "file": "cmd/nanotund/audit_gc.go",
+    "old": "\t\tn, err := st.PruneAuditBefore(opCtx, cutoff)\n\t\tif err != nil {\n\t\t\tlogrus.WithError(err).Warn(\"[audit-gc] prune audit_logs 失败,下次再试\")\n\t\t\treturn\n\t\t}",
+    "new": "\t\tn, err := st.PruneAuditBefore(opCtx, cutoff)\n\t\tif err != nil {\n\t\t\tpanic(\"audit gc db error\")\n\t\t}",
+    "test": "./cmd/nanotund/ -run 'TestRunAuditGCLoop_|TestStartAuditGC_'"
+  },
+  {
+    "desc": "[mut36] audit GC:nil ctx 不兜底(select 上 panic 带走整条 goroutine)",
+    "file": "cmd/nanotund/audit_gc.go",
+    "old": "\tif ctx == nil {\n\t\tctx = context.Background()\n\t}",
+    "new": "",
+    "test": "./cmd/nanotund/ -run 'TestRunAuditGCLoop_|TestStartAuditGC_'"
+  },
+  {
+    "desc": "[mut36] reload:upload_rate 改了不报 deferred(运维以为限速已生效)",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\tif newCfg.Server.UploadRate != old.Server.UploadRate {",
+    "new": "\tif false {",
+    "test": "./cmd/nanotund/ -run TestClassifyDeferredFields_"
+  },
+  {
+    "desc": "[mut36] reload:exit_mode 改了不报 deferred",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\tif newCfg.TUN.ResolveExitMode() != old.TUN.ResolveExitMode() {",
+    "new": "\tif false {",
+    "test": "./cmd/nanotund/ -run TestClassifyDeferredFields_"
+  },
+  {
+    "desc": "[mut36] reload:exit_deny_private 比较前不归一化(空↔auto 被误报成延迟字段)",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\tif newCfg.TUN.ResolveExitDenyPrivate() != old.TUN.ResolveExitDenyPrivate() {",
+    "new": "\tif newCfg.TUN.ExitDenyPrivate != old.TUN.ExitDenyPrivate {",
+    "test": "./cmd/nanotund/ -run TestClassifyDeferredFields_"
+  },
+  {
+    "desc": "[mut36] reload:exit_dns_redirect 比较前不归一化(大小写改动被误报)",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\tif normalizeExitDNSRedirect(newCfg.TUN.ExitDNSRedirect) != normalizeExitDNSRedirect(old.TUN.ExitDNSRedirect) {",
+    "new": "\tif newCfg.TUN.ExitDNSRedirect != old.TUN.ExitDNSRedirect {",
+    "test": "./cmd/nanotund/ -run TestClassifyDeferredFields_"
+  },
+  {
+    "desc": "[mut36] 用户失效扫描:DB 故障当成账号已删(库抖一下全站掉线)",
+    "file": "cmd/nanotund/user_invalidate.go",
+    "old": "\t\tlogrus.WithError(err).WithField(\"user_id\", userID).Warn(\"[user-invalidate] 查 user 失败,跳过本轮\")\n\t\treturn nil, \"\", false",
+    "new": "\t\tlogrus.WithError(err).WithField(\"user_id\", userID).Warn(\"[user-invalidate] 查 user 失败,跳过本轮\")\n\t\treturn nil, \"user_deleted\", true",
+    "test": "./cmd/nanotund/ -run 'TestScanAndKick|TestKickConnForUserInvalidate_'"
+  },
+  {
+    "desc": "[mut36] 用户失效扫描:未认证会话也参与判定(被不存在的账号判死)",
+    "file": "cmd/nanotund/user_invalidate.go",
+    "old": "\t\tuid := parseUserIDStr(userIDStr)\n\t\tif uid <= 0 {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tuid := parseUserIDStr(userIDStr)",
+    "test": "./cmd/nanotund/ -run 'TestScanAndKick|TestKickConnForUserInvalidate_'"
+  },
+  {
+    "desc": "[mut36] 用户失效扫描:接管链回溯无跳数上限(扫描 goroutine 死循环)",
+    "file": "cmd/nanotund/user_invalidate.go",
+    "old": "\t\tif hop >= maxKickTakeoverHops {",
+    "new": "\t\tif false {",
+    "test": "./cmd/nanotund/ -run 'TestScanAndKick|TestKickConnForUserInvalidate_'"
+  },
+  {
+    "desc": "[mut36] 路由列表:Online 只看设备有会话,不看当前宣告集(UI 说能走、包不通)",
+    "file": "cmd/nanotund/routes_list.go",
+    "old": "\tfor _, p := range *pfxs {\n\t\tif p.Contains(prefix.Addr()) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn false",
+    "new": "\treturn true",
+    "test": "./cmd/nanotund/ -run 'TestDeviceServesSubnetRoute_|TestBuildRoutesList_'"
+  },
+  {
+    "desc": "[mut36] 路由列表:宣告集未知时判不可用(老客户端全部网段显示离线)",
+    "file": "cmd/nanotund/routes_list.go",
+    "old": "\tif pfxs == nil || len(*pfxs) == 0 {\n\t\treturn true\n\t}",
+    "new": "\tif pfxs == nil || len(*pfxs) == 0 {\n\t\treturn false\n\t}",
+    "test": "./cmd/nanotund/ -run 'TestDeviceServesSubnetRoute_|TestBuildRoutesList_'"
+  },
+  {
+    "desc": "[mut36] 路由列表:广播也发给已被接管的旧会话(并发写同一链路)",
+    "file": "cmd/nanotund/routes_list.go",
+    "old": "\t\tif c != nil && !c.takenOver.Load() {\n\t\t\ttargets = append(targets, c)\n\t\t}",
+    "new": "\t\tif c != nil {\n\t\t\ttargets = append(targets, c)\n\t\t}",
+    "test": "./cmd/nanotund/ -run 'TestBroadcastRoutesList_|TestSendRoutesListTo_'"
   }
 ]

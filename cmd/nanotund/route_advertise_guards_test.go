@@ -42,6 +42,23 @@ func awaitExitsBroadcast(t *testing.T, watcher *routeFakeConn) {
 	t.Fatal("等不到出口列表广播 —— 已撤回的出口会一直留在别人的下拉里,直到它下线")
 }
 
+// awaitRoutesBroadcast 等「已批准宣告方上报了具体网段」触发的那条 `go broadcastRoutesList` 落地。
+//
+// 同 awaitExitsBroadcast 的两个作用。断言:宣告方晚于请求方上线时,请求方手里的 online 圆点停在
+// 旧的 false(UI 一直显示离线,而它明明在线),所以这一帧必须当场推出去。同步:那条 goroutine 会读
+// gatewayInstance,不等它就在 t.Cleanup 里把值改回去是一个真实的 data race。
+func awaitRoutesBroadcast(t *testing.T, watcher *routeFakeConn) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(watcher.bytes()) > 0 {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("等不到子网路由列表广播 —— 请求方 UI 上这条网段会一直显示离线")
+}
+
 // registerExitsWatcher 挂一条只用来收广播的 exit_allowed 会话。它**不是**宣告方,所以它的
 // fake 上只会出现广播帧,不会混进宣告方那条同步回的 route status 帧。
 func registerExitsWatcher(t *testing.T) *routeFakeConn {
@@ -471,6 +488,9 @@ func TestHandleRouteAdvertiseFrame_SubnetApprovalGateNeedsLoadedTable(t *testing
 
 		setSubnetRouteTableForTest(t, []subnetRouteEntry{mkEntry("192.168.72.0/24", devID)})
 
+		// 这条只用来收广播:已批准宣告方上报网段会顺带推一帧 routes-list 给所有会话。
+		watcher := registerExitsWatcher(t)
+
 		c := newAdvConn(devID)
 		body, _ := util.MarshalRouteAdvertise([]string{"192.168.72.0/24"})
 		handleRouteAdvertiseFrame(ctx, c, body)
@@ -478,5 +498,6 @@ func TestHandleRouteAdvertiseFrame_SubnetApprovalGateNeedsLoadedTable(t *testing
 		if !c.advertisedSubnetApproved.Load() {
 			t.Fatal("已批准宣告方应开豁免闸,否则它的 LAN 回程包会被当源伪装丢掉")
 		}
+		awaitRoutesBroadcast(t, watcher)
 	})
 }
