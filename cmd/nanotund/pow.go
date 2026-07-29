@@ -474,10 +474,14 @@ func (s *PoWService) MetricsSnapshot() PoWMetricsSnapshot {
 	}
 }
 
+// powGCInterval 是 RunGC 的清扫周期。用 var 只为让守卫测试把它调到毫秒级 —— 否则「到点真的清了」
+// 这条断言要等一分钟。生产不改这个值。
+var powGCInterval = 60 * time.Second
+
 // RunGC 是 main 入口启动的 goroutine,定期清扫过期 challenge_id 跟 stale IP 失败记录。
 // stop 关闭时退出。
 func (s *PoWService) RunGC(stop <-chan struct{}) {
-	tick := time.NewTicker(60 * time.Second)
+	tick := time.NewTicker(powGCInterval)
 	defer tick.Stop()
 	for {
 		select {

@@ -3662,5 +3662,85 @@
     ],
     "test": "./cmd/nanotund/",
     "run": "TestPushInitialExitsList_|TestSendExitsListTo_"
+  },
+  {
+    "desc": "[mut41] v6 探测:配了 subnets_v6 却探不到 v6 时不告警(配置与能力脱节无人知)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\t\t\t\tif !has && sharedTUNGatewayV6 != \"\" {",
+    "new": "\t\t\t\tif !has && sharedTUNGatewayV6 != \"\" && false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartServerV6EgressProbe_"
+  },
+  {
+    "desc": "[mut41] v6 探测:结果不写 atomic(数据面永远按「未知」保守处理)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\t\t\tprev := serverV6EgressHas.Swap(has)",
+    "new": "\t\t\tprev := serverV6EgressHas.Swap(false)",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartServerV6EgressProbe_"
+  },
+  {
+    "desc": "[mut41] v6 探测:探不到 v6 也补装 NAT66(在没有 v6 的机器上凭空加规则)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\t\t\tif has {\n\t\t\t\tselect {\n\t\t\t\tcase <-stop:\n\t\t\t\t\treturn\n\t\t\t\tdefault:\n\t\t\t\t\trunV6SetupRetryIfArmed()\n\t\t\t\t}\n\t\t\t}",
+    "new": "\t\t\tselect {\n\t\t\tcase <-stop:\n\t\t\t\treturn\n\t\t\tdefault:\n\t\t\t\trunV6SetupRetryIfArmed()\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartServerV6EgressProbe_"
+  },
+  {
+    "desc": "[mut41] v6 探测:探明有 v6 也不补装 NAT66(探测说有、MASQUERADE 没装 → 公网 v6 黑洞)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\t\t\t\tdefault:\n\t\t\t\t\trunV6SetupRetryIfArmed()\n\t\t\t\t}",
+    "new": "\t\t\t\tdefault:\n\t\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartServerV6EgressProbe_"
+  },
+  {
+    "desc": "[mut41] NAT66 补装:装失败也撤钩(v6 由 RA 晚下发的机器永远补不上)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tif fn() {\n\t\tv6SetupRetryMu.Lock()\n\t\tv6SetupRetryFn = nil\n\t\tv6SetupRetryMu.Unlock()\n\t}",
+    "new": "\tfn()\n\tv6SetupRetryMu.Lock()\n\tv6SetupRetryFn = nil\n\tv6SetupRetryMu.Unlock()",
+    "test": "./cmd/nanotund/",
+    "run": "TestRunV6SetupRetryIfArmed_|TestStartServerV6EgressProbe_"
+  },
+  {
+    "desc": "[mut41] NAT66 补装:装成功也不撤钩(每轮探测重复装同样的规则)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tif fn() {\n\t\tv6SetupRetryMu.Lock()\n\t\tv6SetupRetryFn = nil\n\t\tv6SetupRetryMu.Unlock()\n\t}",
+    "new": "\tif fn() && false {\n\t\tv6SetupRetryMu.Lock()\n\t\tv6SetupRetryFn = nil\n\t\tv6SetupRetryMu.Unlock()\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestRunV6SetupRetryIfArmed_|TestStartServerV6EgressProbe_"
+  },
+  {
+    "desc": "[mut41] PoW 清扫:只在进循环时清一次(两张表随登录尝试单调增长,最后 OOM)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\t\tcase <-tick.C:\n\t\t\ts.pruneExpired()\n\t\t\tif s.failures != nil {\n\t\t\t\ts.failures.Prune()\n\t\t\t}",
+    "new": "\t\tcase <-tick.C:",
+    "test": "./cmd/nanotund/",
+    "run": "TestPoWRunGC_|TestPoWService_GC"
+  },
+  {
+    "desc": "[mut41] 非 Linux 桩:iptables 装配返回 nil(开发机跑出一台没有任何规则的 server)",
+    "file": "cmd/nanotund/network_setup_other.go",
+    "old": "func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, _, _, _ bool, _, _, _ string, _ string, _ int) error {\n\treturn fmt.Errorf(\"iptables only supported on Linux\")",
+    "new": "func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, _, _, _ bool, _, _, _ string, _ string, _ int) error {\n\treturn nil",
+    "test": "./cmd/nanotund/",
+    "run": "TestNonLinuxNetworkStubs_"
+  },
+  {
+    "desc": "[mut41] 非 Linux 桩:WAN 探测返回空串加 nil(拿着空网卡名去装规则)",
+    "file": "cmd/nanotund/network_setup_other.go",
+    "old": "func GetWAN() (iface, ip string, err error) {\n\treturn \"\", \"\", fmt.Errorf(\"WAN detection only supported on Linux\")",
+    "new": "func GetWAN() (iface, ip string, err error) {\n\treturn \"\", \"\", nil",
+    "test": "./cmd/nanotund/",
+    "run": "TestNonLinuxNetworkStubs_"
+  },
+  {
+    "desc": "[mut41] v6 探测:探测周期不可配(守卫测试接缝回归 —— 常量化会让第二轮探测永不发生)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\t\tt := time.NewTicker(serverV6EgressProbeInterval)",
+    "new": "\t\tt := time.NewTicker(60 * time.Second)",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartServerV6EgressProbe_"
   }
 ]

@@ -1069,6 +1069,43 @@ demux、保活)的 panic **必须**升级成 graceful shutdown。只 recover 不
 「查 DB 按 device 去重」的效率闸没能变异验证:`gatewayState.store` 是具体类型,进程内无法数 DB 调用次数,
 而它的效果只体现在开销上(同设备 N 条会话 → 每次广播乘 N 次查询),不改变任何可观测的输出。
 
+### 第 41 轮:server 自身 v6 出网探测、PoW 清扫、非 Linux 桩
+
+`egress_select.go` 24 → 21、`pow.go` 9 → 6、`network_setup_other.go` 9 → 0,包 90.8% → 91.0%,
+变异 10/10 全抓。
+
+**server 自身有没有 v6 公网出网,决定数据面对使用方的公网 v6 流量是转发还是回一记 ICMPv6 unreachable
+让客户端秒回落 v4。** 两个方向的误判都不报错:误判为「有」时公网 v6 包照转,但源是 ULA 或 NAT66 没装,
+上游直接丢 —— 客户端的 v6 连接全部卡到自己超时而 v4 好着,现象是「某些网站时快时慢/打不开」;误判为
+「无」则把所有 v6 白白降级成 v4。这一轮钉的是探测循环那半边:探不到 v6 而又配了 `subnets_v6` 必须告警
+(否则运维要等用户报障才知道配置与能力脱节);探测结果必须落到 atomic(数据面只读它);NAT66 补装只能在
+探明有 v6 之后做 —— 提前装等于在没有 v6 的机器上凭空加规则,而探明之后不装就是「探测说有 v6、数据面照转、
+MASQUERADE 没装 → 公网 v6 以 ULA 源出网被丢」的脱节黑洞;补装失败要保留钩子(v6 由 RA 晚下发的机器
+靠它才能补上),成功要撤钩(否则每轮探测重装一遍)。
+
+真探测要拨公网 v6,在 CI / 无 v6 的机器上恒为 false,所以加了 `probeServerIPv6EgressFn` 接缝,并把
+`serverV6EgressProbeInterval` 从 const 改成 var(否则「下一轮探到 v6 会做什么」要等一分钟)。
+
+写这组用例时踩到一个自己造的竞态,值得记:`close(stop)` 只让循环在**下一次** select 时退出,本轮循环体
+还可能正在读 `sharedTUNGatewayV6`,而我的 `t.Cleanup` 立刻就把这个全局还原了 —— `-race` 抓到的是测试
+自己的问题。收敛办法有两条:接缝只装一次(阶段切换改 atomic 而不是改函数指针,因为函数变量本身也被
+goroutine 读),以及还原全局之前留一个退出窗口。
+
+**PoW 的防重放表与失败追踪表只在内存里,定期清扫是它们唯一的上界。** 停了不报错:出题验题照常,只是
+两张表随每次登录尝试单调增长,被持续灌登录的 server 慢慢吃满内存,最后 OOM 被拉起,现场只留一条
+oom-kill,看不出跟 PoW 有关。既有用例覆盖了单次 `pruneExpired` 与 stop 退出,但「只在进循环时清一次」
+在那条用例里同样是绿的 —— 这一轮补的是「每一拍都真清」。为此把清扫周期也改成 var 接缝。
+
+**非 Linux 平台上那批网络配置函数全是桩,它们唯一的正确行为是明确报错。** 转发、NAT、连接数限制、端口
+放行全靠 iptables/ip6tables,桩什么都没做;桩若返回 nil,启动路径会认为防火墙已就绪并继续把 server 拉起来,
+开发机上跑出来的是一台没有任何规则的机器,而日志里一行错误都没有。这个文件在 Linux 上根本不参与编译,
+所以守卫测试同样带 `//go:build !linux`。
+
+待查项(与第 38 轮那条同类):全包跑里 `TestTakeover_CarriesOverTheEgressIntentAndAdvertisedRoutes` 失败过
+一次,之后两次全包 + 10 次隔离压测都没复现。第 39 轮也见过一次同族失败(`TestHandleTakeoverLogin_
+AbortsWhenKickedMidWindow`,报的是 `read pipe: i/o timeout`)。两次都出现在全包负载下,怀疑是接管 harness
+里那些读超时在机器忙时不够宽,而不是产品代码的竞态 —— 下轮专门查这批 net.Pipe 超时的余量。
+
 ## 单测这一侧的现状（2026-07-28 晚，Linux 实测）
 
 零覆盖函数已经清空，只剩三个 `main` —— 那三个各有子进程冒烟测试（`nanotund` 靠 e2e）。

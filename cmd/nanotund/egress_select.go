@@ -97,7 +97,9 @@ var (
 
 // serverV6EgressProbeInterval:server 自出网 v6 能力的后台重探间隔。server 网络通常稳定,60s 足够反映
 // 上/下线变化,又不至于频繁 net.Dial。
-const serverV6EgressProbeInterval = 60 * time.Second
+// 用 var 而非 const:守卫测试要把它调到毫秒级,才能观察「下一轮探测到 v6 之后会做什么」。
+// 生产不改这个值。
+var serverV6EgressProbeInterval = 60 * time.Second
 
 // exitForwardRateBPS(M6 带宽帽):每个使用出口的会话,经出口转发的公网流量速率上限(字节/秒)。
 // 0 = 不限(默认)。出口中转占用 server 双倍带宽,可比常规链路更严地单独限速以防滥用。
@@ -485,6 +487,10 @@ func probeServerIPv6Egress() bool {
 	return verifyServerIPv6RoundTrip()
 }
 
+// probeServerIPv6EgressFn 是探测循环调用的那一层,单测用来注入探测结果 —— 真探测要拨公网 v6,
+// 在 CI / 无 v6 的机器上恒为 false,循环里「探明有 v6 之后做什么」的分支就永远进不去。
+var probeServerIPv6EgressFn = probeServerIPv6Egress
+
 // probeServerIPv6Route ①路由级:UDP connect 只做路由查找,看 OS 能否为公网 v6 目的选出可用的全局单播源地址。
 func probeServerIPv6Route() bool {
 	for _, target := range serverV6ProbeTargets {
@@ -604,7 +610,7 @@ func startServerV6EgressProbe(stop <-chan struct{}) {
 		t := time.NewTicker(serverV6EgressProbeInterval)
 		defer t.Stop()
 		for {
-			has := probeServerIPv6Egress()
+			has := probeServerIPv6EgressFn()
 			prev := serverV6EgressHas.Swap(has)
 			first := !serverV6EgressKnown.Swap(true)
 			if first || prev != has {
