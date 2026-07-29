@@ -3392,5 +3392,93 @@
     "new": "\tif r.hasPorts {",
     "test": "./cmd/nanotund/",
     "run": "TestRuleMatchesPacket_|TestACL|TestAcl"
+  },
+  {
+    "desc": "[mut38] 失败追踪:空 IP 也建表项(所有取不到对端地址的失败堆到一个不属于任何人的键上)",
+    "file": "cmd/nanotund/ip_failures.go",
+    "old": "func (t *IPFailureTracker) MarkFailure(ip string) {\n\tif ip == \"\" {\n\t\treturn\n\t}",
+    "new": "func (t *IPFailureTracker) MarkFailure(ip string) {",
+    "test": "./cmd/nanotund/",
+    "run": "TestIPFailureTracker_"
+  },
+  {
+    "desc": "[mut38] 失败追踪:单 IP 列表不截断(一个 IP 灌几十万条,每次 Count 持锁扫长列表)",
+    "file": "cmd/nanotund/ip_failures.go",
+    "old": "\tif len(list) > maxFailuresPerIP {\n\t\tlist = list[len(list)-maxFailuresPerIP:]\n\t}",
+    "new": "\t_ = maxFailuresPerIP",
+    "test": "./cmd/nanotund/",
+    "run": "TestIPFailureTracker_"
+  },
+  {
+    "desc": "[mut38] 失败追踪:成功一次就清零(NAT 后攻击者靠别人的成功登录抹平自己的成本)",
+    "file": "cmd/nanotund/ip_failures.go",
+    "old": "\tkeep := len(list) / 2",
+    "new": "\tkeep := 0",
+    "test": "./cmd/nanotund/",
+    "run": "TestIPFailureTracker_"
+  },
+  {
+    "desc": "[mut38] 失败追踪:Prune 把窗口内的有效项一起丢掉(攻击进行中难度被重置回 base)",
+    "file": "cmd/nanotund/ip_failures.go",
+    "old": "\t\tif first > 0 {\n\t\t\t// copy 截断,缩短切片;避免 underlying array 仍引用旧元素让 GC 抓不到。\n\t\t\tnewList := make([]time.Time, len(list)-first)\n\t\t\tcopy(newList, list[first:])\n\t\t\tt.entries[ip] = newList\n\t\t}",
+    "new": "\t\tif first > 0 {\n\t\t\tdelete(t.entries, ip)\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestIPFailureTracker_"
+  },
+  {
+    "desc": "[mut38] 失败追踪:表满直接丢弃新 IP 的失败(先灌表就能让自己的失败不被记录,自适应 PoW 失效)",
+    "file": "cmd/nanotund/ip_failures.go",
+    "old": "\t\tt.pruneLocked(now)\n\t\tif len(t.entries) >= maxTrackedIPs {\n\t\t\tt.evictOneLocked()\n\t\t}",
+    "new": "\t\tt.pruneLocked(now)\n\t\tif len(t.entries) >= maxTrackedIPs {\n\t\t\treturn\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestIPFailureTracker_"
+  },
+  {
+    "desc": "[mut38] keepalive:次毫秒间隔不夹取(每秒两千次写帧,数据面的写和 CPU 一起被挤住)",
+    "file": "cmd/nanotund/wss_keepalive.go",
+    "old": "\t\tinterval = minPingInterval",
+    "new": "\t\t_ = minPingInterval",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartWSSDataPlaneKeepalive_"
+  },
+  {
+    "desc": "[mut38] keepalive:写失败后接着刷(断链后反复抢 linkWrMu,把连接清理堵住)",
+    "file": "cmd/nanotund/wss_keepalive.go",
+    "old": "\t\t\tif !writePing(seq) {\n\t\t\t\treturn\n\t\t\t}",
+    "new": "\t\t\t_ = writePing(seq)",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartWSSDataPlaneKeepalive_"
+  },
+  {
+    "desc": "[mut38] keepalive:起步阶段没有宽限期(全新连接第一个间隔到点即被判僵尸,客户端循环掉线)",
+    "file": "cmd/nanotund/wss_keepalive.go",
+    "old": "\t\t\tif seq <= uint32(missThreshold) {\n\t\t\t\tcontinue\n\t\t\t}",
+    "new": "\t\t\tif false {\n\t\t\t\tcontinue\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartWSSDataPlaneKeepalive_"
+  },
+  {
+    "desc": "[mut38] health:非环回地址不拒启(TUN/store 就绪状态反射到公网,供扫描器做指纹与故障窗口识别)",
+    "file": "cmd/nanotund/health.go",
+    "old": "\t\tif !healthAllowPublicFromEnv() {",
+    "new": "\t\tif false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartHealthHTTPServer_"
+  },
+  {
+    "desc": "[mut38] health:地址解析失败回 nil cleanup(main 的 defer 链当场 panic,一个可选端点带走整台 server)",
+    "file": "cmd/nanotund/health.go",
+    "old": "\t\tlogrus.Warnf(\"[health] health_listen_addr %q 无法解析,健康检查端点未启动: %v\", addr, err)\n\t\treturn func() {}",
+    "new": "\t\tlogrus.Warnf(\"[health] health_listen_addr %q 无法解析,健康检查端点未启动: %v\", addr, err)\n\t\treturn nil",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartHealthHTTPServer_"
+  },
+  {
+    "desc": "[mut38] health:空地址当成用默认端口启动(运维明确关掉的端点自己开了起来)",
+    "file": "cmd/nanotund/health.go",
+    "old": "\tif strings.TrimSpace(addr) == \"\" {\n\t\tlogrus.Info(\"[health] health_listen_addr 为空,health endpoint 未启用\")\n\t\treturn func() {}\n\t}",
+    "new": "\tif strings.TrimSpace(addr) == \"\" {\n\t\taddr = \"127.0.0.1:8081\"\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartHealthHTTPServer_"
   }
 ]
