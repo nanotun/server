@@ -3214,5 +3214,183 @@
     "old": "\t\tif c != nil && !c.takenOver.Load() {\n\t\t\ttargets = append(targets, c)\n\t\t}",
     "new": "\t\tif c != nil {\n\t\t\ttargets = append(targets, c)\n\t\t}",
     "test": "./cmd/nanotund/ -run 'TestBroadcastRoutesList_|TestSendRoutesListTo_'"
+  },
+  {
+    "desc": "[mut37] MagicDNS 上游:会话早期不钳短 TTL(刚连上时解析到的坏答案被客户端缓存几十分钟)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\tclamp := magicDNSInEarlyClampWindow(peer)",
+    "new": "\tclamp := false && magicDNSInEarlyClampWindow(peer)",
+    "test": "./cmd/nanotund/",
+    "run": "TestForwardMagicDNSToUpstream_"
+  },
+  {
+    "desc": "[mut37] MagicDNS 上游:钳了 TTL 却不记计数(排查时看不出发生过)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\t\t\tmagicDNSEarlyClampCount.Add(1)",
+    "new": "\t\t\t_ = 0",
+    "test": "./cmd/nanotund/",
+    "run": "TestForwardMagicDNSToUpstream_"
+  },
+  {
+    "desc": "[mut37] 上游应答:不校验 TXID/question(抢注一包即污染所有客户端的答案)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\t\tif dnsReplyMatches(resp, wantID, wantQ) {\n\t\t\treturn append([]byte(nil), resp...), nil\n\t\t}",
+    "new": "\t\t_, _ = wantID, wantQ\n\t\treturn append([]byte(nil), resp...), nil",
+    "test": "./cmd/nanotund/",
+    "run": "TestForwardMagicDNSToUpstream_|TestDialAndQueryUDP_"
+  },
+  {
+    "desc": "[mut37] 上游应答:解析不出 key 的查询直接判失败(这类查询从此永远拿不到答案)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\t\tif !haveKey {\n\t\t\t// 查询本身解析不出 key(异常报文)→ 退回旧行为(收第一包即返回),不改变可用性。\n\t\t\treturn append([]byte(nil), resp...), nil\n\t\t}",
+    "new": "\t\tif !haveKey {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestDialAndQueryUDP_"
+  },
+  {
+    "desc": "[mut37] MagicDNS 读循环:读超时当成致命错误退出(整台 server 的 mesh 名字解析停摆而进程还活着)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\t\t\tif ne, ok := err.(net.Error); ok && ne.Timeout() {\n\t\t\t\tcontinue // 借此 tick 检查 ctx.Done\n\t\t\t}",
+    "new": "\t\t\tif ne, ok := err.(net.Error); ok && ne.Timeout() {\n\t\t\t\treturn\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestRunMagicDNSLoop_"
+  },
+  {
+    "desc": "[mut37] 限速连接:带 err 的那一帧字节不计入(高频短连接把上行读数拉歪)",
+    "file": "cmd/nanotund/rate_conn.go",
+    "old": "\tif n > 0 {\n\t\tvpnBytesUp.Add(uint64(n))\n\t}",
+    "new": "\tif n > 0 && err == nil {\n\t\tvpnBytesUp.Add(uint64(n))\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestRateLimitedConn"
+  },
+  {
+    "desc": "[mut37] 限速连接:部分写的字节不计入(下行读数少算真实出流量)",
+    "file": "cmd/nanotund/rate_conn.go",
+    "old": "\tif n > 0 {\n\t\tvpnBytesDown.Add(uint64(n))\n\t}",
+    "new": "\tif n > 0 && err == nil {\n\t\tvpnBytesDown.Add(uint64(n))\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestRateLimitedConn"
+  },
+  {
+    "desc": "[mut37] 限速连接:关闭那一帧仍去等令牌(低速限制下把连接清理拖住,期间 linkWrMu 被占)",
+    "file": "cmd/nanotund/rate_conn.go",
+    "old": "\tif err == nil && n > 0 {",
+    "new": "\tif n > 0 {",
+    "test": "./cmd/nanotund/",
+    "run": "TestRateLimitedConn"
+  },
+  {
+    "desc": "[mut37] 出口宣告:已批准的设备重发声明时不开豁免闸(它的出口回程流量被当伪装丢掉)",
+    "file": "cmd/nanotund/route_advertise.go",
+    "old": "\t\tif q {\n\t\t\tc.advertisedExitApproved.Store(approved)\n\t\t}",
+    "new": "\t\tif false && q {\n\t\t\tc.advertisedExitApproved.Store(approved)\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleRouteAdvertiseFrame_"
+  },
+  {
+    "desc": "[mut37] 出口宣告:已批准也不广播出口列表(使用方下拉里看不到这台在线出口)",
+    "file": "cmd/nanotund/route_advertise.go",
+    "old": "\t\tif approved && q {\n\t\t\tgo safeGoroutine(\"broadcastExitsList\", func() { broadcastExitsList(context.Background()) })\n\t\t}",
+    "new": "\t\tif false && approved && q {\n\t\t\tgo safeGoroutine(\"broadcastExitsList\", func() { broadcastExitsList(context.Background()) })\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleRouteAdvertiseFrame_"
+  },
+  {
+    "desc": "[mut37] 出口宣告:本帧无 ::/0 也报有 v6 出网(发往它的公网 v6 进黑洞)",
+    "file": "cmd/nanotund/route_advertise.go",
+    "old": "\t\tc.advertisedExitV6.Store(hasExitV6)",
+    "new": "\t\tc.advertisedExitV6.Store(hasExitV6 && false)",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleRouteAdvertiseFrame_"
+  },
+  {
+    "desc": "[mut37] 审批广播:子网路由表未加载时也改写豁免闸(已批准的子网路由器 LAN 回程断到下次重连)",
+    "file": "cmd/nanotund/route_advertise.go",
+    "old": "\t\tif c.advertisedSubnetRoutes.Load() && subnetRouteTableLoaded() {",
+    "new": "\t\tif c.advertisedSubnetRoutes.Load() {",
+    "test": "./cmd/nanotund/",
+    "run": "TestBroadcastRouteApproveStatus_"
+  },
+  {
+    "desc": "[mut37] 审批状态:时间戳只取宣告时刻(刚批准的项在客户端 UI 上显示成旧状态)",
+    "file": "cmd/nanotund/route_advertise.go",
+    "old": "\t\tif r.ApprovedAt > at {\n\t\t\tat = r.ApprovedAt\n\t\t}",
+    "new": "\t\t_ = r.ApprovedAt",
+    "test": "./cmd/nanotund/",
+    "run": "TestSendRouteApproveStatusForDevice_"
+  },
+  {
+    "desc": "[mut37] 审批状态:这次写不加超时(客户端不读就能顶死同样要 linkWrMu 的 kick/keepalive)",
+    "file": "cmd/nanotund/route_advertise.go",
+    "old": "\tif dl, ok := c.linkConn.(deadliner); ok {\n\t\t_ = dl.SetWriteDeadline(time.Now().Add(dataPlanePingWriteDeadline))\n\t\tdefer func() { _ = dl.SetWriteDeadline(time.Time{}) }()\n\t}",
+    "new": "\t_ = deadliner(nil)",
+    "test": "./cmd/nanotund/",
+    "run": "TestSendRouteApproveStatusForDevice_"
+  },
+  {
+    "desc": "[mut37] ACL 快照:未知 default 收敛成 allow(一次配置笔误让整台 server 默认放行)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\tif defaultAction != store.ACLAllow && defaultAction != store.ACLDeny {\n\t\tdefaultAction = store.ACLDeny\n\t}",
+    "new": "\tif defaultAction != store.ACLAllow && defaultAction != store.ACLDeny {\n\t\tdefaultAction = store.ACLAllow\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestBuildACLSnapshot_"
+  },
+  {
+    "desc": "[mut37] ACL 快照:通配出口规则落进 by-src[0](管理员配的出口限制永远没人命中)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\t\t\tif r.SrcUserID == 0 {\n\t\t\t\ts.exitWild = append(s.exitWild, entry)\n\t\t\t} else {\n\t\t\t\ts.exitBySrc[r.SrcUserID] = append(s.exitBySrc[r.SrcUserID], entry)\n\t\t\t}",
+    "new": "\t\t\ts.exitBySrc[r.SrcUserID] = append(s.exitBySrc[r.SrcUserID], entry)",
+    "test": "./cmd/nanotund/",
+    "run": "TestBuildACLSnapshot_"
+  },
+  {
+    "desc": "[mut37] ACL 判定:快照未加载时 CLI 报 deny(与数据面 fail-open 口径相反,运维照错结论改配置)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\tsnap := aclCurrent.Load()\n\tif snap == nil {\n\t\treturn true\n\t}\n\t// mesh 总开关 OFF 时跨用户永远拒(2026-05-23),与 aclDropPacketDirected 保持一致。",
+    "new": "\tsnap := aclCurrent.Load()\n\tif snap == nil {\n\t\treturn false\n\t}\n\t// mesh 总开关 OFF 时跨用户永远拒(2026-05-23),与 aclDropPacketDirected 保持一致。",
+    "test": "./cmd/nanotund/",
+    "run": "TestAclAllows"
+  },
+  {
+    "desc": "[mut37] ACL 判定:带端口的规则也压到无端口流量上(一条 deny tcp 22 把 ping 一起封掉)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\tif r.hasPorts {\n\t\tif t.proto != \"tcp\" && t.proto != \"udp\" {\n\t\t\treturn false\n\t\t}",
+    "new": "\tif r.hasPorts {\n\t\tif false {\n\t\t\treturn false\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestRuleMatchesPacket_|TestACL|TestAcl",
+    "note": "等价变异:端口比较与 hasL4Ports 两层冗余,单拆不可观测;由「两层同时拆掉」那条证明至少一层在",
+    "equivalent": true
+  },
+  {
+    "desc": "[mut37] 源地址反欺骗:vIP 解析失败就放弃整道校验(一条脏 vIP 记录让该会话可用任意源发包)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\t\tpa, err := netip.ParseAddr(a.VirtualIP)\n\t\tif err != nil {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tpa, err := netip.ParseAddr(a.VirtualIP)\n\t\tif err != nil {\n\t\t\treturn false\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestConnSourceSpoofed"
+  },
+  {
+    "desc": "[mut37] 管理面:device_id 定向刷被当成全量刷(一次点击把所有在线会话逐条查库重设)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\t\t\treq.DeviceID = v",
+    "new": "\t\t\t\treq.DeviceID = 0",
+    "test": "./cmd/nanotund/",
+    "run": "TestControlSocketRateRefresh_|TestControlSocket_RateRefresh"
+  },
+  {
+    "desc": "[mut37] 管理面:routes reload 恒回 0 条(管理员看不到批准是否真的落进转发表)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\t\tif tbl := subnetRouteTable.Load(); tbl != nil {\n\t\t\t\tn = len(*tbl)\n\t\t\t}",
+    "new": "\t\t\t_ = subnetRouteTable.Load()",
+    "test": "./cmd/nanotund/",
+    "run": "TestControlSocketReloadRoutes_"
+  },
+  {
+    "desc": "[mut37] ACL 判定:端口规则的两层防线同时拆掉(deny tcp 0-1024 会把 ping 一起封掉)",
+    "file": "cmd/nanotund/acl_runtime.go",
+    "old": "\tif r.hasPorts {\n\t\tif t.proto != \"tcp\" && t.proto != \"udp\" {\n\t\t\treturn false\n\t\t}\n\t\t// 无可信 L4 端口(非首片 / 截断头)→ 端口维度无从判定,带端口的规则不命中(见 pktTuple.hasL4Ports)。\n\t\tif !t.hasL4Ports {\n\t\t\treturn false\n\t\t}",
+    "new": "\tif r.hasPorts {",
+    "test": "./cmd/nanotund/",
+    "run": "TestRuleMatchesPacket_|TestACL|TestAcl"
   }
 ]
