@@ -2829,5 +2829,152 @@
     "old": "\tif _, owned := lookupVIPOwner(src); owned {",
     "new": "\tif _, owned := lookupVIPOwner(src); owned && !c.advertisedExitApproved.Load() && !c.advertisedSubnetApproved.Load() {",
     "test": "./cmd/nanotund/ -run TestConnSourceSpoofed_"
+  },
+  {
+    "desc": "[mut34] 真实 IP 透传:UDP(QUIC)地址不归一(头静默退化 LOCAL,hy2 全塌到 127.0.0.1)",
+    "file": "cmd/nanotund/loopback_proxyproto.go",
+    "old": "\tcase *net.UDPAddr:\n\t\tif v == nil || len(v.IP) == 0 {\n\t\t\treturn nil\n\t\t}\n\t\treturn &net.TCPAddr{IP: v.IP, Port: v.Port, Zone: v.Zone}",
+    "new": "\tcase *net.UDPAddr:\n\t\treturn nil",
+    "test": "./cmd/nanotund/ -run 'TestNormalizeProxyAddr_|TestWriteLoopbackProxyHeader_'"
+  },
+  {
+    "desc": "[mut34] 真实 IP 透传:UDP 地址丢 zone(link-local 源地址不完整)",
+    "file": "cmd/nanotund/loopback_proxyproto.go",
+    "old": "\t\treturn &net.TCPAddr{IP: v.IP, Port: v.Port, Zone: v.Zone}",
+    "new": "\t\treturn &net.TCPAddr{IP: v.IP, Port: v.Port}",
+    "test": "./cmd/nanotund/ -run TestNormalizeProxyAddr_"
+  },
+  {
+    "desc": "[mut34] 真实 IP 透传:空 IP 也当合法(给对端一个残缺源地址)",
+    "file": "cmd/nanotund/loopback_proxyproto.go",
+    "old": "\tcase *net.TCPAddr:\n\t\tif v == nil || len(v.IP) == 0 {\n\t\t\treturn nil\n\t\t}\n\t\treturn v",
+    "new": "\tcase *net.TCPAddr:\n\t\treturn v",
+    "test": "./cmd/nanotund/ -run TestNormalizeProxyAddr_"
+  },
+  {
+    "desc": "[mut34] 真实 IP 透传:host 不是 IP 也接受(解析出垃圾源地址)",
+    "file": "cmd/nanotund/loopback_proxyproto.go",
+    "old": "\tip, err := netip.ParseAddr(strings.Trim(host, \"[]\"))\n\tif err != nil {\n\t\treturn nil\n\t}",
+    "new": "\tip, _ := netip.ParseAddr(strings.Trim(host, \"[]\"))\n\tif false {\n\t\treturn nil\n\t}",
+    "test": "./cmd/nanotund/ -run TestNormalizeProxyAddr_"
+  },
+  {
+    "desc": "[mut34] 承载入口:非环回对端也放行(公网客户端可伪造 PROXY 头冒充任意源 IP)",
+    "file": "cmd/nanotund/loopback_proxyproto.go",
+    "old": "\tif ip, err := netip.ParseAddr(host); err == nil {\n\t\treturn ip.IsLoopback()\n\t}\n\treturn false",
+    "new": "\tif ip, err := netip.ParseAddr(host); err == nil {\n\t\t_ = ip\n\t\treturn true\n\t}\n\treturn false",
+    "test": "./cmd/nanotund/ -run TestIsLoopbackConnPeer_"
+  },
+  {
+    "desc": "[mut34] 承载入口:nil 连接当成环回",
+    "file": "cmd/nanotund/loopback_proxyproto.go",
+    "old": "func isLoopbackConnPeer(c net.Conn) bool {\n\tif c == nil {\n\t\treturn false\n\t}",
+    "new": "func isLoopbackConnPeer(c net.Conn) bool {\n\tif c == nil {\n\t\treturn true\n\t}",
+    "test": "./cmd/nanotund/ -run TestIsLoopbackConnPeer_"
+  },
+  {
+    "desc": "[mut34] lease 回收:回收前不刷在线设备的 last_seen(长在线会话的 vIP 被回收,两台机器同址)",
+    "file": "cmd/nanotund/lease_gc.go",
+    "old": "\t\tif active := activeDeviceIDsSnapshot(); len(active) > 0 {",
+    "new": "\t\tif active := activeDeviceIDsSnapshot(); false {",
+    "test": "./cmd/nanotund/ -run 'TestLeaseGC_|TestRunLeaseGCLoop_'"
+  },
+  {
+    "desc": "[mut34] lease 回收:idleDays<=0 不再当显式关闭(无视配置照样回收)",
+    "file": "cmd/nanotund/lease_gc.go",
+    "old": "\tif idleDays <= 0 {",
+    "new": "\tif idleDays < 0 {",
+    "test": "./cmd/nanotund/ -run TestStartLeaseGCLoop_"
+  },
+  {
+    "desc": "[mut34] lease 回收:intervalHours<=0 不夹取(NewTicker(0) panic 带走进程)",
+    "file": "cmd/nanotund/lease_gc.go",
+    "old": "\tif intervalHours <= 0 {\n\t\tintervalHours = defaultLeaseGCIntervalHours\n\t}",
+    "new": "\tif intervalHours < 0 {\n\t\tintervalHours = defaultLeaseGCIntervalHours\n\t}",
+    "test": "./cmd/nanotund/ -run TestStartLeaseGCLoop_"
+  },
+  {
+    "desc": "[mut34] lease 回收:一次失败就退出循环(从此再也不回收)",
+    "file": "cmd/nanotund/lease_gc.go",
+    "old": "\t\tn, err := st.GcOrphanLeases(opCtx, int64(idle.Seconds()))\n\t\tif err != nil {",
+    "new": "\t\tn, err := st.GcOrphanLeases(opCtx, int64(idle.Seconds()))\n\t\tif err == nil && false {",
+    "test": "./cmd/nanotund/ -run 'TestLeaseGC_|TestRunLeaseGCLoop_'"
+  },
+  {
+    "desc": "[mut34] 出口 DNS 缓存:TTL 取最大而非最小(缓存活过 CDN 换 IP)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t\t\taddrs = append(addrs, netip.AddrFrom4(r.A))\n\t\t\tif !haveTTL || ah.TTL < minTTL {",
+    "new": "\t\t\taddrs = append(addrs, netip.AddrFrom4(r.A))\n\t\t\tif !haveTTL || ah.TTL > minTTL {",
+    "test": "./cmd/nanotund/ -run TestParseExitDNSResult_"
+  },
+  {
+    "desc": "[mut34] 出口 DNS 缓存:CNAME 等类型当成解析失败(出口解析永不命中)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t\tdefault:\n\t\t\tif err := p.SkipAnswer(); err != nil {\n\t\t\t\treturn nil, 0, 0, false\n\t\t\t}",
+    "new": "\t\tdefault:\n\t\t\treturn nil, 0, 0, false",
+    "test": "./cmd/nanotund/ -run TestParseExitDNSResult_"
+  },
+  {
+    "desc": "[mut34] 出口 DNS 缓存:丢掉 rcode(NXDOMAIN 被缓存成「成功但没有地址」)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\trcode = hdr.RCode\n\tif err := p.SkipAllQuestions(); err != nil {\n\t\treturn nil, 0, 0, false\n\t}",
+    "new": "\tif err := p.SkipAllQuestions(); err != nil {\n\t\treturn nil, 0, 0, false\n\t}",
+    "test": "./cmd/nanotund/ -run TestParseExitDNSResult_"
+  },
+  {
+    "desc": "[mut34] 出口 DNS 缓存:答复区解析出错也报成功(空答案被缓存一个 TTL)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t\tah, err := p.AnswerHeader()\n\t\tif errors.Is(err, dnsmessage.ErrSectionDone) {\n\t\t\tbreak\n\t\t}\n\t\tif err != nil {\n\t\t\treturn nil, 0, 0, false\n\t\t}",
+    "new": "\t\tah, err := p.AnswerHeader()\n\t\tif err != nil {\n\t\t\tbreak\n\t\t}",
+    "test": "./cmd/nanotund/ -run TestParseExitDNSResult_"
+  },
+  {
+    "desc": "[mut34] 原始应答缓存:TTL 取最大而非最小(整份应答缓存过久)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t\tif !have || ah.TTL < minTTL {\n\t\t\tminTTL, have = ah.TTL, true\n\t\t}",
+    "new": "\t\tif !have || ah.TTL > minTTL {\n\t\t\tminTTL, have = ah.TTL, true\n\t\t}",
+    "test": "./cmd/nanotund/ -run TestParseRawDNSMeta_"
+  },
+  {
+    "desc": "[mut34] 原始应答缓存:畸形应答也报成功(解不开的字节连同凭空 TTL 一起缓存)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "func parseRawDNSMeta(resp []byte) (rcode dnsmessage.RCode, minTTL uint32, ok bool) {\n\tvar p dnsmessage.Parser\n\thdr, err := p.Start(resp)\n\tif err != nil {\n\t\treturn 0, 0, false\n\t}",
+    "new": "func parseRawDNSMeta(resp []byte) (rcode dnsmessage.RCode, minTTL uint32, ok bool) {\n\tvar p dnsmessage.Parser\n\thdr, err := p.Start(resp)\n\tif err != nil {\n\t\treturn 0, 0, true\n\t}",
+    "test": "./cmd/nanotund/ -run TestParseRawDNSMeta_"
+  },
+  {
+    "desc": "[mut34b] 子网路由:超长包回退原链路(内网包从公网网卡发出去)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tif len(payload) > tunBufSize {\n\t\tsubnetRouteDroppedOversize.Add(1)\n\t\treturn true\n\t}\n\tif deliverIPPacketToConn(advConn, payload) {",
+    "new": "\tif len(payload) > tunBufSize {\n\t\tsubnetRouteDroppedOversize.Add(1)\n\t\treturn false\n\t}\n\tif deliverIPPacketToConn(advConn, payload) {",
+    "test": "./cmd/nanotund/ -run TestForwardPacketToSubnetRoute_"
+  },
+  {
+    "desc": "[mut34b] 子网路由:队列满时不记 full 计数(间歇丢包查不到)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\t} else {\n\t\tsubnetRouteDroppedFull.Add(1)\n\t}\n\treturn true\n}",
+    "new": "\t}\n\treturn true\n}",
+    "test": "./cmd/nanotund/ -run TestForwardPacketToSubnetRoute_"
+  },
+  {
+    "desc": "[mut34b] 子网路由:解析不出的包被这条路吞掉",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tt, ok := parsePacketTuple(payload)\n\tif !ok {\n\t\treturn false\n\t}\n\t// 本 mesh 内部 / server 本地优先",
+    "new": "\tt, ok := parsePacketTuple(payload)\n\tif !ok {\n\t\treturn true\n\t}\n\t// 本 mesh 内部 / server 本地优先",
+    "test": "./cmd/nanotund/ -run TestForwardPacketToSubnetRoute_"
+  },
+  {
+    "desc": "[mut34b] server 主动发起:不查宣告方当前宣告集(往它已撤回的网段投包)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\t\tif !covered {\n\t\t\tsubnetRouteDroppedNotAdvertised.Add(1)\n\t\t\treturn false\n\t\t}",
+    "new": "\t\tif false {\n\t\t\tsubnetRouteDroppedNotAdvertised.Add(1)\n\t\t\treturn false\n\t\t}",
+    "test": "./cmd/nanotund/ -run TestDeliverServerOriginatedToDevice_"
+  },
+  {
+    "desc": "[mut34b] server 主动发起:队列满仍报告投递成功(调用方以为包在路上)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tsubnetRouteDroppedFull.Add(1)\n\treturn false\n}",
+    "new": "\tsubnetRouteDroppedFull.Add(1)\n\treturn true\n}",
+    "test": "./cmd/nanotund/ -run TestDeliverServerOriginatedToDevice_"
   }
 ]

@@ -1682,12 +1682,15 @@ func tunReadLoop(dev tun.Device) {
 	}()
 	// 监听 ctx;触发时关 dev 让 Read 立刻返回。done 通道防止 watchdog 在
 	// Read 自然退出后还闲挂(避免重复关 dev 引起的 EBADF 告警噪声)。
+	// gctx 一次取定:watchdog 是分离 goroutine,它与主循环必须看同一个 ctx,
+	// 否则「谁关的 dev」与「退出日志算不算预期」会各自参照不同的 ctx。
+	gctx := globalContext
 	done := make(chan struct{})
 	defer close(done)
-	if globalContext != nil {
+	if gctx != nil {
 		go safeGoroutine("tunReadLoop/ctxWatch", func() {
 			select {
-			case <-globalContext.Done():
+			case <-gctx.Done():
 				_ = dev.Close()
 			case <-done:
 			}
@@ -1697,7 +1700,7 @@ func tunReadLoop(dev tun.Device) {
 		n, err := dev.Read(bufs, sizes, 0)
 		if err != nil {
 			// ctx 已取消时 dev.Close 触发的 Read err 是预期路径,Debug 即可。
-			if globalContext != nil && globalContext.Err() != nil {
+			if gctx != nil && gctx.Err() != nil {
 				logrus.WithError(err).Debug("TUN 读循环退出(ctx cancelled)")
 			} else {
 				logrus.WithError(err).Warn("TUN 读循环退出")
