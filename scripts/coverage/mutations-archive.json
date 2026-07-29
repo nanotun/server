@@ -2179,5 +2179,168 @@
     "new": "\t\tcase <-ctx.Done():\n\t\tcase <-done:",
     "test": "./cmd/nanotund/",
     "run": "TestAcceptPortForward"
+  },
+  {
+    "desc": "[mut31] alloc:v6 候选不按主机位夹取上界(长于 /112 时 i 溢进网络位,地址落到前缀外) [等价:与另一层防线互为冗余/循环从 i=2 起使夹取不可观测,单拆一层行为不变;两层同拆已验证被抓]",
+    "file": "cmd/nanotund/alloc.go",
+    "old": "\t} else {\n\t\thostBits := 128 - prefix.Bits()\n\t\tif hostBits > 16 {\n\t\t\thostBits = 16\n\t\t}",
+    "new": "\t} else {\n\t\thostBits := 16\n\t\tif hostBits > 16 {\n\t\t\thostBits = 16\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestAllocClientIP",
+    "equivalent": true
+  },
+  {
+    "desc": "[mut31] alloc:去掉 prefix.Contains 兜底(把网络位写脏的候选照发) [等价:与另一层防线互为冗余/循环从 i=2 起使夹取不可观测,单拆一层行为不变;两层同拆已验证被抓]",
+    "file": "cmd/nanotund/alloc.go",
+    "old": "\t\tif !prefix.Contains(cand) {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tif !prefix.Contains(cand) && false {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestAllocClientIP",
+    "equivalent": true
+  },
+  {
+    "desc": "[mut31] alloc:候选等于网关也照发(客户端与 server 网关撞车,整条路由断)",
+    "file": "cmd/nanotund/alloc.go",
+    "old": "\t\tif candStr == gatewayStr {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tif candStr == gatewayStr && false {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestAllocClientIP"
+  },
+  {
+    "desc": "[mut31] alloc:v4 上界不夹取 16 位(小前缀上 maxIter 变负 / 越界) [等价:与另一层防线互为冗余/循环从 i=2 起使夹取不可观测,单拆一层行为不变;两层同拆已验证被抓]",
+    "file": "cmd/nanotund/alloc.go",
+    "old": "\t\thostBits := 32 - prefix.Bits()\n\t\tif hostBits > 16 {\n\t\t\thostBits = 16\n\t\t}\n\t\tmaxIter = (1 << hostBits) - 2\n\t\tif maxIter < 1 {\n\t\t\tmaxIter = 1\n\t\t}",
+    "new": "\t\thostBits := 32 - prefix.Bits()\n\t\tif hostBits > 16 {\n\t\t\thostBits = 16\n\t\t}\n\t\tmaxIter = (1 << hostBits) - 2",
+    "test": "./cmd/nanotund/",
+    "run": "TestAllocClientIP",
+    "equivalent": true
+  },
+  {
+    "desc": "[mut31] alloc:族不一致时不报错继续算(对 v6 形态调 As4 → panic)",
+    "file": "cmd/nanotund/alloc.go",
+    "old": "\tif gatewayAddr.Is4() != networkAddr.Is4() {",
+    "new": "\tif gatewayAddr.Is4() != networkAddr.Is4() && false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestAllocClientIP"
+  },
+  {
+    "desc": "[mut31] alloc:exclude 集不再排除(把本机自己的地址分给客户端)",
+    "file": "cmd/nanotund/alloc.go",
+    "old": "\t\tif !used[candStr] && (exclude == nil || !exclude[candStr]) {",
+    "new": "\t\tif !used[candStr] {",
+    "test": "./cmd/nanotund/",
+    "run": "TestAllocClientIP"
+  },
+  {
+    "desc": "[mut31] 配置校验:不拒 v4-mapped 网段(掩码下发 0.0.0.0,登录时才发作)",
+    "file": "config/validate_startup.go",
+    "old": "\t\tif strings.Contains(e, \":\") {",
+    "new": "\t\tif strings.Contains(e, \":\") && false {",
+    "test": "./config/",
+    "run": "TestValidateTUNSubnets|TestTUNConfigValidateTUNSubnets"
+  },
+  {
+    "desc": "[mut31] 偏好 vIP:fixed 不再优先于历史 lease(手钉地址被忽略)",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\tif v4 == \"\" && prev.VIPv4 != \"\" {\n\t\tv4 = prev.VIPv4\n\t}",
+    "new": "\tif prev.VIPv4 != \"\" {\n\t\tv4 = prev.VIPv4\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestPreferredLeasedVIPs|TestAllocOrLease"
+  },
+  {
+    "desc": "[mut31] 偏好 vIP:lease 查不动时把 fixed 也一起丢掉",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\tprev, err := gw.store.GetLeaseByDevice(ctx, res.Device.ID)\n\tif err != nil || prev == nil {\n\t\treturn v4, v6\n\t}",
+    "new": "\tprev, err := gw.store.GetLeaseByDevice(ctx, res.Device.ID)\n\tif err != nil || prev == nil {\n\t\treturn \"\", \"\"\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestPreferredLeasedVIPs"
+  },
+  {
+    "desc": "[mut31] 偏好可用性:不挡网关地址(客户端拿到网关 IP,与 server 撞车)",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\tif addr == prefix.Addr().Unmap() {\n\t\treturn false // 网关地址\n\t}",
+    "new": "\tif addr == prefix.Addr().Unmap() && false {\n\t\treturn false // 网关地址\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestPreferredVIPUsable"
+  },
+  {
+    "desc": "[mut31] 偏好可用性:不挡定向广播地址(部分内核丢弃以广播为源的报文)",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\tif bcast, ok := ipv4DirectedBroadcast(prefix); ok && addr == bcast {\n\t\treturn false\n\t}",
+    "new": "\tif bcast, ok := ipv4DirectedBroadcast(prefix); ok && addr == bcast && false {\n\t\treturn false\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestPreferredVIPUsable"
+  },
+  {
+    "desc": "[mut31] 偏好可用性:不挡网段外的地址",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\tif !prefix.Contains(addr) {\n\t\treturn false\n\t}\n\tif addr == prefix.Addr().Unmap() {",
+    "new": "\tif !prefix.Contains(addr) && false {\n\t\treturn false\n\t}\n\tif addr == prefix.Addr().Unmap() {",
+    "test": "./cmd/nanotund/",
+    "run": "TestPreferredVIPUsable"
+  },
+  {
+    "desc": "[mut31] 广播计算:/31 与 /32 也算出广播(点对点网段里那个可用地址被挡掉)",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\tif bits < 0 || bits >= 31 {\n\t\treturn netip.Addr{}, false\n\t}",
+    "new": "\tif bits < 0 {\n\t\treturn netip.Addr{}, false\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestIPv4DirectedBroadcast|TestPreferredVIPUsable"
+  },
+  {
+    "desc": "[mut31] 库占用集:不剔除本设备自己的地址(它复用不到也回收不了自己的 vIP)",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\tfor _, e := range exceptV4 {\n\t\tif e != \"\" {\n\t\t\tdelete(v4, e)\n\t\t}\n\t}",
+    "new": "\tfor _, e := range exceptV4 {\n\t\tif e != \"\" && false {\n\t\t\tdelete(v4, e)\n\t\t}\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestDBReservedVIPs"
+  },
+  {
+    "desc": "[mut31] 自身例外集:只报 fixed 不报当前 lease(第十九轮 MED:同一设备白占两个 vIP)",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\tif prev, err := gw.store.GetLeaseByDevice(ctx, res.Device.ID); err == nil && prev != nil {\n\t\tadd(&v4s, prev.VIPv4)\n\t\tadd(&v6s, prev.VIPv6)\n\t}",
+    "new": "\tif prev, err := gw.store.GetLeaseByDevice(ctx, res.Device.ID); err == nil && prev != nil && false {\n\t\tadd(&v4s, prev.VIPv4)\n\t\tadd(&v6s, prev.VIPv6)\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestDeviceReservedVIPExceptions"
+  },
+  {
+    "desc": "[mut31] 落 lease:撞 vIP UNIQUE 也放行登录(两台设备同一个地址,数据面黑洞)",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\t\t\t}).Error(\"upsert lease 撞 vIP UNIQUE 冲突 -> 拒登 -> 释放内存占用 vIP;请检查 alloc 路径是否把 db 中离线 lease 算入 used 集合(dbReservedVIPs / mergeUsedVIPs)\")\n\t\t\treturn err",
+    "new": "\t\t\t}).Error(\"upsert lease 撞 vIP UNIQUE 冲突 -> 拒登 -> 释放内存占用 vIP;请检查 alloc 路径是否把 db 中离线 lease 算入 used 集合(dbReservedVIPs / mergeUsedVIPs)\")\n\t\t\treturn nil",
+    "test": "./cmd/nanotund/",
+    "run": "TestPersistDeviceLease"
+  },
+  {
+    "desc": "[mut31] 落 lease:普通 DB 故障也拒登(一次库抖动让所有人登不进)",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\t\t}).Warn(\"upsert lease 失败(非 UNIQUE 冲突),下次登录会重新分配,不影响当前会话\")\n\t\treturn nil",
+    "new": "\t\t}).Warn(\"upsert lease 失败(非 UNIQUE 冲突),下次登录会重新分配,不影响当前会话\")\n\t\treturn err",
+    "test": "./cmd/nanotund/",
+    "run": "TestPersistDeviceLease"
+  },
+  {
+    "desc": "[mut31] 落 lease:地址来自 fixed 时不标 manual(lease gc 会把手钉地址当自动分配回收)",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\t\t\tmanual = true",
+    "new": "\t\t\tmanual = false",
+    "test": "./cmd/nanotund/",
+    "run": "TestPersistDeviceLease"
+  },
+  {
+    "desc": "[mut31] 合并占用集:直接改动入参(库里的离线占用被写进内存表,地址永不回收)",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\tout := make(map[string]bool, len(a)+len(b))\n\tfor k := range a {\n\t\tout[k] = true\n\t}",
+    "new": "\tout := a\n\tif out == nil {\n\t\tout = make(map[string]bool, len(b))\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestMergeUsedVIPs"
+  },
+  {
+    "desc": "[mut31] isIPv4:v4-mapped 不算 v4(会被当 v6 lease 落进错误的列)",
+    "file": "cmd/nanotund/alloc_lease.go",
+    "old": "\treturn addr.Is4() || addr.Is4In6()",
+    "new": "\treturn addr.Is4()",
+    "test": "./cmd/nanotund/",
+    "run": "TestIsIPv4|TestPersistDeviceLease"
   }
 ]

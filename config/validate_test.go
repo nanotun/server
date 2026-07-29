@@ -91,6 +91,20 @@ func TestValidateTUNSubnets(t *testing.T) {
 	if err := (TUNConfig{SubnetsV6: []string{"10.0.0.0/8"}}).ValidateTUNSubnets(); err == nil {
 		t.Fatal("IPv4 CIDR 放进 subnets_v6 应报错")
 	}
+	// IPv4-mapped 写法:地址解析出来是 v4(所以能过上面那道族检查),但前缀长度是在 128 位空间里
+	// 算的 —— 掩码会下发成 0.0.0.0,地址池一个都分不出来。此前它能过校验,要到第一个客户端登录时
+	// 才在 AllocClientIP 里炸出 panic(gateway 被 Unmap 成 v4、网络地址被 Masked 成纯 v6,
+	// 族一分岔就对 v6 形态调了 As4)。这里在启动前就拒掉。
+	for _, s := range []string{"::ffff:10.0.0.1/24", "::ffff:10.201.0.0/16"} {
+		err := (TUNConfig{Subnets: []string{s}}).ValidateTUNSubnets()
+		if err == nil {
+			t.Fatalf("subnets=%q 用 v4-mapped 写法应报错(前缀会按 128 位解释)", s)
+		}
+		if !strings.Contains(err.Error(), "IPv4-mapped") {
+			t.Errorf("subnets=%q 的报错应点明是 v4-mapped 写法,got %v", s, err)
+		}
+	}
+
 	// 合法组合。
 	for _, c := range []TUNConfig{
 		{Subnets: []string{"10.201.0.0/16"}},

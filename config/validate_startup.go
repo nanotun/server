@@ -204,6 +204,15 @@ func (t TUNConfig) ValidateTUNSubnets() error {
 		}
 		if ip.To4() == nil {
 			errs = append(errs, fmt.Sprintf("[tun].subnets[%d]=%q 是 IPv6 CIDR,应放到 [tun].subnets_v6", i, s))
+			continue
+		}
+		// v4-mapped 写法(`::ffff:10.0.0.1/24`):地址解析出来是 v4,但前缀长度是在 **128 位**空间里算的。
+		// 于是 /24 覆盖的是 v6 空间的一大片而不是 256 个 v4 地址:掩码下发成 0.0.0.0,地址池一个都分不出来。
+		// 这条以前能过校验(To4() 非空 → 当成合法 v4 网段),要到第一个客户端登录才发作。
+		if strings.Contains(e, ":") {
+			errs = append(errs, fmt.Sprintf(
+				"[tun].subnets[%d]=%q 用了 IPv4-mapped 写法,前缀长度会按 128 位解释(掩码下发成 0.0.0.0、地址池分不出地址),请直接写点分十进制如 %q",
+				i, s, ip.String()+"/24"))
 		}
 	}
 	for i, s := range t.SubnetsV6 {

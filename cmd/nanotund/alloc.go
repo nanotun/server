@@ -68,7 +68,18 @@ func AllocClientIP(gatewayCIDR string, used map[string]bool, exclude map[string]
 		}
 	}
 
-	networkAddr := prefix.Masked().Addr()
+	networkAddr := prefix.Masked().Addr().Unmap()
+
+	// 族一致性:下面按 gatewayAddr 的族选算术分支,但算术吃的是 networkAddr。网关写成 v4-mapped
+	// 形态(`::ffff:10.0.0.1/24`)时两者会不一致 —— gatewayAddr Unmap 成 v4,而 Masked() 把 ::ffff
+	// 那几个字节一起掩掉了,networkAddr 成了纯 v6 的 ::,对它调 As4() 直接 panic。这种写法能过
+	// [tun].subnets 的校验,发作时机是第一个客户端登录,不是启动。在这里报错收口(配置侧另有一道
+	// 明确拒绝,见 config.ValidateTUNSubnets)。
+	if gatewayAddr.Is4() != networkAddr.Is4() {
+		return ClientNetConfig{}, fmt.Errorf(
+			"gateway %s 与网段 %s 的地址族不一致(v4-mapped 写法会让前缀长度按 128 位解释),请把网段写成点分十进制",
+			gatewayStr, gatewayCIDR)
+	}
 
 	for i := 2; i <= maxIter; i++ {
 		var cand netip.Addr
