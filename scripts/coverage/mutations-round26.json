@@ -1,0 +1,170 @@
+[
+  {
+    "desc": "路径解析:空值当成关闭(该开的管理面悄悄没开)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\tif trimmed == \"\" {\n\t\treturn defaultControlSocketPath, false\n\t}",
+    "new": "\tif trimmed == \"\" {\n\t\treturn \"\", true\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestResolveControlSocketPath|TestStartControlSocket|TestControlSocket"
+  },
+  {
+    "desc": "路径解析:前缀匹配 off(把 offline.sock 也当成关闭)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\tif strings.EqualFold(trimmed, \"off\") {",
+    "new": "\tif strings.HasPrefix(strings.ToLower(trimmed), \"off\") {",
+    "test": "./cmd/nanotund/",
+    "run": "TestResolveControlSocketPath"
+  },
+  {
+    "desc": "权限:chmod 失败只 Warn 照样开门(本地任何用户都能踢会话/改限速)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\tif err := os.Chmod(path, controlSocketFileMode); err != nil {\n\t\tlogrus.WithError(err).WithField(\"path\", path).\n\t\t\tError(\"[control] chmod socket 失败,管理面拒绝启动(fail-closed:无法保证 socket 仅 owner 可访问,不提供无鉴权特权面)\")\n\t\t_ = ln.Close()\n\t\t_ = os.Remove(path)\n\t\treturn err\n\t}",
+    "new": "\tif err := os.Chmod(path, controlSocketFileMode); err != nil {\n\t\tlogrus.WithError(err).Warn(\"[control] chmod socket 失败\")\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestEnforceControlSocketPerm|TestStartControlSocket|TestControlSocket"
+  },
+  {
+    "desc": "权限:不复核实测权限(chmod 报成功但没落到 0600 时照样开门)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\tinfo, err := controlSocketStatForPermCheck(path)\n\tif err != nil || info.Mode().Perm()&0o077 != 0 {",
+    "new": "\tinfo, err := controlSocketStatForPermCheck(path)\n\tif false && (err != nil || info.Mode().Perm()&0o077 != 0) {",
+    "test": "./cmd/nanotund/",
+    "run": "TestEnforceControlSocketPerm|TestStartControlSocket|TestControlSocket"
+  },
+  {
+    "desc": "权限:复核不过只报错但不关监听(socket 还挂着等人来连)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\tlogrus.WithField(\"path\", path).WithField(\"perm\", perm).WithError(err).\n\t\t\tError(\"[control] socket 权限复核未通过(group/other 仍可访问),管理面拒绝启动(fail-closed)\")\n\t\t_ = ln.Close()\n\t\t_ = os.Remove(path)",
+    "new": "\t\tlogrus.WithField(\"path\", path).WithField(\"perm\", perm).WithError(err).\n\t\t\tError(\"[control] socket 权限复核未通过\")",
+    "test": "./cmd/nanotund/",
+    "run": "TestEnforceControlSocketPerm|TestStartControlSocket|TestControlSocket"
+  },
+  {
+    "desc": "权限:Stat 失败当成安全(读不到就放行)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\tif err != nil || info.Mode().Perm()&0o077 != 0 {",
+    "new": "\tif err == nil && info.Mode().Perm()&0o077 != 0 {",
+    "test": "./cmd/nanotund/",
+    "run": "TestEnforceControlSocketPerm|TestStartControlSocket|TestControlSocket"
+  },
+  {
+    "desc": "路径准备:残留 socket 删不掉时吞掉错误继续",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\tif err := os.Remove(path); err != nil {\n\t\t\treturn fmt.Errorf(\"unlink stale socket %s: %w\", path, err)\n\t\t}",
+    "new": "\t\t_ = os.Remove(path)",
+    "test": "./cmd/nanotund/",
+    "run": "TestPrepareControlSocketPath"
+  },
+  {
+    "desc": "路径准备:建父目录失败时吞掉错误继续",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\tif err := os.MkdirAll(dir, controlSocketDirMode); err != nil {\n\t\t\treturn fmt.Errorf(\"mkdir %s: %w\", dir, err)\n\t\t}",
+    "new": "\t\t_ = os.MkdirAll(dir, controlSocketDirMode)",
+    "test": "./cmd/nanotund/",
+    "run": "TestPrepareControlSocketPath"
+  },
+  {
+    "desc": "cleanup:不删 socket 文件(等价变异:Go 的 UnixListener.Close 自己就 unlink,os.Remove 只是保险,无可观测差异)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\t_ = ln.Close()\n\t\t// Go 的 UnixListener 关闭时自己就会 unlink(SetUnlinkOnClose 默认开),这里是保险:\n\t\t// 万一将来换成从 fd 接管的 listener(那种默认不 unlink),残留文件会让下次 bind 报\n\t\t// \"address already in use\",表现成「管理面莫名起不来」。\n\t\t_ = os.Remove(path)",
+    "new": "\t\t_ = ln.Close()",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartControlSocket"
+  },
+  {
+    "desc": "kick session:按 device id 匹配(踢错人)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\t\tif c, ok := connIDMap[req.ID]; ok && c != nil {\n\t\t\t\tvictims = append(victims, c)\n\t\t\t}",
+    "new": "\t\t\tfor _, c := range connIDMap {\n\t\t\t\tif c != nil {\n\t\t\t\t\tvictims = append(victims, c)\n\t\t\t\t}\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestControlSocketKick|TestControlSocket_Kick"
+  },
+  {
+    "desc": "kick device:UUID 不做小写归一(大写 UUID 踢不到)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\t\tmatch := func(c *Connection) bool { return c.deviceUUID == strings.ToLower(raw) }",
+    "new": "\t\t\tmatch := func(c *Connection) bool { return c.deviceUUID == raw }",
+    "test": "./cmd/nanotund/",
+    "run": "TestControlSocketKick|TestControlSocket_Kick"
+  },
+  {
+    "desc": "kick device:数字 id 也走 UUID 比对(按 device id 踢不到任何人)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\t\tif did, err := stringToInt64(raw); err == nil && did > 0 {\n\t\t\t\tmatch = func(c *Connection) bool { return c.deviceID == did }\n\t\t\t}",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestControlSocketKick|TestControlSocket_Kick"
+  },
+  {
+    "desc": "kick user:不按 user 索引取,改成全表(把别人的会话一起踢了)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\t\tvictims = byUserSnapshotLocked(userIDFromStoreID(uid))",
+    "new": "\t\t\tfor _, c := range connIDMap {\n\t\t\t\tif c != nil {\n\t\t\t\t\tvictims = append(victims, c)\n\t\t\t\t}\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestControlSocketKick|TestControlSocket_Kick"
+  },
+  {
+    "desc": "kick:无条件计数(没踢掉也回报已踢除)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\t\tif kickConnForUserInvalidate(ctx, gw, c, uid, req.Reason, kickFollowTakeover) {\n\t\t\t\tresp.Kicked++\n\t\t\t\tresp.ConnIDs = append(resp.ConnIDs, c.connIDStr)\n\t\t\t}",
+    "new": "\t\t\tkickConnForUserInvalidate(ctx, gw, c, uid, req.Reason, kickFollowTakeover)\n\t\t\tresp.Kicked++\n\t\t\tresp.ConnIDs = append(resp.ConnIDs, c.connIDStr)",
+    "test": "./cmd/nanotund/",
+    "run": "TestControlSocketKick|TestControlSocket_Kick"
+  },
+  {
+    "desc": "kick:默认 reason 丢掉(审计里这次处置没有原因)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\tif req.Reason == \"\" {\n\t\t\treq.Reason = \"kicked_by_admin\"\n\t\t}",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestControlSocketKick|TestControlSocket_Kick"
+  },
+  {
+    "desc": "reload:失败也回 200(管理员以为新 ACL 生效了)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\t\tn, err := reloadACLSnapshotFromStore(gw.store)\n\t\t\tif err != nil {\n\t\t\t\thttp.Error(w, \"reload acl: \"+err.Error(), http.StatusInternalServerError)\n\t\t\t\treturn\n\t\t\t}",
+    "new": "\t\t\tn, _ := reloadACLSnapshotFromStore(gw.store)",
+    "test": "./cmd/nanotund/",
+    "run": "TestControlSocketReload"
+  },
+  {
+    "desc": "限速回落:读不到当前值时回落成 0(等于把限速悄悄取消)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "func freshUserBW(\n\tctx context.Context, gw *gatewayState, userID int64,\n\tcache map[int64]rateSnap, fallbackUp, fallbackDown int64,\n) (int64, int64) {\n\tif userID <= 0 || gw == nil || gw.store == nil {\n\t\treturn fallbackUp, fallbackDown\n\t}",
+    "new": "func freshUserBW(\n\tctx context.Context, gw *gatewayState, userID int64,\n\tcache map[int64]rateSnap, fallbackUp, fallbackDown int64,\n) (int64, int64) {\n\tif userID <= 0 || gw == nil || gw.store == nil {\n\t\treturn 0, 0\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestFreshRateLookups|TestRateRefresh|TestUserRateRefresh|TestControlSocket"
+  },
+  {
+    "desc": "限速回落:device 那层行已删时回落成 0",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\tsnap := rateSnap{up: fallbackUp, down: fallbackDown}\n\tc, cancel := context.WithTimeout(ctx, 3*time.Second)\n\tif d, err := gw.store.GetDevice(c, deviceID); err == nil && d != nil {",
+    "new": "\tsnap := rateSnap{}\n\tc, cancel := context.WithTimeout(ctx, 3*time.Second)\n\tif d, err := gw.store.GetDevice(c, deviceID); err == nil && d != nil {",
+    "test": "./cmd/nanotund/",
+    "run": "TestFreshRateLookups|TestRateRefresh|TestUserRateRefresh|TestControlSocket"
+  },
+  {
+    "desc": "限速回落:忽略缓存(一次全量刷把同一个 user 读 N 次)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\tif v, ok := cache[userID]; ok {\n\t\treturn v.up, v.down\n\t}",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestFreshRateLookups"
+  },
+  {
+    "desc": "限速应用:被接管的连接也算刷到了(refreshed 虚高)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\tif c.takenOver.Load() {\n\t\treturn false\n\t}",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestApplyConnRateLimit|TestRateRefresh|TestControlSocket"
+  },
+  {
+    "desc": "会话表 nil 表项:去掉 /status 里的 nil 守卫(管理面 goroutine 崩掉)",
+    "file": "cmd/nanotund/control_socket.go",
+    "old": "\t\tfor _, c := range connIDMap {\n\t\t\tif c == nil {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif filterDeviceID > 0 && c.deviceID != filterDeviceID {",
+    "new": "\t\tfor _, c := range connIDMap {\n\t\t\tif filterDeviceID > 0 && c.deviceID != filterDeviceID {",
+    "test": "./cmd/nanotund/",
+    "run": "TestControlSocket"
+  }
+]

@@ -17,18 +17,29 @@ import subprocess
 import sys
 
 
-def patch(path, old, new, nth):
+def read(path):
     with open(path, encoding="utf-8") as fh:
-        src = fh.read()
+        return fh.read()
+
+
+def write(path, text):
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+# 变异一律以「开跑那一刻的原始内容」为基准施加,还原也还原成它 —— 而不是各自读一遍磁盘。
+#
+# 否则一次没还原干净就会连环出错:后一条变异的锚点在被改过的文件里找不到,被报成「锚点失效」
+# (于是看起来是清单写错了,其实是工具漏了),而它随手拍下的"原始内容"里已经带着上一条变异,
+# 一路传下去,最后把某条变异留在工作树里 —— 那是会被当成真代码提交掉的。
+def patch(path, pristine, old, new, nth):
     idx = -1
     for _ in range(nth + 1):
-        idx = src.find(old, idx + 1)
+        idx = pristine.find(old, idx + 1)
         if idx < 0:
-            return None
-    mutated = src[:idx] + new + src[idx + len(old):]
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(mutated)
-    return src
+            return False
+    write(path, pristine[:idx] + new + pristine[idx + len(old):])
+    return True
 
 
 def main():
@@ -39,11 +50,19 @@ def main():
     with open(spec_path, encoding="utf-8") as fh:
         muts = json.load(fh)
 
-    caught, escaped, broken = [], [], []
+    pristine = {m["file"]: read(m["file"]) for m in muts}
+
+    # 开跑前先确认原始代码是能编过的。否则每条变异都会因为「构建失败」被记成抓住,
+    # 一份全绿的报告底下其实一条断言都没跑 —— 这种假绿比逃逸更危险。
+    base = subprocess.run(["go", "build", "./..."], capture_output=True, text=True)
+    if base.returncode != 0:
+        print("原始代码就编不过,先修好再跑变异:\n" + base.stderr.strip())
+        return 2
+
+    caught, escaped, broken, nocompile = [], [], [], []
     for i, m in enumerate(muts, 1):
         desc, path = m["desc"], m["file"]
-        original = patch(path, m["old"], m["new"], m.get("nth", 0))
-        if original is None:
+        if not patch(path, pristine[path], m["old"], m["new"], m.get("nth", 0)):
             broken.append(desc)
             print(f"[{i}/{len(muts)}] 找不到锚点,跳过: {desc}", flush=True)
             continue
@@ -55,21 +74,38 @@ def main():
             if m.get("run"):
                 cmd += ["-run", m["run"]]
             proc = subprocess.run(cmd, capture_output=True, text=True)
+            out = proc.stdout + proc.stderr
             if proc.returncode == 0:
                 escaped.append(desc)
                 mark = "逃逸 ✗"
+            elif "[build failed]" in out or "syntax error" in out:
+                # 编不过不算「测试抓住了它」:这条变异什么断言都没验证到,得改写成语法合法的形状。
+                nocompile.append(desc)
+                mark = "编不过 —"
             else:
                 caught.append(desc)
                 mark = "抓住 ✓"
             print(f"[{i}/{len(muts)}] {mark}  {desc}", flush=True)
         finally:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(original)
+            write(path, pristine[path])
+
+    # 收尾复核:哪怕上面某一步出了意外,也不许把变异留在工作树里。
+    dirty = [p for p, src in pristine.items() if read(p) != src]
+    if dirty:
+        for p in dirty:
+            write(p, pristine[p])
+        print("\n警告:以下文件在跑完时与开跑前不一致,已强制还原(请复核 git diff):")
+        for p in dirty:
+            print(f"  - {p}")
 
     print(f"\n抓住 {len(caught)} / 共 {len(caught) + len(escaped)}")
     if escaped:
         print("\n逃逸的变异(测试照过,说明没有断言真正检查这段逻辑):")
         for d in escaped:
+            print(f"  - {d}")
+    if nocompile:
+        print("\n编不过(不算被抓住,需改写成语法合法的变异):")
+        for d in nocompile:
             print(f"  - {d}")
     if broken:
         print("\n锚点失效:")

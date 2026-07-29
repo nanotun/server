@@ -47,12 +47,10 @@ const (
 //
 // 返回 cleanup func(关 listener + unlink socket 文件)。
 func startControlSocket(path string, gw *gatewayState) func() {
-	if strings.EqualFold(strings.TrimSpace(path), "off") {
+	path, off := resolveControlSocketPath(path)
+	if off {
 		logrus.Info("[control] control_socket_path=off,管理面已关闭")
 		return func() {}
-	}
-	if strings.TrimSpace(path) == "" {
-		path = defaultControlSocketPath
 	}
 
 	if err := prepareControlSocketPath(path); err != nil {
@@ -71,28 +69,7 @@ func startControlSocket(path string, gw *gatewayState) func() {
 		logrus.WithError(err).WithField("path", path).Warn("[control] 监听 unix socket 失败,管理面未启动")
 		return func() {}
 	}
-	// fail-closed:控制面**无鉴权**——kick / reload / rate-refresh 等特权操作全靠「只有能读这个
-	// socket 的本地用户才是管理员」这一文件权限前提。若无法把 socket 收紧到 0600,任何本地用户都能
-	// 连上执行特权操作(踢会话 / 改限速 / reload),等于本地提权。此前 chmod 失败只 Warn 后**继续**
-	// 提供服务,违背这个安全前提。改为:chmod 失败 → 关监听 + 删文件 + 不启动管理面。
-	if err := os.Chmod(path, controlSocketFileMode); err != nil {
-		logrus.WithError(err).WithField("path", path).
-			Error("[control] chmod socket 失败,管理面拒绝启动(fail-closed:无法保证 socket 仅 owner 可访问,不提供无鉴权特权面)")
-		_ = ln.Close()
-		_ = os.Remove(path)
-		return func() {}
-	}
-	// 复核实际权限:umask + chmod 之后再 Stat 确认 group/other 位确为 0。个别 FS / 容器 overlay 上
-	// chmod 可能"成功返回"却未真正落到 0600;控制面无鉴权,这里必须以实测权限为准 fail-closed。
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm()&0o077 != 0 {
-		perm := "unknown"
-		if info != nil {
-			perm = info.Mode().Perm().String()
-		}
-		logrus.WithField("path", path).WithField("perm", perm).WithError(err).
-			Error("[control] socket 权限复核未通过(group/other 仍可访问),管理面拒绝启动(fail-closed)")
-		_ = ln.Close()
-		_ = os.Remove(path)
+	if err := enforceControlSocketPerm(ln, path); err != nil {
 		return func() {}
 	}
 
@@ -133,8 +110,64 @@ func startControlSocket(path string, gw *gatewayState) func() {
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 		_ = ln.Close()
-		_ = os.Remove(path) // 避免下次启动时 bind 报 "address already in use"
+		// Go 的 UnixListener 关闭时自己就会 unlink(SetUnlinkOnClose 默认开),这里是保险:
+		// 万一将来换成从 fd 接管的 listener(那种默认不 unlink),残留文件会让下次 bind 报
+		// "address already in use",表现成「管理面莫名起不来」。
+		_ = os.Remove(path)
 	}
+}
+
+// resolveControlSocketPath 把配置值化成「实际路径 + 是否关闭」。空 = 用默认路径,"off"(不分大小写、
+// 容忍空白)= 关闭管理面。分出来是因为「空值到底关不关」错了没有任何报错:要么该开的没开(reload/kick
+// 全部不可用),要么该关的悄悄开着一个无鉴权特权面。
+func resolveControlSocketPath(path string) (resolved string, off bool) {
+	trimmed := strings.TrimSpace(path)
+	if strings.EqualFold(trimmed, "off") {
+		return "", true
+	}
+	if trimmed == "" {
+		return defaultControlSocketPath, false
+	}
+	return path, false
+}
+
+// controlSocketStatForPermCheck 是 socket 权限复核那一次 Stat 的接缝,仅测试替换。
+//
+// 「chmod 返回成功但权限没真正落到 0600」只在个别 FS / 容器 overlay 上出现,用真实文件系统构造不出来;
+// 而这条分支正是无鉴权控制面的最后一道门,不能只靠读代码确认它会拒绝服务。
+var controlSocketStatForPermCheck = os.Stat
+
+// enforceControlSocketPerm 把 socket 收紧到 owner-only,收不紧就 fail-closed。
+//
+// 控制面**无鉴权**——kick / reload / rate-refresh 等特权操作全靠「只有能读这个 socket 的本地用户才是
+// 管理员」这一文件权限前提。若无法把 socket 收紧到 0600,任何本地用户都能连上执行特权操作(踢会话 /
+// 改限速 / reload),等于本地提权。所以失败时不只是不启动:还要关掉监听并删掉那个文件,否则一个
+// group/other 可访问的 socket 会继续挂在那里等人来连。
+func enforceControlSocketPerm(ln net.Listener, path string) error {
+	if err := os.Chmod(path, controlSocketFileMode); err != nil {
+		logrus.WithError(err).WithField("path", path).
+			Error("[control] chmod socket 失败,管理面拒绝启动(fail-closed:无法保证 socket 仅 owner 可访问,不提供无鉴权特权面)")
+		_ = ln.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	// 复核实际权限:umask + chmod 之后再 Stat 确认 group/other 位确为 0。
+	info, err := controlSocketStatForPermCheck(path)
+	if err != nil || info.Mode().Perm()&0o077 != 0 {
+		perm := "unknown"
+		if info != nil {
+			perm = info.Mode().Perm().String()
+		}
+		logrus.WithField("path", path).WithField("perm", perm).WithError(err).
+			Error("[control] socket 权限复核未通过(group/other 仍可访问),管理面拒绝启动(fail-closed)")
+		_ = ln.Close()
+		_ = os.Remove(path)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("control socket %s 权限复核未通过(%s)", path, perm)
+	}
+	return nil
 }
 
 // prepareControlSocketPath 确保父目录存在 + socket 文件不残留。
@@ -756,12 +789,19 @@ func controlHandleKick(gw *gatewayState) http.HandlerFunc {
 		targetUserID := int64(0)
 		matchKind := strings.ToLower(req.Kind)
 
-		// 把 device / user 形态规范成「conn 选择函数」,session 直接按 connIDStr 精确匹配。
-		var picker func(c *Connection) bool
+		// 三种形状各自算出「要踢谁」。session / user 有 O(1) 索引,device 只能全表扫。
+		//
+		// 这里原本是两个 switch:前一个给三种形状各建一个 picker,后一个再挑受害者。但 session / user
+		// 在后一个 switch 里走的是索引,它们的 picker 从来没被调用过 —— 覆盖率上那两行恒为 0 才看出来。
+		// 死掉的匹配逻辑是个陷阱:改 kick 语义的人很可能只改那两行,而真正生效的是索引那一侧。
+		var victims []*Connection
 		switch matchKind {
 		case "session":
-			id := req.ID
-			picker = func(c *Connection) bool { return c.connIDStr == id }
+			connIDMapMu.RLock()
+			if c, ok := connIDMap[req.ID]; ok && c != nil {
+				victims = append(victims, c)
+			}
+			connIDMapMu.RUnlock()
 		case "device":
 			// 2026-05-23:Connection.deviceID / deviceUUID 已就位(P2#12 + 0011),
 			// kick by device 真正落地。req.ID 接受两种格式:
@@ -775,12 +815,17 @@ func controlHandleKick(gw *gatewayState) http.HandlerFunc {
 				http.Error(w, "device id 不能为空", http.StatusBadRequest)
 				return
 			}
+			match := func(c *Connection) bool { return c.deviceUUID == strings.ToLower(raw) }
 			if did, err := stringToInt64(raw); err == nil && did > 0 {
-				picker = func(c *Connection) bool { return c.deviceID == did }
-			} else {
-				uuidNorm := strings.ToLower(raw)
-				picker = func(c *Connection) bool { return c.deviceUUID == uuidNorm }
+				match = func(c *Connection) bool { return c.deviceID == did }
 			}
+			connIDMapMu.RLock()
+			for _, c := range connIDMap {
+				if c != nil && match(c) {
+					victims = append(victims, c)
+				}
+			}
+			connIDMapMu.RUnlock()
 		case "user":
 			uid, ok := resolveControlKickUser(r.Context(), gw, req.ID)
 			if !ok {
@@ -788,39 +833,21 @@ func controlHandleKick(gw *gatewayState) http.HandlerFunc {
 				return
 			}
 			targetUserID = uid
-			picker = func(c *Connection) bool { return parseUserIDStr(c.userID) == uid }
+			connIDMapMu.RLock()
+			victims = byUserSnapshotLocked(userIDFromStoreID(uid))
+			connIDMapMu.RUnlock()
 		default:
 			http.Error(w, "unknown kind: "+req.Kind, http.StatusBadRequest)
 			return
-		}
-
-		// P3-a:user/session 两类有 O(1) 索引,优先走快速路径;只有 fallback 时全表扫描。
-		var victims []*Connection
-		switch matchKind {
-		case "session":
-			connIDMapMu.RLock()
-			if c, ok := connIDMap[req.ID]; ok && c != nil {
-				victims = append(victims, c)
-			}
-			connIDMapMu.RUnlock()
-		case "user":
-			connIDMapMu.RLock()
-			victims = byUserSnapshotLocked(userIDFromStoreID(targetUserID))
-			connIDMapMu.RUnlock()
-		default:
-			connIDMapMu.RLock()
-			for _, c := range connIDMap {
-				if c != nil && picker(c) {
-					victims = append(victims, c)
-				}
-			}
-			connIDMapMu.RUnlock()
 		}
 
 		resp := controlKickResp{Reason: req.Reason}
 		ctx := r.Context()
 		for _, c := range victims {
 			uid := parseUserIDStr(c.userID)
+			// 前置守卫,当前不可达:by-user 索引的键就是 c.userID(见 connByUserAddLocked),所以从
+			// 索引里捞出来的 conn 必然能解析出同一个 uid。哪天索引改成按数字 id 存,这里才开始生效 ——
+			// 留着是为了那时审计不会把处置记到 user 0 名下。
 			if matchKind == "user" && uid == 0 {
 				uid = targetUserID
 			}
