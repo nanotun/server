@@ -1,0 +1,139 @@
+[
+  {
+    "desc": "dispatch:识别阶段又回去死等 4 个字节(直连客户端 3 字节首帧卡死)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\thead, err := br.Peek(1)\n\t\tif err == nil && head[0] == loopbackSmuxMagic[0] {\n\t\t\thead, err = br.Peek(4)\n\t\t}",
+    "new": "\t\thead, err := br.Peek(4)",
+    "test": "./cmd/nanotund/",
+    "run": "TestDispatchVPNIncoming_|TestLoopbackSmux"
+  },
+  {
+    "desc": "dispatch:魔法只比首字节(把首字节撞上 'V' 的链路帧误当承载)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "if len(head) >= 4 && bytes.Equal(head[:4], loopbackSmuxMagic) {",
+    "new": "if len(head) >= 1 && head[0] == loopbackSmuxMagic[0] {",
+    "test": "./cmd/nanotund/",
+    "run": "TestDispatchVPNIncoming_|TestLoopbackSmux"
+  },
+  {
+    "desc": "dispatch:VPN1 不再当承载,一律走直连链路帧",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\t\twrapped := &connBufCloser{Conn: c, r: br}\n\t\t\tenableTCPKeepAlive(c)\n\t\t\trunLoopbackSmuxServerSide(wrapped, gw, smuxCfg)",
+    "new": "\t\t\twrapped := &connBufCloser{Conn: c, r: br}\n\t\t\tenableTCPKeepAlive(c)\n\t\t\thandleVPNLink(wrapped, gw)",
+    "test": "./cmd/nanotund/",
+    "run": "TestDispatchVPNIncoming_|TestLoopbackSmux|TestLoopbackProxyHeader"
+  },
+  {
+    "desc": "dispatch:非 VPN1 也当 smux 承载",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\twrapped := &connBufCloser{Conn: c, r: br}\n\t\tenableTCPKeepAlive(c)\n\t\thandleVPNLink(wrapped, gw)",
+    "new": "\t\twrapped := &connBufCloser{Conn: c, r: br}\n\t\tenableTCPKeepAlive(c)\n\t\trunLoopbackSmuxServerSide(wrapped, gw, smuxCfg)",
+    "test": "./cmd/nanotund/",
+    "run": "TestDispatchVPNIncoming_|TestLoopbackSmux"
+  },
+  {
+    "desc": "dispatch:忽略 muxEnabled,一律走识别流程",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\tif muxEnabled {\n\t\tbr := bufio.NewReaderSize(c, 256)",
+    "new": "\tif true {\n\t\tbr := bufio.NewReaderSize(c, 256)",
+    "test": "./cmd/nanotund/",
+    "run": "TestDispatchVPNIncoming_|TestLoopbackSmux"
+  },
+  {
+    "desc": "dispatch:交给 handleVPNLink 时丢掉 Peek 过的字节(吞掉首帧开头)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\twrapped := &connBufCloser{Conn: c, r: br}\n\t\tenableTCPKeepAlive(c)\n\t\thandleVPNLink(wrapped, gw)",
+    "new": "\t\tenableTCPKeepAlive(c)\n\t\thandleVPNLink(c, gw)",
+    "test": "./cmd/nanotund/",
+    "run": "TestDispatchVPNIncoming_|TestLoopbackSmux"
+  },
+  {
+    "desc": "dispatch:识别阶段不设读超时(未认证连接可白占 goroutine)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\tif err := setPeekDeadline(c); err != nil {",
+    "new": "\t\tif err := error(nil); err != nil {",
+    "test": "./cmd/nanotund/",
+    "run": "TestDispatchVPNIncoming_|TestLoopbackSmux"
+  },
+  {
+    "desc": "dispatch:识别完不撤 deadline(握手期被 30s 硬上限截断)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\t_ = c.SetReadDeadline(time.Time{})\n",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestDispatchVPNIncoming_|TestLoopbackSmux|TestPoWE2E"
+  },
+  {
+    "desc": "池:每次 OpenStream 都重新拨一条承载(复用形同未做)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\tif sess := p.sess; sess != nil && !sess.IsClosed() {",
+    "new": "\t\tif sess := p.sess; false && sess != nil && !sess.IsClosed() {",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoopbackSmux"
+  },
+  {
+    "desc": "池:去掉 singleflight,并发各拨一次",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\tif ch := p.dialing; ch != nil {",
+    "new": "\t\tif ch := p.dialing; false && ch != nil {",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoopbackSmux"
+  },
+  {
+    "desc": "池:流上的承载故障不回传(退回等 keepalive 超时的老行为)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "func (s *poolStream) noteIOError(err error) {\n\tif carrierIsBroken(err) {\n\t\ts.pool.retireSession(s.sess)\n\t}\n}",
+    "new": "func (s *poolStream) noteIOError(err error) {\n\t_ = err\n}",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoopbackSmux|TestPoolStream_"
+  },
+  {
+    "desc": "池:OpenStream 报错也不摘会话(退回第二十五轮之前:每条新流都往尸体上开)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\t\tp.dropSession(sess)\n\t\t\tcontinue",
+    "new": "\t\t\treturn nil, err",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoopbackSmux|TestPoolStream_"
+  },
+  {
+    "desc": "池:把 stream 正常结束(EOF)也当成承载故障,连带拆掉共用承载",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\tif errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) ||\n\t\terrors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, smux.ErrTimeout) {\n\t\treturn false\n\t}",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoopbackSmux"
+  },
+  {
+    "desc": "池:retireSession 顺手 Close,误判时连带掐断在跑的流",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "func (p *loopbackSmuxPool) retireSession(dead *smux.Session) {\n\tp.mu.Lock()",
+    "new": "func (p *loopbackSmuxPool) retireSession(dead *smux.Session) {\n\tdefer func() { _ = dead.Close() }()\n\tp.mu.Lock()",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoopbackSmux"
+  },
+  {
+    "desc": "池:retireSession 不管是不是当前会话就清(误伤别人刚建好的新承载)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\tif p.sess == dead {\n\t\tp.sess = nil\n\t}",
+    "new": "\tp.sess = nil",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoopbackSmux"
+  },
+  {
+    "desc": "池:smux.Client 失败后不关环回连接(连接泄漏)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\tsess, err := smux.Client(conn, p.smuxCfg)\n\tif err != nil {\n\t\t_ = conn.Close()\n\t\treturn nil, err\n\t}",
+    "new": "\tsess, err := smux.Client(conn, p.smuxCfg)\n\tif err != nil {\n\t\treturn nil, err\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoopbackSmux"
+  },
+  {
+    "desc": "池:拨号失败也把 nil 会话写进池(等价变异:失败时 sess 恒为 nil,写进去与不写无可观测差异)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\tif err == nil {\n\t\t\tp.sess = sess\n\t\t}",
+    "new": "\t\tp.sess = sess",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoopbackSmux",
+    "equivalent": true
+  }
+]

@@ -47,7 +47,8 @@ func hy2RelayHandoff(t *testing.T, relay *hy2ClientAddrRelay, clientAddr net.Add
 // 这是 hy2 侧「按真实 IP 归因」的唯一实现路径(REALITY 那边桥接 goroutine 自己持有 conn,
 // hy2 拿不到,只能靠 relay 传一手)。传不到不会报错,表现是所有 hy2 客户端共用一个限流桶。
 func TestVpnSmuxStreamOutbound_CarriesTheRealClientAddrToTheLoopback(t *testing.T) {
-	listenAddr, wsPath, seen := startLoopbackWSEcho(t, true)
+	echo := startLoopbackWSEcho(t, true)
+	listenAddr, wsPath, seen := echo.listenAddr, echo.wsPath, echo.seen
 	pool := newLoopbackSmuxPool(loopbackVPNWebSocketURL(listenAddr, wsPath, false), smux.DefaultConfig(), nil)
 	relay := newHy2ClientAddrRelay()
 	out := &vpnSmuxStreamOutbound{pool: pool, relay: relay}
@@ -113,7 +114,8 @@ func TestVpnSmuxStreamOutbound_IgnoresRequestedTargetEvenWhenItIsDialable(t *tes
 		}
 	}()
 
-	listenAddr, wsPath, seen := startLoopbackWSEcho(t, true)
+	echo := startLoopbackWSEcho(t, true)
+	listenAddr, wsPath, seen := echo.listenAddr, echo.wsPath, echo.seen
 	pool := newLoopbackSmuxPool(loopbackVPNWebSocketURL(listenAddr, wsPath, false), smux.DefaultConfig(), nil)
 	out := &vpnSmuxStreamOutbound{pool: pool} // 不挂 relay:走 LOCAL 头那条分支
 
@@ -161,7 +163,8 @@ func TestVpnSmuxStreamOutbound_ReportsFailureWhenTheLoopbackIsDown(t *testing.T)
 // TestVpnLocalOutbound_DialsTheLoopbackAndIgnoresTheRequestedTarget
 // 每流直拨那条路径(没配 [smux] 时)的成功面。同样的开放代理约束在这条路上也要成立。
 func TestVpnLocalOutbound_DialsTheLoopbackAndIgnoresTheRequestedTarget(t *testing.T) {
-	listenAddr, wsPath, seen := startLoopbackWSEcho(t, false)
+	echo := startLoopbackWSEcho(t, false)
+	listenAddr, wsPath, seen := echo.listenAddr, echo.wsPath, echo.seen
 	out := &vpnLocalOutbound{
 		wsURL:   loopbackVPNWebSocketURL(listenAddr, wsPath, false),
 		timeout: 10 * time.Second,

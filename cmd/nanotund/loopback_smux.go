@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -113,12 +114,22 @@ const loopbackSmuxDialTimeout = 15 * time.Second
 // 被放大成 N×15s 的串行阻塞;② 期间任何 hy2 / REALITY 新流都卡在这把锁上 —— 一次慢握手把整个节点的新连接
 // 全部串行化。现在改为 singleflight:同一时刻只有一名调用者拨号(锁外),其余等它的结果;失败也只失败一次。
 func (p *loopbackSmuxPool) OpenStream() (net.Conn, error) {
-	// 最多两轮:第一轮可能是「等别人重建」,若那次失败则本轮自己成为拨号者。再失败即返回,不无限重试。
-	for attempt := 0; attempt < 2; attempt++ {
+	// 最多三轮,每轮至多推进一步,不无限重试:① 等别人在飞的那次重建;② 复用的会话开流失败、摘掉尸体;
+	// ③ 自己拨一次。
+	for attempt := 0; attempt < 3; attempt++ {
 		p.mu.Lock()
 		if sess := p.sess; sess != nil && !sess.IsClosed() {
 			p.mu.Unlock()
-			return sess.OpenStream()
+			st, err := sess.OpenStream()
+			if err == nil {
+				return &poolStream{Stream: st, pool: p, sess: sess}, nil
+			}
+			// 第二十五轮深扫 MED:会话对象自称还活着,开流却失败 —— 承载已断,而 smux 要等 keepalive
+			// 超时(DefaultConfig 30s)才把会话标记为死。期间 IsClosed() 恒 false,clearOnClose 也还没
+			// 醒,于是池子会一直往这具尸体上开流:每条新 hy2 / REALITY 流都以 broken pipe 失败,长达半分钟,
+			// 而重拨一条环回只要几毫秒。这里立刻摘掉它,本轮之后重建。
+			p.dropSession(sess)
+			continue
 		}
 		if ch := p.dialing; ch != nil {
 			p.mu.Unlock()
@@ -140,9 +151,61 @@ func (p *loopbackSmuxPool) OpenStream() (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		return sess.OpenStream()
+		st, err := sess.OpenStream()
+		if err != nil {
+			return nil, err
+		}
+		return &poolStream{Stream: st, pool: p, sess: sess}, nil
 	}
 	return nil, errors.New("loopback smux: 会话重建未能就绪")
+}
+
+// poolStream 包住一条复用 stream,把「承载已断」的信号回传给池。
+//
+// 为什么必须从流上回传:承载断掉的那一刻 OpenStream 往往仍然成功(SYN 由 shaper 异步写出),错误要到
+// 第一次 Read/Write 才浮出来;而 smux 只在 keepalive 超时(DefaultConfig 30s)后才把会话标记为死。
+// 两者叠加的结果是:池子在这半分钟里把每条新 hy2 / REALITY 流都开在同一具尸体上,全部失败。回传之后,
+// 代价收敛成「正好撞上断线的那一条流失败」,下一条流就落在新承载上。
+type poolStream struct {
+	*smux.Stream
+	pool *loopbackSmuxPool
+	sess *smux.Session
+}
+
+func (s *poolStream) Read(b []byte) (int, error) {
+	n, err := s.Stream.Read(b)
+	s.noteIOError(err)
+	return n, err
+}
+
+func (s *poolStream) Write(b []byte) (int, error) {
+	n, err := s.Stream.Write(b)
+	s.noteIOError(err)
+	return n, err
+}
+
+// noteIOError 两侧共用:承载断了的时候,先撞上的可能是读也可能是写(取决于这条流当时在干什么),
+// 所以两边都得回报,判据也必须是同一套。
+func (s *poolStream) noteIOError(err error) {
+	if carrierIsBroken(err) {
+		s.pool.retireSession(s.sess)
+	}
+}
+
+// carrierIsBroken 判断一次 stream I/O 错误是否说明**承载**出了问题(而不只是这条 stream 结束了)。
+//
+// 下面这几个是 stream 自身的生命周期 / 调用方 deadline,与承载无关:据此拆共享承载的话,每条正常
+// 结束的连接都会把别人的流一起带走。其余的(承载 socket 的读写错误、smux 协议错误、stream id 用尽)
+// 都意味着这条会话不该再接新流。
+func carrierIsBroken(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, smux.ErrTimeout) {
+		return false
+	}
+	return true
 }
 
 // dialNewSession 建一条新的环回 WSS + smux 客户端会话。**不持 p.mu**(见 OpenStream)。
@@ -167,6 +230,26 @@ func (p *loopbackSmuxPool) dialNewSession() (*smux.Session, error) {
 	return sess, nil
 }
 
+// retireSession 把一具疑似失效的会话从池里摘掉(仅当它仍是当前会话,避免误伤别人刚建好的新会话),
+// 于是下一次 OpenStream 会重建。
+//
+// 故意**不** Close:承载真断了的话,smux 会在 keepalive 超时后自己收尸、clearOnClose 随后关掉那条 WSS;
+// 而万一是误判,已经跑在这条会话上的流不会被连带掐断 —— 最坏结果只是多出一条承载,不会丢连接。
+func (p *loopbackSmuxPool) retireSession(dead *smux.Session) {
+	p.mu.Lock()
+	if p.sess == dead {
+		p.sess = nil
+	}
+	p.mu.Unlock()
+}
+
+// dropSession 用于「会话已确定不可用」(OpenStream 直接报错:socket 错误 / 协议错误 / stream id 用尽)。
+// 除摘掉之外还要 Close —— 那才会唤醒 clearOnClose 去收底下那条环回 WSS,不必等 keepalive 超时。
+func (p *loopbackSmuxPool) dropSession(dead *smux.Session) {
+	p.retireSession(dead)
+	_ = dead.Close()
+}
+
 func (p *loopbackSmuxPool) clearOnClose(conn net.Conn, sess *smux.Session) {
 	<-sess.CloseChan()
 	p.mu.Lock()
@@ -177,16 +260,46 @@ func (p *loopbackSmuxPool) clearOnClose(conn net.Conn, sess *smux.Session) {
 	_ = conn.Close()
 }
 
+// loopbackDispatchPeekTimeout 是「识别这条连接是什么」的上限。
+//
+// 未认证的对端在这一步只要一个字节;一直不发就把 goroutine 和这块读缓冲白占着,是笔便宜的 DoS。
+// 与 handleVPNLink 的 pre-login idle deadline 同量级,识别成功后立即撤销。
+//
+// var 而非 const:测试里调小到几百毫秒才能在秒级内验证「不发就踢」以及「识别完确实撤了 deadline」。
+var loopbackDispatchPeekTimeout = 30 * time.Second
+
+func setPeekDeadline(c net.Conn) error {
+	return c.SetReadDeadline(time.Now().Add(loopbackDispatchPeekTimeout))
+}
+
 // dispatchVPNIncoming 区分直连链路帧与环回 smux 承载（魔法前缀 VPN1）。
 func dispatchVPNIncoming(c net.Conn, gw *gatewayState, muxEnabled bool, smuxCfg *smux.Config) {
 	if muxEnabled {
 		br := bufio.NewReaderSize(c, 256)
-		head, err := br.Peek(4)
+		// 第二十五轮深扫 HIGH:这里只许**先看一个字节**。
+		//
+		// 直连原生客户端的首帧是 PoWChallengeReq,协议规定 body 必须为空 —— 线上恒为 3 字节
+		// (2 长度 + 1 类型)。此前这里直接 Peek(4),于是启用 [smux] + hy2/REALITY 时:服务端等
+		// 第 4 个字节,客户端等 PoWChallenge 回复,双方互相干等到超时,**所有直连客户端都登不进来**。
+		// (三机 e2e 从未配 hy2/REALITY,这个组合一直没被跑到。)
+		//
+		// 环回桥接是把 4 字节魔法一次写出的,首字节必为 'V';链路帧的首字节是长度高位,只有在帧长
+		// ≥0x5600 时才可能撞上 'V',而那时后续字节早已到齐,Peek(4) 不会等。所以「首字节匹配才要求
+		// 看满 4 字节」既不会误判,也不会在直连路径上多等一个字节。
+		if err := setPeekDeadline(c); err != nil {
+			logrus.WithError(err).Debug("VPN 连接设置识别期读超时失败")
+		}
+		head, err := br.Peek(1)
+		if err == nil && head[0] == loopbackSmuxMagic[0] {
+			head, err = br.Peek(4)
+		}
 		if err != nil {
 			logrus.WithError(err).Debug("VPN 连接 Peek 失败")
 			_ = c.Close()
 			return
 		}
+		// 识别完就把 deadline 撤掉,后续握手期由 handleVPNLink 自己的 pre-login idle deadline 接管。
+		_ = c.SetReadDeadline(time.Time{})
 		if len(head) >= 4 && bytes.Equal(head[:4], loopbackSmuxMagic) {
 			// M1 安全边界:VPN1/smux 承载(其上每条 stream 带可覆盖源地址的 PROXY v2 头)只应来自本机
 			// 环回桥接(hy2/REALITY 恒 dial 127.0.0.1)。从**非环回**对端收到 VPN1 = 公网客户端在伪造

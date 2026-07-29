@@ -118,33 +118,71 @@ func freeTCPPort(t *testing.T) int {
 	return port
 }
 
-// startLoopbackWSEcho 起一个环回 WebSocket 服务端,模拟 [server] 那一侧。
+// loopbackEchoServer 环回 WebSocket 回声服务端,模拟 [server] 那一侧。
+//
+// listenAddr / wsPath 分开给出,是为了让被测代码**自己拼** URL —— 拼错(端口/路径/scheme)
+// 也是一种静默故障,替它拼就测不到了。
+type loopbackEchoServer struct {
+	listenAddr string
+	wsPath     string
+	seen       chan string  // 服务端观察到的对端地址(smux 模式下是每条 stream 的 PROXY 头解析结果)
+	upgrades   atomic.Int32 // 建了几条承载连接 —— 复用有没有生效全看这个数
+	// carrierGone 每条承载的 handler 退出时发一次。承载被对端关掉才会退出,于是
+	// 「失败路径有没有把连接关掉」可以从服务端断言(泄漏的话 handler 一直挂在 AcceptStream)。
+	carrierGone chan struct{}
+	mu          sync.Mutex
+	carriers    []net.Conn
+}
+
+// killCarriers 掐断所有已建承载,模拟环回那侧重启 / 连接被中断。
+func (s *loopbackEchoServer) killCarriers() {
+	s.mu.Lock()
+	conns := append([]net.Conn(nil), s.carriers...)
+	s.carriers = nil
+	s.mu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+}
+
+// startLoopbackWSEcho 起一个环回 WebSocket 回声服务端。
 //
 // smuxMode=true 时按环回承载的真实约定收:先读 4 字节 VPN1 魔法、再 smux.Server,
-// 每条 stream 先经 readLoopbackClientAddr 读 PROXY 头 —— 于是 bridge 写的头能被
-// 真实解析,「真实客户端 IP 有没有透传过来」才是可断言的。
-//
-// 返回 listenAddr / wsPath 供 bridgeRealityToPlainVPN 自己拼 URL(拼错也是一种静默故障,
-// 让它自己拼才测得到),以及一个收「服务端观察到的客户端地址」的 channel。
-func startLoopbackWSEcho(t *testing.T, smuxMode bool) (listenAddr, wsPath string, seenRemote <-chan string) {
+// 每条 stream 先经 readLoopbackClientAddr 读 PROXY 头 —— 于是被测代码写的头能被真实解析,
+// 「真实客户端 IP 有没有透传过来」才是可断言的。
+func startLoopbackWSEcho(t *testing.T, smuxMode bool) *loopbackEchoServer {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("起环回 WS listener: %v", err)
 	}
-	seen := make(chan string, 4)
-	path := "/reality-guard-test/v1/feed"
+	es := &loopbackEchoServer{
+		listenAddr:  ln.Addr().String(),
+		wsPath:      "/reality-guard-test/v1/feed",
+		seen:        make(chan string, 8),
+		carrierGone: make(chan struct{}, 8),
+	}
 	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	mux := http.NewServeMux()
-	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(es.wsPath, func(w http.ResponseWriter, r *http.Request) {
 		ws, err := up.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
 		nc := util.NewWSStreamConn(ws)
-		defer func() { _ = nc.Close() }()
+		es.upgrades.Add(1)
+		es.mu.Lock()
+		es.carriers = append(es.carriers, nc)
+		es.mu.Unlock()
+		defer func() {
+			_ = nc.Close()
+			select {
+			case es.carrierGone <- struct{}{}:
+			default:
+			}
+		}()
 		if !smuxMode {
-			seen <- nc.RemoteAddr().String()
+			es.seen <- nc.RemoteAddr().String()
 			_, _ = io.Copy(nc, nc)
 			return
 		}
@@ -167,7 +205,7 @@ func startLoopbackWSEcho(t *testing.T, smuxMode bool) (listenAddr, wsPath string
 			go func(s *smux.Stream) {
 				defer func() { _ = s.Close() }()
 				wrapped := readLoopbackClientAddr(s)
-				seen <- wrapped.RemoteAddr().String()
+				es.seen <- wrapped.RemoteAddr().String()
 				_, _ = io.Copy(wrapped, wrapped)
 			}(st)
 		}
@@ -175,7 +213,12 @@ func startLoopbackWSEcho(t *testing.T, smuxMode bool) (listenAddr, wsPath string
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
-	return ln.Addr().String(), path, seen
+	return es
+}
+
+// wsURL 环回承载该拨的地址。只在「被测代码不负责拼 URL」的用例里用。
+func (s *loopbackEchoServer) wsURL() string {
+	return loopbackVPNWebSocketURL(s.listenAddr, s.wsPath, false)
 }
 
 // dialLoopbackTCP 造一条**真** TCP 连接对,用它当 realityConn。
@@ -649,7 +692,8 @@ func TestRealityConcLimitConn_CloseWriteFallsBackToCloseForNonTCP(t *testing.T) 
 //     业务数据一旦有 15s 空闲就被砍断 —— 表现成「连上能用一会儿然后莫名断线」。
 //  3. 双向都要通。只通一向的现象是「能发不能收」。
 func TestBridgeRealityToPlainVPN_SmuxPathCarriesRealClientAddrAndBridgesBothWays(t *testing.T) {
-	listenAddr, wsPath, seen := startLoopbackWSEcho(t, true)
+	echo := startLoopbackWSEcho(t, true)
+	listenAddr, wsPath, seen := echo.listenAddr, echo.wsPath, echo.seen
 	pool := newLoopbackSmuxPool(loopbackVPNWebSocketURL(listenAddr, wsPath, false), smux.DefaultConfig(), nil)
 
 	server, client := dialLoopbackTCP(t)
@@ -707,7 +751,8 @@ func TestBridgeRealityToPlainVPN_SmuxPathCarriesRealClientAddrAndBridgesBothWays
 // 一次 WebSocket 直连。这条路自己拼环回 URL,拼错(端口/路径/scheme)就整条入口不通,
 // 所以让 bridge 自己拼、只喂它 [server] 的 listen_addr。
 func TestBridgeRealityToPlainVPN_PlainWebSocketPathBridgesBothWays(t *testing.T) {
-	listenAddr, wsPath, seen := startLoopbackWSEcho(t, false)
+	echo := startLoopbackWSEcho(t, false)
+	listenAddr, wsPath, seen := echo.listenAddr, echo.wsPath, echo.seen
 
 	server, client := dialLoopbackTCP(t)
 	done := make(chan struct{})
