@@ -37,7 +37,10 @@ const ShutdownReason = "服务器维护中,请稍后重连"
 //
 // 可通过 [server].shutdown_drain_timeout_ms 覆盖,0 = 完全不等(只发不等),
 // 这样在测试 / 紧急 kill 时能立刻退。
-const shutdownDrainTimeout = 3 * time.Second
+//
+// var 而非 const:守卫测试要观察「负值回落成默认值」这条,把默认值调小才能在毫秒级验证,
+// 否则每跑一次就得等 3 秒。生产路径不写它。
+var shutdownDrainTimeout = 3 * time.Second
 
 // broadcastShutdownClose 给所有 active session 发一帧 LinkTypeClose(graceful)。
 //

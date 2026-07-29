@@ -216,6 +216,8 @@ func startStormDemux(t *testing.T) {
 		}
 	}()
 	t.Cleanup(func() {
+		// 先等 handler 退干净(它们的清理要经过这份 demux),再停 demux。
+		waitVPNLinkHandlers(t)
 		close(stop)
 		<-done
 	})
@@ -229,6 +231,41 @@ type stormSession struct {
 	// sessionID / takeoverSecret 用于后续发起 takeover 登录(热切换链路)。
 	sessionID      string
 	takeoverSecret string
+}
+
+// vpnLinkHandlers 记录所有由 harness 派生的 handleVPNLink goroutine。
+//
+// 为什么必须记:这些 goroutine 读一批包级全局(sharedTUNGateway / sharedTUNGatewayV6 / globalContext …),
+// 而 harness 的 t.Cleanup 会把它们还原。客户端 conn 一关,handler 只是**开始**退出 —— 它还要跑完
+// cleanupConnection。谁都不等它的话,还原全局的那次写就和它的读并发,-race 下报成 DATA RACE,
+// 而且落在**下一个**用例头上(观察到过两次:一次是 dualstack 的 setup 撞上前一条 storm 登录,
+// 一次是 storm 的 cleanup 撞上自己派生的 handler)。
+var vpnLinkHandlers sync.WaitGroup
+
+// goHandleVPNLink 派生一条被记账的 handleVPNLink。harness 一律用它,不要裸 go。
+func goHandleVPNLink(c net.Conn, gw *gatewayState) {
+	vpnLinkHandlers.Add(1)
+	go func() {
+		defer vpnLinkHandlers.Done()
+		handleVPNLink(c, gw)
+	}()
+}
+
+// waitVPNLinkHandlers 等所有派生的 handler 退出。由 startStormDemux 在收尾时调用 ——
+// 顺序是硬要求:handler 退出要走 cleanupConnection,而那一步要往 registerTunReadChan 投递并**等确认**。
+// demux 先停的话,handler 会永远卡在清理里(表现就是「客户端 conn 都关了 handler 还不退」)。
+func waitVPNLinkHandlers(t *testing.T) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		vpnLinkHandlers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Error("派生的 handleVPNLink 15s 内没退出 —— 还原全局会与它并发,且失败会落在下一个用例头上")
+	}
 }
 
 // stormPoW 是 runClientPoWHandshake 的**返回 error** 版本。
@@ -273,7 +310,7 @@ func stormPoW(c net.Conn) (util.LoginReqPoW, error) {
 // 返回的 session 持有客户端 conn:调用方 Close 之前会话一直在线。
 func stormLogin(gw *gatewayState, srcIdx int, user, psk, deviceUUID, deviceName string) (*stormSession, error) {
 	serverEnd, clientEnd := net.Pipe()
-	go handleVPNLink(&stormConn{Conn: serverEnd, remote: stormAddr(srcIdx)}, gw)
+	goHandleVPNLink(&stormConn{Conn: serverEnd, remote: stormAddr(srcIdx)}, gw)
 
 	pow, err := stormPoW(clientEnd)
 	if err != nil {
@@ -339,7 +376,7 @@ func stormLogin(gw *gatewayState, srcIdx int, user, psk, deviceUUID, deviceName 
 // 返回接管后的新链路;老链路会被服务端关掉。
 func stormTakeover(gw *gatewayState, srcIdx int, user, psk string, old *stormSession) (*stormSession, error) {
 	serverEnd, clientEnd := net.Pipe()
-	go handleVPNLink(&stormConn{Conn: serverEnd, remote: stormAddr(srcIdx)}, gw)
+	goHandleVPNLink(&stormConn{Conn: serverEnd, remote: stormAddr(srcIdx)}, gw)
 
 	pow, err := stormPoW(clientEnd)
 	if err != nil {

@@ -1106,6 +1106,47 @@ oom-kill,看不出跟 PoW 有关。既有用例覆盖了单次 `pruneExpired` �
 AbortsWhenKickedMidWindow`,报的是 `read pipe: i/o timeout`)。两次都出现在全包负载下,怀疑是接管 harness
 里那些读超时在机器忙时不够宽,而不是产品代码的竞态 —— 下轮专门查这批 net.Pipe 超时的余量。
 
+### 第 42 轮:DNS 闸的 fail-open、畸形应答、hy2 地址中转、僵尸 smux
+
+`magic_dns.go` 27 → 19、`magic_dns_cache.go` 10 → 1、`loopback_smux.go` 9 → 7、`hysteria_clientaddr.go`
+补齐、加上一批小函数(匿名设备索引、isolate 提醒、非 Linux sweep 桩、drain 超时兜底),包 91.0% → 91.4%
+(未覆盖 612 条),变异 25/25 全抓(含两条「两层同拆」的组合变异)。
+
+**MagicDNS 的每一道闸都必须 fail-open,因为 fail-close 的表现是「域名解析不了」而不是「拒绝访问」。**
+mesh 总开关、ACL、isolate 三道闸都要先认出查询方是谁,而查询方地址可能压根拿不到(nil peer、无 IP、
+长度畸形)。这时候拦下来最省事,但 server 本机自查、健康探测同样从这条路进来,拿到的是 NXDOMAIN ——
+运维会去查 DNS 配置,而真正的原因是一道安全闸在信息不足时选择了拒绝。同理,4via6 站点映射指向一台
+已删除的设备时不能推出一个「无主」的 user id 去比对(那会误判成同用户放行),设备表读不动时也不能当成
+「没这台设备」继续往下走 —— 前者是越权,后者是把一次 DB 抖动变成整片名字的 NXDOMAIN。
+
+**畸形应答的唯一正确处置是整条丢掉,不能半条入缓存。** 出口 DNS 结果是**共享**缓存:A/AAAA 的 rdata
+被截断、答复区里混进未知类型、question 段的标签越过报文末尾,只要有一处「解析到哪儿算哪儿」,残缺的那
+半条就会被后续所有查询命中,直到 TTL 结束。改写不出来时必须 SERVFAIL —— 客户端会重试或回落,而返回一个
+自认为「差不多对」的应答等于把错误答案钉死。question 偏移那条还是一对冗余防线(循环顶部的 `pos >= len`
+与末尾的 `pos > len`),单拆任一层另一层都接得住,要靠组合变异才能证明它们真在。
+
+**读循环在 in-flight 打满时必须就地丢包并记数,不能排队等位。** 阻塞等位会把内核接收队列堵满,于是
+攻击者用几十条慢查询就能让整台 server 的 MagicDNS 停摆;而丢包不记数则让「偶发查不到」永远查不出来。
+写这条断言时踩了一次假绿:只断言「池满时没有立即回应」的话,阻塞版本会在腾出位子后把那条查询补答上去,
+一样是绿的。给两条查询各一个 txn id、分别在「池满时」和「腾空后」发出,才能区分「丢了」和「晚答了」。
+
+**hy2 真实客户端地址中转表**的 token 撞号被断言抓住了,是个真缺陷:熵源故障时降级用时间戳串,而 macOS
+的 `time.Now()` 只有微秒分辨率 —— 同一微秒内的两次调用拿到同一个 token,两个客户端的真实地址互串,
+之后限速、IP 失败计数、审计全部记到对方头上。修法是给降级路径挂一个原子单调序号。
+
+**smux 僵尸会话**:承载连接死了而 `Session.IsClosed()` 仍是 false(keepalive 还没到期),这时池子必须靠
+`OpenStream` 的失败自己摘掉会话并重建,否则新流会连续失败到 keepalive 超时为止。
+
+顺带把两处 const 改成 var 接缝:`shutdownDrainTimeout`(否则「负超时要回落成默认」这条无法在秒级观察)。
+
+**终于定位到挂了两轮的那条偶发失败,而且两条是同一形状、都在测试侧:**上一个用例 `go handleVPNLink`
+派生的 goroutine 还在跑,下一个用例的 setup/cleanup 就已经在写 `sharedTUNGateway` / `globalContext`
+了。测试用例自己不会失败在正确的地方 —— 报错落在毫无关系的下一个用例上,所以前两轮都误判成「harness
+读超时余量不够」。修法是给 harness 一个 `vpnLinkHandlers` WaitGroup,派生走 `goHandleVPNLink`,
+并在 **demux 收尾里**先等 handler 退干净:顺序是硬要求,handler 退出要走 `cleanupConnection`,而那一步
+要往 `registerTunReadChan` 投递并等确认 —— demux 先停的话 handler 永远卡在清理里。修完之后这组用例
+`-race -count=2` 从 693s 降到 66s(此前大量时间就耗在那些卡死的 handler 上),全包 `-race` 零竞态。
+
 ## 单测这一侧的现状（2026-07-28 晚，Linux 实测）
 
 零覆盖函数已经清空，只剩三个 `main` —— 那三个各有子进程冒烟测试（`nanotund` 靠 e2e）。

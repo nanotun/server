@@ -33,7 +33,7 @@ func dualStackLogin(t *testing.T, env *loginGateEnv, remote net.Addr, name, psk,
 	if remote != nil {
 		srv = &stormConn{Conn: serverEnd, remote: remote}
 	}
-	go handleVPNLink(srv, env.gw)
+	goHandleVPNLink(srv, env.gw)
 
 	pow := runClientPoWHandshake(t, clientEnd)
 	body, err := marshalLoginReqWithPoW(name, psk, "c", "linux", "tcp", deviceUUID, "dev", pow)

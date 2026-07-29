@@ -1,0 +1,214 @@
+[
+  {
+    "desc": "[mut42] by-device 查询:匿名设备(deviceID=0)也当转发目标(公网流量投给没装 NAT 的会话)",
+    "file": "cmd/nanotund/conn_by_device.go",
+    "old": "func lookupRunningExitConnByDevice(deviceID int64) *Connection {\n\tif deviceID == 0 {\n\t\treturn nil\n\t}",
+    "new": "func lookupRunningExitConnByDevice(deviceID int64) *Connection {",
+    "also": [
+      ["func connByDeviceAddLocked(c *Connection) {\n\tif c == nil || c.deviceID == 0 || c.connIDStr == \"\" {\n\t\treturn\n\t}", "func connByDeviceAddLocked(c *Connection) {\n\tif c == nil || c.connIDStr == \"\" {\n\t\treturn\n\t}"]
+    ],
+    "test": "./cmd/nanotund/",
+    "run": "TestByDeviceLookups_Anonymous"
+  },
+  {
+    "desc": "[mut42] by-device 查询:匿名设备也当子网转发目标(内网包漏进匿名会话所在 LAN)",
+    "file": "cmd/nanotund/conn_by_device.go",
+    "old": "func lookupSubnetAdvertiserConnByDevice(deviceID int64) *Connection {\n\tif deviceID == 0 {\n\t\treturn nil\n\t}",
+    "new": "func lookupSubnetAdvertiserConnByDevice(deviceID int64) *Connection {",
+    "also": [
+      ["func connByDeviceAddLocked(c *Connection) {\n\tif c == nil || c.deviceID == 0 || c.connIDStr == \"\" {\n\t\treturn\n\t}", "func connByDeviceAddLocked(c *Connection) {\n\tif c == nil || c.connIDStr == \"\" {\n\t\treturn\n\t}"]
+    ],
+    "test": "./cmd/nanotund/",
+    "run": "TestByDeviceLookups_Anonymous"
+  },
+  {
+    "desc": "[mut42] isolate 提醒:库里已批过一堆中转也不提醒(运维看着 ✓ 查不出为什么全超时)",
+    "file": "cmd/nanotund/isolate_relay_warn.go",
+    "old": "\tif exitDevices == 0 && subnetRoutes == 0 {\n\t\treturn\n\t}",
+    "new": "\treturn\n\tif exitDevices == 0 && subnetRoutes == 0 {\n\t\treturn\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestWarnIsolateBlocksApprovedRelays_"
+  },
+  {
+    "desc": "[mut42] isolate 提醒:同一台出口设备的 v4/v6 默认路由算两台(报出的台数是虚的)",
+    "file": "cmd/nanotund/isolate_relay_warn.go",
+    "old": "\t\t\tseenExitDev[r.DeviceID] = struct{}{}\n\t\t\tcontinue",
+    "new": "\t\t\tseenExitDev[r.DeviceID*1000+int64(len(r.CIDR))] = struct{}{}\n\t\t\tcontinue",
+    "test": "./cmd/nanotund/",
+    "run": "TestWarnIsolateBlocksApprovedRelays_"
+  },
+  {
+    "desc": "[mut42] isolate 提醒:库查不动时打 WARN(一条 best-effort 提醒把启动日志变吵)",
+    "file": "cmd/nanotund/isolate_relay_warn.go",
+    "old": "\t\tlogrus.WithError(err).Debug(\"[isolate] 查已批准路由失败,跳过 isolate 兼容性提醒\")",
+    "new": "\t\tlogrus.WithError(err).Warn(\"[isolate] 查已批准路由失败,跳过 isolate 兼容性提醒\")",
+    "test": "./cmd/nanotund/",
+    "run": "TestWarnIsolateBlocksApprovedRelays_"
+  },
+  {
+    "desc": "[mut42] 非 Linux 桩:加注释时吞掉调用方传的参数(换回 Linux 版时规则静默丢失)",
+    "file": "cmd/nanotund/iptables_sweep_stub.go",
+    "old": "func withMainComment(args []string) []string { return args }",
+    "new": "func withMainComment(args []string) []string { return nil }",
+    "test": "./cmd/nanotund/",
+    "run": "TestNonLinuxIptablesSweepStubs_"
+  },
+  {
+    "desc": "[mut42] 出口 DNS 缓存:A 的 rdata 截断也当解析成功(半条答案进共享缓存)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t\t\tr, err := p.AResource()\n\t\t\tif err != nil {\n\t\t\t\treturn nil, 0, 0, false\n\t\t\t}\n\t\t\taddrs = append(addrs, netip.AddrFrom4(r.A))",
+    "new": "\t\t\tr, _ := p.AResource()\n\t\t\taddrs = append(addrs, netip.AddrFrom4(r.A))",
+    "test": "./cmd/nanotund/",
+    "run": "TestParseExitDNSResult_"
+  },
+  {
+    "desc": "[mut42] 出口 DNS 缓存:未知类型跳不过去也继续(解析器错位后的垃圾被当答案)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t\tdefault:\n\t\t\tif err := p.SkipAnswer(); err != nil {\n\t\t\t\treturn nil, 0, 0, false\n\t\t\t}\n\t\t}",
+    "new": "\t\tdefault:\n\t\t\tif err := p.SkipAnswer(); err != nil {\n\t\t\t\treturn addrs, rcode, minTTL, true\n\t\t\t}\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestParseExitDNSResult_"
+  },
+  {
+    "desc": "[mut42] 原始应答缓存:答复区截断也当可缓存(坏应答以本次 key 留在共享缓存里)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t\tif err := p.SkipAnswer(); err != nil {\n\t\t\treturn 0, 0, false\n\t\t}\n\t}\n\treturn rcode, minTTL, true",
+    "new": "\t\tif err := p.SkipAnswer(); err != nil {\n\t\t\treturn rcode, minTTL, true\n\t\t}\n\t}\n\treturn rcode, minTTL, true",
+    "test": "./cmd/nanotund/",
+    "run": "TestParseRawDNSMeta_"
+  },
+  {
+    "desc": "[mut42] question 偏移:越界检查两层同拆(单拆任一层另一层都兜得住,属等价变异)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t\tpos += 1 + l\n\t\tif pos > len(msg) {\n\t\t\treturn 0, false\n\t\t}",
+    "new": "\t\tpos += 1 + l",
+    "also": [
+      ["\t\tif pos >= len(msg) {\n\t\t\treturn 0, false\n\t\t}\n\t\tl := int(msg[pos])", "\t\tl := int(msg[pos])"]
+    ],
+    "test": "./cmd/nanotund/",
+    "run": "TestDNSQuestionEnd_|TestServeRawExitDNSFromCache_"
+  },
+  {
+    "desc": "[mut42] question 偏移:question 段里的压缩指针照收(pos 跳到乱处)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t\tif l&0xc0 != 0 {\n\t\t\treturn 0, false // question 段不该有压缩指针\n\t\t}",
+    "new": "\t\tif l&0xc0 != 0 && false {\n\t\t\treturn 0, false // question 段不该有压缩指针\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestDNSQuestionEnd_"
+  },
+  {
+    "desc": "[mut42] 原始应答回放:改写不出来就静默吞包(客户端干等到 stub 超时)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t_ = writeMagicDNSStatus(conn, peer, qid, dnsmessage.RCodeServerFailure, nil, dnsmessage.Question{})\n}",
+    "new": "}",
+    "test": "./cmd/nanotund/",
+    "run": "TestServeRawExitDNSFromCache_"
+  },
+  {
+    "desc": "[mut42] 缓存回放:A/AAAA 重建失败就静默吞包",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t\t// 重建失败（极少）→ 退化成 SERVFAIL，不静默吞包。\n\t\t_ = writeMagicDNSStatus(conn, peer, qid, dnsmessage.RCodeServerFailure, nil, q)\n\t\treturn",
+    "new": "\t\treturn",
+    "test": "./cmd/nanotund/",
+    "run": "TestServeExitDNSFromCache_"
+  },
+  {
+    "desc": "[mut42] mesh 闸:查询方地址取不出来时改成拦(server 本机自查也 NXDOMAIN)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\tvip, ok := netipAddrFromUDP(peer)\n\tif !ok {\n\t\treturn false\n\t}\n\tsrcUser, ok := lookupVIPOwner(vip)\n\tif !ok || srcUser == 0 {\n\t\treturn false\n\t}\n\tdstUser, ok := magicNameOwnerUserID(ctx, gw.store, name, suffix)\n\tif !ok || dstUser == 0 {\n\t\treturn false\n\t}\n\treturn dstUser != srcUser",
+    "new": "\tvip, ok := netipAddrFromUDP(peer)\n\tif !ok {\n\t\treturn true\n\t}\n\tsrcUser, ok := lookupVIPOwner(vip)\n\tif !ok || srcUser == 0 {\n\t\treturn false\n\t}\n\tdstUser, ok := magicNameOwnerUserID(ctx, gw.store, name, suffix)\n\tif !ok || dstUser == 0 {\n\t\treturn false\n\t}\n\treturn dstUser != srcUser",
+    "test": "./cmd/nanotund/",
+    "run": "TestMagicNameGates_FailOpen"
+  },
+  {
+    "desc": "[mut42] isolate 闸:查询方地址取不出来时改成拦",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\tvip, ok := netipAddrFromUDP(peer)\n\tif !ok {\n\t\treturn false\n\t}\n\tselfConn, ok := lookupVIPOwnerConn(vip)",
+    "new": "\tvip, ok := netipAddrFromUDP(peer)\n\tif !ok {\n\t\treturn true\n\t}\n\tselfConn, ok := lookupVIPOwnerConn(vip)",
+    "test": "./cmd/nanotund/",
+    "run": "TestMagicNameGates_FailOpen"
+  },
+  {
+    "desc": "[mut42] 归属反查:站点映射指向不存在的设备时把 user 0 当答案(宣告方自查自己的站点名也被拦)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\t\td, err := st.GetDevice(opCtx, deviceID)\n\t\tif err != nil || d == nil {\n\t\t\treturn 0, false\n\t\t}\n\t\treturn d.UserID, true",
+    "new": "\t\td, _ := st.GetDevice(opCtx, deviceID)\n\t\tif d == nil {\n\t\t\treturn 0, true\n\t\t}\n\t\treturn d.UserID, true",
+    "test": "./cmd/nanotund/",
+    "run": "TestMagicNameOwnerUserID_Orphan"
+  },
+  {
+    "desc": "[mut42] 设备解析:设备表读不动时当成「没这台设备」(等价变异——空设备集随后也必然 best==nil)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\tdevices, err := st.ListDevicesByUser(opCtx, u.ID)\n\tif err != nil {\n\t\treturn nil, false\n\t}",
+    "new": "\tdevices, _ := st.ListDevicesByUser(opCtx, u.ID)",
+    "also": [
+      ["\tif best == nil {\n\t\treturn nil, false\n\t}", "\tif best == nil {\n\t\treturn []netip.Addr{netip.MustParseAddr(\"127.0.0.1\")}, true\n\t}"]
+    ],
+    "test": "./cmd/nanotund/",
+    "run": "TestLookupMagicHost_"
+  },
+  {
+    "desc": "[mut42] 存在性探测:isolate 下别人的 4via6 站点名照答存在(换 qtype 即可绕过 A/AAAA 那道闸)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\t\treturn !magicNameDeniedByIsolate(peer, []netip.Addr{addr})",
+    "new": "\t\t_ = addr\n\t\treturn true",
+    "test": "./cmd/nanotund/",
+    "run": "TestMagicHostExists_"
+  },
+  {
+    "desc": "[mut42] MagicDNS 读循环:in-flight 满时阻塞等位(攻击者灌包把内核队列堵满,server 侧无迹可查)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\t\trelease, ok := tryAcquireMagicDNSSlot(clientKey, haveKey)\n\t\tif !ok {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\trelease, ok := tryAcquireMagicDNSSlot(clientKey, haveKey)\n\t\tfor !ok {\n\t\t\ttime.Sleep(50 * time.Millisecond)\n\t\t\trelease, ok = tryAcquireMagicDNSSlot(clientKey, haveKey)\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestRunMagicDNSLoop_DropsInstead"
+  },
+  {
+    "desc": "[mut42] TTL 早期钳制:认不出会话也钳(server 自查/清理竞态的应答被无端缩短)",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "func magicDNSInEarlyClampWindow(peer *net.UDPAddr) bool {\n\tvip, ok := netipAddrFromUDP(peer)\n\tif !ok {\n\t\treturn false\n\t}",
+    "new": "func magicDNSInEarlyClampWindow(peer *net.UDPAddr) bool {\n\tvip, ok := netipAddrFromUDP(peer)\n\tif !ok {\n\t\treturn true\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestMagicNameGates_FailOpen"
+  },
+  {
+    "desc": "[mut42] hy2 地址中转:过期 token 照给地址(限流/审计记到早已换人的 IP 上)",
+    "file": "cmd/nanotund/hysteria_clientaddr.go",
+    "old": "\tif time.Since(e.at) > hy2AddrTokenTTL {\n\t\treturn nil\n\t}\n\treturn e.addr",
+    "new": "\treturn e.addr",
+    "test": "./cmd/nanotund/",
+    "run": "TestHy2ClientAddrRelay_Expired"
+  },
+  {
+    "desc": "[mut42] hy2 地址中转:表满不先清过期项(残留把表填满后所有新 stream 都退回环回归因)",
+    "file": "cmd/nanotund/hysteria_clientaddr.go",
+    "old": "\tif len(r.pending) >= hy2PendingMax {\n\t\tr.gcLocked()",
+    "new": "\tif len(r.pending) >= hy2PendingMax {\n\t\tif false {\n\t\t\tr.gcLocked()\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestHy2ClientAddrRelay_TableStays"
+  },
+  {
+    "desc": "[mut42] hy2 地址中转:熵源故障时的降级 token 不带序号(同一微秒内两条 stream 的真实地址互串)",
+    "file": "cmd/nanotund/hysteria_clientaddr.go",
+    "old": "\t\treturn \"t\" + time.Now().Format(\"20060102150405.000000000\") +\n\t\t\t\"-\" + strconv.FormatUint(hy2TokenFallbackSeq.Add(1), 36)",
+    "new": "\t\treturn \"t\" + time.Now().Format(\"20060102150405.000000000\") +\n\t\t\t\"-\" + strconv.FormatUint(0, 36)",
+    "test": "./cmd/nanotund/",
+    "run": "TestNewHy2AddrToken_"
+  },
+  {
+    "desc": "[mut42] 环回 smux 池:只看 IsClosed(僵尸会话上每条新流连续失败到 keepalive 超时)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\t\tp.dropSession(sess)\n\t\t\tcontinue",
+    "new": "\t\t\treturn nil, err",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoopbackSmuxPool_DropsAZombie"
+  },
+  {
+    "desc": "[mut42] 关机广播:负超时不回落默认(客户端来不及收 Close 帧就被打断)",
+    "file": "cmd/nanotund/shutdown_drain.go",
+    "old": "\tif drainTimeout < 0 {\n\t\tdrainTimeout = shutdownDrainTimeout\n\t}",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestBroadcastShutdownClose_"
+  }
+]

@@ -324,7 +324,7 @@ func TestHandleVPNLink_VIPExhaustionFailsLoudlyAndLeaksNothing(t *testing.T) {
 	var exhausted *util.LoginResp
 	for i := 0; i < 6 && exhausted == nil; i++ {
 		serverEnd, clientEnd := net.Pipe()
-		go handleVPNLink(&stormConn{Conn: serverEnd, remote: stormAddr(20 + i)}, env.gw)
+		goHandleVPNLink(&stormConn{Conn: serverEnd, remote: stormAddr(20 + i)}, env.gw)
 
 		pow := runClientPoWHandshake(t, clientEnd)
 		body, err := marshalLoginReqWithPoW("known", "right-psk", "c", "linux", "tcp", "", "", pow)
@@ -392,7 +392,7 @@ func TestHandleVPNLink_NonIPRemoteStillAllocates(t *testing.T) {
 
 	serverEnd, clientEnd := net.Pipe() // RemoteAddr() = "pipe",不是 IP
 	defer clientEnd.Close()
-	go handleVPNLink(serverEnd, env.gw)
+	goHandleVPNLink(serverEnd, env.gw)
 
 	pow := runClientPoWHandshake(t, clientEnd)
 	body, err := marshalLoginReqWithPoW("known", "right-psk", "c", "linux", "tcp", "", "", pow)

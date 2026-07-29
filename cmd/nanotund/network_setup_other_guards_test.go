@@ -59,3 +59,24 @@ func TestNonLinuxNetworkStubs_FailClosedWithAReasonInTheMessage(t *testing.T) {
 	DeleteExistingTUNs("nanotun", 4)
 	DeleteExistingTUN("nanotun0")
 }
+
+// TestNonLinuxIptablesSweepStubs_NoopButKeepTheShape:主链规则清扫在非 Linux 上是 noop。
+// 与上面那组相反,这里**不能**报错:启动早期无条件调用它们清理上次崩溃的残留规则,
+// 桩若报错开发机根本起不来。要钉的是「形状不变」——加注释的参数原样返回(不能吞掉参数,
+// 否则 Linux 版换回来时调用方传的规则会静默丢失)、清扫报告清掉 0 条、拆除不 panic。
+func TestNonLinuxIptablesSweepStubs_NoopButKeepTheShape(t *testing.T) {
+	args := []string{"-A", "FORWARD", "-i", "nanotun0", "-j", "DROP"}
+	got := withMainComment(args)
+	if len(got) != len(args) {
+		t.Fatalf("非 Linux 桩不该增删参数,want %d 个,got %v", len(args), got)
+	}
+	for i := range args {
+		if got[i] != args[i] {
+			t.Fatalf("参数被改写了:第 %d 个 want %q got %q", i, args[i], got[i])
+		}
+	}
+	if n := sweepMainIptablesRules("iptables"); n != 0 {
+		t.Errorf("非 Linux 上没有规则可清,应报 0 条,got %d", n)
+	}
+	teardownMainIptablesRules() // 不许 panic
+}

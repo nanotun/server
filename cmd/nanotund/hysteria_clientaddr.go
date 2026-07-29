@@ -4,8 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	hyserver "github.com/apernet/hysteria/core/v2/server"
@@ -161,12 +163,24 @@ func (r *hy2ClientAddrRelay) pendingLenForTest() int {
 	return len(r.pending)
 }
 
+// hy2TokenRandRead 是 crypto/rand.Read 的间接层,只为可测性(生产行为不变)。与
+// takeoverSecretRandRead 同一手法:熵源故障是唯一走到降级分支的方式,而那条分支的正确性
+// (token 仍必须唯一)只能靠注入故障来验证。
+var hy2TokenRandRead = rand.Read
+
+// hy2TokenFallbackSeq 给降级 token 兜住唯一性。时间戳单独用是不够的:格式串虽然打到纳秒,
+// 但时钟粒度往一微秒上取整(macOS 实测),同一微秒内的两次调用会拿到**同一个** token。
+// 撞号的后果正是本文件要修的那件事的反面 —— 两条并发 stream 关联到同一条目,A 的流量按 B 的
+// 真实 IP 归因(登录限流 / IP 失败锁定 / 审计全部记到无辜客户端头上)。
+var hy2TokenFallbackSeq atomic.Uint64
+
 func newHy2AddrToken() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand 失败极罕见。退化成时间戳:token 只需在本进程内唯一,不承担安全语义
-		// (客户端无法注入 —— reqAddr 恒被 hook 覆盖)。
-		return "t" + time.Now().Format("20060102150405.000000000")
+	if _, err := hy2TokenRandRead(b[:]); err != nil {
+		// crypto/rand 失败极罕见。退化成「时间戳 + 进程内单调序号」:token 只需在本进程内唯一,
+		// 不承担安全语义(客户端无法注入 —— reqAddr 恒被 hook 覆盖)。
+		return "t" + time.Now().Format("20060102150405.000000000") +
+			"-" + strconv.FormatUint(hy2TokenFallbackSeq.Add(1), 36)
 	}
 	return hex.EncodeToString(b[:])
 }
