@@ -1859,5 +1859,199 @@
     "new": "\tif p.Signature == \"\" && false {",
     "test": "./cmd/nanotund/",
     "run": "PoW|Pow"
+  },
+  {
+    "desc": "[mut29] audit action:两个失败码共用一个 action(报表里两类失败并成一类)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\tcase util.CodeVPNExpired:\n\t\treturn \"login.fail.vpn_expired\"",
+    "new": "\tcase util.CodeVPNExpired:\n\t\treturn \"login.fail.token_expired\"",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoginCodeTable|TestAuditActionForLoginCode"
+  },
+  {
+    "desc": "[mut29] audit action:成功也归到 login.fail 前缀(失败率报表把成功算成失败)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\tcase util.CodeOK:\n\t\treturn \"login.success\"",
+    "new": "\tcase util.CodeOK:\n\t\treturn \"login.fail.success\"",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoginCodeTable|TestAuditActionForLoginCode"
+  },
+  {
+    "desc": "[mut29] audit action:user_not_found 退回扁平 login.fail(2026-05-21 事故的原形)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\tcase util.CodeUserNotFound:\n\t\treturn \"login.fail.user_not_found\"",
+    "new": "\tcase util.CodeUserNotFound:\n\t\treturn \"login.fail\"",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoginCodeTable|TestAuditActionForLoginCode"
+  },
+  {
+    "desc": "[mut29] 客户端文案:未知码回空串(客户端只看到一个没有原因的失败)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\tdefault:\n\t\treturn \"认证失败\"\n\t}\n}",
+    "new": "\tdefault:\n\t\treturn \"\"\n\t}\n}",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoginCodeTable"
+  },
+  {
+    "desc": "[mut29] 客户端文案:VPN 到期报成用户已禁用(让用户去找管理员而不是去续费)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\tcase util.CodeVPNExpired:\n\t\treturn \"VPN 服务已到期\"",
+    "new": "\tcase util.CodeVPNExpired:\n\t\treturn \"用户已被禁用\"",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoginCodeTable"
+  },
+  {
+    "desc": "[mut29] PSK:用户已禁用报成密码错(用户一直重输,管理员看不到有人在用停掉的号)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\t\tcase errors.Is(err, auth.ErrUserDisabled):\n\t\t\treturn nil, &loginAuthError{code: util.CodeUserBlacklisted, message: \"用户已禁用\"}",
+    "new": "\t\tcase errors.Is(err, auth.ErrUserDisabled):\n\t\t\treturn nil, &loginAuthError{code: util.CodeTokenInvalid, message: \"用户已禁用\"}",
+    "test": "./cmd/nanotund/",
+    "run": "TestAuthenticatePSK|TestAuthenticateLogin"
+  },
+  {
+    "desc": "[mut29] PSK:库读不动时报成密码错(一次数据库事故被伪装成一群人同时打错密码)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\t\tdefault:\n\t\t\tlogrus.WithError(err).Error(\"PSK 校验内部错误\")\n\t\t\treturn nil, &loginAuthError{code: util.CodeServerError, message: \"服务器内部错误\"}",
+    "new": "\t\tdefault:\n\t\t\tlogrus.WithError(err).Error(\"PSK 校验内部错误\")\n\t\t\treturn nil, &loginAuthError{code: util.CodeTokenInvalid, message: \"服务器内部错误\"}",
+    "test": "./cmd/nanotund/",
+    "run": "TestAuthenticatePSK|TestAuthenticateLogin"
+  },
+  {
+    "desc": "[mut29] PSK:未初始化(缺 store/verifier)也往下跑",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\tif gw == nil || gw.authVerifier == nil || gw.store == nil {",
+    "new": "\tif gw == nil {",
+    "test": "./cmd/nanotund/",
+    "run": "TestAuthenticatePSK|TestAuthenticateLogin"
+  },
+  {
+    "desc": "[mut29] PSK:缺用户名/PSK 也放进 VerifyLogin(空口令走一遍 argon2)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\tif loginReq.Name == \"\" || loginReq.Token == \"\" {",
+    "new": "\tif loginReq.Name == \"\" && false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestAuthenticatePSK|TestAuthenticateLogin"
+  },
+  {
+    "desc": "[mut29] 日志截断:max<=0 时原样返回(KB 级错误链把整行日志撑爆)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\tif max <= 0 {\n\t\treturn \"\"\n\t}",
+    "new": "\tif max < 0 {\n\t\treturn s\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestTruncateForLog"
+  },
+  {
+    "desc": "[mut29] 日志截断:截断后不留痕迹(读日志的人以为错误就这么短)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\treturn s[:max] + \"...<truncated>\"",
+    "new": "\treturn s[:max]",
+    "test": "./cmd/nanotund/",
+    "run": "TestTruncateForLog"
+  },
+  {
+    "desc": "[mut29] initAuthBackend:没配 db_path 时用空路径打开(落到内存/临时库,重启即失忆)",
+    "file": "cmd/nanotund/auth_login.go",
+    "old": "\tif dbPath == \"\" {\n\t\tdbPath = \"data/nanotun.db\"\n\t}",
+    "new": "\tif dbPath == \"\" {\n\t\tdbPath = \"data/nanotun-other.db\"\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestInitAuthBackend"
+  },
+  {
+    "desc": "[mut29] 子网表载入:不挡公网/宽段(绕过出口闸与出口 ACL,confused deputy)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\t\tif !util.PrefixWithinAdvertisable(masked) {",
+    "new": "\t\tif !util.PrefixWithinAdvertisable(masked) && false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestRebuild|TestLookupSubnetRoute|TestForwardPacketToSubnetRoute"
+  },
+  {
+    "desc": "[mut29] 子网表载入:0/0 与 ::/0 也收进表(任意公网目的被中继给未获批出口)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\t\tif util.IsExitDefaultRoute(r.CIDR) {",
+    "new": "\t\tif util.IsExitDefaultRoute(r.CIDR) && false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestRebuild|TestLookupSubnetRoute|TestForwardPacketToSubnetRoute",
+    "equivalent": true,
+    "note": "等价:紧随其后的 PrefixWithinAdvertisable 同样挡掉 0/0 与 ::/0(默认路由不在私有段内),两道闸重叠,无可观测差异"
+  },
+  {
+    "desc": "[mut29] 子网表载入:DB 读不动时把表清空(所有内网路由同时黑洞)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\t\tlogrus.WithError(err).Warn(\"[subnet-route] 重建路由表失败，保留旧表（不黑洞已生效路由）\")\n\t\treturn",
+    "new": "\t\tlogrus.WithError(err).Warn(\"[subnet-route] 重建路由表失败，保留旧表（不黑洞已生效路由）\")\n\t\tempty := []subnetRouteEntry{}\n\t\tsubnetRouteTable.Store(&empty)\n\t\treturn",
+    "test": "./cmd/nanotund/",
+    "run": "TestRebuild"
+  },
+  {
+    "desc": "[mut29] 审批门控:表未加载时放行(撤销审批后 FRP 仍能打进 LAN)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "func deviceApprovedForDst(deviceID int64, dst netip.Addr) bool {\n\tptr := subnetRouteTable.Load()\n\tif ptr == nil {\n\t\treturn false\n\t}",
+    "new": "func deviceApprovedForDst(deviceID int64, dst netip.Addr) bool {\n\tptr := subnetRouteTable.Load()\n\tif ptr == nil {\n\t\treturn true\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestApprovalGates|TestDeliverServerOriginated|TestForwardServerOriginated"
+  },
+  {
+    "desc": "[mut29] 反源欺骗:deviceID=0 也去匹配网段(给「不知道是谁」放行)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "func deviceApprovedPrefixContains(deviceID int64, addr netip.Addr) bool {\n\tif deviceID == 0 {\n\t\treturn false\n\t}",
+    "new": "func deviceApprovedPrefixContains(deviceID int64, addr netip.Addr) bool {\n\tif deviceID == 0 && false {\n\t\treturn false\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestApprovalGates|TestVia6SrcOwnedByConn"
+  },
+  {
+    "desc": "[mut29] 4via6 反源:表就绪后也一律放行(可拿别人 site 的地址冒充另一站点)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tdev, known := lookupVia6Site(siteID)\n\tif !known || dev != c.deviceID {\n\t\treturn false\n\t}",
+    "new": "\tdev, known := lookupVia6Site(siteID)\n\tif !known || dev != c.deviceID {\n\t\treturn true\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestVia6SrcOwnedByConn"
+  },
+  {
+    "desc": "[mut29] 4via6 反源:不校内嵌 v4 是否在已批准网段内(多报几条网段就能拿它们当源)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\treturn deviceApprovedPrefixContains(c.deviceID, v4)",
+    "new": "\treturn true || deviceApprovedPrefixContains(c.deviceID, v4)",
+    "test": "./cmd/nanotund/",
+    "run": "TestVia6SrcOwnedByConn"
+  },
+  {
+    "desc": "[mut29] 4via6 反源:表未就绪时收窄(每次 reload 窗口误杀一批合法回程)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tif via6SiteTable.Load() == nil || !subnetRouteTableLoaded() {\n\t\treturn true // 表未就绪:保守放行,不误杀\n\t}",
+    "new": "\tif via6SiteTable.Load() == nil || !subnetRouteTableLoaded() {\n\t\treturn false\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestVia6SrcOwnedByConn"
+  },
+  {
+    "desc": "[mut29] server 自发包:宣告方离线也算投递成功(丢了却回报已送到)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tadv := lookupSubnetAdvertiserConnByDevice(deviceID)\n\tif adv == nil {\n\t\tsubnetRouteDroppedOffline.Add(1)\n\t\treturn false\n\t}",
+    "new": "\tadv := lookupSubnetAdvertiserConnByDevice(deviceID)\n\tif adv == nil {\n\t\tsubnetRouteDroppedOffline.Add(1)\n\t\treturn true\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestDeliverServerOriginated|TestForwardServerOriginated"
+  },
+  {
+    "desc": "[mut29] server 自发包:不看会话当前宣告集(已收窄掉的网段仍往里投,未 NAT 的包漏进 LAN)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\t\tif !covered {\n\t\t\tsubnetRouteDroppedNotAdvertised.Add(1)\n\t\t\treturn false\n\t\t}",
+    "new": "\t\tif !covered {\n\t\t\tsubnetRouteDroppedNotAdvertised.Add(1)\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestDeliverServerOriginated|TestForwardServerOriginated"
+  },
+  {
+    "desc": "[mut29] server 自发包:超长包照投(写坏 TUN 缓冲)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tif len(payload) > tunBufSize {\n\t\tsubnetRouteDroppedOversize.Add(1)\n\t\treturn false\n\t}\n\tif deliverIPPacketToConn(adv, payload) {",
+    "new": "\tif len(payload) > tunBufSize && false {\n\t\tsubnetRouteDroppedOversize.Add(1)\n\t\treturn false\n\t}\n\tif deliverIPPacketToConn(adv, payload) {",
+    "test": "./cmd/nanotund/",
+    "run": "TestDeliverServerOriginated"
+  },
+  {
+    "desc": "[mut29] server 自发包:无匹配路由时回报已投递(本该进内网的包被当成已处理)",
+    "file": "cmd/nanotund/subnet_route.go",
+    "old": "\tdev, ok := lookupSubnetRoute(dst)\n\tif !ok {\n\t\treturn false\n\t}",
+    "new": "\tdev, ok := lookupSubnetRoute(dst)\n\tif !ok {\n\t\treturn true\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestForwardServerOriginated"
   }
 ]
