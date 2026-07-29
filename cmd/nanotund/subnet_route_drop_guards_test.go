@@ -3,8 +3,6 @@ package main
 import (
 	"net/netip"
 	"testing"
-
-	"github.com/nanotun/server/util"
 )
 
 // 子网路由的丢包路径:丢了以后**不能回退**。
@@ -43,7 +41,7 @@ func TestForwardPacketToSubnetRoute_NeverFallsBackAfterDeciding(t *testing.T) {
 		tunCh := addAdvertiserConn(t, 89, "adv-full", "10.0.0.21")
 		// 把宣告方的队列塞满:后续投递必然失败。
 		for len(tunCh) < cap(tunCh) {
-			tunCh <- &util.TunPacket{}
+			tunCh <- poolShapedTunPacket(nil)
 		}
 
 		a := &Connection{userID: "1", connIDStr: "a", deviceID: 11}
@@ -113,7 +111,7 @@ func TestDeliverServerOriginatedToDevice_ChecksTheAdvertisedSetAndTheQueue(t *te
 		setSubnetRouteTableForTest(t, []subnetRouteEntry{mkEntry("192.168.32.0/24", 97)})
 		tunCh := addAdvertiserConnWithRoutes(t, 97, "adv-srv3", "10.0.0.32", []string{"192.168.32.0/24"})
 		for len(tunCh) < cap(tunCh) {
-			tunCh <- &util.TunPacket{}
+			tunCh <- poolShapedTunPacket(nil)
 		}
 
 		before := subnetRouteDroppedFull.Load()

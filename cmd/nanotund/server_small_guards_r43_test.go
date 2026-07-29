@@ -213,3 +213,36 @@ func TestSendRegisterActionAwait_GivesUpWhenTheProcessIsShuttingDown(t *testing.
 		t.Fatal("关机中仍在死等 demux 回执 —— 清理协程就挂在这里,优雅关停的 defer 一个都跑不到")
 	}
 }
+
+// TestSendRegisterActionAwait_GivesUpWhenTheQueueIsFullAndWeAreShuttingDown
+// 关机中投递不进去也不许干等。
+//
+// 上面那条钉的是「等回执」那一段,这条钉前一段:投递队列满。关机瞬间正是它最容易满的时候
+// —— 所有会话同时清理,每条都要投一次 unregister,而 demux 已经先退、没人再取。不看
+// globalContext 的话,清理协程堵在投递上,后果与上面同款:优雅关停退化成 SIGKILL。
+func TestSendRegisterActionAwait_GivesUpWhenTheQueueIsFullAndWeAreShuttingDown(t *testing.T) {
+	prevCtx, prevCancel := globalContext, globalContextCancel
+	ctx, cancel := context.WithCancel(context.Background())
+	globalContext, globalContextCancel = ctx, cancel
+	cancel() // 关机已经开始
+
+	// 换成一条无人接收的零容量队列 = 「队列满」。生产里是 800 条积压,行为一致而不必真灌 800 条。
+	prevChan := registerTunReadChan
+	registerTunReadChan = make(chan registerTunReadChanAction)
+	t.Cleanup(func() {
+		registerTunReadChan = prevChan
+		globalContext, globalContextCancel = prevCtx, prevCancel
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sendRegisterActionAwait(registerTunReadChanAction{action: 1, success: make(chan struct{}, 1)})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("关机中投递不进去还在死等 —— 清理协程挂在投递上,优雅关停的 defer 一个都跑不到")
+	}
+}

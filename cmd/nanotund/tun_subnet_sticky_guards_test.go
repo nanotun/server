@@ -81,6 +81,12 @@ func (h *countingLogHook) count() int {
 	return len(h.msgs)
 }
 
+func (h *countingLogHook) messages() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.msgs...)
+}
+
 // TestWarnFixedVIPOutOfMesh_WarnsOncePerPinNotPerReconnect 同一个失效钉住地址只告警一次。
 func TestWarnFixedVIPOutOfMesh_WarnsOncePerPinNotPerReconnect(t *testing.T) {
 	oldV4, oldV6 := sharedTUNGateway, sharedTUNGatewayV6

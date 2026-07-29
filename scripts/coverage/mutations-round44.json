@@ -1,0 +1,160 @@
+[
+  {
+    "desc": "[mut44] 分发:子网路由判过的包再从 server 自出口发一遍(内网包从公网网卡出去)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\tif forwardPacketToSubnetRoute(c, payload) {\n\t\t\t\tcontinue\n\t\t\t}",
+    "new": "\t\t\t_ = forwardPacketToSubnetRoute(c, payload)",
+    "test": "./cmd/nanotund/",
+    "run": "TestRunLinkTunnel_SubnetRouteVerdictStopsThePacketRightThere"
+  },
+  {
+    "desc": "[mut44] 分发:出口判过的包又回退 server 自出口(用户选的出口被静默绕过)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\tif forwardPacketToExitNode(c, payload) {\n\t\t\t\tcontinue\n\t\t\t}",
+    "new": "\t\t\t_ = forwardPacketToExitNode(c, payload)",
+    "test": "./cmd/nanotund/",
+    "run": "TestRunLinkTunnel_ExitNodeVerdictStopsThePacketRightThere"
+  },
+  {
+    "desc": "[mut44] 分发:已回 ICMPv6 的 v6 包还是写进 server TUN(那一份在内核黑洞)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\tif serverSelfEgressV6FastFail(c, payload) {\n\t\t\t\tcontinue\n\t\t\t}",
+    "new": "\t\t\t_ = serverSelfEgressV6FastFail(c, payload)",
+    "test": "./cmd/nanotund/",
+    "run": "TestRunLinkTunnel_V6FastFailVerdictStopsThePacketRightThere"
+  },
+  {
+    "desc": "[mut44] 分发:已截获的出口 DNS 回包继续往下走(每次查询都往冒充计数器灌噪声)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\tif interceptExitDNSResponseIfPending(c, payload) {\n\t\t\t\tcontinue\n\t\t\t}",
+    "new": "\t\t\t_ = interceptExitDNSResponseIfPending(c, payload)",
+    "test": "./cmd/nanotund/",
+    "run": "TestRunLinkTunnel_InterceptedExitDNSResponseGoesNoFurther"
+  },
+  {
+    "desc": "[mut44] v6 秒回落:只丢包不回 ICMPv6(客户端不知道此路不通,干等到超时)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tserverEgressDroppedNoV6.Add(1)\n\tsendICMPv6NoRouteToConn(c, payload)\n\treturn true",
+    "new": "\tserverEgressDroppedNoV6.Add(1)\n\treturn true",
+    "test": "./cmd/nanotund/",
+    "run": "TestRunLinkTunnel_V6FastFailVerdictStopsThePacketRightThere"
+  },
+  {
+    "desc": "[mut44] 审计回收:启动不装这条 goroutine(audit_logs 只增不删)",
+    "file": "cmd/nanotund/audit_gc.go",
+    "old": "\tgo safeGlobalGoroutine(\"auditGC\", globalContextCancel, func() {\n\t\trunAuditGCLoop(globalContext, st, auditPruneRetention, auditPruneInterval)\n\t})",
+    "new": "\t_ = st",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartAuditGC_PrunesOnStartAndKeepsTheThirtyDayWindow"
+  },
+  {
+    "desc": "[mut44] 审计回收:保留窗口接成 0(刚写的审计当场被删,合规要的 30 天等于没有)",
+    "file": "cmd/nanotund/audit_gc.go",
+    "old": "\t\trunAuditGCLoop(globalContext, st, auditPruneRetention, auditPruneInterval)",
+    "new": "\t\trunAuditGCLoop(globalContext, st, 0, auditPruneInterval)",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartAuditGC_PrunesOnStartAndKeepsTheThirtyDayWindow"
+  },
+  {
+    "desc": "[mut44] 审计回收:表撑大了不出声(磁盘写满前没有任何信号)",
+    "file": "cmd/nanotund/audit_gc.go",
+    "old": "\t\tif total >= auditMonitorBigSize {\n\t\t\tlogrus.WithFields(fields).Warnf(\"[audit-gc] audit_logs 行数已超过 %d,建议运维检查磁盘占用 / 缩短保留窗口\", auditMonitorBigSize)\n\t\t} else if n > 0 {",
+    "new": "\t\tif false {\n\t\t\tlogrus.WithFields(fields).Warnf(\"[audit-gc] audit_logs 行数已超过 %d,建议运维检查磁盘占用 / 缩短保留窗口\", auditMonitorBigSize)\n\t\t} else if n > 0 {",
+    "test": "./cmd/nanotund/",
+    "run": "TestRunAuditGCLoop_SaysSoWhenTheTableGetsHuge"
+  },
+  {
+    "desc": "[mut44] 审计回收:行数没超也天天告警(告警天天响就等于没有)",
+    "file": "cmd/nanotund/audit_gc.go",
+    "old": "\t\tif total >= auditMonitorBigSize {",
+    "new": "\t\tif total >= 0 {",
+    "test": "./cmd/nanotund/",
+    "run": "TestRunAuditGCLoop_SaysSoWhenTheTableGetsHuge"
+  },
+  {
+    "desc": "[mut44] demux 投递:关机中投不进去仍死等(清理协程挂在投递上)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tselect {\n\tcase registerTunReadChan <- a:\n\tcase <-globalContext.Done():\n\t\treturn\n\t}",
+    "new": "\tregisterTunReadChan <- a",
+    "test": "./cmd/nanotund/",
+    "run": "TestSendRegisterActionAwait_GivesUpWhenTheQueueIsFullAndWeAreShuttingDown"
+  },
+  {
+    "desc": "[mut44] hy2 启动:混淆器初始化失败不撤跳跃规则(机器上留下 REDIRECT 到没人监听的端口)",
+    "file": "cmd/nanotund/hysteria.go",
+    "old": "\t\tif errO != nil {\n\t\t\t_ = packetConn.Close()\n\t\t\tif hopCleanup != nil {\n\t\t\t\thopCleanup()\n\t\t\t}\n\t\t\treturn nil, 0, nil, fmt.Errorf(\"hysteria Salamander obfs: %w\", errO)\n\t\t}",
+    "new": "\t\tif errO != nil {\n\t\t\t_ = packetConn.Close()\n\t\t\treturn nil, 0, nil, fmt.Errorf(\"hysteria Salamander obfs: %w\", errO)\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartEmbeddedHysteria_ObfsInitFailureUnwindsThePortAndTheRules"
+  },
+  {
+    "desc": "[mut44] hy2 启动:混淆器初始化失败不还 UDP 端口(下一个实例撞上 address already in use)",
+    "file": "cmd/nanotund/hysteria.go",
+    "old": "\t\tif errO != nil {\n\t\t\t_ = packetConn.Close()\n\t\t\tif hopCleanup != nil {",
+    "new": "\t\tif errO != nil {\n\t\t\tif hopCleanup != nil {",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartEmbeddedHysteria_ObfsInitFailureUnwindsThePortAndTheRules"
+  },
+  {
+    "desc": "[mut44] hy2 启动:混淆器初始化失败照旧起服务(客户端带混淆发包,服务端按明文收)",
+    "file": "cmd/nanotund/hysteria.go",
+    "old": "\t\tif errO != nil {\n\t\t\t_ = packetConn.Close()\n\t\t\tif hopCleanup != nil {\n\t\t\t\thopCleanup()\n\t\t\t}\n\t\t\treturn nil, 0, nil, fmt.Errorf(\"hysteria Salamander obfs: %w\", errO)\n\t\t}\n\t\tpacketConn = wrapped",
+    "new": "\t\tif errO == nil {\n\t\t\tpacketConn = wrapped\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartEmbeddedHysteria_ObfsInitFailureUnwindsThePortAndTheRules"
+  },
+  {
+    "desc": "[mut44] hy2 UDP 出口:给不出 socket 也不报错(客户端 UDP 会话静默黑洞)",
+    "file": "cmd/nanotund/hysteria.go",
+    "old": "\tconn, err := net.ListenUDP(\"udp\", nil)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn &hysteriaUDPProxyConn{UDPConn: conn}, nil",
+    "new": "\tconn, err := net.ListenUDP(\"udp\", nil)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\t_ = conn\n\treturn nil, nil",
+    "test": "./cmd/nanotund/",
+    "run": "TestVPNHybridOutbound_UDPHandsOutARealSocket"
+  },
+  {
+    "desc": "[mut44] v6 探测(路由级):只要 connect 成功就算有 v6(环回也算,全站 v6 流量进黑洞)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\t\tif a, ok := netip.AddrFromSlice(la.IP); ok && isUsableV6EgressSrc(a.Unmap()) {\n\t\t\treturn true\n\t\t}",
+    "new": "\t\tif _, ok := netip.AddrFromSlice(la.IP); ok {\n\t\t\treturn true\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestProbeServerIPv6Route_LoopbackIsNotAnEgressSource"
+  },
+  {
+    "desc": "[mut44] v6 探测(端到端):UDP 查询发得出去就算通(假 v6 环境被判成有 v6)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tbuf := make([]byte, 512)\n\tn, err := conn.Read(buf)\n\treturn err == nil && n > 0",
+    "new": "\tbuf := make([]byte, 512)\n\t_, _ = conn.Read(buf)\n\treturn true",
+    "test": "./cmd/nanotund/",
+    "run": "TestVerifyServerIPv6RoundTrip_NoAnswerMeansNoV6"
+  },
+  {
+    "desc": "[mut44] v6 探测(端到端):TCP 兜底不看 dial 结果(连接被拒也算通)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\t\tconn, err := net.DialTimeout(\"tcp6\", net.JoinHostPort(target, \"443\"), perTargetTimeout)\n\t\tif err == nil {",
+    "new": "\t\tconn, err := net.DialTimeout(\"tcp6\", net.JoinHostPort(target, \"443\"), perTargetTimeout)\n\t\tif err == nil || conn == nil {",
+    "test": "./cmd/nanotund/",
+    "run": "TestVerifyServerIPv6RoundTrip_NoAnswerMeansNoV6"
+  },
+  {
+    "desc": "[mut44] 出口回执:两层 nil 复核同时拆掉(复核循环被一次 nil 解引用带走)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tif c == nil || c.safeLinkConn() == nil {\n\t\treturn\n\t}",
+    "new": "\tif c == nil {\n\t\treturn\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSendEgressSelectAck_SurvivesAConnectionWithNoLink",
+    "also": [
+      [
+        "\tc.linkWrMu.Lock()\n\tdefer c.linkWrMu.Unlock()\n\tif c.linkConn == nil {\n\t\treturn\n\t}\n\t// 深扫第五轮:与 sendExitsListTo 同口径钉 5s 写超时。",
+        "\tc.linkWrMu.Lock()\n\tdefer c.linkWrMu.Unlock()\n\t// 深扫第五轮:与 sendExitsListTo 同口径钉 5s 写超时。"
+      ]
+    ]
+  },
+  {
+    "desc": "[mut44] 网关推导:网络地址 +1 溢出后不报错(把零值地址当网关配到 TUN 上)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tgateway := networkAddr.Next() // 网络地址 +1 = 网关\n\tif !gateway.IsValid() {\n\t\treturn \"\", fmt.Errorf(\"cannot compute gateway for %s\", subnet)\n\t}",
+    "new": "\tgateway := networkAddr.Next() // 网络地址 +1 = 网关",
+    "test": "./cmd/nanotund/",
+    "run": "TestGatewayCIDRFromSubnet"
+  }
+]

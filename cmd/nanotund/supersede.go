@@ -64,6 +64,7 @@ const sessionLimitEvictClientMsg = "账号同时在线会话数已达上限，�
 //   - tunDemuxWriteDeadline 也是 5s,所以即使数据面卡住,5s 内 readLoop 也能退;
 //   - 与 client 端 LoginResp 接收超时(15s)留出余量,避免新 conn 因等老 cleanup
 //     而错过 LoginResp 写入窗口。
+//
 // 用 var 而非 const:守卫测试要把它调到几百毫秒,才能在用例里观察「总等待被硬顶住」
 // 而不是等真实的 5s。生产不改这个值。
 var supersedeWaitTimeout = 5 * time.Second

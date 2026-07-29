@@ -16,6 +16,7 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // hopSpy 替换端口跳跃的安装步骤,记账安装与撤销次数。
@@ -126,4 +127,85 @@ func TestStartEmbeddedHysteria_PortHopFailureReleasesThePortAndSaysSo(t *testing
 			"systemd 拉起的新实例会撞上「端口已被占用」,把排查带偏", port, perr)
 	}
 	_ = probe.Close()
+}
+
+// TestStartEmbeddedHysteria_ObfsInitFailureUnwindsThePortAndTheRules
+// 混淆器初始化失败也要把端口和跳跃规则原路还回去。
+//
+// 上面两条钉的是「配置构造失败」和「装规则本身失败」,这里补混淆器这一处。触发条件(obfs 密码
+// 短于库下限)在配置校验里**已经拦过一遍**,所以正常部署走不到;它是两套限值分头写死之后的兜底
+// —— 库升级把下限改了而我们的校验没跟着改时,这条路就是现场唯一会走的路。
+//
+// 资源回收这件事跟触发原因无关:漏一处,机器上就留下一段「REDIRECT 到没人监听的端口」加一个攥在
+// 退出中进程里的 UDP socket,下一个实例撞上「端口已被占用」。
+//
+// (再往后那处 —— hy2 建服务失败 —— 进程内构造不出来:库会拒的每个维度 ValidateTuning 都在函数
+// 开头先拒了一遍,连一个能穿过前者、被后者拒掉的取值都不存在。)
+func TestStartEmbeddedHysteria_ObfsInitFailureUnwindsThePortAndTheRules(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := writeTestHy2ServerTLS(t, dir)
+	spy := &hopSpy{}
+	spy.install(t)
+
+	port := pickFreeUDPPort(t)
+	cfg := testHysteriaConfig(t, hopUnionAddr(port), "0123456789abcdef", certFile, keyFile)
+	cfg.Hysteria.ObfsSalamanderPassword = "ab" // 短于库下限
+
+	srv, gotPort, cleanup, err := startEmbeddedHysteria(&cfg, "", "ws://127.0.0.1:8080/vpn", nil, nil)
+	if err == nil {
+		if srv != nil {
+			_ = srv.Close()
+		}
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatal("混淆器初始化不了却启动成功了 —— 客户端会带混淆发包,服务端按明文收,谁都连不上")
+	}
+	if srv != nil || gotPort != 0 || cleanup != nil {
+		t.Errorf("失败时不能返回半成品(srv=%v port=%d cleanup==nil:%v)", srv, gotPort, cleanup == nil)
+	}
+	if spy.installs.Load() != 1 {
+		t.Fatalf("跳跃规则装了 %d 次,应为 1 —— 失败点排在装规则之前,这条用例什么都没验到", spy.installs.Load())
+	}
+	if n := spy.undos.Load(); n != 1 {
+		t.Errorf("启动失败后撤销了 %d 次跳跃规则,应为 1 —— 残留规则把那段端口 REDIRECT 到没人监听的端口", n)
+	}
+	probe, perr := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", port))
+	if perr != nil {
+		t.Fatalf("失败路径没关掉已绑的 UDP 端口 %d: %v", port, perr)
+	}
+	_ = probe.Close()
+}
+
+// TestVPNHybridOutbound_UDPHandsOutARealSocket 开了 udp_relay 时 UDP 出口要真给一个可用 socket。
+//
+// 这条 outbound 只在 config.udp_relay_enabled=true 时装上(nanotun 默认关,开了等于把 hy2 当通用
+// UDP 代理)。它必须真的绑一个本地 UDP socket:返回 nil 而不报错的话,hy2 会拿着 nil 往下走 ——
+// 表现是客户端的 UDP 会话建起来就静默黑洞,而服务端日志上什么都没有。
+func TestVPNHybridOutbound_UDPHandsOutARealSocket(t *testing.T) {
+	ob := &vpnHybridOutbound{}
+	conn, err := ob.UDP("8.8.8.8:53")
+	if err != nil {
+		t.Fatalf("开了 udp_relay 却给不出 UDP socket: %v", err)
+	}
+	if conn == nil {
+		t.Fatal("返回了 nil socket 且不报错 —— hy2 会拿着它往下走,客户端 UDP 静默黑洞")
+	}
+	defer func() { _ = conn.Close() }()
+
+	// 真发一包给自己起的监听,证明这不是个空壳。
+	peer, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = peer.Close() }()
+	if _, err := conn.WriteTo([]byte("ping"), peer.LocalAddr().String()); err != nil {
+		t.Fatalf("拿到的 socket 发不出包: %v", err)
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 8)
+	n, _, err := peer.ReadFrom(buf)
+	if err != nil || string(buf[:n]) != "ping" {
+		t.Fatalf("对端没收到包(n=%d err=%v)", n, err)
+	}
 }

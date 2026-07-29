@@ -133,6 +133,18 @@ func (h *linkHarness) barrier() {
 	}
 }
 
+// poolShapedTunPacket 造一个与生产同形的在途包。
+//
+// 队列里的包最终会被 demux 或 drainAndCloseTunChan **归还池子**,所以塞进去的 Buf 必须是池子那种
+// tunBufSize 的切片。塞一条 4 字节(或 nil)的进去,池子里就混进了一个短 buffer,之后任何一次 Get
+// 拿到它都只能装下那么多 —— 现象是毫无关系的另一个用例收到一个被截断的包(实测:出口 DNS 那组
+// 用例报「注入出口的查询包异常」,而它们与本文件八竿子打不着)。
+func poolShapedTunPacket(payload []byte) *util.TunPacket {
+	buf := tunReadBufPool.Get().([]byte)
+	n := copy(buf, payload)
+	return &util.TunPacket{Buf: buf, N: n}
+}
+
 // drainTunWrites 抽干 tunWriteChan 并返回抽到的包。它是包级全局,测试之间会串台。
 func drainTunWrites() [][]byte {
 	var out [][]byte
@@ -475,7 +487,7 @@ func TestRunLinkTunnel_ShutdownWaitsForDemuxToActuallyStop(t *testing.T) {
 			}()
 
 			// 让 demux 取一个下行包并卡在写上。
-			tunCh <- &util.TunPacket{Buf: []byte{0x45, 0, 0, 20}, N: 4}
+			tunCh <- poolShapedTunPacket([]byte{0x45, 0, 0, 20})
 			select {
 			case <-gated.entered:
 			case <-time.After(3 * time.Second):
@@ -536,7 +548,7 @@ func TestRunLinkTunnel_DemuxWriteFailureTearsDownTheWholeTunnel(t *testing.T) {
 		runLinkTunnel(ctx, dead, c, harnessRemote)
 	}()
 
-	tunCh <- &util.TunPacket{Buf: []byte{0x45, 0, 0, 20}, N: 4}
+	tunCh <- poolShapedTunPacket([]byte{0x45, 0, 0, 20})
 
 	// 没人发 Close、客户端也没断开;readLoop 应当被 demux 的收尾(cancel + rw.Close)逼退。
 	select {

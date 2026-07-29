@@ -30,8 +30,11 @@ import (
 const (
 	auditPruneRetention = 30 * 24 * time.Hour
 	auditPruneInterval  = 24 * time.Hour
-	auditMonitorBigSize = 1_000_000 // 行数,超过这个值打 WARN 让运维感知
 )
+
+// auditMonitorBigSize 行数超过这个值就打 WARN 让运维感知。
+// var 而非 const:守卫测试要压低它才能验到告警(否则得真造一百万行)。
+var auditMonitorBigSize int64 = 1_000_000
 
 // startAuditGC 在后台起一条 goroutine 周期性 prune audit_logs。
 // st 为 nil(测试场景兜底)时直接 no-op。
