@@ -3480,5 +3480,85 @@
     "new": "\tif strings.TrimSpace(addr) == \"\" {\n\t\taddr = \"127.0.0.1:8081\"\n\t}",
     "test": "./cmd/nanotund/",
     "run": "TestStartHealthHTTPServer_"
+  },
+  {
+    "desc": "[mut39] WSS 入站:Upgrade 后不撤握手超时(正常长连接十几秒后必掉线)",
+    "file": "cmd/nanotund/vpn_listen.go",
+    "old": "_ = dc.SetDeadline(time.Time{})",
+    "new": "_ = dc.SetDeadline(time.Now().Add(time.Hour))",
+    "test": "./cmd/nanotund/",
+    "run": "TestVPNWSHandler_"
+  },
+  {
+    "desc": "[mut39] WSS 入站:非 Upgrade 请求也当 WS 处理(白占 goroutine 与 accept 槽位)",
+    "file": "cmd/nanotund/vpn_listen.go",
+    "old": "http.Error(w, \"upgrade required\", http.StatusUpgradeRequired)",
+    "new": "http.Error(w, \"upgrade required\", http.StatusOK)",
+    "test": "./cmd/nanotund/",
+    "run": "TestVPNWSHandler_|TestBuildVPNHTTPServeMux"
+  },
+  {
+    "desc": "[mut39] 上次网段探测:库不存在也照样打开(首次部署先造出一个空库)",
+    "file": "cmd/nanotund/tun_subnet_sticky.go",
+    "old": "\tif _, err := os.Stat(dbPath); err != nil {\n\t\treturn nil\n\t}",
+    "new": "\tif _, err := os.Stat(dbPath); err != nil && false {\n\t\treturn nil\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestReadPersistedMeshGateways_"
+  },
+  {
+    "desc": "[mut39] 上次网段探测:读表失败当成「没有偏好」以外的东西(启动被拦住)",
+    "file": "cmd/nanotund/tun_subnet_sticky.go",
+    "old": "\t\tlogrus.WithError(err).Debug(\"[tun-subnet] 读 mesh_cidrs 失败,按无偏好处理\")\n\t\treturn nil",
+    "new": "\t\tlogrus.WithError(err).Debug(\"[tun-subnet] 读 mesh_cidrs 失败,按无偏好处理\")\n\t\treturn []string{\"10.255.255.1/16\"}",
+    "test": "./cmd/nanotund/",
+    "run": "TestReadPersistedMeshGateways_"
+  },
+  {
+    "desc": "[mut39] 钉住 vIP 掉出网段:每次重连都告警(唯一线索被自己的噪声埋掉)",
+    "file": "cmd/nanotund/tun_subnet_sticky.go",
+    "old": "\t\tif _, dup := fixedVIPWarnOnce.LoadOrStore(key, struct{}{}); dup {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tif _, dup := fixedVIPWarnOnce.LoadOrStore(key, struct{}{}); dup && false {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestWarnFixedVIPOutOfMesh_"
+  },
+  {
+    "desc": "[mut39] 钉住 vIP:在网段内也告警(把对的配置报成错的)",
+    "file": "cmd/nanotund/tun_subnet_sticky.go",
+    "old": "\t\tif sameSubnet(p.gateway, p.pin) {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tif !sameSubnet(p.gateway, p.pin) {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestWarnFixedVIPOutOfMesh_"
+  },
+  {
+    "desc": "[mut39] 截获 DNS:HTTPS/SVCB 走 A/AAAA 解析路径(ipv4hint/ech 被丢,ECH 静默失效)",
+    "file": "cmd/nanotund/magic_dns_intercept.go",
+    "old": "\t\tif q.Type == dnsmessage.TypeA || q.Type == dnsmessage.TypeAAAA {\n\t\t\te, rok = resolveExitDNSAddrsCached(key, exitConn, query)\n\t\t} else {\n\t\t\te, rok = resolveExitDNSRawCached(key, exitConn, query)\n\t\t}",
+    "new": "\t\te, rok = resolveExitDNSAddrsCached(key, exitConn, query)",
+    "test": "./cmd/nanotund/",
+    "run": "TestInterceptExitBoundDNS_"
+  },
+  {
+    "desc": "[mut39] 截获 DNS:出口失败静默吞包(客户端干等自己的 stub 超时)",
+    "file": "cmd/nanotund/magic_dns_intercept.go",
+    "old": "\t\t\tif resp := buildMagicDNSStatusBytes(qid, dnsmessage.RCodeServerFailure, q); resp != nil {\n\t\t\t\tinjectDNSReplyToClient(c, dstIP, srcIP, srcPort, resp)\n\t\t\t}\n\t\t\treturn",
+    "new": "\t\t\treturn",
+    "test": "./cmd/nanotund/",
+    "run": "TestInterceptExitBoundDNS_"
+  },
+  {
+    "desc": "[mut39] 截获 DNS:出口失败不记计数(大面积失败查不到)",
+    "file": "cmd/nanotund/magic_dns_intercept.go",
+    "old": "\t\t\tmagicDNSExitServfailCount.Add(1)",
+    "new": "\t\t\t_ = 0",
+    "test": "./cmd/nanotund/",
+    "run": "TestInterceptExitBoundDNS_"
+  },
+  {
+    "desc": "[mut39] 截获 DNS:raw 中继不记计数(HTTPS 到底走没走出口无从判断)",
+    "file": "cmd/nanotund/magic_dns_intercept.go",
+    "old": "\t\t\tmagicDNSViaExitRelayCount.Add(1)",
+    "new": "\t\t\t_ = 0",
+    "test": "./cmd/nanotund/",
+    "run": "TestInterceptExitBoundDNS_"
   }
 ]
