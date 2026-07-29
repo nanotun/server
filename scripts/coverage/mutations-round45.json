@@ -1,0 +1,132 @@
+[
+  {
+    "desc": "[mut45] 接管:两层 cancel 同拆 —— 谁都不去逼停老链路的 tunnel(卡在 WaitN 的老 demux 继续抢共享 TunChan)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\tforceCancelTunnel(oldConn)\n\t\t\tselect {",
+    "new": "\t\t\tselect {",
+    "also": [["\tforceCancelTunnel(oldConn)\n\n\t// best-effort 通知老链路", "\n\t// best-effort 通知老链路"]],
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_ForcesTheOldTunnelDownWhenItOverstays"
+  },
+  {
+    "desc": "[mut45] 接管:第一段等待改成无上限地等老链路自己退(卡死的 demux 能把会话永久锁死)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tcase <-oldConn.tunnelDone:\n\t\tcase <-time.After(takeoverOldTunnelGrace):",
+    "new": "\t\tcase <-oldConn.tunnelDone:\n\t\tcase <-time.After(365 * 24 * time.Hour):",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_StillHandsOverWhenTheOldTunnelIgnoresTheCancel"
+  },
+  {
+    "desc": "[mut45] 接管:cancel 之后无上限地等(老 demux 不理 cancel 就再也接管不了)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\tcase <-oldConn.tunnelDone:\n\t\t\tcase <-time.After(takeoverOldTunnelCancelGrace):",
+    "new": "\t\t\tcase <-oldConn.tunnelDone:\n\t\t\tcase <-time.After(365 * 24 * time.Hour):",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_StillHandsOverWhenTheOldTunnelIgnoresTheCancel"
+  },
+  {
+    "desc": "[mut45] 登录:conv_id 回绕到 0 也照用(0 是「没有连接」的哨兵值)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tconvID = gw.nextConvID.Add(1)\n\t\tif convID == 0 {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tconvID = gw.nextConvID.Add(1)",
+    "test": "./cmd/nanotund/",
+    "run": "TestLogin_SkipsZeroWhenTheConvIDCounterWrapsAround"
+  },
+  {
+    "desc": "[mut45] 接管:conv_id 回绕到 0 也照用(新连接与「无连接」同值)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tcid := gw.nextConvID.Add(1)\n\t\tif cid == 0 {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tcid := gw.nextConvID.Add(1)",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_SkipsZeroWhenTheConvIDCounterWrapsAround"
+  },
+  {
+    "desc": "[mut45] TUN 写:设备报出的批大小直接用(负值 make 直接 panic,下行从未起来)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tbatchSize := dev.BatchSize()\n\tif batchSize <= 0 {\n\t\tbatchSize = 1\n\t}",
+    "new": "\tbatchSize := dev.BatchSize()",
+    "nth": 1,
+    "test": "./cmd/nanotund/",
+    "run": "TestTunWriteLoop_SurvivesADeviceThatReportsNoBatchSize"
+  },
+  {
+    "desc": "[mut45] TUN 写:攒批途中队列关闭就直接退(已从队列取走的包凭空丢失)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\t\tcase pkt2, ok2 := <-tunWriteChan:\n\t\t\t\t\tif !ok2 {\n\t\t\t\t\t\tgoto flush\n\t\t\t\t\t}",
+    "new": "\t\t\t\tcase pkt2, ok2 := <-tunWriteChan:\n\t\t\t\t\tif !ok2 {\n\t\t\t\t\t\treturn\n\t\t\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestTunWriteLoop_FlushesWhatItAlreadyTookWhenTheQueueClosesMidBatch"
+  },
+  {
+    "desc": "[mut45] 掩码:新解析器不认就放弃(非规范写法的网关下发空掩码)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t_, ipnet, errOld := net.ParseCIDR(gatewayCIDR)\n\t\tif errOld == nil && ipnet != nil && len(ipnet.Mask) == 4 {\n\t\t\tm := ipnet.Mask\n\t\t\treturn fmt.Sprintf(\"%d.%d.%d.%d\", m[0], m[1], m[2], m[3])\n\t\t}\n\t\treturn \"\"",
+    "new": "\t\treturn \"\"",
+    "test": "./cmd/nanotund/",
+    "run": "TestMaskFromGatewayCIDR"
+  },
+  {
+    "desc": "[mut45] 环回池:重建不落地时无限重试(goroutine 空转吃满 CPU,新流全挂死)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\tfor attempt := 0; attempt < 3; attempt++ {",
+    "new": "\tfor attempt := 0; ; attempt++ {",
+    "test": "./cmd/nanotund/",
+    "run": "TestLoopbackSmuxPool_GivesUpInsteadOfSpinningWhenTheRebuildNeverLands"
+  },
+  {
+    "desc": "[mut45] 出口 DNS:按 vIP 反查出口时把已被接管的僵尸会话也算上",
+    "file": "cmd/nanotund/magic_dns_exit.go",
+    "old": "\tfor _, c := range connIDMap {\n\t\tif c == nil || c.takenOver.Load() {\n\t\t\tcontinue\n\t\t}\n\t\tfor _, a := range c.safeClientIPs() {\n\t\t\tif pa, err := netip.ParseAddr(a.VirtualIP); err == nil && pa == vip {\n\t\t\t\treturn c.egressDeviceID.Load()",
+    "new": "\tfor _, c := range connIDMap {\n\t\tif c == nil {\n\t\t\tcontinue\n\t\t}\n\t\tfor _, a := range c.safeClientIPs() {\n\t\t\tif pa, err := netip.ParseAddr(a.VirtualIP); err == nil && pa == vip {\n\t\t\t\treturn c.egressDeviceID.Load()",
+    "test": "./cmd/nanotund/",
+    "run": "TestExitDeviceForClientVIP_IgnoresASessionThatWasAlreadyTakenOver"
+  },
+  {
+    "desc": "[mut45] 出口 DNS:会话上线时刻同样把僵尸会话算上(TTL 钳制按死会话的时刻算)",
+    "file": "cmd/nanotund/magic_dns_exit.go",
+    "old": "\tfor _, c := range connIDMap {\n\t\tif c == nil || c.takenOver.Load() {\n\t\t\tcontinue\n\t\t}\n\t\tfor _, a := range c.safeClientIPs() {\n\t\t\tif pa, err := netip.ParseAddr(a.VirtualIP); err == nil && pa == vip {\n\t\t\t\treturn c.createdAt, true",
+    "new": "\tfor _, c := range connIDMap {\n\t\tif c == nil {\n\t\t\tcontinue\n\t\t}\n\t\tfor _, a := range c.safeClientIPs() {\n\t\t\tif pa, err := netip.ParseAddr(a.VirtualIP); err == nil && pa == vip {\n\t\t\t\treturn c.createdAt, true",
+    "test": "./cmd/nanotund/",
+    "run": "TestExitDeviceForClientVIP_IgnoresASessionThatWasAlreadyTakenOver"
+  },
+  {
+    "desc": "[mut45] 活跃设备快照:把没有设备身份的会话也算成一台设备",
+    "file": "cmd/nanotund/conn_by_user.go",
+    "old": "\t\tif c == nil || c.deviceID == 0 {\n\t\t\tcontinue\n\t\t}\n\t\tseen[c.deviceID] = struct{}{}",
+    "new": "\t\tif c == nil {\n\t\t\tcontinue\n\t\t}\n\t\tseen[c.deviceID] = struct{}{}",
+    "test": "./cmd/nanotund/",
+    "run": "TestActiveDeviceIDsSnapshot_LeavesOutSessionsWithoutADevice"
+  },
+  {
+    "desc": "[mut45] 保活:miss 阈值缺省时按 0 用(健康连接一个 ping 间隔后集体被判死)",
+    "file": "cmd/nanotund/wss_keepalive.go",
+    "old": "\tif missThreshold <= 0 {\n\t\tmissThreshold = defaultDataPlanePingMissThreshold\n\t}",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartWSSDataPlaneKeepalive_FallsBackToTheDefaultMissThreshold"
+  },
+  {
+    "desc": "[mut45] 监控:tun_ready 恒为 0(告警长鸣,真出事没人看)",
+    "file": "cmd/nanotund/metrics.go",
+    "old": "\ttunReady := 0\n\tif sharedTUN != nil {\n\t\ttunReady = 1\n\t}",
+    "new": "\ttunReady := 0",
+    "test": "./cmd/nanotund/",
+    "run": "TestWritePrometheusMetrics_ReportsTunReadyOnceTheDeviceIsUp"
+  },
+  {
+    "desc": "[mut45] PoW 限速表:摊销 GC 不删过期项(表只增不减)",
+    "file": "cmd/nanotund/pow_limiter.go",
+    "old": "\t\t\tif now.Sub(v.lastSeen) > powIPRLGCTTL {\n\t\t\t\tdelete(l.limits, k)\n\t\t\t}",
+    "new": "\t\t\t_, _ = k, v",
+    "test": "./cmd/nanotund/",
+    "run": "TestPoWIPLimiter_ForgetsIPsThatStoppedComing"
+  },
+  {
+    "desc": "[mut45] 出口 DNS 缓存:AAAA 记录不参与取最小 TTL(v6 换址后还在打老地址)",
+    "file": "cmd/nanotund/magic_dns_cache.go",
+    "old": "\t\t\taddrs = append(addrs, netip.AddrFrom16(r.AAAA))\n\t\t\tif !haveTTL || ah.TTL < minTTL {\n\t\t\t\tminTTL, haveTTL = ah.TTL, true\n\t\t\t}",
+    "new": "\t\t\taddrs = append(addrs, netip.AddrFrom16(r.AAAA))",
+    "test": "./cmd/nanotund/",
+    "run": "TestParseExitDNSResult"
+  }
+]

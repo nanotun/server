@@ -113,6 +113,20 @@ func TestParseExitDNSResult_TakesTheShortestTTLAndSkipsWhatItCannotUse(t *testin
 		}
 	})
 
+	t.Run("最短的那条是 AAAA", func(t *testing.T) {
+		// A/AAAA 两个分支各有一份「取最小」的实现,只测其中一个等于只钉住一半:
+		// 双栈站点的 AAAA 常配更短 TTL(v6 出口切换更频繁),漏掉这半边的表现正是「v6 换了地址还在打老的」。
+		raw := dnsAnswer(t, dnsmessage.RCodeSuccess,
+			aRec(300, "93.184.216.34"), aaaaRec(30, "2606:2800:220::1"))
+		_, _, ttl, ok := parseExitDNSResult(raw)
+		if !ok {
+			t.Fatal("解析失败")
+		}
+		if ttl != 30 {
+			t.Errorf("TTL=%d,期望 AAAA 那条的 30 —— AAAA 分支没参与取最小,v6 地址换了还在打老的", ttl)
+		}
+	})
+
 	t.Run("CNAME 链跳过但不算失败", func(t *testing.T) {
 		raw := dnsAnswer(t, dnsmessage.RCodeSuccess, cnameRec(3600), aRec(45, "93.184.216.34"))
 		addrs, _, ttl, ok := parseExitDNSResult(raw)

@@ -151,6 +151,24 @@ func TestMaskFromGatewayCIDR(t *testing.T) {
 	}
 }
 
+// TestMaskFromGatewayCIDR_FallsBackToTheOldParserForNonCanonicalForms 新解析器挑剔的写法,老解析器兜住。
+//
+// netip.ParsePrefix 只认规范写法,net.ParseCIDR 宽松得多 —— "10.201.0.1/016"(前缀长度带前导零)是
+// 后者收、前者拒的典型。这个掩码是**下发给客户端配网卡**的:兜不住就下发空串,客户端把网卡配成
+// 无掩码 / 默认掩码,整条 VPN 路由随之错位,而服务端日志一切正常。
+func TestMaskFromGatewayCIDR_FallsBackToTheOldParserForNonCanonicalForms(t *testing.T) {
+	if got := maskFromGatewayCIDR("10.201.0.1/016"); got != "255.255.0.0" {
+		t.Errorf("maskFromGatewayCIDR(%q) = %q,期望 255.255.0.0 —— 老式写法没兜住,客户端会拿到空掩码",
+			"10.201.0.1/016", got)
+	}
+	// 兜底只对「老解析器认、且是 v4」的输入生效;真正的垃圾仍要返回空串,而不是编一个掩码出来。
+	for _, bad := range []string{"fe80::1%eth0/64", "010.0.0.1/24", "10.0.0.1/33"} {
+		if got := maskFromGatewayCIDR(bad); got != "" {
+			t.Errorf("maskFromGatewayCIDR(%q) = %q,非法输入应返回空串", bad, got)
+		}
+	}
+}
+
 func TestParseCIDR_ReturnsNetworkOrError(t *testing.T) {
 	n, err := parseCIDR("10.0.0.7/24")
 	if err != nil {

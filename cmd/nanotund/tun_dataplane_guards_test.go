@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"runtime"
@@ -508,6 +509,61 @@ func TestTunWriteLoop_ExitsWhenTheChannelClosesOrCtxIsDone(t *testing.T) {
 		cancel()
 		awaitClosed(t, done, "tunWriteLoop")
 	})
+}
+
+// TestTunWriteLoop_SurvivesADeviceThatReportsNoBatchSize 设备报出非正的批大小时不能把自己写崩。
+//
+// 批大小直接进 make([][]byte, 0, batchSize):负数就是 panic。这个值来自设备实现(平台/驱动/未来换
+// 实现都可能给出 0 或 -1),而它在 tunWriteLoop 的**第一行**——崩在这里等于整台服务器的下行从未起来过。
+func TestTunWriteLoop_SurvivesADeviceThatReportsNoBatchSize(t *testing.T) {
+	for _, bs := range []int{0, -1} {
+		t.Run(fmt.Sprintf("BatchSize=%d", bs), func(t *testing.T) {
+			withTestGlobalContext(t)
+			_, wc := withTestTunChans(t, 8, 16)
+
+			dev := newScriptedTUN(bs)
+			done := startLoop(t, "tunWriteLoop", func() { tunWriteLoop(dev) })
+
+			buf := tunPktBufPool.Get().([]byte)
+			wc <- buf[:copy(buf, []byte{0x45, 7})]
+
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				if pkts, _ := dev.writtenPackets(); len(pkts) > 0 {
+					tunWriteLoopStop(t, done)
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			t.Fatalf("设备报 BatchSize=%d 时下行一个包都没写下去", bs)
+		})
+	}
+}
+
+// TestTunWriteLoop_FlushesWhatItAlreadyTookWhenTheQueueClosesMidBatch 队列在攒批途中关闭,已收进批里的包仍要落地。
+//
+// 攒批是「先取一个,再尽量多取几个」。第二步撞上队列关闭时若直接 return,那个已经从队列里取走、
+// 谁也不会再重发的包就凭空消失了。停机时正是这个时刻:客户端看到的是最后几个下行包丢失。
+func TestTunWriteLoop_FlushesWhatItAlreadyTookWhenTheQueueClosesMidBatch(t *testing.T) {
+	withTestGlobalContext(t)
+	_, wc := withTestTunChans(t, 8, 16)
+
+	// 批大小 4,但队列里只有 1 个包且随即关闭 —— 循环取走第一个后,攒批的第二步会撞上「队列已关」。
+	dev := newScriptedTUN(4)
+	buf := tunPktBufPool.Get().([]byte)
+	wc <- buf[:copy(buf, []byte{0x45, 0x5a})]
+	close(wc)
+
+	done := startLoop(t, "tunWriteLoop", func() { tunWriteLoop(dev) })
+	awaitClosed(t, done, "tunWriteLoop")
+
+	pkts, _ := dev.writtenPackets()
+	if len(pkts) != 1 {
+		t.Fatalf("写下去 %d 个包,期望 1 个 —— 攒批时撞上队列关闭,已取走的那个包被丢了", len(pkts))
+	}
+	if string(pkts[0]) != string([]byte{0x45, 0x5a}) {
+		t.Errorf("写下去的包 = %v,期望 [69 90]", pkts[0])
+	}
 }
 
 // tunWriteLoopStop 用 ctx 取消把写循环停下(它不看设备关闭,只看 ctx 与队列)。

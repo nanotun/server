@@ -40,7 +40,13 @@ func runTakeoverOK(t *testing.T, fx *takeoverFixture, req *util.LoginReq) *util.
 	default:
 		close(fx.oldConn.tunnelDone)
 	}
+	return startTakeoverOK(t, fx, req)
+}
 
+// startTakeoverOK 与 runTakeoverOK 相同,但**不动** oldConn.tunnelDone ——
+// 「老链路迟迟不退出」那组用例要验的正是那段等待本身。
+func startTakeoverOK(t *testing.T, fx *takeoverFixture, req *util.LoginReq) *util.LoginResp {
+	t.Helper()
 	// 接管成功后 handler 会 defer cleanupConnection,而清理要往 registerTunReadChan 投递并**等确认**。
 	// 没有消费者的话它永远卡在那里 —— 表现就是「关掉链路 handler 也不退出」。
 	withTestGlobalContext(t)

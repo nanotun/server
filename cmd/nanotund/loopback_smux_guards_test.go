@@ -398,6 +398,35 @@ func TestLoopbackSmuxPool_ReportsDialFailureAndCachesNothing(t *testing.T) {
 	}
 }
 
+// TestLoopbackSmuxPool_GivesUpInsteadOfSpinningWhenTheRebuildNeverLands 重建一直不落地时要认输报错,不能空转。
+//
+// OpenStream 的慢路径是「有人在拨号就等它,等完再看一眼」。这个「再看一眼」如果没有轮数上限,遇到
+// 「拨号者刚落地又被下一个请求接手」这种持续状态就会原地空转 —— 一个吃满 CPU 的 goroutine,而调用方
+// (每条 hy2 / REALITY 新流)既不返回也不报错,现象是新连接全部挂死而 CPU 打满。
+func TestLoopbackSmuxPool_GivesUpInsteadOfSpinningWhenTheRebuildNeverLands(t *testing.T) {
+	pool := newLoopbackSmuxPool("ws://127.0.0.1:1/nope", smux.DefaultConfig(), nil)
+	// 模拟「永远有一次重建刚刚落地」:等待立刻返回,但池里始终没有会话。
+	ch := make(chan struct{})
+	close(ch)
+	pool.mu.Lock()
+	pool.dialing = ch
+	pool.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := pool.OpenStream()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("池里始终没有会话,OpenStream 却报成功")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OpenStream 在重建始终不落地时没有认输 —— 它在原地空转,新流全部挂死")
+	}
+}
+
 // smux 客户端建不起来时,底下那条 WSS 必须一起关掉,不能留着挂在服务端。
 func TestLoopbackSmuxPool_ClosesTheCarrierWhenTheSmuxClientCannotStart(t *testing.T) {
 	es := startLoopbackWSEcho(t, true)

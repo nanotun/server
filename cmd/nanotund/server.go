@@ -1888,6 +1888,14 @@ func tunDemuxToLink(ch <-chan *util.TunPacket, w io.Writer, mu *sync.Mutex, ctx 
 // takeover/admin-kick)在抢 c.linkWrMu **之前**调它,逼停一个可能正卡在限速器 WaitN、且持有 linkWrMu 的下行
 // demux —— 否则低限速配置下 linkWrMu.Lock() 可能阻塞数秒(WaitN 不受 SetWriteDeadline 约束)。cancel 幂等,与
 // demux 自身退出 / 其它 teardown 并发调用安全;tunnelCancel 为 nil(tunnel 未起 / 已退)时 no-op。
+// takeoverOldTunnelGrace / takeoverOldTunnelCancelGrace 是接管时「等老链路的 demux 彻底松开共享 TunChan」
+// 的两段等待上限(先自然等,再 cancel 后等)。var 而非 const:守卫测试要在秒级内验证「老链路赖着不走时确实
+// 会被主动 cancel」,按生产值跑一次要 8 秒。
+var (
+	takeoverOldTunnelGrace       = 5 * time.Second
+	takeoverOldTunnelCancelGrace = 3 * time.Second
+)
+
 func forceCancelTunnel(c *Connection) {
 	if c == nil {
 		return
@@ -4001,7 +4009,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	if oldConn.tunnelDone != nil {
 		select {
 		case <-oldConn.tunnelDone:
-		case <-time.After(5 * time.Second):
+		case <-time.After(takeoverOldTunnelGrace):
 			// 第四轮深扫 MED(c_tunnel_dual):5s 内老链路 runLinkTunnel 仍未退出,意味着它的 demux goroutine 还在
 			// 消费**与 newConn 共享**的 TunChan。此刻直接启动 newConn 的 demux → 两个 demux 并发抢同一 TunChan,
 			// 下行包被随机分给已 Close 的老链路而**丢失**(不止乱序)。故先主动 cancel 老 tunnel 的 ctx 逼停其
@@ -4012,7 +4020,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 			forceCancelTunnel(oldConn)
 			select {
 			case <-oldConn.tunnelDone:
-			case <-time.After(3 * time.Second):
+			case <-time.After(takeoverOldTunnelCancelGrace):
 				logrus.WithFields(logrus.Fields{
 					"remote": remote, "sid": sid,
 				}).Error("[takeover] cancel 后老链路仍未退出 runLinkTunnel；作为最后手段启动新 demux（可能短暂下行丢包）")
