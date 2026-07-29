@@ -1,0 +1,181 @@
+[
+  {
+    "desc": "[mut43] 出题失败:不拒连接,带着一道零值的题往下走",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tif errIssue != nil {\n\t\tlogrus.WithError(errIssue).WithField(\"remote\", remote).Error(\"[pow] 出题失败\")\n\t\twriteCloseAndReturn(raw, util.CodeServerError, \"\")\n\t\treturn\n\t}",
+    "new": "\tif errIssue != nil {\n\t\tlogrus.WithError(errIssue).WithField(\"remote\", remote).Error(\"[pow] 出题失败\")\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleVPNLink_ChallengeEntropyFailureRefusesTheConnection"
+  },
+  {
+    "desc": "[mut43] 出题失败:把内部失败细节写进 Close 的 reason(attacker 抓包即知自己被哪层挡了)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tlogrus.WithError(errIssue).WithField(\"remote\", remote).Error(\"[pow] 出题失败\")\n\t\twriteCloseAndReturn(raw, util.CodeServerError, \"\")",
+    "new": "\t\tlogrus.WithError(errIssue).WithField(\"remote\", remote).Error(\"[pow] 出题失败\")\n\t\twriteCloseAndReturn(raw, util.CodeServerError, \"pow-issue-failed\")",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleVPNLink_ChallengeEntropyFailureRefusesTheConnection"
+  },
+  {
+    "desc": "[mut43] 会话 ID:熵源故障给出的空 connIDStr 也照常注册(全挤在 connIDMap 同一格互相顶掉)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tconnIDStr := util.GenerateID()\n\tif connIDStr == \"\" {\n\t\t// crypto/rand 故障:不接受这条连接进入活跃集合,客户端会重连重试。\n\t\t// 不写 connIDMap、不分配 vIP,直接拒绝。\n\t\tlogrus.WithField(\"remote\", remote).Error(\"[login] 生成 connIDStr 失败,熵源不可用,拒绝登录\")\n\t\t_ = writeLinkLoginResp(raw, util.CodeServerError, clientLoginMessageForCode(util.CodeServerError), \"\")\n\t\treturn\n\t}",
+    "new": "\tconnIDStr := util.GenerateID()",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleVPNLink_SessionIDEntropyFailureRejectsBeforeRegistering"
+  },
+  {
+    "desc": "[mut43] 会话 ID:熵源故障时返回一个固定串而不是空串(调用方再也认不出这是故障)",
+    "file": "util/login_codes.go",
+    "old": "\tif _, err := IDRandRead(b[:]); err != nil {\n\t\treturn \"\"\n\t}",
+    "new": "\tif _, err := IDRandRead(b[:]); err != nil {\n\t\treturn \"00000000000000000000000000000000\"\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleVPNLink_SessionIDEntropyFailureRejectsBeforeRegistering"
+  },
+  {
+    "desc": "[mut43] 写题失败:给客户端记一次 IP 失败(断线的人下次登录被拉到 ramp 难度)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tif errW := util.WriteLinkFrame(raw, util.LinkTypePoWChallenge, chBody); errW != nil {\n\t\tlogrus.WithError(errW).WithField(\"remote\", remote).Debug(\"[pow] 写 challenge 失败\")\n\t\treturn\n\t}",
+    "new": "\tif errW := util.WriteLinkFrame(raw, util.LinkTypePoWChallenge, chBody); errW != nil {\n\t\tlogrus.WithError(errW).WithField(\"remote\", remote).Debug(\"[pow] 写 challenge 失败\")\n\t\tpowSvc.failures.MarkFailure(ipHost)\n\t\treturn\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleVPNLink_UnwritableChallengeIsNotChargedToTheClientsIPBudget"
+  },
+  {
+    "desc": "[mut43] PoW HMAC key:熵源故障时用全零 key(challenge 签名可离线伪造)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\t\tif _, err := powRandRead(key); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"pow: 生成 HMAC key 失败: %w\", err)\n\t\t}",
+    "new": "\t\t_, _ = powRandRead(key)",
+    "test": "./cmd/nanotund/",
+    "run": "TestNewPoWService_EntropyFailureIsAnErrorNotAZeroKey"
+  },
+  {
+    "desc": "[mut43] 出题:salt 熵源失败仍出题(所有客户端算同一道题)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tsalt := make([]byte, powSaltBytes)\n\tif _, err := powRandRead(salt); err != nil {\n\t\treturn PoWChallenge{}, fmt.Errorf(\"pow: 生成 salt 失败: %w\", err)\n\t}",
+    "new": "\tsalt := make([]byte, powSaltBytes)\n\t_, _ = powRandRead(salt)",
+    "test": "./cmd/nanotund/",
+    "run": "TestIssueChallenge_EntropyFailureYieldsNoChallengeAtAll"
+  },
+  {
+    "desc": "[mut43] 出题:challenge_id 熵源失败仍出题(防重放表把所有客户端并成一格)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tcidBuf := make([]byte, 16)\n\tif _, err := powRandRead(cidBuf); err != nil {\n\t\treturn PoWChallenge{}, fmt.Errorf(\"pow: 生成 challenge_id 失败: %w\", err)\n\t}",
+    "new": "\tcidBuf := make([]byte, 16)\n\t_, _ = powRandRead(cidBuf)",
+    "test": "./cmd/nanotund/",
+    "run": "TestIssueChallenge_EntropyFailureYieldsNoChallengeAtAll"
+  },
+  {
+    "desc": "[mut43] 难度:不夹协议上界(客户端算到超时,全站登不进来)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tif d > powMaxDifficulty {\n\t\td = powMaxDifficulty\n\t}\n\tif d < powMinDifficulty {\n\t\td = powMinDifficulty\n\t}\n\treturn d",
+    "new": "\tif d < powMinDifficulty {\n\t\td = powMinDifficulty\n\t}\n\treturn d",
+    "test": "./cmd/nanotund/",
+    "run": "TestComputeDifficulty_NeverLeavesTheProtocolWindow"
+  },
+  {
+    "desc": "[mut43] 难度:不夹协议下界(一次就能算出来,PoW 等于没做)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tif d > powMaxDifficulty {\n\t\td = powMaxDifficulty\n\t}\n\tif d < powMinDifficulty {\n\t\td = powMinDifficulty\n\t}\n\treturn d",
+    "new": "\tif d > powMaxDifficulty {\n\t\td = powMaxDifficulty\n\t}\n\treturn d",
+    "test": "./cmd/nanotund/",
+    "run": "TestComputeDifficulty_NeverLeavesTheProtocolWindow"
+  },
+  {
+    "desc": "[mut43] 会话下线:已批准宣告方下线不刷路由列表(请求方 UI 停在 online=true,包已没人转)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tif deviceInSubnetRouteTable(c.deviceID) {\n\t\t\tgo safeGoroutine(\"broadcastRoutesList\", func() { broadcastRoutesList(context.Background()) })\n\t\t}",
+    "new": "\t\tif false {\n\t\t\tgo safeGoroutine(\"broadcastRoutesList\", func() { broadcastRoutesList(context.Background()) })\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestCleanupConnection_AdvertiserGoingOfflineRefreshesTheRoutesList"
+  },
+  {
+    "desc": "[mut43] 会话下线:任何会话下线都全站重播路由列表(几百个会话时是自伤)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tif deviceInSubnetRouteTable(c.deviceID) {\n\t\t\tgo safeGoroutine(\"broadcastRoutesList\", func() { broadcastRoutesList(context.Background()) })\n\t\t}",
+    "new": "\t\tif true {\n\t\t\tgo safeGoroutine(\"broadcastRoutesList\", func() { broadcastRoutesList(context.Background()) })\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestCleanupConnection_AdvertiserGoingOfflineRefreshesTheRoutesList"
+  },
+  {
+    "desc": "[mut43] 限速取 min:把「没配」当成 0 bps(任一层没配就把链路掐死)",
+    "file": "cmd/nanotund/server.go",
+    "old": "func minPositiveInt(a, b int) int {\n\tif a <= 0 {\n\t\treturn b\n\t}",
+    "new": "func minPositiveInt(a, b int) int {\n\tif a < 0 {\n\t\treturn b\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestMinPositiveInt_TreatsZeroAsUnlimited"
+  },
+  {
+    "desc": "[mut43] 会话淘汰:匿名会话也按 userID 分桶(所有匿名并成一个用户,一台登录挤掉别人)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tif newConn == nil || newConn.userID == \"\" {\n\t\treturn nil\n\t}\n\tmax := effectiveMaxSessions(gw, newConn)",
+    "new": "\tif newConn == nil {\n\t\treturn nil\n\t}\n\tmax := effectiveMaxSessions(gw, newConn)",
+    "test": "./cmd/nanotund/",
+    "run": "TestEvictOldestSessionsLocked_NeedsAnIdentifiedUserToCountAgainst"
+  },
+  {
+    "desc": "[mut43] demux 回执:关机中仍死等确认(清理协程挂死,优雅关停的 defer 全跑不到)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tselect {\n\tcase <-a.success:\n\tcase <-globalContext.Done():\n\t}",
+    "new": "\t<-a.success",
+    "test": "./cmd/nanotund/",
+    "run": "TestSendRegisterActionAwait_GivesUpWhenTheProcessIsShuttingDown"
+  },
+  {
+    "desc": "[mut43] 网关推算:全一前缀算不出网关也不报错(下游拿 \"invalid IP\" 去装 TUN 地址)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tif !gateway.IsValid() {\n\t\treturn \"\", fmt.Errorf(\"cannot compute gateway for %s\", subnet)\n\t}",
+    "new": "\t_ = gateway.IsValid()",
+    "test": "./cmd/nanotund/",
+    "run": "TestGatewayCIDRFromSubnet"
+  },
+  {
+    "desc": "[mut43] magic 名:只剩后缀(\".lan\")也当合法名(host/user 双空,归属谁都不匹配)【两层同拆:空 rest + 段数】",
+    "file": "cmd/nanotund/magic_dns.go",
+    "old": "\trest := strings.TrimSuffix(name, \".\"+suffix)\n\tif rest == \"\" {\n\t\treturn \"\", \"\", false\n\t}",
+    "new": "\trest := strings.TrimSuffix(name, \".\"+suffix)",
+    "also": [
+      ["\tparts := strings.Split(rest, \".\")\n\tif len(parts) != 2 {\n\t\treturn \"\", \"\", false\n\t}\n\thost = strings.TrimSpace(parts[0])\n\tuser = strings.TrimSpace(parts[1])\n\tif host == \"\" || user == \"\" {\n\t\treturn \"\", \"\", false", "\tparts := strings.Split(rest, \".\")\n\tif len(parts) > 2 {\n\t\treturn \"\", \"\", false\n\t}\n\thost = strings.TrimSpace(parts[0])\n\tuser = strings.TrimSpace(parts[len(parts)-1])\n\tif false {\n\t\treturn \"\", \"\", false"]
+    ],
+    "test": "./cmd/nanotund/",
+    "run": "TestParseMagicHostname"
+  },
+  {
+    "desc": "[mut43] 承载识别:设不上识别期读超时就断开(不支持 deadline 的底层 conn 全体登不进来)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\t\tif err := setPeekDeadline(c); err != nil {\n\t\t\tlogrus.WithError(err).Debug(\"VPN 连接设置识别期读超时失败\")\n\t\t}",
+    "new": "\t\tif err := setPeekDeadline(c); err != nil {\n\t\t\tlogrus.WithError(err).Debug(\"VPN 连接设置识别期读超时失败\")\n\t\t\t_ = c.Close()\n\t\t\treturn\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestDispatchVPNIncoming_KeepsGoingWhenThePeekDeadlineCannotBeSet"
+  },
+  {
+    "desc": "[mut43] v6 探测:关机中仍补装 NAT66(与 teardown sweep 反向打架,规则留在机器上过夜)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\t\t\tif has {\n\t\t\t\tselect {\n\t\t\t\tcase <-stop:\n\t\t\t\t\treturn\n\t\t\t\tdefault:\n\t\t\t\t\trunV6SetupRetryIfArmed()\n\t\t\t\t}\n\t\t\t}",
+    "new": "\t\t\tif has {\n\t\t\t\trunV6SetupRetryIfArmed()\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartServerV6EgressProbe_DoesNotInstallNAT66WhileShuttingDown"
+  },
+  {
+    "desc": "[mut43] 端口跳跃:装上规则后启动失败不撤(那段端口 REDIRECT 到没人监听的端口)",
+    "file": "cmd/nanotund/hysteria.go",
+    "old": "\thyCfg, err := buildHysteriaServerConfig(hc, cert, tcpOb, addrRelay)\n\tif err != nil {\n\t\t_ = packetConn.Close()\n\t\tif hopCleanup != nil {\n\t\t\thopCleanup()\n\t\t}\n\t\treturn nil, 0, nil, err\n\t}",
+    "new": "\thyCfg, err := buildHysteriaServerConfig(hc, cert, tcpOb, addrRelay)\n\tif err != nil {\n\t\t_ = packetConn.Close()\n\t\treturn nil, 0, nil, err\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartEmbeddedHysteria_RollsBackThePortHopRulesWhenStartupFailsLater"
+  },
+  {
+    "desc": "[mut43] 端口跳跃:装不上也继续启动(客户端按并集端口发包,那些包没人接)",
+    "file": "cmd/nanotund/hysteria.go",
+    "old": "\t\tif hopErr != nil {\n\t\t\t_ = packetConn.Close()\n\t\t\treturn nil, 0, nil, fmt.Errorf(\"hysteria 端口跳跃: %w\", hopErr)\n\t\t}",
+    "new": "\t\t_ = hopErr",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartEmbeddedHysteria_PortHopFailureReleasesThePortAndSaysSo"
+  },
+  {
+    "desc": "[mut43] 端口跳跃:装不上时不还 UDP 端口(重启的新实例撞「端口已被占用」,排查被带偏)",
+    "file": "cmd/nanotund/hysteria.go",
+    "old": "\t\tif hopErr != nil {\n\t\t\t_ = packetConn.Close()\n\t\t\treturn nil, 0, nil, fmt.Errorf(\"hysteria 端口跳跃: %w\", hopErr)\n\t\t}",
+    "new": "\t\tif hopErr != nil {\n\t\t\treturn nil, 0, nil, fmt.Errorf(\"hysteria 端口跳跃: %w\", hopErr)\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestStartEmbeddedHysteria_PortHopFailureReleasesThePortAndSaysSo"
+  }
+]

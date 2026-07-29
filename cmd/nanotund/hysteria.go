@@ -249,6 +249,11 @@ func udpPortFromPacketConn(c net.PacketConn) (int, error) {
 	return u.Port, nil
 }
 
+// setupHy2PortHopFn 是端口跳跃安装那一步的间接层,只为可测性(生产行为不变)。真安装要写 iptables:
+// 非 Linux 上是个 no-op 桩,Linux 上要 root —— 两边都看不见「装上了之后启动失败,规则有没有被撤掉」
+// 这件事,而那正是这条路上唯一会留下副作用的失败面。
+var setupHy2PortHopFn = setupHy2UDPPortHopRedirect
+
 // startEmbeddedHysteria 当 password、tls_cert_file、tls_key_file 均配置时启动 Hysteria 2；否则返回 nil, 0, nil。
 // smuxPool 非空时 hy2 的 TCP 出口经 smux OpenStream；否则每流 dial 环回 VPN WebSocket（loopbackWSURL）。
 // 第二返回值为实际监听 UDP 端口（用于 node_login 上报；listen_addr 为 :0 时必用此值）。
@@ -284,7 +289,7 @@ func startEmbeddedHysteria(cfg *config.Config, vpnListenAddr string, loopbackWSU
 	}
 	var hopCleanup func()
 	if util.UDPPortUnionNeedsHop(portUnion) {
-		cleanup, hopErr := setupHy2UDPPortHopRedirect(primaryPort, portUnion, hc.PortHopIface)
+		cleanup, hopErr := setupHy2PortHopFn(primaryPort, portUnion, hc.PortHopIface)
 		if hopErr != nil {
 			_ = packetConn.Close()
 			return nil, 0, nil, fmt.Errorf("hysteria 端口跳跃: %w", hopErr)

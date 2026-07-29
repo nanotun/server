@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math/rand"
 	"net"
 	"net/netip"
 	"path/filepath"
@@ -121,15 +122,26 @@ func (e *pfEnv) mkDevice(username, uuid, leaseV4, leaseV6 string) *store.Device 
 }
 
 // freePort 拿一个当前空闲的端口号(拿到后立刻释放,给被测代码去绑)。
+// freePort 挑一个当下能绑的端口给被测代码用。
+//
+// 不用 `:0` 让内核挑:那样拿到的一定落在临时端口区间(macOS 49152+、Linux 32768+),而这个函数是
+// 「先绑再关、把号交给被测代码稍后重绑」——中间那段窗口里,同一进程里任何一次外发连接都可能被内核
+// 分到这个号,于是被测代码绑的时候报 address already in use。全包 -race 跑里实测撞过
+// (TestPortForwardReload_KeepsListenersWhenTheDBIsUnreadable 报 bind: address already in use),
+// 表现成与被测逻辑毫无关系的偶发失败。改成在临时端口区间**之外**随机挑,并确认当下真能绑。
 func freePort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("探测空闲端口: %v", err)
+	for i := 0; i < 50; i++ {
+		p := 20000 + rand.Intn(10000)
+		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p))
+		if err != nil {
+			continue // 这个号被别人占着,换一个
+		}
+		_ = ln.Close()
+		return p
 	}
-	p := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	return p
+	t.Fatal("50 次都没挑到能绑的端口")
+	return 0
 }
 
 func (e *pfEnv) statusOf(port int) portForwardStatus {

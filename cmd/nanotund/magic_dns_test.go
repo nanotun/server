@@ -182,6 +182,10 @@ func TestParseMagicHostname(t *testing.T) {
 		{"空 host", ".alice.lan", "lan", "", "", false},
 		{"自定义 suffix", "phone.bob.internal", "internal", "phone", "bob", true},
 		{"等于 suffix", "lan", "lan", "", "", false},
+		// 去掉后缀什么都不剩(查询名就是 ".lan")。不单独挡的话 strings.Split("") 会给出一个
+		// 空元素的切片,长度校验意外通过,host/user 双双成空串 —— 后面按 user 查归属时谁都不匹配,
+		// 表现成随机的解析失败而不是明确的 NXDOMAIN。
+		{"只剩后缀", ".lan", "lan", "", "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

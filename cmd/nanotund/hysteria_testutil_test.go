@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	mrand "math/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -63,20 +64,23 @@ func testHysteriaConfig(t *testing.T, listenAddr, password, certFile, keyFile st
 	}
 }
 
+// pickFreeUDPPort 挑一个当下能绑的 UDP 端口交给被测代码。
+//
+// 与 freePort 同一个理由:不让内核用 `:0` 挑,否则拿到的号落在临时端口区间,而「先绑再关、把号交给
+// 被测代码稍后重绑」的中间窗口里,同一进程的任何外发 socket 都可能被分到它 —— 失败会报成
+// bind: address already in use,看起来像被测代码的问题。
 func pickFreeUDPPort(t *testing.T) int {
 	t.Helper()
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for i := 0; i < 50; i++ {
+		// 留 4 个号的余量:端口跳跃那组用例要 port..port+3 一整段。
+		port := 20000 + mrand.Intn(9990)
+		pc, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		_ = pc.Close()
+		return port
 	}
-	defer pc.Close()
-	_, portStr, err := net.SplitHostPort(pc.LocalAddr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var port int
-	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
-		t.Fatal(err)
-	}
-	return port
+	t.Fatal("50 次都没挑到能绑的 UDP 端口")
+	return 0
 }

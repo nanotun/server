@@ -113,6 +113,10 @@ func TestGatewayCIDRFromSubnet(t *testing.T) {
 		{"不是网段", "", true},
 		{"10.0.0.0/33", "", true},
 		{"", "", true},
+		// 全一前缀:网络地址 +1 溢出,算不出网关。回一个空串而不是错误的话,下游会拿 ""
+		// 去装 TUN 地址 —— 那时报的错离配置很远,查起来先怀疑的是网卡。
+		{"255.255.255.255/32", "", true},
+		{"ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128", "", true},
 	}
 	for _, c := range cases {
 		t.Run(c.subnet, func(t *testing.T) {

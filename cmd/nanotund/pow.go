@@ -238,7 +238,7 @@ func NewPoWService(
 	key := hmacKeyOverride
 	if len(key) == 0 {
 		key = make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
+		if _, err := powRandRead(key); err != nil {
 			return nil, fmt.Errorf("pow: 生成 HMAC key 失败: %w", err)
 		}
 	}
@@ -352,6 +352,11 @@ func (s *PoWService) ComputeDifficulty(failures int) int {
 	return d
 }
 
+// powRandRead 是 crypto/rand.Read 的间接层,只为可测性(生产行为不变)。与 takeoverSecretRandRead /
+// hy2TokenRandRead 同一手法:熵源故障是走到「出题失败 → 拒绝这条连接」那条分支的唯一方式,而那条分支
+// 的正确性(不能放一个没题的连接进登录,也不能给出一道 salt 全零的题)只有注入故障才验得到。
+var powRandRead = rand.Read
+
 // IssueChallenge 出一道难度 d 的题。d 会被自动夹到 [powMinDifficulty, powMaxDifficulty]。
 func (s *PoWService) IssueChallenge(d int) (PoWChallenge, error) {
 	if d < powMinDifficulty {
@@ -361,13 +366,13 @@ func (s *PoWService) IssueChallenge(d int) (PoWChallenge, error) {
 		d = powMaxDifficulty
 	}
 	cidBuf := make([]byte, 16)
-	if _, err := rand.Read(cidBuf); err != nil {
+	if _, err := powRandRead(cidBuf); err != nil {
 		return PoWChallenge{}, fmt.Errorf("pow: 生成 challenge_id 失败: %w", err)
 	}
 	cid := base64.RawURLEncoding.EncodeToString(cidBuf)
 
 	salt := make([]byte, powSaltBytes)
-	if _, err := rand.Read(salt); err != nil {
+	if _, err := powRandRead(salt); err != nil {
 		return PoWChallenge{}, fmt.Errorf("pow: 生成 salt 失败: %w", err)
 	}
 	saltB64 := base64.StdEncoding.EncodeToString(salt)

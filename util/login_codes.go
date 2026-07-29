@@ -5,6 +5,11 @@ import (
 	"encoding/hex"
 )
 
+// IDRandRead 是 crypto/rand.Read 的间接层,只为可测性(生产行为不变)。熵源故障是让 GenerateID
+// 返回空串的唯一方式,而「调用方必须把空串当故障处理」这条约定只有注入故障才验得到 —— 不处理的
+// 后果不是拒登,而是所有这类会话都以 "" 为键挤在 connIDMap 同一格里互相顶掉。
+var IDRandRead = crand.Read
+
 // GenerateID 生成 16 字节十六进制随机 ID,用作 connIDStr / req_id。
 //
 // crypto/rand 失败时返回空串,调用方应当把空 ID 当作「entropy 故障」处理 ——
@@ -12,7 +17,7 @@ import (
 // 连接进入活跃集合。
 func GenerateID() string {
 	var b [16]byte
-	if _, err := crand.Read(b[:]); err != nil {
+	if _, err := IDRandRead(b[:]); err != nil {
 		return ""
 	}
 	return hex.EncodeToString(b[:])
