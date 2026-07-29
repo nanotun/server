@@ -1,0 +1,91 @@
+[
+  {
+    "desc": "[23c 复核] exits_list:存活判据漏掉 superseded(被顶掉的旧会话仍显示为在线出口,选中即黑洞)",
+    "file": "cmd/nanotund/exits_list.go",
+    "old": "\treturn c != nil && c.advertisedExit.Load() && c.deviceID != 0 &&\n\t\t!c.takenOver.Load() && !c.superseded.Load()",
+    "new": "\treturn c != nil && c.advertisedExit.Load() && c.deviceID != 0 &&\n\t\t!c.takenOver.Load()",
+    "test": "./cmd/nanotund/",
+    "run": "TestIsRunningExitConn|TestBuildExitsList|TestExitsList|TestBroadcastExitsList|TestPushInitialExitsList"
+  },
+  {
+    "desc": "[23c 复核] exits_list:存活判据漏掉 takenOver",
+    "file": "cmd/nanotund/exits_list.go",
+    "old": "\t\t!c.takenOver.Load() && !c.superseded.Load()",
+    "new": "\t\t!c.superseded.Load()",
+    "test": "./cmd/nanotund/",
+    "run": "TestIsRunningExitConn|TestBuildExitsList|TestExitsList|TestBroadcastExitsList|TestPushInitialExitsList"
+  },
+  {
+    "desc": "[23c 复核] exits_list:③ 步整段不复核存活(放锁后离场的会话仍被列成 Online)",
+    "file": "cmd/nanotund/exits_list.go",
+    "old": "\t\tif cur, ok := connIDMap[cd.conn.connIDStr]; !ok || cur != cd.conn || !isRunningExitConn(cd.conn) {\n\t\t\tcontinue",
+    "new": "\t\tif false {\n\t\t\tcontinue",
+    "test": "./cmd/nanotund/",
+    "run": "TestIsRunningExitConn|TestBuildExitsList|TestExitsList|TestBroadcastExitsList|TestPushInitialExitsList"
+  },
+  {
+    "desc": "[23g 复核] 中继路径的 fail-closed 哨兵改成回退本地上游(HTTPS 的 ipv4hint 被 server 地理污染)",
+    "file": "cmd/nanotund/magic_dns_exit.go",
+    "old": "\t\twriteExitDNSServfail(conn, peer, qid, q) // 出口无法兑现 → 同「出口离线」，见 tryResolvePublicViaExit",
+    "new": "\t\treturn false",
+    "test": "./cmd/nanotund/",
+    "run": "TestTryRelayPublicViaExit|TestTryResolvePublicViaExit|TestMagicDNS"
+  },
+  {
+    "desc": "[23g 复核] 拦截:限流满时接管却不作答(把突发期的 DNS 全部吞掉)",
+    "file": "cmd/nanotund/magic_dns_intercept.go",
+    "old": "\tif !acquired {\n\t\treturn false // 限流满 → 不接管，照旧原样转发（出口 DNAT 兜底，DNS 不断）\n\t}",
+    "new": "\tif !acquired {\n\t\treturn true\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestInterceptExitBoundDNS|TestMagicDNSIntercept"
+  },
+  {
+    "desc": "[24b 复核] 配了 [smux] 却仍用每流直拨的出口(真实客户端地址无处安放,全塌回同一个限流桶)",
+    "file": "cmd/nanotund/hysteria.go",
+    "old": "\tif smuxPool != nil {\n\t\trelay := newHy2ClientAddrRelay()\n\t\treturn &vpnSmuxStreamOutbound{pool: smuxPool, relay: relay}, relay\n\t}",
+    "new": "\tif smuxPool != nil {\n\t\treturn &vpnLocalOutbound{wsURL: loopbackWSURL, timeout: dialTimeout, tlsClient: loopbackWSTLS}, nil\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestBuildHy2TCPOutbound|TestStartEmbeddedHysteria|TestVpnSmuxStreamOutbound"
+  },
+  {
+    "desc": "[24b 复核] smux 出口拿到的 relay 与返回给调用方的不是同一个(出口恒查不到 token,悄悄退回 LOCAL 头)",
+    "file": "cmd/nanotund/hysteria.go",
+    "old": "\t\trelay := newHy2ClientAddrRelay()\n\t\treturn &vpnSmuxStreamOutbound{pool: smuxPool, relay: relay}, relay",
+    "new": "\t\trelay := newHy2ClientAddrRelay()\n\t\treturn &vpnSmuxStreamOutbound{pool: smuxPool, relay: newHy2ClientAddrRelay()}, relay",
+    "test": "./cmd/nanotund/",
+    "run": "TestBuildHy2TCPOutbound|TestStartEmbeddedHysteria|TestVpnSmuxStreamOutbound"
+  },
+  {
+    "desc": "[25c 复核] 池:流上的承载故障不回传(退回等 keepalive 超时的老行为,新流连续失败 30s)",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "func (s *poolStream) noteIOError(err error) {\n\tif carrierIsBroken(err) {\n\t\ts.pool.retireSession(s.sess)\n\t}\n}",
+    "new": "func (s *poolStream) noteIOError(err error) {}",
+    "test": "./cmd/nanotund/",
+    "run": "TestPoolStream|TestLoopbackSmux"
+  },
+  {
+    "desc": "[25c 复核] 池:把 stream 正常结束(EOF)也当成承载故障,连带拆掉别人在用的共享承载",
+    "file": "cmd/nanotund/loopback_smux.go",
+    "old": "\tif errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) ||\n\t\terrors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, smux.ErrTimeout) {\n\t\treturn false\n\t}",
+    "new": "\tif false && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) ||\n\t\terrors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, smux.ErrTimeout)) {\n\t\treturn false\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestPoolStream|TestLoopbackSmux"
+  },
+  {
+    "desc": "[22 复核] acl add --json 不再通知 server(退回那次修掉的静默失效:规则写进库但执法面不换快照)",
+    "file": "cmd/nanotun-admin/cmd_acl.go",
+    "old": "\tif notifyACLChanged(opts) {",
+    "new": "\tif opts.json || notifyACLChanged(opts) {",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestCmdACL"
+  },
+  {
+    "desc": "[22 复核] acl deny --json 不再通知 server(同上,第二个调用点)",
+    "file": "cmd/nanotun-admin/cmd_acl.go",
+    "old": "\tif notifyACLChanged(opts) {",
+    "new": "\tif opts.json || notifyACLChanged(opts) {",
+    "nth": 1,
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestCmdACL"
+  }
+]

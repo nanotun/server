@@ -218,6 +218,41 @@ func TestBuildExitsList_StaleConnStatesExcluded(t *testing.T) {
 			t.Fatal("已离场的会话不该显示 Online")
 		}
 	})
+
+	t.Run("第 ③ 步的复核必须真的跑", func(t *testing.T) {
+		resetConnByDeviceForTest(t)
+		st := egressTestStore(t)
+		const uuid = "aaaa0000-0000-4000-8000-00000000aaaa"
+		devID := seedApprovedExitDevice(t, st, uuid)
+
+		// 上面那条「从 connIDMap 消失」到不了第 ③ 步:conn 一从 map 里删掉,第 ① 步(遍历 map 的
+		// value)就已经看不见它,候选集是空的,拆掉复核也看不出差别。
+		//
+		// 这里把会话登记在**另一个键**下:它仍是 map 的一个 value,所以第 ① 步照收;而第 ③ 步是拿
+		// c.connIDStr 回查「这个 sid 现在归谁」,查不到就必须丢掉。这个状态是构造出来的(线上真正
+		// 触发它的是「① 与 ③ 之间发生了接管 / 离场」,那个窗口在进程内开不出来),用途只有一个:
+		// 证明第 ③ 步的复核仍在调用点上拦着,而不是一段被绕过的死代码。
+		c := &Connection{userID: "u1", connIDStr: "sid-已被别人接管", deviceID: devID, deviceUUID: uuid}
+		c.advertisedExit.Store(true)
+		connIDMapMu.Lock()
+		connIDMap["另一个键"] = c
+		connByDeviceAddLocked(c)
+		connIDMapMu.Unlock()
+		t.Cleanup(func() {
+			connIDMapMu.Lock()
+			delete(connIDMap, "另一个键")
+			connIDMapMu.Unlock()
+		})
+
+		e, ok := findExit(buildExitsList(ctx), uuid)
+		if ok && e.Online {
+			t.Fatal("这条会话已不是它那个 sid 的当前持有者,复核该把它丢掉 —— " +
+				"标成 Online 就是给用户一个链路已死的出口")
+		}
+		if !ok {
+			t.Fatal("它仍是已批准出口,应以 Online=false 留在下拉里")
+		}
+	})
 }
 
 // TestBuildExitsList_ApprovedSubnetIsNotAnExit 钉住第 ④ 步的过滤:批准一条 LAN 子网路由

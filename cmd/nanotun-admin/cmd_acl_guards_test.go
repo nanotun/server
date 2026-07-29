@@ -13,6 +13,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -507,5 +508,49 @@ func TestCmdACLAddPair_JSONOutput(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "reload") {
 		t.Errorf("--json 也要提示刷 snapshot, stderr=%q", stderr)
+	}
+}
+
+// server 在跑时,增删规则都必须真的把 reload 打过去 —— 而且 --json 也不例外。
+//
+// 既有用例验的是「通知不到时要指路手动 reload」,那条在没有 control socket 的环境下跑,
+// 所以「通知这一步被 --json 跳过了」它看不出来。落库 ≠ 生效:数据面读的是内存快照,
+// 删掉一条 deny 却不刷快照,那条规则会继续拦流量,而列表里已经查不到它 —— 排障时无从下手。
+func TestCmdACL_AddAndDeleteAlwaysReloadTheSnapshot(t *testing.T) {
+	for _, useJSON := range []bool{false, true} {
+		name := "默认输出"
+		if useJSON {
+			name = "--json"
+		}
+		t.Run(name, func(t *testing.T) {
+			db := newInitializedDB(t, t.TempDir(), "acl-notify.db")
+			seedACLUsers(t, db, "ua", "ub")
+			fc := newFakeControlSocket(t, map[string]http.HandlerFunc{
+				"/reload": jsonHandler(`{"ok":true,"what":"acl","rules":1}`)})
+
+			add := []string{"acl", "deny", "ua", "ub"}
+			if useJSON {
+				add = append([]string{"--json"}, add...)
+			}
+			if code, _, stderr := runCLISock(t, db, fc.path, add...); code != 0 {
+				t.Fatalf("acl deny: code=%d stderr=%s", code, stderr)
+			}
+			if !containsAny(fc.requests(), "/reload") {
+				t.Fatalf("加了一条 deny 却没通知 server 刷快照,规则落库了但没有约束力: %v", fc.requests())
+			}
+
+			id := firstACLID(t, db)
+			del := []string{"acl", "del", fmt.Sprint(id)}
+			if useJSON {
+				del = append([]string{"--json"}, del...)
+			}
+			before := len(fc.requests())
+			if code, _, stderr := runCLISock(t, db, fc.path, del...); code != 0 {
+				t.Fatalf("acl del: code=%d stderr=%s", code, stderr)
+			}
+			if len(fc.requests()) <= before {
+				t.Fatalf("删了一条规则却没通知 server 刷快照,被删的 deny 会继续拦流量: %v", fc.requests())
+			}
+		})
 	}
 }

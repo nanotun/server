@@ -13,6 +13,7 @@ nth 是当 old 在文件里出现多次时选第几个(默认 0)。逃逸(测试
 用法: mutate.py MUTATIONS.json [--test-timeout 300s]
 """
 import json
+import signal
 import subprocess
 import sys
 
@@ -42,6 +43,24 @@ def patch(path, pristine, old, new, nth):
     return True
 
 
+# 源码注释里中英混排,全角逗号/括号跟半角混着用;手写锚点时抄成半角是最常见的失手。
+# 这一步不放宽匹配(那会让变异改到意料之外的位置),只是在找不到时把文件里的真实文本打出来,
+# 好直接照抄 —— 否则「锚点失效」只是一句「跳过」,而这条变异从此再没人验证过。
+FULLWIDTH = str.maketrans({
+    "，": ",", "（": "(", "）": ")", "：": ":", "；": ";",
+    "！": "!", "？": "?", "、": ",", "　": " ",
+})
+
+
+def diagnose(pristine, old):
+    norm = pristine.translate(FULLWIDTH)
+    idx = norm.find(old.translate(FULLWIDTH))
+    if idx < 0:
+        return None
+    # 逐字符替换,所以规范化后的下标可以直接落回原文。
+    return pristine[idx:idx + len(old)]
+
+
 def main():
     spec_path = sys.argv[1]
     timeout = "600s"
@@ -52,6 +71,15 @@ def main():
 
     pristine = {m["file"]: read(m["file"]) for m in muts}
 
+    # 整批要跑一两个小时,中途被 Ctrl-C / kill 掉是常态。默认的 SIGTERM 会直接终止进程,
+    # 当时正被改坏的那个文件就留在工作树里了 —— 下一次 git commit 会把变异当成真代码提交。
+    # 转成异常,好让下面的 finally 把所有文件还原回去。
+    def on_signal(signum, _frame):
+        raise KeyboardInterrupt(f"收到信号 {signum}")
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
     # 开跑前先确认原始代码是能编过的。否则每条变异都会因为「构建失败」被记成抓住,
     # 一份全绿的报告底下其实一条断言都没跑 —— 这种假绿比逃逸更危险。
     base = subprocess.run(["go", "build", "./..."], capture_output=True, text=True)
@@ -60,11 +88,51 @@ def main():
         return 2
 
     caught, escaped, broken, nocompile = [], [], [], []
+    try:
+        run_all(muts, pristine, timeout, caught, escaped, broken, nocompile)
+    except KeyboardInterrupt as stop:
+        print(f"\n中断:{stop}(已跑 {len(caught) + len(escaped) + len(nocompile)} 条)", flush=True)
+    finally:
+        restore_all(pristine)
+
+    print(f"\n抓住 {len(caught)} / 共 {len(caught) + len(escaped)}")
+    if escaped:
+        print("\n逃逸的变异(测试照过,说明没有断言真正检查这段逻辑):")
+        for d in escaped:
+            print(f"  - {d}")
+    if nocompile:
+        print("\n编不过(不算被抓住,需改写成语法合法的变异):")
+        for d in nocompile:
+            print(f"  - {d}")
+    if broken:
+        print("\n锚点失效:")
+        for d in broken:
+            print(f"  - {d}")
+    return 1 if escaped else 0
+
+
+# restore_all 是最后一道保险:哪怕上面任何一步出了意外(信号、异常、写盘失败),
+# 也不许把变异留在工作树里 —— 那是会被当成真代码提交掉的。
+def restore_all(pristine):
+    dirty = [p for p, src in pristine.items() if read(p) != src]
+    for p in dirty:
+        write(p, pristine[p])
+    if dirty:
+        print("\n以下文件与开跑前不一致,已强制还原(请复核 git diff):")
+        for p in dirty:
+            print(f"  - {p}")
+
+
+def run_all(muts, pristine, timeout, caught, escaped, broken, nocompile):
     for i, m in enumerate(muts, 1):
         desc, path = m["desc"], m["file"]
         if not patch(path, pristine[path], m["old"], m["new"], m.get("nth", 0)):
             broken.append(desc)
             print(f"[{i}/{len(muts)}] 找不到锚点,跳过: {desc}", flush=True)
+            actual = diagnose(pristine[path], m["old"])
+            if actual is not None:
+                print("      只差全/半角标点,文件里的真实文本是:", flush=True)
+                print("      " + actual.replace("\n", "\n      "), flush=True)
             continue
         try:
             cmd = ["go", "test", m.get("test", "./..."), "-count=1", "-timeout", timeout]
@@ -88,30 +156,6 @@ def main():
             print(f"[{i}/{len(muts)}] {mark}  {desc}", flush=True)
         finally:
             write(path, pristine[path])
-
-    # 收尾复核:哪怕上面某一步出了意外,也不许把变异留在工作树里。
-    dirty = [p for p, src in pristine.items() if read(p) != src]
-    if dirty:
-        for p in dirty:
-            write(p, pristine[p])
-        print("\n警告:以下文件在跑完时与开跑前不一致,已强制还原(请复核 git diff):")
-        for p in dirty:
-            print(f"  - {p}")
-
-    print(f"\n抓住 {len(caught)} / 共 {len(caught) + len(escaped)}")
-    if escaped:
-        print("\n逃逸的变异(测试照过,说明没有断言真正检查这段逻辑):")
-        for d in escaped:
-            print(f"  - {d}")
-    if nocompile:
-        print("\n编不过(不算被抓住,需改写成语法合法的变异):")
-        for d in nocompile:
-            print(f"  - {d}")
-    if broken:
-        print("\n锚点失效:")
-        for d in broken:
-            print(f"  - {d}")
-    return 1 if escaped else 0
 
 
 if __name__ == "__main__":
