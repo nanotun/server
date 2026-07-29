@@ -481,8 +481,15 @@ func TestMeTOTPDisable_WrongRecoveryCodeIsRejected(t *testing.T) {
 	admin := createTestAdmin(t, s, "alice", pw)
 	_, codes := enrollTOTP(t, s, admin, pw)
 
-	// 拿一条真码改掉最后一个字符 —— 格式合法但不匹配任何 hash。
-	bogus := codes[0][:len(codes[0])-1] + "Z"
+	// 拿一条真码改掉最后一个字符 —— 格式合法但不匹配任何 hash。替换字符要挑一个**与原字符
+	// 不同**的:恢复码是 base32,末位本来就有 1/32 的机会正好等于替换字符,那时「伪造码」就是
+	// 真码,2FA 真被关掉、返回 303,这条用例会随机翻车(2026-07-29 -race 全量里就中过一次)。
+	last := codes[0][len(codes[0])-1]
+	repl := "Z"
+	if last == 'Z' {
+		repl = "Y"
+	}
+	bogus := codes[0][:len(codes[0])-1] + repl
 	w := httptest.NewRecorder()
 	s.handleMeTOTPDisable(w, mePost(t, s, admin, "/me/totp/disable",
 		url.Values{"recovery_code": {bogus}}, "10.26.0.1"))

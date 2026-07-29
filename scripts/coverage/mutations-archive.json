@@ -3,17 +3,17 @@
     "desc": "[mut13] CreateWebAdmin 不再拦空用户名",
     "file": "store/web_admins.go",
     "test": "./store/",
-    "old": "\tif in.Username == \"\" {\n\t\treturn nil, errors.New(\"store: empty web admin username\")\n\t}",
+    "old": "func (s *Store) CreateWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, error) {\n\t// 第四轮深扫 MED(store #4/#15):裁剪首尾空白 + 大小写不敏感去重(见 users.CreateUser 同款说明)。\n\tin.Username = strings.TrimSpace(in.Username)\n\tif in.Username == \"\" {\n\t\treturn nil, errors.New(\"store: empty web admin username\")\n\t}",
     "nth": 0,
-    "new": "\tif false {\n\t\treturn nil, errors.New(\"store: empty web admin username\")\n\t}"
+    "new": "func (s *Store) CreateWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, error) {\n\t// 第四轮深扫 MED(store #4/#15):裁剪首尾空白 + 大小写不敏感去重(见 users.CreateUser 同款说明)。\n\tin.Username = strings.TrimSpace(in.Username)\n\tif false {\n\t\treturn nil, errors.New(\"store: empty web admin username\")\n\t}"
   },
   {
     "desc": "[mut13] CreateWebAdmin 不再拦空口令哈希",
     "file": "store/web_admins.go",
     "test": "./store/",
-    "old": "\tif strings.TrimSpace(in.PasswordHash) == \"\" {\n\t\treturn nil, errors.New(\"store: empty web admin password_hash\")\n\t}",
+    "old": "func (s *Store) CreateWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, error) {\n\t// 第四轮深扫 MED(store #4/#15):裁剪首尾空白 + 大小写不敏感去重(见 users.CreateUser 同款说明)。\n\tin.Username = strings.TrimSpace(in.Username)\n\tif in.Username == \"\" {\n\t\treturn nil, errors.New(\"store: empty web admin username\")\n\t}\n\tif strings.TrimSpace(in.PasswordHash) == \"\" {\n\t\treturn nil, errors.New(\"store: empty web admin password_hash\")\n\t}",
     "nth": 0,
-    "new": "\tif false {\n\t\treturn nil, errors.New(\"store: empty web admin password_hash\")\n\t}"
+    "new": "func (s *Store) CreateWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, error) {\n\t// 第四轮深扫 MED(store #4/#15):裁剪首尾空白 + 大小写不敏感去重(见 users.CreateUser 同款说明)。\n\tin.Username = strings.TrimSpace(in.Username)\n\tif in.Username == \"\" {\n\t\treturn nil, errors.New(\"store: empty web admin username\")\n\t}\n\tif false {\n\t\treturn nil, errors.New(\"store: empty web admin password_hash\")\n\t}"
   },
   {
     "desc": "[mut13] CreateWebAdmin 的 role 白名单失效",
@@ -26,9 +26,9 @@
     "desc": "[mut13] CreateFirstWebAdmin 不再拦空用户名",
     "file": "store/web_admins.go",
     "test": "./store/",
-    "old": "\tif in.Username == \"\" {\n\t\treturn nil, errors.New(\"store: empty web admin username\")\n\t}",
-    "nth": 1,
-    "new": "\tif false {\n\t\treturn nil, errors.New(\"store: empty web admin username\")\n\t}"
+    "old": "func (s *Store) CreateFirstWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, error) {\n\t// 首位管理员:表为空(NOT EXISTS 守门),无需 CI 去重,只裁剪首尾空白。\n\tin.Username = strings.TrimSpace(in.Username)\n\tif in.Username == \"\" {\n\t\treturn nil, errors.New(\"store: empty web admin username\")\n\t}",
+    "nth": 0,
+    "new": "func (s *Store) CreateFirstWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, error) {\n\t// 首位管理员:表为空(NOT EXISTS 守门),无需 CI 去重,只裁剪首尾空白。\n\tin.Username = strings.TrimSpace(in.Username)\n\tif false {\n\t\treturn nil, errors.New(\"store: empty web admin username\")\n\t}"
   },
   {
     "desc": "[mut13] UpdateWebAdminPasswordHash 不再拦空哈希",
@@ -48,17 +48,17 @@
     "desc": "[mut13] SetWebAdminRole 的 role 白名单失效",
     "file": "store/web_admins.go",
     "test": "./store/",
-    "old": "\tif role != \"admin\" && role != \"viewer\" {\n\t\treturn fmt.Errorf(\"store: invalid web admin role %q\", role)\n\t}",
+    "old": "func (s *Store) SetWebAdminRole(ctx context.Context, id int64, role string) error {\n\trole = strings.TrimSpace(role)\n\tif role != \"admin\" && role != \"viewer\" {\n\t\treturn fmt.Errorf(\"store: invalid web admin role %q\", role)\n\t}",
     "nth": 0,
-    "new": "\tif false {\n\t\treturn fmt.Errorf(\"store: invalid web admin role %q\", role)\n\t}"
+    "new": "func (s *Store) SetWebAdminRole(ctx context.Context, id int64, role string) error {\n\trole = strings.TrimSpace(role)\n\tif false {\n\t\treturn fmt.Errorf(\"store: invalid web admin role %q\", role)\n\t}"
   },
   {
     "desc": "[mut13] SetWebAdminRoleEnsuringAdmin 的 role 白名单失效",
     "file": "store/web_admins.go",
     "test": "./store/",
-    "old": "\tif role != \"admin\" && role != \"viewer\" {\n\t\treturn fmt.Errorf(\"store: invalid web admin role %q\", role)\n\t}",
-    "nth": 1,
-    "new": "\tif false {\n\t\treturn fmt.Errorf(\"store: invalid web admin role %q\", role)\n\t}"
+    "old": "func (s *Store) SetWebAdminRoleEnsuringAdmin(ctx context.Context, id int64, role string) error {\n\trole = strings.TrimSpace(role)\n\tif role != \"admin\" && role != \"viewer\" {\n\t\treturn fmt.Errorf(\"store: invalid web admin role %q\", role)\n\t}",
+    "nth": 0,
+    "new": "func (s *Store) SetWebAdminRoleEnsuringAdmin(ctx context.Context, id int64, role string) error {\n\trole = strings.TrimSpace(role)\n\tif false {\n\t\treturn fmt.Errorf(\"store: invalid web admin role %q\", role)\n\t}"
   },
   {
     "desc": "[mut13] SetWebAdminEnabled 的 enabled=true 分支写成 0",
@@ -514,8 +514,8 @@
   {
     "desc": "[mut22b] acl add --json 不再通知 server(退回本轮修掉的静默失效)",
     "file": "cmd/nanotun-admin/cmd_acl.go",
-    "old": "\tif notifyACLChanged(opts) {",
-    "new": "\tif opts.json {\n\t} else if notifyACLChanged(opts) {",
+    "old": "func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args []string, action string) error {\n\tflags, positional, err := splitACLAddFlags(args)\n\tif err != nil {\n\t\treturn err\n\t}\n\tif len(positional) != 2 {\n\t\treturn usageError(opts.usage(fmt.Sprintf(\"nanotun-admin acl %s <src_user|*> <dst_user|*> [--proto X --port N --port-range LO-HI --exit]\", action)))\n\t}\n\tsrc, err := resolveUserOrWildcard(ctx, st, opts, positional[0])\n\tif err != nil {\n\t\treturn err\n\t}\n\tdstRaw := positional[1]\n\tdstKind := store.ACLDstKindUser\n\tif flags.exit {\n\t\tif dstRaw != \"*\" {\n\t\t\t// 第十六轮深扫 LOW:`--exit` 要求 dst 传 `*` 属**用法错误** → exit 2(与本仓 usageError 约定一致;\n\t\t\t// 此前 errors.New 恒 exit 1)。\n\t\t\treturn usageError(opts.T(\"acl.exitRequiresWildcard\"))\n\t\t}\n\t\tdstKind = store.ACLDstKindExit\n\t}\n\tdst, err := resolveUserOrWildcard(ctx, st, opts, dstRaw)\n\tif err != nil {\n\t\treturn err\n\t}\n\tpair, err := st.AddACLPair(ctx, store.NewACLPair{\n\t\tSrcUserID: src,\n\t\tDstUserID: dst,\n\t\tAction:    action,\n\t\tProto:     flags.proto,\n\t\tDstPortLo: flags.portLo,\n\t\tDstPortHi: flags.portHi,\n\t\tDstKind:   dstKind,\n\t})\n\tif err != nil {\n\t\treturn err\n\t}\n\t// 与 web(acl_add)对等的审计:ACL 变更直接影响数据面放行/拦截,须可归因。\n\t_ = st.Audit(ctx, \"admin-cli\", \"acl_add\",\n\t\tfmt.Sprintf(\"acl:%d\", pair.ID),\n\t\tfmt.Sprintf(\"action=%s src=%s dst=%s kind=%s proto=%s port=%s\",\n\t\t\tpair.Action, positional[0], dstRaw, pair.DstKind,\n\t\t\tformatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi)))\n\t// 第二十二轮:此前 --json 在这里直接 return,把后面的**通知 server + reload 提示 + 缺回程告警**\n\t// 一并跳过了 —— 脚本化加规则(CI / 编排工具)于是拿到一条「已创建」的 JSON,而数据面的 ACL\n\t// snapshot 从没刷过,规则静默不生效;同一文件里的 acl del 反倒一直通知,两条路口径相反。\n\t// 这些输出全在 stderr,不会污染 --json 的机器可读 stdout,没有理由分叉。\n\tif opts.json {\n\t\tif err := printJSON(opts.stdout, pair); err != nil {\n\t\t\treturn err\n\t\t}\n\t} else {\n\t\tdstCell := formatACLEnd(pair.DstUserID, dstRaw)\n\t\tif pair.DstKind == store.ACLDstKindExit {\n\t\t\tdstCell = \"<exit>\"\n\t\t}\n\t\tfmt.Fprintln(opts.stdout, opts.T(\"acl.added\",\n\t\t\tpair.ID,\n\t\t\tformatACLEnd(pair.SrcUserID, positional[0]), dstCell,\n\t\t\tpair.DstKind, formatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi),\n\t\t\tpair.Action,\n\t\t))\n\t}\n\t// 落库 ≠ 生效:数据面读的是内存里的 ACL snapshot。不通知就只是往列表里摆了一条没有约束力的规则。\n\tif notifyACLChanged(opts) {",
+    "new": "func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args []string, action string) error {\n\tflags, positional, err := splitACLAddFlags(args)\n\tif err != nil {\n\t\treturn err\n\t}\n\tif len(positional) != 2 {\n\t\treturn usageError(opts.usage(fmt.Sprintf(\"nanotun-admin acl %s <src_user|*> <dst_user|*> [--proto X --port N --port-range LO-HI --exit]\", action)))\n\t}\n\tsrc, err := resolveUserOrWildcard(ctx, st, opts, positional[0])\n\tif err != nil {\n\t\treturn err\n\t}\n\tdstRaw := positional[1]\n\tdstKind := store.ACLDstKindUser\n\tif flags.exit {\n\t\tif dstRaw != \"*\" {\n\t\t\t// 第十六轮深扫 LOW:`--exit` 要求 dst 传 `*` 属**用法错误** → exit 2(与本仓 usageError 约定一致;\n\t\t\t// 此前 errors.New 恒 exit 1)。\n\t\t\treturn usageError(opts.T(\"acl.exitRequiresWildcard\"))\n\t\t}\n\t\tdstKind = store.ACLDstKindExit\n\t}\n\tdst, err := resolveUserOrWildcard(ctx, st, opts, dstRaw)\n\tif err != nil {\n\t\treturn err\n\t}\n\tpair, err := st.AddACLPair(ctx, store.NewACLPair{\n\t\tSrcUserID: src,\n\t\tDstUserID: dst,\n\t\tAction:    action,\n\t\tProto:     flags.proto,\n\t\tDstPortLo: flags.portLo,\n\t\tDstPortHi: flags.portHi,\n\t\tDstKind:   dstKind,\n\t})\n\tif err != nil {\n\t\treturn err\n\t}\n\t// 与 web(acl_add)对等的审计:ACL 变更直接影响数据面放行/拦截,须可归因。\n\t_ = st.Audit(ctx, \"admin-cli\", \"acl_add\",\n\t\tfmt.Sprintf(\"acl:%d\", pair.ID),\n\t\tfmt.Sprintf(\"action=%s src=%s dst=%s kind=%s proto=%s port=%s\",\n\t\t\tpair.Action, positional[0], dstRaw, pair.DstKind,\n\t\t\tformatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi)))\n\t// 第二十二轮:此前 --json 在这里直接 return,把后面的**通知 server + reload 提示 + 缺回程告警**\n\t// 一并跳过了 —— 脚本化加规则(CI / 编排工具)于是拿到一条「已创建」的 JSON,而数据面的 ACL\n\t// snapshot 从没刷过,规则静默不生效;同一文件里的 acl del 反倒一直通知,两条路口径相反。\n\t// 这些输出全在 stderr,不会污染 --json 的机器可读 stdout,没有理由分叉。\n\tif opts.json {\n\t\tif err := printJSON(opts.stdout, pair); err != nil {\n\t\t\treturn err\n\t\t}\n\t} else {\n\t\tdstCell := formatACLEnd(pair.DstUserID, dstRaw)\n\t\tif pair.DstKind == store.ACLDstKindExit {\n\t\t\tdstCell = \"<exit>\"\n\t\t}\n\t\tfmt.Fprintln(opts.stdout, opts.T(\"acl.added\",\n\t\t\tpair.ID,\n\t\t\tformatACLEnd(pair.SrcUserID, positional[0]), dstCell,\n\t\t\tpair.DstKind, formatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi),\n\t\t\tpair.Action,\n\t\t))\n\t}\n\t// 落库 ≠ 生效:数据面读的是内存里的 ACL snapshot。不通知就只是往列表里摆了一条没有约束力的规则。\n\tif opts.json {\n\t} else if notifyACLChanged(opts) {",
     "nth": 0,
     "test": "./cmd/nanotun-admin/",
     "run": "TestCmdACL"
@@ -595,8 +595,8 @@
   {
     "desc": "[mut23b] 解析不出五元组的包被当已处理吞掉",
     "file": "cmd/nanotund/egress_select.go",
-    "old": "\tt, ok := parsePacketTuple(payload)\n\tif !ok {\n\t\treturn false\n\t}",
-    "new": "\tt, ok := parsePacketTuple(payload)\n\tif !ok {\n\t\treturn true\n\t}",
+    "old": "func forwardPacketToExitNode(c *Connection, payload []byte) bool {\n\tif c == nil {\n\t\treturn false\n\t}\n\tegress := c.egressDeviceID.Load() // 一次性读;control-socket 复核可能并发改它,Load 取一致快照。\n\tif egress == 0 {\n\t\treturn false\n\t}\n\t// 退化:选到自己当出口(egress 指向本机 device)→ 回退 server 自出口避免自环。**提前**判,不依赖出口 conn 状态——\n\t// 否则下面的 advertisedExit 守卫会把「选了自己但自己没在跑出口」误判成 offline 丢包,而非回退 server。\n\tif c.deviceID != 0 && egress == c.deviceID {\n\t\treturn false\n\t}\n\t// 仅转发「公网出口」流量:目的若是本 mesh 内部 / server 本地(某 vIP mesh 互通，**或 server 自身网关地址**)，\n\t// 照旧走 server TUN 让内核 + demux / 本地服务处理，绝不转发给出口节点。**含网关**是关键修复:发往网关:53 的\n\t// MagicDNS 查询若被当公网转发给 peer 出口，会到不了 server 本地 resolver → 选了 peer 出口即 DNS 全断。\n\tt, ok := parsePacketTuple(payload)\n\tif !ok {\n\t\treturn false\n\t}",
+    "new": "func forwardPacketToExitNode(c *Connection, payload []byte) bool {\n\tif c == nil {\n\t\treturn false\n\t}\n\tegress := c.egressDeviceID.Load() // 一次性读;control-socket 复核可能并发改它,Load 取一致快照。\n\tif egress == 0 {\n\t\treturn false\n\t}\n\t// 退化:选到自己当出口(egress 指向本机 device)→ 回退 server 自出口避免自环。**提前**判,不依赖出口 conn 状态——\n\t// 否则下面的 advertisedExit 守卫会把「选了自己但自己没在跑出口」误判成 offline 丢包,而非回退 server。\n\tif c.deviceID != 0 && egress == c.deviceID {\n\t\treturn false\n\t}\n\t// 仅转发「公网出口」流量:目的若是本 mesh 内部 / server 本地(某 vIP mesh 互通，**或 server 自身网关地址**)，\n\t// 照旧走 server TUN 让内核 + demux / 本地服务处理，绝不转发给出口节点。**含网关**是关键修复:发往网关:53 的\n\t// MagicDNS 查询若被当公网转发给 peer 出口，会到不了 server 本地 resolver → 选了 peer 出口即 DNS 全断。\n\tt, ok := parsePacketTuple(payload)\n\tif !ok {\n\t\treturn true\n\t}",
     "test": "./cmd/nanotund/",
     "run": "TestForwardPacketToExitNode|TestExitDenied"
   },
@@ -1710,17 +1710,17 @@
   {
     "desc": "[22 复核] acl add --json 不再通知 server(退回那次修掉的静默失效:规则写进库但执法面不换快照)",
     "file": "cmd/nanotun-admin/cmd_acl.go",
-    "old": "\tif notifyACLChanged(opts) {",
-    "new": "\tif opts.json || notifyACLChanged(opts) {",
+    "old": "func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args []string, action string) error {\n\tflags, positional, err := splitACLAddFlags(args)\n\tif err != nil {\n\t\treturn err\n\t}\n\tif len(positional) != 2 {\n\t\treturn usageError(opts.usage(fmt.Sprintf(\"nanotun-admin acl %s <src_user|*> <dst_user|*> [--proto X --port N --port-range LO-HI --exit]\", action)))\n\t}\n\tsrc, err := resolveUserOrWildcard(ctx, st, opts, positional[0])\n\tif err != nil {\n\t\treturn err\n\t}\n\tdstRaw := positional[1]\n\tdstKind := store.ACLDstKindUser\n\tif flags.exit {\n\t\tif dstRaw != \"*\" {\n\t\t\t// 第十六轮深扫 LOW:`--exit` 要求 dst 传 `*` 属**用法错误** → exit 2(与本仓 usageError 约定一致;\n\t\t\t// 此前 errors.New 恒 exit 1)。\n\t\t\treturn usageError(opts.T(\"acl.exitRequiresWildcard\"))\n\t\t}\n\t\tdstKind = store.ACLDstKindExit\n\t}\n\tdst, err := resolveUserOrWildcard(ctx, st, opts, dstRaw)\n\tif err != nil {\n\t\treturn err\n\t}\n\tpair, err := st.AddACLPair(ctx, store.NewACLPair{\n\t\tSrcUserID: src,\n\t\tDstUserID: dst,\n\t\tAction:    action,\n\t\tProto:     flags.proto,\n\t\tDstPortLo: flags.portLo,\n\t\tDstPortHi: flags.portHi,\n\t\tDstKind:   dstKind,\n\t})\n\tif err != nil {\n\t\treturn err\n\t}\n\t// 与 web(acl_add)对等的审计:ACL 变更直接影响数据面放行/拦截,须可归因。\n\t_ = st.Audit(ctx, \"admin-cli\", \"acl_add\",\n\t\tfmt.Sprintf(\"acl:%d\", pair.ID),\n\t\tfmt.Sprintf(\"action=%s src=%s dst=%s kind=%s proto=%s port=%s\",\n\t\t\tpair.Action, positional[0], dstRaw, pair.DstKind,\n\t\t\tformatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi)))\n\t// 第二十二轮:此前 --json 在这里直接 return,把后面的**通知 server + reload 提示 + 缺回程告警**\n\t// 一并跳过了 —— 脚本化加规则(CI / 编排工具)于是拿到一条「已创建」的 JSON,而数据面的 ACL\n\t// snapshot 从没刷过,规则静默不生效;同一文件里的 acl del 反倒一直通知,两条路口径相反。\n\t// 这些输出全在 stderr,不会污染 --json 的机器可读 stdout,没有理由分叉。\n\tif opts.json {\n\t\tif err := printJSON(opts.stdout, pair); err != nil {\n\t\t\treturn err\n\t\t}\n\t} else {\n\t\tdstCell := formatACLEnd(pair.DstUserID, dstRaw)\n\t\tif pair.DstKind == store.ACLDstKindExit {\n\t\t\tdstCell = \"<exit>\"\n\t\t}\n\t\tfmt.Fprintln(opts.stdout, opts.T(\"acl.added\",\n\t\t\tpair.ID,\n\t\t\tformatACLEnd(pair.SrcUserID, positional[0]), dstCell,\n\t\t\tpair.DstKind, formatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi),\n\t\t\tpair.Action,\n\t\t))\n\t}\n\t// 落库 ≠ 生效:数据面读的是内存里的 ACL snapshot。不通知就只是往列表里摆了一条没有约束力的规则。\n\tif notifyACLChanged(opts) {",
+    "new": "func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args []string, action string) error {\n\tflags, positional, err := splitACLAddFlags(args)\n\tif err != nil {\n\t\treturn err\n\t}\n\tif len(positional) != 2 {\n\t\treturn usageError(opts.usage(fmt.Sprintf(\"nanotun-admin acl %s <src_user|*> <dst_user|*> [--proto X --port N --port-range LO-HI --exit]\", action)))\n\t}\n\tsrc, err := resolveUserOrWildcard(ctx, st, opts, positional[0])\n\tif err != nil {\n\t\treturn err\n\t}\n\tdstRaw := positional[1]\n\tdstKind := store.ACLDstKindUser\n\tif flags.exit {\n\t\tif dstRaw != \"*\" {\n\t\t\t// 第十六轮深扫 LOW:`--exit` 要求 dst 传 `*` 属**用法错误** → exit 2(与本仓 usageError 约定一致;\n\t\t\t// 此前 errors.New 恒 exit 1)。\n\t\t\treturn usageError(opts.T(\"acl.exitRequiresWildcard\"))\n\t\t}\n\t\tdstKind = store.ACLDstKindExit\n\t}\n\tdst, err := resolveUserOrWildcard(ctx, st, opts, dstRaw)\n\tif err != nil {\n\t\treturn err\n\t}\n\tpair, err := st.AddACLPair(ctx, store.NewACLPair{\n\t\tSrcUserID: src,\n\t\tDstUserID: dst,\n\t\tAction:    action,\n\t\tProto:     flags.proto,\n\t\tDstPortLo: flags.portLo,\n\t\tDstPortHi: flags.portHi,\n\t\tDstKind:   dstKind,\n\t})\n\tif err != nil {\n\t\treturn err\n\t}\n\t// 与 web(acl_add)对等的审计:ACL 变更直接影响数据面放行/拦截,须可归因。\n\t_ = st.Audit(ctx, \"admin-cli\", \"acl_add\",\n\t\tfmt.Sprintf(\"acl:%d\", pair.ID),\n\t\tfmt.Sprintf(\"action=%s src=%s dst=%s kind=%s proto=%s port=%s\",\n\t\t\tpair.Action, positional[0], dstRaw, pair.DstKind,\n\t\t\tformatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi)))\n\t// 第二十二轮:此前 --json 在这里直接 return,把后面的**通知 server + reload 提示 + 缺回程告警**\n\t// 一并跳过了 —— 脚本化加规则(CI / 编排工具)于是拿到一条「已创建」的 JSON,而数据面的 ACL\n\t// snapshot 从没刷过,规则静默不生效;同一文件里的 acl del 反倒一直通知,两条路口径相反。\n\t// 这些输出全在 stderr,不会污染 --json 的机器可读 stdout,没有理由分叉。\n\tif opts.json {\n\t\tif err := printJSON(opts.stdout, pair); err != nil {\n\t\t\treturn err\n\t\t}\n\t} else {\n\t\tdstCell := formatACLEnd(pair.DstUserID, dstRaw)\n\t\tif pair.DstKind == store.ACLDstKindExit {\n\t\t\tdstCell = \"<exit>\"\n\t\t}\n\t\tfmt.Fprintln(opts.stdout, opts.T(\"acl.added\",\n\t\t\tpair.ID,\n\t\t\tformatACLEnd(pair.SrcUserID, positional[0]), dstCell,\n\t\t\tpair.DstKind, formatACLProto(pair.Proto), formatACLPort(pair.DstPortLo, pair.DstPortHi),\n\t\t\tpair.Action,\n\t\t))\n\t}\n\t// 落库 ≠ 生效:数据面读的是内存里的 ACL snapshot。不通知就只是往列表里摆了一条没有约束力的规则。\n\tif opts.json || notifyACLChanged(opts) {",
     "test": "./cmd/nanotun-admin/",
     "run": "TestCmdACL"
   },
   {
     "desc": "[22 复核] acl deny --json 不再通知 server(同上,第二个调用点)",
     "file": "cmd/nanotun-admin/cmd_acl.go",
-    "old": "\tif notifyACLChanged(opts) {",
-    "new": "\tif opts.json || notifyACLChanged(opts) {",
-    "nth": 1,
+    "old": "func cmdACLDelete(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {\n\tif len(args) != 1 {\n\t\treturn usageError(opts.usage(\"nanotun-admin acl del <id>\"))\n\t}\n\tid, err := parseInt64(args[0])\n\tif err != nil {\n\t\t// 第十六轮深扫 LOW:非法 <id> 参数属用法错误 → exit 2(与 acl del 缺参 / 顶层 dispatch 一致)。\n\t\treturn usageErrorWrap(fmt.Sprintf(\"%s: %v\", opts.T(\"cli.invalidACLID\", args[0]), err), err)\n\t}\n\tif err := st.DeleteACLPair(ctx, id); err != nil {\n\t\t// 深扫第十轮 LOW:本地化 ErrNotFound(与 route 各 verb 同款,此前裸抛 store 英文错误)。\n\t\tif errors.Is(err, store.ErrNotFound) {\n\t\t\treturn errors.New(opts.T(\"acl.notFound\", id))\n\t\t}\n\t\treturn err\n\t}\n\t// 与 web(acl_delete)对等的审计。\n\t_ = st.Audit(ctx, \"admin-cli\", \"acl_delete\",\n\t\tfmt.Sprintf(\"acl:%d\", id), \"\")\n\tfmt.Fprintln(opts.stdout, opts.T(\"acl.deleted\", id))\n\t// 删除同样要刷 snapshot:否则被删掉的 deny 规则还会继续拦流量(而列表里已经没有它了,\n\t// 排障时无从下手)。\n\tif notifyACLChanged(opts) {",
+    "new": "func cmdACLDelete(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {\n\tif len(args) != 1 {\n\t\treturn usageError(opts.usage(\"nanotun-admin acl del <id>\"))\n\t}\n\tid, err := parseInt64(args[0])\n\tif err != nil {\n\t\t// 第十六轮深扫 LOW:非法 <id> 参数属用法错误 → exit 2(与 acl del 缺参 / 顶层 dispatch 一致)。\n\t\treturn usageErrorWrap(fmt.Sprintf(\"%s: %v\", opts.T(\"cli.invalidACLID\", args[0]), err), err)\n\t}\n\tif err := st.DeleteACLPair(ctx, id); err != nil {\n\t\t// 深扫第十轮 LOW:本地化 ErrNotFound(与 route 各 verb 同款,此前裸抛 store 英文错误)。\n\t\tif errors.Is(err, store.ErrNotFound) {\n\t\t\treturn errors.New(opts.T(\"acl.notFound\", id))\n\t\t}\n\t\treturn err\n\t}\n\t// 与 web(acl_delete)对等的审计。\n\t_ = st.Audit(ctx, \"admin-cli\", \"acl_delete\",\n\t\tfmt.Sprintf(\"acl:%d\", id), \"\")\n\tfmt.Fprintln(opts.stdout, opts.T(\"acl.deleted\", id))\n\t// 删除同样要刷 snapshot:否则被删掉的 deny 规则还会继续拦流量(而列表里已经没有它了,\n\t// 排障时无从下手)。\n\tif opts.json || notifyACLChanged(opts) {",
+    "nth": 0,
     "test": "./cmd/nanotun-admin/",
     "run": "TestCmdACL"
   },
@@ -2342,5 +2342,254 @@
     "new": "\treturn addr.Is4()",
     "test": "./cmd/nanotund/",
     "run": "TestIsIPv4|TestPersistDeviceLease"
+  },
+  {
+    "desc": "[mut32] TUN 读:一批只投第一个包(越忙丢包越多)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tfor i := 0; i < n; i++ {\n\t\t\tpkt := tunPacketPool.Get().(*util.TunPacket)",
+    "new": "\t\tfor i := 0; i < n && i < 1; i++ {\n\t\t\tpkt := tunPacketPool.Get().(*util.TunPacket)",
+    "test": "./cmd/nanotund/",
+    "run": "TestTunReadLoop"
+  },
+  {
+    "desc": "[mut32] TUN 读:batchSize<=0 不夹取成 1(一个包都读不到,上行彻底不通)",
+    "file": "cmd/nanotund/server.go",
+    "old": "func tunReadLoop(dev tun.Device) {\n\tbatchSize := dev.BatchSize()\n\tif batchSize <= 0 {\n\t\tbatchSize = 1\n\t}",
+    "new": "func tunReadLoop(dev tun.Device) {\n\tbatchSize := dev.BatchSize()\n\tif batchSize <= 0 && false {\n\t\tbatchSize = 1\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestTunReadLoop"
+  },
+  {
+    "desc": "[mut32] TUN 读:读错误不退出(死循环刷日志)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\t\tlogrus.WithError(err).Warn(\"TUN 读循环退出\")\n\t\t\t}\n\t\t\treturn",
+    "new": "\t\t\t\tlogrus.WithError(err).Warn(\"TUN 读循环退出\")\n\t\t\t}\n\t\t\tcontinue",
+    "test": "./cmd/nanotund/",
+    "run": "TestTunReadLoop"
+  },
+  {
+    "desc": "[mut32] TUN 读:ctx 取消时不关设备(shutdown 被阻塞的 Read 拖住)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\tcase <-globalContext.Done():\n\t\t\t\t_ = dev.Close()\n\t\t\tcase <-done:",
+    "new": "\t\t\tcase <-globalContext.Done():\n\t\t\tcase <-done:",
+    "test": "./cmd/nanotund/",
+    "run": "TestTunReadLoop"
+  },
+  {
+    "desc": "[mut32] TUN 读:队列满时丢包不归还 buffer(每次拥塞漏几万个 2KB)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\t\tlogrus.Warn(\"TUN 读循环通道已满\")\n\t\t\t\ttunReadBufPool.Put(pkt.Buf)\n\t\t\t\ttunPacketPool.Put(pkt)",
+    "new": "\t\t\t\tlogrus.Warn(\"TUN 读循环通道已满\")",
+    "test": "./cmd/nanotund/",
+    "run": "TestTunReadLoop"
+  },
+  {
+    "desc": "[mut32] TUN 写:写失败就退出循环(全服下行静默变黑洞,会话全显示在线)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\t\tif _, err := dev.Write(writeBufs, virtioNetHdrLen); err != nil {\n\t\t\t\t\tlogrus.WithError(err).Debug(\"TUN 写入失败\")\n\t\t\t\t}",
+    "new": "\t\t\t\tif _, err := dev.Write(writeBufs, virtioNetHdrLen); err != nil {\n\t\t\t\t\tlogrus.WithError(err).Debug(\"TUN 写入失败\")\n\t\t\t\t\treturn\n\t\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestTunWriteLoop"
+  },
+  {
+    "desc": "[mut32] TUN 写:不预留 virtio 头(内核把包头当 virtio 头解析,下行包全废)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\t\tbuf := tunWriteBufPool.Get().([]byte)\n\t\t\t\tn := copy(buf[virtioNetHdrLen:], pkt)\n\t\t\t\ttunPktBufPool.Put(pkt[:cap(pkt)])\n\t\t\t\twriteBufs = append(writeBufs, buf[:virtioNetHdrLen+n])",
+    "new": "\t\t\t\tbuf := tunWriteBufPool.Get().([]byte)\n\t\t\t\tn := copy(buf, pkt)\n\t\t\t\ttunPktBufPool.Put(pkt[:cap(pkt)])\n\t\t\t\twriteBufs = append(writeBufs, buf[:n])",
+    "test": "./cmd/nanotund/",
+    "run": "TestTunWriteLoop"
+  },
+  {
+    "desc": "[mut32] TUN 写:队列关闭后不退出(空转)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tcase pkt, ok := <-tunWriteChan:\n\t\t\tif !ok {\n\t\t\t\treturn\n\t\t\t}",
+    "new": "\t\tcase pkt, ok := <-tunWriteChan:\n\t\t\tif !ok {\n\t\t\t\tcontinue\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestTunWriteLoop"
+  },
+  {
+    "desc": "[mut32] TUN 写:不批量合并,每包一次 syscall",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\tfor len(writeBufs) < batchSize {",
+    "new": "\t\t\tfor len(writeBufs) < 1 {",
+    "test": "./cmd/nanotund/",
+    "run": "TestTunWriteLoop"
+  },
+  {
+    "desc": "[mut32] 排空队列:不归还池化包(每次 shutdown 漏掉队列里上千个 2KB)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tfor pkt := range ch {\n\t\tif pkt != nil {\n\t\t\ttunReadBufPool.Put(pkt.Buf)\n\t\t\ttunPacketPool.Put(pkt)\n\t\t}\n\t}",
+    "new": "\tfor pkt := range ch {\n\t\t_ = pkt\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestDrainAndCloseTunChan|TestTunReadLoop"
+  },
+  {
+    "desc": "[mut32] 登录:配了 subnets_v6 也不分 v6 地址(登录成功但客户端 v6 全黑)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\t\tif sharedTUNGatewayV6 != \"\" {\n\t\t\t\t\tmaskStrV6 := maskFromGatewayCIDR(sharedTUNGatewayV6)",
+    "new": "\t\t\t\tif sharedTUNGatewayV6 != \"\" && false {\n\t\t\t\t\tmaskStrV6 := maskFromGatewayCIDR(sharedTUNGatewayV6)",
+    "test": "./cmd/nanotund/",
+    "run": "TestLogin_"
+  },
+  {
+    "desc": "[mut32] 登录:v6 分不到地址就拒登(v6 网段配小了把所有人挡在门外)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\t\t\tif errAllocV6 != nil {\n\t\t\t\t\t\tlogrus.WithField(\"remote\", remote).WithError(errAllocV6).Warn(\"IPv6 虚拟 IP 分配失败，继续仅 IPv4\")\n\t\t\t\t\t} else {",
+    "new": "\t\t\t\t\tif errAllocV6 != nil {\n\t\t\t\t\t\tlogrus.WithField(\"remote\", remote).WithError(errAllocV6).Warn(\"IPv6 虚拟 IP 分配失败，继续仅 IPv4\")\n\t\t\t\t\t\tclientIPUsedMu.Unlock()\n\t\t\t\t\t\tconnectionsMu.Unlock()\n\t\t\t\t\t\t_ = writeLinkLoginResp(raw, util.CodeServerError, clientLoginMessageForCode(util.CodeServerError), \"\")\n\t\t\t\t\t\treturn\n\t\t\t\t\t} else {",
+    "test": "./cmd/nanotund/",
+    "run": "TestLogin_"
+  },
+  {
+    "desc": "[mut32] 登录:没配 v6 网关也下发 v6 解析器(客户端每次 v6 查询白等超时)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tdnsV4 := util.SanitizeDNSServersV4(gw.cfg.TUN.DNSServersV4)\n\tvar dnsV6 []string\n\tif sharedTUNGatewayV6 != \"\" {\n\t\t// dnsV6ServersForClient",
+    "new": "\tdnsV4 := util.SanitizeDNSServersV4(gw.cfg.TUN.DNSServersV4)\n\tvar dnsV6 []string\n\tif true {\n\t\t// dnsV6ServersForClient",
+    "test": "./cmd/nanotund/",
+    "run": "TestLogin_"
+  },
+  {
+    "desc": "[mut32] 登录:v6 偏好 vIP 不做可用性过滤(重连拿到网关 / 网段外地址)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\t\t\tif preferredVIPUsable(sharedTUNGatewayV6, leasedV6, mergeUsedVIPs(clientIPUsed, dbResvV6)) {",
+    "new": "\t\t\t\t\tif leasedV6 != \"\" {",
+    "test": "./cmd/nanotund/",
+    "run": "TestLogin_"
+  },
+  {
+    "desc": "[mut32] 登录:撞 vIP UNIQUE 也放行(两台设备同一个地址,回程包发给谁看运气)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tif err := persistDeviceLease(gw, authResult, ips); err != nil {\n\t\tif errors.Is(err, store.ErrDuplicate) {",
+    "new": "\tif err := persistDeviceLease(gw, authResult, ips); err != nil {\n\t\tif errors.Is(err, store.ErrDuplicate) && false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestLogin_"
+  },
+  {
+    "desc": "[mut32] 接管:限速不看库里最新值,沿用老链路旧快照(降速被一次热切换解除)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tnewConn.deviceRateUpBPS = authResult.Device.RateUploadBPS\n\t\tnewConn.deviceRateDownBPS = authResult.Device.RateDownloadBPS",
+    "new": "\t\t_ = authResult.Device.RateUploadBPS",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_"
+  },
+  {
+    "desc": "[mut32] 接管:认不出设备时把身份清空(会话变成认不出设备的幽灵)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tnewConn.deviceUUID = oldConn.deviceUUID\n\t}",
+    "new": "\t\tnewConn.deviceUUID = \"\"\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_"
+  },
+  {
+    "desc": "[mut32] 接管:出口意图不过户(撤销后又批回来的自动恢复失效)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tnewConn.desiredExitDeviceID.Store(oldConn.desiredExitDeviceID.Load())",
+    "new": "\t_ = oldConn.desiredExitDeviceID.Load()",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_"
+  },
+  {
+    "desc": "[mut32] 接管:宣告网段集不过户(per-CIDR 收窄退回布尔放行,权限被放宽)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tnewConn.advertisedRoutes.Store(oldConn.advertisedRoutes.Load())",
+    "new": "\t_ = oldConn.advertisedRoutes.Load()",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_"
+  },
+  {
+    "desc": "[mut32] 接管:两个批准位不过户(合法转发者回程被反源欺骗检查丢掉)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tnewConn.advertisedExitApproved.Store(oldConn.advertisedExitApproved.Load())\n\tnewConn.advertisedSubnetApproved.Store(oldConn.advertisedSubnetApproved.Load())",
+    "new": "\t_ = oldConn.advertisedExitApproved.Load()",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_"
+  },
+  {
+    "desc": "[mut32] 接管:secret 不轮换(拿到过一次的人可反复接管,每次踢掉合法客户端)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\ttakeoverSecret: newSecret, // 新 secret,客户端将通过下方 LoginResp 收到",
+    "new": "\t\ttakeoverSecret: oldConn.takeoverSecret,",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_"
+  },
+  {
+    "desc": "[mut32] 接管:轮换 secret 失败时降级用旧 secret(熵源故障时静默削弱一次性语义)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tnewSecret := generateTakeoverSecret()\n\tif newSecret == \"\" {",
+    "new": "\tnewSecret := generateTakeoverSecret()\n\tif newSecret == \"\" {\n\t\tnewSecret = oldConn.takeoverSecret\n\t}\n\tif false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_"
+  },
+  {
+    "desc": "[mut32] 接管:vIP 不继承(登录成功但数据面全黑)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tinheritedIPs := make([]util.VirtualIPAssignment, len(oldIPs))\n\tcopy(inheritedIPs, oldIPs)",
+    "new": "\tinheritedIPs := make([]util.VirtualIPAssignment, len(oldIPs))\n\tcopy(inheritedIPs, oldIPs)\n\tinheritedIPs = inheritedIPs[:0]",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_"
+  },
+  {
+    "desc": "[mut32] 接管:不写审计(事后追查会话当时在谁手里就没了唯一线索)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t_ = gw.store.Audit(context.Background(), remote, \"login.takeover\", oldConn.userID, \"sid=\"+sid)",
+    "new": "\t\t_ = sid",
+    "test": "./cmd/nanotund/",
+    "run": "TestTakeover_"
+  },
+  {
+    "desc": "[mut32] 登录:v4 偏好 vIP 不做可用性过滤(重连拿到网关 / 广播地址)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\t\t\t\t\tif i == 0 && preferredVIPUsable(sharedTUNGateway, leasedV4, mergeUsedVIPs(clientIPUsed, dbResvV4)) {",
+    "new": "\t\t\t\t\t\tif i == 0 && leasedV4 != \"\" {",
+    "test": "./cmd/nanotund/",
+    "run": "TestLogin_"
+  },
+  {
+    "desc": "[mut32b] 配置:语义校验失败只告警不拦(非法网段静默让地址池为空)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tif verr := cfg.Validate(); verr != nil {\n\t\treturn cfg, fmt.Errorf(\"配置语义校验未通过: %w\", verr)\n\t}",
+    "new": "\tif verr := cfg.Validate(); verr != nil {\n\t\tlogrus.WithError(verr).Warn(\"[config] 语义校验未通过\")\n\t}",
+    "test": "./cmd/nanotund/ -run TestLoadConfig_RefusesToStart"
+  },
+  {
+    "desc": "[mut32b] 配置:strict 模式失效(开了开关也放过未知字段)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tif config.StrictModeEnabled() {",
+    "new": "\t\tif false {",
+    "test": "./cmd/nanotund/ -run TestLoadConfig_RefusesToStart"
+  },
+  {
+    "desc": "[mut32b] 配置:TOML 解析错被吞(半份配置继续启动)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\terr = toml.Unmarshal(data, &cfg)\n\tif err != nil {\n\t\treturn cfg, err\n\t}",
+    "new": "\terr = toml.Unmarshal(data, &cfg)\n\t_ = err",
+    "test": "./cmd/nanotund/ -run TestLoadConfig_RefusesToStart"
+  },
+  {
+    "desc": "[mut32b] 下线:出口宣告方不广播(已下线出口一直留在别人下拉里)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tif c.advertisedExit.Load() {\n\t\t\tgo safeGoroutine(\"broadcastExitsList\", func() { broadcastExitsList(context.Background()) })\n\t\t}",
+    "new": "\t\tif false && c.advertisedExit.Load() {\n\t\t\tgo safeGoroutine(\"broadcastExitsList\", func() { broadcastExitsList(context.Background()) })\n\t\t}",
+    "test": "./cmd/nanotund/ -run TestCleanupConnection_"
+  },
+  {
+    "desc": "[mut32b] 下线:去掉广播门控(每个普通客户端断线都全员推送)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\t\tif c.advertisedExit.Load() {\n\t\t\tgo safeGoroutine(\"broadcastExitsList\", func() { broadcastExitsList(context.Background()) })\n\t\t}",
+    "new": "\t\tif true {\n\t\t\tgo safeGoroutine(\"broadcastExitsList\", func() { broadcastExitsList(context.Background()) })\n\t\t}",
+    "test": "./cmd/nanotund/ -run TestCleanupConnection_"
+  },
+  {
+    "desc": "[mut32b] 下线:cleanupDone 不 close(supersede 永远抢不到同一 vIP)",
+    "file": "cmd/nanotund/server.go",
+    "old": "\tif c.cleanupDone != nil {\n\t\tdefer c.cleanupOnce.Do(func() { close(c.cleanupDone) })\n\t}",
+    "new": "\tif false {\n\t\tdefer c.cleanupOnce.Do(func() { close(c.cleanupDone) })\n\t}",
+    "test": "./cmd/nanotund/ -run TestCleanupConnection_"
+  },
+  {
+    "desc": "[mut32b] 下线:nil 入参不再早退(关停竞态里一次断线带走整个进程)",
+    "file": "cmd/nanotund/server.go",
+    "old": "func cleanupConnection(c *Connection) {\n\tif c == nil {\n\t\treturn\n\t}",
+    "new": "func cleanupConnection(c *Connection) {\n\tif c == nil {\n\t\tc = &Connection{}\n\t\t_ = c\n\t}",
+    "test": "./cmd/nanotund/ -run TestCleanupConnection_"
   }
 ]

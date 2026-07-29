@@ -2523,9 +2523,16 @@ func effectiveMaxSessions(gw *gatewayState, newConn *Connection) int {
 	return 0
 }
 
+// takeoverSecretRandRead 是 crypto/rand.Read 的间接层,只为可测性,生产行为不变。
+//
+// 它守着一条不能降级的规则:轮换 secret 失败时必须**拒绝**整个接管,而不是退回旧 secret。
+// 旧 secret 已经用过一次,继续复用就等于放弃「一次性」——任何拿到过它的人都能反复接管同一个
+// 会话、每次把合法客户端踢下线。这条分支只在熵源故障时才走到,没有接缝就无从验证。
+var takeoverSecretRandRead = crand.Read
+
 func generateTakeoverSecret() string {
 	var b [32]byte
-	if _, err := crand.Read(b[:]); err != nil {
+	if _, err := takeoverSecretRandRead(b[:]); err != nil {
 		logrus.WithError(err).Error("[takeover] crypto/rand 不可用,放弃生成 secret —— 当次登录将不下发 takeover_secret,客户端无法接管")
 		return ""
 	}
