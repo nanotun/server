@@ -1731,5 +1731,133 @@
     "new": "\t\tif _, err := os.Lstat(path); err == nil && false {\n\t\t\treturn fmt.Errorf(\"refusing to overwrite existing %s (use --force)\", path)",
     "test": "./cmd/nanotun-admin/",
     "run": "TestWriteFileTight|TestCmdBackup|TestCmdProfile|TestCmdCredentials"
+  },
+  {
+    "desc": "[mut28] reload:刷规则失败仍记成已应用(回报成功,端口实际敞开)",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\t\tif rerr := rs.jumpFW.Replace(newCfg.Server.JumpHostAllowedIPs); rerr != nil {",
+    "new": "\t\t\tif rerr := rs.jumpFW.Replace(newCfg.Server.JumpHostAllowedIPs); rerr != nil && false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestApplyConfigReload"
+  },
+  {
+    "desc": "[mut28] reload:失败时也把新名单写进内存(下次同样的 SIGHUP 会整段跳过,不再重试)",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\t\t\tdeferred = append(deferred, \"server.jump_host_allowed_ips(应用失败,见日志)\")\n\t\t\t\tbreak",
+    "new": "\t\t\t\tdeferred = append(deferred, \"server.jump_host_allowed_ips(应用失败,见日志)\")\n\t\t\t\told.Server.JumpHostAllowedIPs = append([]string(nil), newCfg.Server.JumpHostAllowedIPs...)\n\t\t\t\tbreak",
+    "test": "./cmd/nanotund/",
+    "run": "TestApplyConfigReload"
+  },
+  {
+    "desc": "[mut28] reload:SIGHUP 不重跑名单校验(全非法名单被 sanitize 成只剩 127.0.0.1,跳板机自锁)",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\t\tif verr := newCfg.Server.ValidateJumpHostFirewall(); verr != nil {",
+    "new": "\t\t\tif verr := newCfg.Server.ValidateJumpHostFirewall(); verr != nil && false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestApplyConfigReload"
+  },
+  {
+    "desc": "[mut28] reload:jumpFW 未启用时不提示需重启(改名单静默无效)",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\tcase rs.jumpFW == nil:",
+    "new": "\t\tcase rs.jumpFW == nil && false:",
+    "test": "./cmd/nanotund/",
+    "run": "TestApplyConfigReload"
+  },
+  {
+    "desc": "[mut28] reload:ACL 快照刷新失败记成已应用",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\tif n, err := reloadACLSnapshotFromStore(rs.store); err != nil {",
+    "new": "\t\tif n, err := reloadACLSnapshotFromStore(rs.store); err != nil && false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestApplyConfigReload"
+  },
+  {
+    "desc": "[mut28] reload:登录限速改了但不推给限速器(配置说改了,实际拦不住)",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\tglobalLoginIPLimiter.SetRatePerMin(newCfg.Server.LoginRateLimitPerMin)",
+    "new": "\t\t_ = newCfg.Server.LoginRateLimitPerMin",
+    "test": "./cmd/nanotund/",
+    "run": "TestApplyConfigReload"
+  },
+  {
+    "desc": "[mut28] reload:加载新配置失败时照旧往下应用(拿零值配置覆盖现役)",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\tlogrus.WithError(err).WithField(\"config_path\", rs.configPath).Error(\"[reload] 加载新配置失败,保留旧配置\")\n\t\treturn nil, nil",
+    "new": "\t\tlogrus.WithError(err).WithField(\"config_path\", rs.configPath).Error(\"[reload] 加载新配置失败,保留旧配置\")",
+    "test": "./cmd/nanotund/",
+    "run": "TestApplyConfigReload"
+  },
+  {
+    "desc": "[mut28] reload:入口不判 rs/cfg 为空(SIGHUP 处理器 panic 会带走整个进程)",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\tif rs == nil || rs.cfg == nil {\n\t\treturn nil, nil\n\t}",
+    "new": "\tif rs == nil {\n\t\treturn nil, nil\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestApplyConfigReload"
+  },
+  {
+    "desc": "[mut28] pow:不校签名(客户端可自出 4-bit 的题)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tif !powChallengeHMACEqual(s.hmacKey, p.ChallengeID, p.Salt, p.Difficulty, p.ExpiresAt, p.Signature) {",
+    "new": "\tif !powChallengeHMACEqual(s.hmacKey, p.ChallengeID, p.Salt, p.Difficulty, p.ExpiresAt, p.Signature) && false {",
+    "test": "./cmd/nanotund/",
+    "run": "PoW|Pow"
+  },
+  {
+    "desc": "[mut28] pow:不查过期(一道题永久有效)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tif now >= p.ExpiresAt {",
+    "new": "\tif now >= p.ExpiresAt && false {",
+    "test": "./cmd/nanotund/",
+    "run": "PoW|Pow"
+  },
+  {
+    "desc": "[mut28] pow:不查难度是否够当前 IP 要求(跨 IP 借低难度题)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tif p.Difficulty < serverWants {",
+    "new": "\tif p.Difficulty < serverWants && false {",
+    "test": "./cmd/nanotund/",
+    "run": "PoW|Pow"
+  },
+  {
+    "desc": "[mut28] pow:不验算 nonce(交什么都算解出来了)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tif !powVerify(p.ChallengeID, salt, p.Difficulty, p.Nonce) {",
+    "new": "\tif !powVerify(p.ChallengeID, salt, p.Difficulty, p.Nonce) && false {",
+    "test": "./cmd/nanotund/",
+    "run": "PoW|Pow"
+  },
+  {
+    "desc": "[mut28] pow:不防重放(一道题算一次可用无限次,闸门形同虚设)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tif _, loaded := s.powUsed.LoadOrStore(p.ChallengeID, p.ExpiresAt); loaded {",
+    "new": "\tif _, loaded := s.powUsed.LoadOrStore(p.ChallengeID, p.ExpiresAt); loaded && false {",
+    "test": "./cmd/nanotund/",
+    "run": "PoW|Pow"
+  },
+  {
+    "desc": "[mut28] pow:把防重放登记提到验算之前(错 nonce 会烧掉题目 → 可拿别人 cid 做 DoS)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tif !powVerify(p.ChallengeID, salt, p.Difficulty, p.Nonce) {\n\t\ts.verifyFailInvalid.Add(1)\n\t\treturn ErrPoWInvalid\n\t}",
+    "new": "\tif _, pre := s.powUsed.LoadOrStore(p.ChallengeID, p.ExpiresAt); pre {\n\t\ts.verifyFailReplay.Add(1)\n\t\treturn ErrPoWReplay\n\t}\n\tif !powVerify(p.ChallengeID, salt, p.Difficulty, p.Nonce) {\n\t\ts.verifyFailInvalid.Add(1)\n\t\treturn ErrPoWInvalid\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "PoW|Pow"
+  },
+  {
+    "desc": "[mut28] pow:salt 长度不校(短 salt 让题目空间塌缩)",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tif err != nil || len(salt) != powSaltBytes {",
+    "new": "\tif err != nil {",
+    "test": "./cmd/nanotund/",
+    "run": "PoW|Pow"
+  },
+  {
+    "desc": "[mut28] pow:签名/难度/过期时间为空也放行到后面",
+    "file": "cmd/nanotund/pow.go",
+    "old": "\tif p.Signature == \"\" || p.Difficulty <= 0 || p.ExpiresAt <= 0 {",
+    "new": "\tif p.Signature == \"\" && false {",
+    "test": "./cmd/nanotund/",
+    "run": "PoW|Pow"
   }
 ]

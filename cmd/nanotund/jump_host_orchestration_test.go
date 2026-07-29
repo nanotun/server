@@ -101,6 +101,16 @@ func (f *fakeIPT) run(name string, args ...string) ([]byte, error) {
 	return nil, nil
 }
 
+// failOn 让命令行以 prefix 开头的那条命令失败(优先于状态模型)。
+func (f *fakeIPT) failOn(prefix string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fail = append(f.fail, struct {
+		prefix string
+		err    error
+	}{prefix, err})
+}
+
 // leftovers 返回清理后仍挂在 INPUT 上的规则 —— 服务停掉后还挡着端口的那些。
 func (f *fakeIPT) leftovers() []string {
 	f.mu.Lock()
@@ -243,10 +253,7 @@ func TestJumpFirewall_ReplaceReportsFailureInsteadOfPretendingItWorked(t *testin
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := installFakeIPT(t)
-			f.fail = append(f.fail, struct {
-				prefix string
-				err    error
-			}{tc.failOn, errors.New("boom")})
+			f.failOn(tc.failOn, errors.New("boom"))
 
 			fw := twoPortFirewall()
 			err := fw.Replace([]string{"203.0.113.7"})
