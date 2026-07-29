@@ -19,6 +19,9 @@ import (
 type fakeLinkConn struct {
 	closed   chan struct{}
 	writeBuf []byte
+	// writeErr 非 nil 时所有写都失败,用来演「对端已关」——回帧全是 best-effort,
+	// 写失败只该记日志,不该 panic 或阻塞调用方。
+	writeErr error
 }
 
 func newFakeLinkConn() *fakeLinkConn {
@@ -30,6 +33,9 @@ func (c *fakeLinkConn) Read(p []byte) (int, error) {
 	return 0, io.EOF
 }
 func (c *fakeLinkConn) Write(p []byte) (int, error) {
+	if c.writeErr != nil {
+		return 0, c.writeErr
+	}
 	c.writeBuf = append(c.writeBuf, p...)
 	return len(p), nil
 }

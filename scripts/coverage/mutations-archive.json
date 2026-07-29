@@ -2053,5 +2053,131 @@
     "new": "\tdev, ok := lookupSubnetRoute(dst)\n\tif !ok {\n\t\treturn true\n\t}",
     "test": "./cmd/nanotund/",
     "run": "TestForwardServerOriginated"
+  },
+  {
+    "desc": "[mut30] 出口选择:无 exit_allowed 也照绑(绕过出口权限)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tif !c.exitAllowed {\n\t\tegressSelectRejected.Add(1)",
+    "new": "\tif !c.exitAllowed && false {\n\t\tegressSelectRejected.Add(1)",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleEgressSelectFrame|TestEgressSelect"
+  },
+  {
+    "desc": "[mut30] 出口选择:DB 查不动时当成「未批准」(一次抖动把用户踢回 server)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\t\tegressSelectRejected.Add(1)\n\t\tsendEgressSelectAck(c, util.EgressSelectAck{Accepted: false, Reason: \"try_again\"})\n\t\treturn",
+    "new": "\t\tc.egressDeviceID.Store(0)\n\t\tc.desiredExitDeviceID.Store(0)\n\t\tegressSelectRejected.Add(1)\n\t\tsendEgressSelectAck(c, util.EgressSelectAck{Accepted: false, Reason: \"not_approved\"})\n\t\treturn",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleEgressSelectFrame|TestEgressSelect"
+  },
+  {
+    "desc": "[mut30] 出口选择:坏帧不计数也不早退(继续按空 egress 往下走)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\t\tegressSelectFailed.Add(1)\n\t\tlogrus.WithError(err).WithField(\"user_id\", c.userID).Warn(\"[egress] 解析失败,丢弃\")\n\t\treturn",
+    "new": "\t\tlogrus.WithError(err).WithField(\"user_id\", c.userID).Warn(\"[egress] 解析失败,丢弃\")\n\t\treturn",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleEgressSelectFrame"
+  },
+  {
+    "desc": "[mut30] 出口选择:重新选择时不复位一次性闸(换出口后离线不再通知、不再进审计)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tc.exitOfflineNotified = false\n\tc.exitFwdAudited = false",
+    "new": "\t_ = c.exitOfflineNotified",
+    "test": "./cmd/nanotund/",
+    "run": "TestHandleEgressSelectFrame|TestEgressSelect|TestExitOffline"
+  },
+  {
+    "desc": "[mut30] v6 快失败:尚未探明也照打回(启动那几秒把能走的 v6 也打回去)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tif !serverV6EgressKnown.Load() {\n\t\treturn false // 尚未探明 → 保守放行(走 server 自出口)\n\t}",
+    "new": "\tif !serverV6EgressKnown.Load() && false {\n\t\treturn false\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestServerSelfEgressV6FastFail|TestShouldServerFastFailV6"
+  },
+  {
+    "desc": "[mut30] v6 快失败:解不出五元组的包也打回",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tt, ok := parsePacketTuple(payload)\n\tif !ok {\n\t\treturn false\n\t}\n\tif !shouldServerFastFailV6(t.dst, serverV6EgressHas.Load(), true) {",
+    "new": "\tt, _ := parsePacketTuple(payload)\n\tif false {\n\t\treturn false\n\t}\n\tif !shouldServerFastFailV6(t.dst, serverV6EgressHas.Load(), true) {",
+    "test": "./cmd/nanotund/",
+    "run": "TestServerSelfEgressV6FastFail",
+    "equivalent": true,
+    "note": "等价:parsePacketTuple 失败时一律返回零值 tuple,零地址不是公网 v6,下一道 shouldServerFastFailV6 同样回 false。属防御性冗余(若将来它返回部分结果就不冗余了)"
+  },
+  {
+    "desc": "[mut30] 回 ack:没有链路时也往下写(nil 解引用带走整条会话)",
+    "file": "cmd/nanotund/egress_select.go",
+    "old": "\tif c == nil || c.safeLinkConn() == nil {\n\t\treturn\n\t}\n\tbody, err := util.MarshalEgressSelectAck(ack)",
+    "new": "\tif c == nil {\n\t\treturn\n\t}\n\tbody, err := util.MarshalEgressSelectAck(ack)",
+    "test": "./cmd/nanotund/",
+    "run": "TestSendEgressSelectAck|TestHandleEgressSelectFrame",
+    "equivalent": true,
+    "note": "等价:写锁内还有一次 c.linkConn == nil 复核,safeLinkConn 只是 race-free 预筛,去掉不改变可观测行为"
+  },
+  {
+    "desc": "[mut30] 端口转发 reload:读不到映射表就把监听全拆了(一次库抖动关掉所有公网入口)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\t\tlogrus.WithError(err).Warn(\"[port-forward] 读取映射失败，保留现有监听（不改动）\")\n\t\treturn",
+    "new": "\t\tlogrus.WithError(err).Warn(\"[port-forward] 读取映射失败，保留现有监听（不改动）\")\n\t\trows = nil",
+    "test": "./cmd/nanotund/",
+    "run": "TestPortForwardReload|TestReloadPortForwards"
+  },
+  {
+    "desc": "[mut30] 端口转发 reload:不清已删端口的运行态(web 后台一直显示不存在的映射)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\t\tif _, ok := desired[port]; !ok {\n\t\t\tdelete(m.status, port)\n\t\t}",
+    "new": "\t\tif _, ok := desired[port]; !ok && false {\n\t\t\tdelete(m.status, port)\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestPortForwardReload"
+  },
+  {
+    "desc": "[mut30] UUID 解析:空 UUID / 无 store 时不早退(继续查库或空指针)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\tif uuid == \"\" || m.gw == nil || m.gw.store == nil {\n\t\treturn 0, false\n\t}",
+    "new": "\tif m.gw == nil || m.gw.store == nil {\n\t\treturn 0, false\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestResolveDeviceID|TestRebuildFRPTargetTable",
+    "equivalent": true,
+    "note": "等价:空 UUID 查库同样得 (0,false)(设备 UUID 恒非空),该闸只省一次 DB 查询"
+  },
+  {
+    "desc": "[mut30] LAN 回程:表未建时一律认下(任何宣告方都能伪造别人 LAN 主机的回包)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\tm := frpLANReplyTable.Load()\n\tif m == nil {\n\t\treturn false\n\t}\n\tv, ok := (*m)[frpLANReplyKey{addr: src.Unmap(), port: t.srcPort}]",
+    "new": "\tm := frpLANReplyTable.Load()\n\tif m == nil {\n\t\treturn true\n\t}\n\tv, ok := (*m)[frpLANReplyKey{addr: src.Unmap(), port: t.srcPort}]",
+    "test": "./cmd/nanotund/",
+    "run": "TestFRPLANReply"
+  },
+  {
+    "desc": "[mut30] LAN 回程:匿名会话(deviceID<=0)也认",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\tif deviceID <= 0 || !t.hasL4Ports || t.srcPort == 0 {\n\t\treturn false\n\t}",
+    "new": "\tif !t.hasL4Ports || t.srcPort == 0 {\n\t\treturn false\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestFRPLANReply"
+  },
+  {
+    "desc": "[mut30] Accept 循环:瞬时错误当致命(公网端口从此不接客,状态仍显示 running)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\t\t\tif ne, ok := err.(net.Error); ok && ne.Temporary() { //nolint:staticcheck // Temporary 足够区分可重试",
+    "new": "\t\t\tif ne, ok := err.(net.Error); ok && ne.Temporary() && false { //nolint:staticcheck // Temporary 足够区分可重试",
+    "test": "./cmd/nanotund/",
+    "run": "TestAcceptPortForward"
+  },
+  {
+    "desc": "[mut30] Accept 循环:退避不睡(fd 耗尽时忙循环烧 CPU)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\t\t\t\ttime.Sleep(tempDelay)\n\t\t\t\tcontinue",
+    "new": "\t\t\t\tcontinue",
+    "test": "./cmd/nanotund/",
+    "run": "TestAcceptPortForward"
+  },
+  {
+    "desc": "[mut30] Accept 循环:ctx 取消不关 listener(端口一直被占着)",
+    "file": "cmd/nanotund/port_forward.go",
+    "old": "\t\tcase <-ctx.Done():\n\t\t\t_ = ln.Close()\n\t\tcase <-done:",
+    "new": "\t\tcase <-ctx.Done():\n\t\tcase <-done:",
+    "test": "./cmd/nanotund/",
+    "run": "TestAcceptPortForward"
   }
 ]
