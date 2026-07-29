@@ -22,6 +22,23 @@ sudo install -m 0755 nanotun-admin /usr/local/bin/nanotun-admin
 | `--json` | false | 以 JSON 输出（脚本化用） |
 | `--yes`, `-y` | false | 危险操作（删除用户/设备）跳过二次确认 |
 
+### `--json` 的键名约定
+
+全部命令的 JSON 键一律 `snake_case`，与库表列名对齐（`device_uuid`、`dst_port_lo`、
+`rate_upload_bps`）。人类可读输出走 stdout 的表格，警告/提示一律走 stderr，所以
+`--json` 的 stdout 始终是一段干净的 JSON，可以直接喂给 `jq`。
+
+> **破坏性变更（2026-07-30）**：`acl allow`、`acl deny`、`lease set`、`device list` 四条命令
+> 此前的 `--json` 打的是 Go 结构体的默认形状（`Action`、`DstPortLo`、`DeviceUUID`、
+> `RateUploadBPS`），与同族 `acl list` / `lease list` 的 `snake_case` 不是一套。现已统一。
+> 读过这四条命令 JSON 输出的脚本需要改键名——注意旧键读不到时 `jq` 给的是 `null` 而不是
+> 报错，所以升级后请确认下游没有把 `null` 当成空值继续往下传。
+
+同时 `acl allow/deny` 与 `lease set` 现在会一并给出同族 `list` 才有的关联列
+（`src_username` / `dst_username`、`device_uuid` / `user_id` / `username`），
+脚本不必为了打一行日志再查一次库。`device list` 另给 `display_name`
+（设了 `alias` 用别名，否则回落客户端上报的 `device_name`，与 Web 各页一致）。
+
 ## 常用流程
 
 ### 首次部署：创建第一个管理员

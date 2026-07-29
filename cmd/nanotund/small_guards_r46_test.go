@@ -114,7 +114,7 @@ func TestScanAndKickInvalidUsers_SkipsJunkEntriesAndStillHandlesTheRealOne(t *te
 	}
 	select {
 	case <-orphanConn.closed:
-		t.Error("索引键解不出 user 的会话被踢下线了 —— 它对应的账号并不存在于「已删除」这个判定里,"+
+		t.Error("索引键解不出 user 的会话被踢下线了 —— 它对应的账号并不存在于「已删除」这个判定里," +
 			"这条会话是被一个不存在的账号连坐的")
 	default:
 	}

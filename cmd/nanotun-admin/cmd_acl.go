@@ -41,22 +41,9 @@ func cmdACLList(ctx context.Context, st *store.Store, opts *globalOpts, _ []stri
 	}
 	defer rows.Close()
 
-	type row struct {
-		ID          int64  `json:"id"`
-		Action      string `json:"action"`
-		Proto       string `json:"proto,omitempty"`
-		DstPortLo   int    `json:"dst_port_lo,omitempty"`
-		DstPortHi   int    `json:"dst_port_hi,omitempty"`
-		DstKind     string `json:"dst_kind"`
-		CreatedAt   int64  `json:"created_at"`
-		SrcUserID   int64  `json:"src_user_id,omitempty"`
-		SrcUsername string `json:"src_username,omitempty"`
-		DstUserID   int64  `json:"dst_user_id,omitempty"`
-		DstUsername string `json:"dst_username,omitempty"`
-	}
-	var out []row
+	var out []aclPairView
 	for rows.Next() {
-		var r row
+		var r aclPairView
 		var srcID, dstID *int64
 		if err := rows.Scan(&r.ID, &r.Action, &r.Proto, &r.DstPortLo, &r.DstPortHi, &r.DstKind, &r.CreatedAt, &srcID, &r.SrcUsername, &dstID, &r.DstUsername); err != nil {
 			return err
@@ -85,6 +72,44 @@ func cmdACLList(ctx context.Context, st *store.Store, opts *globalOpts, _ []stri
 		t.row(r.ID, r.Action, formatACLEnd(r.SrcUserID, r.SrcUsername), dstCell, r.DstKind, formatACLProto(r.Proto), formatACLPort(r.DstPortLo, r.DstPortHi), fmtTimeUnix(r.CreatedAt))
 	}
 	return t.flush()
+}
+
+// aclPairView 是 acl 一族 --json 的统一形状。
+//
+// 2026-07-30:此前 `acl allow/deny --json` 打的是裸 store.ACLPair(没有 json tag,于是键是
+// Go 风格的 ID/Action/DstPortLo),而 `acl list --json` 是手写的 snake_case。脚本按 list 的键
+// 去读 add 的输出全是零值 —— jq 取不到就是 null,而 CI 里 null 往下走通常不报错,只是把一条
+// 「刚建好的规则」当成空的往后传。同一命令族两套形状没有任何理由,统一到 list 那套。
+type aclPairView struct {
+	ID          int64  `json:"id"`
+	Action      string `json:"action"`
+	Proto       string `json:"proto,omitempty"`
+	DstPortLo   int    `json:"dst_port_lo,omitempty"`
+	DstPortHi   int    `json:"dst_port_hi,omitempty"`
+	DstKind     string `json:"dst_kind"`
+	CreatedAt   int64  `json:"created_at"`
+	SrcUserID   int64  `json:"src_user_id,omitempty"`
+	SrcUsername string `json:"src_username,omitempty"`
+	DstUserID   int64  `json:"dst_user_id,omitempty"`
+	DstUsername string `json:"dst_username,omitempty"`
+}
+
+// viewFromACLPair 由刚落库的规则拼视图。srcRaw/dstRaw 是命令行原样的两端(用户名或 `*`),
+// 通配一端在 list 那侧是 JOIN 不上的空串,这里同样留空。
+func viewFromACLPair(p *store.ACLPair, srcRaw, dstRaw string) aclPairView {
+	v := aclPairView{
+		ID: p.ID, Action: p.Action, Proto: p.Proto,
+		DstPortLo: p.DstPortLo, DstPortHi: p.DstPortHi,
+		DstKind: p.DstKind, CreatedAt: p.CreatedAt,
+		SrcUserID: p.SrcUserID, DstUserID: p.DstUserID,
+	}
+	if srcRaw != "*" {
+		v.SrcUsername = srcRaw
+	}
+	if dstRaw != "*" {
+		v.DstUsername = dstRaw
+	}
+	return v
 }
 
 func formatACLProto(p string) string {
@@ -174,7 +199,7 @@ func cmdACLAddPair(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	// snapshot 从没刷过,规则静默不生效;同一文件里的 acl del 反倒一直通知,两条路口径相反。
 	// 这些输出全在 stderr,不会污染 --json 的机器可读 stdout,没有理由分叉。
 	if opts.json {
-		if err := printJSON(opts.stdout, pair); err != nil {
+		if err := printJSON(opts.stdout, viewFromACLPair(pair, positional[0], dstRaw)); err != nil {
 			return err
 		}
 	} else {

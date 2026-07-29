@@ -1,0 +1,85 @@
+[
+  {
+    "desc": "[mut47] acl add/deny --json 退回打裸 store.ACLPair(键变 Go 风格,脚本按 acl list 的键读到 null)",
+    "file": "cmd/nanotun-admin/cmd_acl.go",
+    "old": "printJSON(opts.stdout, viewFromACLPair(pair, positional[0], dstRaw))",
+    "new": "printJSON(opts.stdout, pair)",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestACLJSON_AddAndListAgreeOnTheirKeys|TestCmdACLAddPair_JSONOutput"
+  },
+  {
+    "desc": "[mut47] acl add/deny --json 漏掉两端用户名(调用方为打一行日志还得再查库)",
+    "file": "cmd/nanotun-admin/cmd_acl.go",
+    "old": "\tif srcRaw != \"*\" {\n\t\tv.SrcUsername = srcRaw\n\t}\n\tif dstRaw != \"*\" {\n\t\tv.DstUsername = dstRaw\n\t}\n",
+    "new": "",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestACLJSON_AddAndListAgreeOnTheirKeys"
+  },
+  {
+    "desc": "[mut47] acl add --json 把通配的 `*` 当用户名填进 src_username(同一条规则在 list 侧是空,两种读法)",
+    "file": "cmd/nanotun-admin/cmd_acl.go",
+    "old": "\tif srcRaw != \"*\" {\n\t\tv.SrcUsername = srcRaw\n\t}",
+    "new": "\tv.SrcUsername = srcRaw",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestACLJSON_WildcardEndsStayEmptyJustLikeInTheList|TestACLJSON_AddAndListAgreeOnTheirKeys"
+  },
+  {
+    "desc": "[mut47] lease set --json 退回打裸 store.Lease(键变 Go 风格,且丢掉设备/用户三列)",
+    "file": "cmd/nanotun-admin/cmd_lease.go",
+    "old": "printJSON(opts.stdout, viewFromLease(ctx, st, l, dev))",
+    "new": "printJSON(opts.stdout, l)",
+    "also": [
+      ["\tdev, err := st.GetDevice(ctx, deviceID)\n\tif err != nil {", "\tif _, err := st.GetDevice(ctx, deviceID); err != nil {"]
+    ],
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestLeaseJSON_SetAndListAgreeOnTheirKeys|TestCmdLeaseSet_JSONOutput"
+  },
+  {
+    "desc": "[mut47] lease set --json 不补设备/用户列(脚本「钉完地址记一条审计」记下的是没有主体的审计)",
+    "file": "cmd/nanotun-admin/cmd_lease.go",
+    "old": "\tif dev != nil {\n\t\tv.DeviceUUID, v.UserID = dev.DeviceUUID, dev.UserID\n\t\tif u, err := st.GetUser(ctx, dev.UserID); err == nil {\n\t\t\tv.Username = u.Username\n\t\t}\n\t}\n",
+    "new": "",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestLeaseJSON_SetAndListAgreeOnTheirKeys"
+  },
+  {
+    "desc": "[mut47] lease set 的用户名回填判据反了(正常时不给名字,查不动库时反而当场 panic)",
+    "file": "cmd/nanotun-admin/cmd_lease.go",
+    "old": "if u, err := st.GetUser(ctx, dev.UserID); err == nil {",
+    "new": "if u, err := st.GetUser(ctx, dev.UserID); err != nil {",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestLeaseJSON_SetAndListAgreeOnTheirKeys|TestLeaseJSON_SetStillSucceedsWhenTheUsernameCannotBeLookedUp"
+  },
+  {
+    "desc": "[mut47] device list --json 退回打裸 []*store.Device(device_uuid/rate_*_bps 全部读到 null)",
+    "file": "cmd/nanotun-admin/cmd_device.go",
+    "old": "printJSON(opts.stdout, viewsFromDevices(devs))",
+    "new": "printJSON(opts.stdout, devs)",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestDeviceListJSON_HasNoGoStyleKeys|TestDeviceListJSON_GivesBothTheAliasAndTheNameActuallyDisplayed"
+  },
+  {
+    "desc": "[mut47] device list --json 的 display_name 不走别名回落(同一台设备在 CLI 与 Web 上是两个名字)",
+    "file": "cmd/nanotun-admin/cmd_device.go",
+    "old": "Alias: d.Alias, DisplayName: d.DisplayName(),",
+    "new": "Alias: d.Alias, DisplayName: d.DeviceName,",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestDeviceListJSON_GivesBothTheAliasAndTheNameActuallyDisplayed"
+  },
+  {
+    "desc": "[mut47] device list --json 只给 alias 不给 display_name(没设别名的设备在清单里凭空少一列名字)",
+    "file": "cmd/nanotun-admin/cmd_device.go",
+    "old": "\tDisplayName     string `json:\"display_name\"`",
+    "new": "\tDisplayName     string `json:\"-\"`",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestDeviceListJSON_HasNoGoStyleKeys|TestDeviceListJSON_GivesBothTheAliasAndTheNameActuallyDisplayed"
+  },
+  {
+    "desc": "[mut47] device list --json 的限速键退回 Go 风格(运维核对限速时读到 null,以为没配)",
+    "file": "cmd/nanotun-admin/cmd_device.go",
+    "old": "\tRateUploadBPS   int64  `json:\"rate_upload_bps\"`\n\tRateDownloadBPS int64  `json:\"rate_download_bps\"`",
+    "new": "\tRateUploadBPS   int64\n\tRateDownloadBPS int64",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestDeviceListJSON_HasNoGoStyleKeys"
+  }
+]

@@ -496,7 +496,7 @@ func TestCmdACLAddPair_JSONOutput(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("acl allow --json: code=%d stderr=%s", code, stderr)
 	}
-	var pair store.ACLPair
+	var pair aclPairView
 	if err := json.Unmarshal([]byte(stdout), &pair); err != nil {
 		t.Fatalf("parse json: %v\n%s", err, stdout)
 	}
@@ -505,6 +505,11 @@ func TestCmdACLAddPair_JSONOutput(t *testing.T) {
 	}
 	if pair.ID == 0 {
 		t.Error("JSON 没带回新规则的 id")
+	}
+	// 端口是这条命令唯一「只能从 JSON 读到」的信息(人类那行是 formatACLPort 拼的字符串),
+	// 所以键名写错在这里最致命:调用方拿到 null,而 CI 里 null 往下走通常不报错。
+	if !strings.Contains(stdout, `"dst_port_lo"`) {
+		t.Errorf("端口的键名不是 snake_case —— 与 acl list --json 对不上:\n%s", stdout)
 	}
 	if !strings.Contains(stderr, "reload") {
 		t.Errorf("--json 也要提示刷 snapshot, stderr=%q", stderr)

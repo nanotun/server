@@ -90,20 +90,9 @@ func cmdLeaseList(ctx context.Context, st *store.Store, opts *globalOpts, _ []st
 	}
 	defer rows.Close()
 
-	type row struct {
-		ID         int64  `json:"id"`
-		DeviceID   int64  `json:"device_id"`
-		VIPv4      string `json:"vip_v4,omitempty"`
-		VIPv6      string `json:"vip_v6,omitempty"`
-		Manual     bool   `json:"manual"`
-		AssignedAt int64  `json:"assigned_at"`
-		DeviceUUID string `json:"device_uuid"`
-		UserID     int64  `json:"user_id"`
-		Username   string `json:"username"`
-	}
-	var out []row
+	var out []leaseView
 	for rows.Next() {
-		var r row
+		var r leaseView
 		var manual int64
 		if err := rows.Scan(&r.ID, &r.DeviceID, &r.VIPv4, &r.VIPv6, &manual, &r.AssignedAt,
 			&r.DeviceUUID, &r.UserID, &r.Username); err != nil {
@@ -124,6 +113,37 @@ func cmdLeaseList(ctx context.Context, st *store.Store, opts *globalOpts, _ []st
 		t.row(r.ID, r.Username, r.DeviceUUID, dashIfEmpty(r.VIPv4), dashIfEmpty(r.VIPv6), fmtBool(r.Manual), fmtTimeUnix(r.AssignedAt))
 	}
 	return t.flush()
+}
+
+// leaseView 是 lease 一族 --json 的统一形状(与 aclPairView 同一批统一,原因见那里)。
+type leaseView struct {
+	ID         int64  `json:"id"`
+	DeviceID   int64  `json:"device_id"`
+	VIPv4      string `json:"vip_v4,omitempty"`
+	VIPv6      string `json:"vip_v6,omitempty"`
+	Manual     bool   `json:"manual"`
+	AssignedAt int64  `json:"assigned_at"`
+	DeviceUUID string `json:"device_uuid"`
+	UserID     int64  `json:"user_id"`
+	Username   string `json:"username"`
+}
+
+// viewFromLease 由刚写入的租约拼视图。device/username 这几列 list 那侧是 JOIN 出来的,
+// 这里补一次查询让两条命令的形状一致 —— 查不动时留空而**不**报错:租约已经落库了,
+// 为了一个展示字段把命令判成失败,调用方会去重试一个其实已经成功的写操作。
+func viewFromLease(ctx context.Context, st *store.Store, l *store.Lease, dev *store.Device) leaseView {
+	v := leaseView{
+		ID: l.ID, DeviceID: l.DeviceID,
+		VIPv4: l.VIPv4, VIPv6: l.VIPv6,
+		Manual: l.Manual, AssignedAt: l.AssignedAt,
+	}
+	if dev != nil {
+		v.DeviceUUID, v.UserID = dev.DeviceUUID, dev.UserID
+		if u, err := st.GetUser(ctx, dev.UserID); err == nil {
+			v.Username = u.Username
+		}
+	}
+	return v
 }
 
 func cmdLeaseRelease(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
@@ -164,7 +184,8 @@ func cmdLeaseSet(ctx context.Context, st *store.Store, opts *globalOpts, args []
 	if err != nil {
 		return usageErrorWrap(fmt.Sprintf("%s: %v", opts.T("cli.invalidDeviceID", pos[0]), err), err)
 	}
-	if _, err := st.GetDevice(ctx, deviceID); err != nil {
+	dev, err := st.GetDevice(ctx, deviceID)
+	if err != nil {
 		return opts.notFoundErr(err, "device.notFound", deviceID)
 	}
 	if *v4 == "" && *v6 == "" {
@@ -204,7 +225,7 @@ func cmdLeaseSet(ctx context.Context, st *store.Store, opts *globalOpts, args []
 		fmt.Sprintf("device:%d", deviceID),
 		fmt.Sprintf("v4=%s v6=%s manual=%v", l.VIPv4, l.VIPv6, l.Manual))
 	if opts.json {
-		return printJSON(opts.stdout, l)
+		return printJSON(opts.stdout, viewFromLease(ctx, st, l, dev))
 	}
 	fmt.Fprintln(opts.stdout, opts.T("lease.assigned",
 		deviceID, dashIfEmpty(l.VIPv4), dashIfEmpty(l.VIPv6), fmtBool(l.Manual)))

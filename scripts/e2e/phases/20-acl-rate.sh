@@ -52,11 +52,14 @@ phase_20_acl_rate() {
   local jout
   jout="$(adm "acl deny $E2E_A_USER $E2E_C_USER --port $E2E_TARGET_PORT --proto tcp --json 2>/tmp/nte2e-acl.err")"
   # 顺带钉住「告警走 stderr、没污染 stdout」:JSON 解析得动,这半边才算成立。
-  # 注意字段名是 Go 风格的 Action —— add/deny 打的是裸 store.ACLPair,
-  # 而 acl list --json 是带 snake_case tag 的另一套形状,此处按现状钉。
-  check "acl deny --json · stdout 是可解析的 JSON" "deny" \
+  # 2026-07-30 统一了键名:add/deny 此前打的是裸 store.ACLPair(Go 风格 Action/DstPortLo),
+  # 现在与 acl list --json 同一套 snake_case。这里连端口一起读 —— 端口是这条命令唯一只能
+  # 从 JSON 拿到的信息(人类那行是拼好的字符串),键名错了调用方拿到的是 null。
+  check "acl deny --json · stdout 是 snake_case 的可解析 JSON" "deny/tcp/$E2E_TARGET_PORT" \
     "$(printf '%s' "$jout" | python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("Action","字段缺失"))
+try:
+    d = json.load(sys.stdin)
+    print("%s/%s/%s" % (d.get("action","缺 action"), d.get("proto","缺 proto"), d.get("dst_port_lo","缺 dst_port_lo")))
 except Exception as e: print("解析失败: %s" % e)')"
   wait_until "acl deny --json · 规则同样即时生效(无需 reload)" 20 probe_http_blocked a "$url"
   check "acl deny --json · reload 提示走的是 stderr" "0" \

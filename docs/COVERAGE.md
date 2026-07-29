@@ -1319,6 +1319,40 @@ hysteria 剩下的两处经确认**进程内不可达**,不再花时间:`udpPort
 `net.ListenPacket("udp")` 返回非 `*net.UDPAddr` 的本地地址;`hyserver.NewServer` 会拒的每个维度,
 `ValidateTuning` 都在函数开头先拒了一遍(连一个能穿过前者、被后者拒掉的取值都不存在)。
 
+### 第 47 轮:`--json` 的键名契约(一族命令两套形状)
+
+`cmd/nanotun-admin` 96.8%(与上次持平 —— 这一轮改的是行为不是覆盖面),变异 10/10 全抓。这一条是第 22 轮
+留下的待定项,e2e 阶段 20 当时明确写了「此处按现状钉」。
+
+**四条命令的 `--json` 打的是裸 store 结构体。** `acl allow` / `acl deny` / `lease set` / `device list` 直接
+`printJSON` 了 `store.ACLPair` / `store.Lease` / `[]*store.Device`,而这三个类型没有 json tag,于是键落成 Go
+风格的 `Action` / `DstPortLo` / `DeviceUUID` / `RateUploadBPS`;同族的 `acl list` / `lease list` 是手写的
+snake_case。**同一命令族两套形状,而失败模式是无声的**:`device list --json | jq '.[].device_uuid'` 拿到的是
+`null` 而不是报错,CI 里 `null` 往下传通常一路无声 —— 编排工具于是把一台刚建好的设备当成「没有 UUID」写进
+下游配置。`acl deny --json` 更险一点:端口是这条命令**唯一只能从 JSON 拿到**的信息(人类那行是 `formatACLPort`
+拼好的字符串),键名对不上就等于「加了一条规则,但脚本读不出它管的是哪个端口」。
+
+改法是三个 CLI 本地视图类型(`aclPairView` / `leaseView` / `deviceView`),沿用本包已有的 `userView` 与
+`acl list` 的手写 `row` 同一套路子 —— **不动 `store` 的类型**:那三个类型在 web 侧被 go template 直接引用
+(template 按字段名取值,不看 json tag),加 tag 虽然当下无害,但把一个 CLI 的展示口径钉进了共享层。
+`acl list` / `lease list` 里原本的局部 `row` 提成包级,两条命令共用同一个类型,形状对不上会编不过而不是
+在运行时错开。
+
+顺带补齐了同族 list 才有的关联列:`acl add/deny` 给 `src_username` / `dst_username`(命令行传的就是用户名,
+本来就知道),`lease set` 给 `device_uuid` / `user_id` / `username`。少了它们,脚本「钉完地址立刻记一条审计」
+得再查一次库。补这几列时**查不动库不能让命令失败** —— 租约在补列之前就已经落库了,为一个纯展示字段判失败,
+调用方会去重试一个已经成功的写,而 `UpsertManualLeasePreservingEmpty` 只保留「命令行没传的那一族」:重试时
+参数拼得不完全一样(编排工具重试常常只带上次失败的那个字段)就会改掉 manual 标记。`device list` 另给
+`display_name`(设了 alias 用别名,否则回落 `device_name`),否则调用方得自己重实现这个回落,而漏掉回落的脚本
+会在没设别名的设备上打出空名字 —— 一张设备清单里凭空少掉一列,它自己不报错。
+
+守卫测试的观测量选的是**键集合本身**(`json_shape_guards_test.go`):不逐个比键名(各自的用例已经在验),
+而是钉住「同族两条命令的顶层键集合一致」+「顶层没有大写开头的键」。理由是往回退化的方式几乎总是同一个 ——
+新写的命令直接 `printJSON` 了 store 结构体,而那一步的结果恰好就是键集合整体错开。
+
+这是一次**破坏性变更**,已在 `cmd/nanotun-admin/README.md` 的全局 flag 一节写明,e2e 阶段 20 的断言同步改成
+读 `action` / `proto` / `dst_port_lo`(顺带把端口一起断言,此前只读了 action)。
+
 ## 单测这一侧的现状（2026-07-28 晚，Linux 实测）
 
 零覆盖函数已经清空，只剩三个 `main` —— 那三个各有子进程冒烟测试（`nanotund` 靠 e2e）。

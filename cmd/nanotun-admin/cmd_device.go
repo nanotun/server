@@ -99,6 +99,43 @@ func cmdDeviceCreate(ctx context.Context, st *store.Store, opts *globalOpts, arg
 	return nil
 }
 
+// deviceView 是 `device list --json` 的形状(与 aclPairView 同一批统一,原因见那里)。
+// 键名跟 devices 表的列对齐,运维照着 schema 写 jq 就能对上。
+type deviceView struct {
+	ID              int64  `json:"id"`
+	UserID          int64  `json:"user_id"`
+	DeviceUUID      string `json:"device_uuid"`
+	DeviceName      string `json:"device_name"`
+	Alias           string `json:"alias,omitempty"`
+	DisplayName     string `json:"display_name"`
+	Platform        string `json:"platform,omitempty"`
+	FixedVIPv4      string `json:"fixed_vip_v4,omitempty"`
+	FixedVIPv6      string `json:"fixed_vip_v6,omitempty"`
+	RateUploadBPS   int64  `json:"rate_upload_bps"`
+	RateDownloadBPS int64  `json:"rate_download_bps"`
+	LastSeenAt      int64  `json:"last_seen_at"`
+	CreatedAt       int64  `json:"created_at"`
+}
+
+func viewsFromDevices(devs []*store.Device) []deviceView {
+	out := make([]deviceView, 0, len(devs))
+	for _, d := range devs {
+		out = append(out, deviceView{
+			ID: d.ID, UserID: d.UserID,
+			DeviceUUID: d.DeviceUUID, DeviceName: d.DeviceName,
+			// Alias 与 DisplayName 都给:前者是「管理员有没有设过别名」,后者是各处展示实际用的名字
+			// (设了取别名,没设回落上报名)。只给 alias 的话调用方得自己重实现这个回落,
+			// 而漏掉回落就会在没设别名的设备上打出空名字。
+			Alias: d.Alias, DisplayName: d.DisplayName(),
+			Platform:   d.Platform,
+			FixedVIPv4: d.FixedVIPv4, FixedVIPv6: d.FixedVIPv6,
+			RateUploadBPS: d.RateUploadBPS, RateDownloadBPS: d.RateDownloadBPS,
+			LastSeenAt: d.LastSeenAt, CreatedAt: d.CreatedAt,
+		})
+	}
+	return out
+}
+
 func cmdDeviceList(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	fs := flag.NewFlagSet("device list", flag.ContinueOnError)
 	fs.SetOutput(opts.stderr)
@@ -130,7 +167,7 @@ func cmdDeviceList(ctx context.Context, st *store.Store, opts *globalOpts, args 
 	}
 
 	if opts.json {
-		return printJSON(opts.stdout, devs)
+		return printJSON(opts.stdout, viewsFromDevices(devs))
 	}
 
 	// --effective:把 device 维度的 raw 值,叠加 app_settings 默认 + (通过 control sock 拿)toml 默认,
