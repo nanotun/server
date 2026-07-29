@@ -155,10 +155,15 @@ func TestCleanupConnection_NormalConnIDMapGuard(t *testing.T) {
 	}
 }
 
-// readResp 从 client 端读一帧 LoginResp，超时 2s。
+// readResp 从 client 端读一帧 LoginResp。
+//
+// 超时给到 15s(与客户端真实的 LoginResp 接收超时同口径),不是 2s:接管路径上有一次 argon2 校验,
+// 那是**故意**昂贵的。全包跑(尤其 -race)时机器很忙,2s 的余量不够 —— 实测在两轮全量里各偶发过一次
+// `read pipe: i/o timeout`,而隔离压测怎么跑都不复现。harness 上的超时只为「别永远挂着」,
+// 卡得紧一点不会让任何断言更严格,只会换来偶发红。
 func readResp(t *testing.T, conn net.Conn) *util.LoginResp {
 	t.Helper()
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	conn.SetDeadline(time.Now().Add(15 * time.Second))
 	typ, payload, err := util.ReadLinkFrame(conn)
 	if err != nil {
 		t.Fatalf("client read LoginResp: %v", err)
@@ -408,7 +413,7 @@ func TestHandleTakeoverLogin_AbortsWhenKickedMidWindow(t *testing.T) {
 	oldConn.superseded.Store(true)
 
 	// 3) 读掉 ConvSalt,放 server 继续走到提交点 —— 此后它必须发现 superseded 并放弃接管。
-	_ = clientConn.SetDeadline(time.Now().Add(2 * time.Second))
+	_ = clientConn.SetDeadline(time.Now().Add(15 * time.Second))
 	typ, _, rerr := util.ReadLinkFrame(clientConn)
 	if rerr != nil {
 		t.Fatalf("读 ConvSalt 失败: %v", rerr)
