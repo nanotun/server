@@ -137,6 +137,11 @@ func writeQRPNG(opts *globalOpts, path, url string, force bool) error {
 //     之间目标被 race 建出(并发调用 / 攻击者抢建),含密产物照样被覆盖。改为 force=false 走 os.Link:
 //     link(2) 目标已存在即 EEXIST 失败,把「不存在→落盘」这步合并成一个原子操作,彻底关掉该窗口。
 //     force=true 保持 os.Rename(语义就是原子替换)。
+// writeFileTightAfterCheck 生产路径恒为 nil,仅测试替换:在「Lstat 判过」与「落盘」之间插一脚,
+// 造出目标文件在这个窗口里被别人创建的局面。no-clobber 的保证来自下面那次原子 os.Link
+// (EEXIST),不是来自上面那次 Lstat;没有这个接缝,把 Link 换成 Rename(静默覆盖)测不出差别。
+var writeFileTightAfterCheck func()
+
 func writeFileTight(path string, data []byte, mode os.FileMode, force bool) error {
 	if !force {
 		if _, err := os.Lstat(path); err == nil {
@@ -144,6 +149,9 @@ func writeFileTight(path string, data []byte, mode os.FileMode, force bool) erro
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("stat %s: %w", path, err)
 		}
+	}
+	if writeFileTightAfterCheck != nil {
+		writeFileTightAfterCheck()
 	}
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")

@@ -100,7 +100,9 @@
     "file": "store/web_admins.go",
     "test": "./store/",
     "old": "\tif in.AdminID <= 0 {\n\t\treturn errors.New(\"store: bad admin id\")\n\t}",
-    "new": "\tif false {\n\t\treturn errors.New(\"store: bad admin id\")\n\t}"
+    "new": "\tif false {\n\t\treturn errors.New(\"store: bad admin id\")\n\t}",
+    "equivalent": true,
+    "note": "等价:web_sessions.admin_id 有 REFERENCES web_admins(id) 且每条连接都开 foreign_keys,闸门删掉后 SQLite 外键照样拒,函数仍返回错误(仅错误文案不同)。它是 schema 之外的第二道防线,保留。"
   },
   {
     "desc": "[mut13] CreateWebSession 不再拦缺失的 expires_at",
@@ -263,9 +265,10 @@
     "desc": "[mut22] 空库(0 表)不再拦下,直接放行往下跑",
     "file": "cmd/nanotun-admin/main.go",
     "old": "\t\t} else if !initialized {",
-    "new": "\t\t} else if false {",
+    "new": "\t\t} else if !initialized && false {",
     "test": "./cmd/nanotun-admin/",
-    "run": "TestRunWithStore"
+    "run": "TestRunWithStore",
+    "note": "第27轮:原写法删掉了标识符的最后一处引用,Go 编不过(旧工具把编译失败记成了抓住),已改写为等效的永假/永真判据"
   },
   {
     "desc": "[mut22] device create 的空平台不再回落 linux(留空)",
@@ -438,10 +441,11 @@
   {
     "desc": "[mut22] reset-psk 补 credential_id 时不写进 audit detail",
     "file": "cmd/nanotun-admin/cmd_user.go",
-    "old": "\tif priorCredID == \"\" {\n\t\tdetail += fmt.Sprintf(\" backfilled credential_id=%s\", newCredID)\n\t}",
-    "new": "\tif false {\n\t\tdetail += fmt.Sprintf(\" backfilled credential_id=%s\", newCredID)\n\t}",
+    "old": "\tif priorCredID == \"\" {",
+    "new": "\tif priorCredID == \"\" && false {",
     "test": "./cmd/nanotun-admin/",
-    "run": "TestCmdUserResetPSK"
+    "run": "TestCmdUserResetPSK",
+    "note": "第27轮:原写法删掉了标识符的最后一处引用,Go 编不过(旧工具把编译失败记成了抓住),已改写为等效的永假/永真判据"
   },
   {
     "desc": "[mut22] init 的 setup_completed 写失败被吞掉",
@@ -1015,10 +1019,11 @@
   {
     "desc": "[mut23f] 4via6:不校验目标 v4 在已批准宣告网段内",
     "file": "cmd/nanotund/magic_dns.go",
-    "old": "\tif !deviceAdvertisesV4(deviceID, v4) {\n\t\treturn netip.Addr{}, false\n\t}",
-    "new": "",
+    "old": "\tif !deviceAdvertisesV4(deviceID, v4) {",
+    "new": "\tif !deviceAdvertisesV4(deviceID, v4) && false {",
     "test": "./cmd/nanotund/",
-    "run": "TestLookupVia6Addr|TestMagicDNS_4via6|TestMagicHostExists"
+    "run": "TestLookupVia6Addr|TestMagicDNS_4via6|TestMagicHostExists",
+    "note": "第27轮:原写法删掉了标识符的最后一处引用,Go 编不过(旧工具把编译失败记成了抓住),已改写为等效的永假/永真判据"
   },
   {
     "desc": "[mut23f] magicHostExists:非 A/AAAA 查询不做 isolate 判定(换 qtype 探设备存在性)",
@@ -1063,10 +1068,11 @@
   {
     "desc": "[mut23g] 出口回包只校 TXID,不校 Response+question(受损出口可投毒全 egress 共享缓存)",
     "file": "cmd/nanotund/magic_dns_exit.go",
-    "old": "\t\tif !dnsReplyMatches(resp, qid, wantQ) {\n\t\t\texitDNSReplyMismatchCount.Add(1)\n\t\t\treturn nil, false\n\t\t}",
-    "new": "",
+    "old": "\t\tif !dnsReplyMatches(resp, qid, wantQ) {",
+    "new": "\t\tif !dnsReplyMatches(resp, qid, wantQ) && false {",
     "test": "./cmd/nanotund/",
-    "run": "TestTryResolvePublicViaExit|TestTryRelayPublicViaExit|TestInterceptExitDNS|TestResolveExitDNS"
+    "run": "TestTryResolvePublicViaExit|TestTryRelayPublicViaExit|TestInterceptExitDNS|TestResolveExitDNS",
+    "note": "第27轮:原写法删掉了标识符的最后一处引用,Go 编不过(旧工具把编译失败记成了抓住),已改写为等效的永假/永真判据"
   },
   {
     "desc": "[mut23g] fail-closed 哨兵不显式判,落到后面(A/AAAA 路径)",
@@ -1074,7 +1080,9 @@
     "old": "\tif egress == egressFailClosed {\n\t\t// 选定出口无法兑现",
     "new": "\tif false && egress == egressFailClosed {\n\t\t// 选定出口无法兑现",
     "test": "./cmd/nanotund/",
-    "run": "TestTryResolvePublicViaExit"
+    "run": "TestTryResolvePublicViaExit",
+    "equivalent": true,
+    "note": "等价:落到下面 lookupRunningExitConnByDevice(-1) 必然查不到 → 同样 SERVFAIL+true。显式判只为可读性(代码注释已写明)。"
   },
   {
     "desc": "[mut23g] fail-closed 哨兵改成回退 server 本地上游(用 server 地理答案污染客户端缓存)",
@@ -1114,15 +1122,18 @@
     "old": "\tif dstPort < exitDNSPortLo || dstPort > exitDNSPortHi {\n\t\treturn false\n\t}",
     "new": "",
     "test": "./cmd/nanotund/",
-    "run": "TestInterceptExitDNS"
+    "run": "TestInterceptExitDNS",
+    "equivalent": true,
+    "note": "等价:关联端口只在 [exitDNSPortLo,Hi] 内分配,区间外的包在等待者表里查不到,照样返回 false。这道判据是热路径上的快速预筛(省一次加锁),不是安全边界。"
   },
   {
     "desc": "[mut23g] 截获路径不校验目的是 server v4 网关",
     "file": "cmd/nanotund/magic_dns_exit.go",
-    "old": "\tif g == nil || !g.v4.IsValid() || dstIP != g.v4 {\n\t\treturn false\n\t}",
-    "new": "\tif g == nil || !g.v4.IsValid() {\n\t\treturn false\n\t}",
+    "old": "\tif g == nil || !g.v4.IsValid() || dstIP != g.v4 {",
+    "new": "\tif g == nil || !g.v4.IsValid() || (dstIP != g.v4 && false) {",
     "test": "./cmd/nanotund/",
-    "run": "TestInterceptExitDNS"
+    "run": "TestInterceptExitDNS",
+    "note": "第27轮:原写法删掉了标识符的最后一处引用,Go 编不过(旧工具把编译失败记成了抓住),已改写为等效的永假/永真判据"
   },
   {
     "desc": "[mut23g] 摘除等待者不幂等(in-flight 双减)",
@@ -1335,18 +1346,20 @@
   {
     "desc": "[mut24a] accept:把可恢复错误也当致命,一次 fd 耗尽让 REALITY 入口永久消失",
     "file": "cmd/nanotund/reality_listen.go",
-    "old": "\t\t\tif errors.Is(err, net.ErrClosed) {\n\t\t\t\t// 主动 Close 路径:静默退出,这是正常 shutdown。\n\t\t\t\tlogrus.Info(\"REALITY Accept: listener 已关闭,退出 accept loop\")\n\t\t\t\treturn\n\t\t\t}",
-    "new": "\t\t\treturn",
+    "old": "\t\t\tif errors.Is(err, net.ErrClosed) {",
+    "new": "\t\t\tif errors.Is(err, net.ErrClosed) || true {",
     "test": "./cmd/nanotund/",
-    "run": "TestRunRealityAcceptLoop"
+    "run": "TestRunRealityAcceptLoop",
+    "note": "第27轮:原写法删掉了标识符的最后一处引用,Go 编不过(旧工具把编译失败记成了抓住),已改写为等效的永假/永真判据"
   },
   {
     "desc": "[mut24a] accept:主动 Close 也去退避重试(关机被拖住,且对已关的 listener 无限重试)",
     "file": "cmd/nanotund/reality_listen.go",
     "old": "\t\t\tif errors.Is(err, net.ErrClosed) {",
-    "new": "\t\t\tif false {",
+    "new": "\t\t\tif errors.Is(err, net.ErrClosed) && false {",
     "test": "./cmd/nanotund/",
-    "run": "TestRunRealityAcceptLoop"
+    "run": "TestRunRealityAcceptLoop",
+    "note": "第27轮:原写法删掉了标识符的最后一处引用,Go 编不过(旧工具把编译失败记成了抓住),已改写为等效的永假/永真判据"
   },
   {
     "desc": "[mut24a] accept:退避期间不理关机信号(持续报错时关机卡住)",
@@ -1629,14 +1642,6 @@
     "run": "TestLoopbackSmux"
   },
   {
-    "desc": "[mut25c] 池:把 stream 正常结束(EOF)也当成承载故障,连带拆掉共用承载",
-    "file": "cmd/nanotund/loopback_smux.go",
-    "old": "\tif errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) ||\n\t\terrors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, smux.ErrTimeout) {\n\t\treturn false\n\t}",
-    "new": "",
-    "test": "./cmd/nanotund/",
-    "run": "TestLoopbackSmux"
-  },
-  {
     "desc": "[mut25c] 池:smux.Client 失败后不关环回连接(连接泄漏)",
     "file": "cmd/nanotund/loopback_smux.go",
     "old": "\tsess, err := smux.Client(conn, p.smuxCfg)\n\tif err != nil {\n\t\t_ = conn.Close()\n\t\treturn nil, err\n\t}",
@@ -1659,7 +1664,8 @@
     "old": "func (s *poolStream) noteIOError(err error) {\n\tif carrierIsBroken(err) {\n\t\ts.pool.retireSession(s.sess)\n\t}\n}",
     "new": "func (s *poolStream) noteIOError(err error) {\n\t_ = err\n}",
     "test": "./cmd/nanotund/",
-    "run": "TestLoopbackSmux"
+    "run": "TestPoolStream|TestLoopbackSmux",
+    "note": "第27轮:原 run 筛选器把 TestPoolStream* 排除在外,导致假逃逸"
   },
   {
     "desc": "[mut25e] 池:OpenStream 报错也不摘会话(退回第二十五轮之前:每条新流都往尸体上开)",
@@ -1717,5 +1723,13 @@
     "nth": 1,
     "test": "./cmd/nanotun-admin/",
     "run": "TestCmdACL"
+  },
+  {
+    "desc": "[mut27] writeFileTight 入口的 Lstat 检查整段不判",
+    "file": "cmd/nanotun-admin/cmd_profile_qr.go",
+    "old": "\t\tif _, err := os.Lstat(path); err == nil {\n\t\t\treturn fmt.Errorf(\"refusing to overwrite existing %s (use --force)\", path)",
+    "new": "\t\tif _, err := os.Lstat(path); err == nil && false {\n\t\t\treturn fmt.Errorf(\"refusing to overwrite existing %s (use --force)\", path)",
+    "test": "./cmd/nanotun-admin/",
+    "run": "TestWriteFileTight|TestCmdBackup|TestCmdProfile|TestCmdCredentials"
   }
 ]

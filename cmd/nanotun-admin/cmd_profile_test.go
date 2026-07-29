@@ -703,28 +703,79 @@ func TestWriteFileTight_RefusesExistingUnlessForce(t *testing.T) {
 	}
 }
 
-// TestWriteFileTight_NoClobberOnRaceCreate 模拟 e_writefiletight 修的 TOCTOU:
-// Lstat 检查时目标不存在,随后(落盘前)被人 race 建出来。force=false 的原子 no-clobber
-// 落盘(os.Link)必须失败、且不覆盖 race 建出的文件内容。
+// TestWriteFileTight_NoClobberOnRaceCreate 钉住 no-clobber 的**两层**。
+//
+// 第一层是入口的 Lstat:目标已存在就直接拒。第二层是落盘用的原子 os.Link(EEXIST),它管的是
+// 「Lstat 判过之后、落盘之前目标才被建出来」这个窗口 —— 也正是 writeFileTight 注释里承诺的
+// TOCTOU 防护。这两层的可观察结果一样(报错 + 不动目标),所以只喂「一开始就存在」的目标时,
+// 第二层根本没被当成闸门跑过:把 os.Link 换成 os.Rename(静默覆盖)照样全绿。用 hook 在那个
+// 窗口里把文件建出来,才真的走到第二层。
 func TestWriteFileTight_NoClobberOnRaceCreate(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sekret.json")
-	// 直接对一个已存在目标调用:force=false 必须拒绝且不改动其内容
-	// (Lstat 早拦是一层;即便绕过 Lstat,最终 os.Link 也会 EEXIST —— 这里覆盖整条契约)。
-	if err := os.WriteFile(path, []byte("victim"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeFileTight(path, []byte("attacker-would-overwrite"), 0o600, false); err == nil {
-		t.Fatal("force=false 落盘到已存在目标应失败(no-clobber)")
-	}
-	if b, _ := os.ReadFile(path); string(b) != "victim" {
-		t.Fatalf("no-clobber 后目标内容应不变,got %q", b)
-	}
-	// 目录里不应残留临时文件(link 失败分支必须清理 CreateTemp 产物)。
+	// 第一层:一开始就存在。
+	t.Run("目标已存在时入口就拒", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "sekret.json")
+		if err := os.WriteFile(path, []byte("victim"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeFileTight(path, []byte("attacker-would-overwrite"), 0o600, false); err == nil {
+			t.Fatal("force=false 落盘到已存在目标应失败(no-clobber)")
+		}
+		if b, _ := os.ReadFile(path); string(b) != "victim" {
+			t.Fatalf("no-clobber 后目标内容应不变,got %q", b)
+		}
+		assertNoTempLeftovers(t, dir, "sekret.json")
+	})
+
+	// 第二层:检查判过之后才出现 —— 只有原子 link 能拦住它。
+	t.Run("检查判过之后才被建出来", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "sekret.json")
+		writeFileTightAfterCheck = func() {
+			if err := os.WriteFile(path, []byte("victim"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Cleanup(func() { writeFileTightAfterCheck = nil })
+
+		if err := writeFileTight(path, []byte("attacker-would-overwrite"), 0o600, false); err == nil {
+			t.Fatal("没给 --force 就绝不许覆盖 —— 哪怕文件是在检查之后才出现的")
+		}
+		if b, _ := os.ReadFile(path); string(b) != "victim" {
+			t.Fatalf("窗口里出现的文件被覆盖了,got %q —— 这正是 --force 存在的意义", b)
+		}
+		assertNoTempLeftovers(t, dir, "sekret.json")
+	})
+
+	// 反面:给了 --force 就该覆盖(否则上面两条可以由一个「永远失败」的实现满足)。
+	t.Run("给了 force 就照常覆盖", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "sekret.json")
+		writeFileTightAfterCheck = func() {
+			if err := os.WriteFile(path, []byte("victim"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Cleanup(func() { writeFileTightAfterCheck = nil })
+
+		if err := writeFileTight(path, []byte("mine"), 0o600, true); err != nil {
+			t.Fatalf("force=true 应当覆盖: %v", err)
+		}
+		if b, _ := os.ReadFile(path); string(b) != "mine" {
+			t.Fatalf("force=true 没写进去,got %q", b)
+		}
+		assertNoTempLeftovers(t, dir, "sekret.json")
+	})
+}
+
+// assertNoTempLeftovers 确认目录里除了 keep 之外没有别的东西:失败分支必须清掉 CreateTemp 的产物,
+// 否则一个装 profile 的目录会随着重试越积越多半成品(且它们带的是明文凭据)。
+func assertNoTempLeftovers(t *testing.T, dir, keep string) {
+	t.Helper()
 	ents, _ := os.ReadDir(dir)
 	for _, e := range ents {
-		if e.Name() != "sekret.json" {
-			t.Fatalf("落盘失败后应无临时残留,发现 %q", e.Name())
+		if e.Name() != keep {
+			t.Fatalf("应无临时残留,发现 %q", e.Name())
 		}
 	}
 }

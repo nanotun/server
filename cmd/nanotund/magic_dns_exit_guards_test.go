@@ -758,3 +758,177 @@ func TestInterceptExitDNSResponse_ZeroInflightFastPath(t *testing.T) {
 		t.Fatal("零在途时必须直接返回 false")
 	}
 }
+
+// exitDNSDrive 备好「客户端 → server → 出口」三方,用来把一份出口应答真的沿投递路径喂进来。
+// 返回值:客户端侧 UDP conn(读 server 回给客户端的东西)、peer 地址、server 侧 conn、
+// 出口会话及其 TunChan、出口 deviceID。
+type exitDNSDrive struct {
+	srv, cli *net.UDPConn
+	peer     *net.UDPAddr
+	exit     *Connection
+	exitTun  chan *util.TunPacket
+	exitDev  int64
+	gw       netip.Addr
+}
+
+func newExitDNSDrive(t *testing.T) *exitDNSDrive {
+	t.Helper()
+	resetConnByDeviceForTest(t)
+	resetExitDNSCacheForTest(t)
+	setServerGatewayAddrs("10.201.0.1/16", "")
+	t.Cleanup(func() { serverGatewayAddrs.Store(nil) })
+
+	d := &exitDNSDrive{
+		exitDev: 91,
+		exitTun: make(chan *util.TunPacket, 4),
+		gw:      netip.AddrFrom4([4]byte{10, 201, 0, 1}),
+	}
+	d.exit = &Connection{deviceID: d.exitDev, connIDStr: "exit-poison"}
+	d.exit.advertisedExit.Store(true)
+	d.exit.advertisedExitV6.Store(true)
+	eips := []util.VirtualIPAssignment{{VirtualIP: "10.0.0.9", TunChan: d.exitTun}}
+	d.exit.clientIPs.Store(&eips)
+	connIDMapMu.Lock()
+	connByDeviceAddLocked(d.exit)
+	connIDMapMu.Unlock()
+
+	var err error
+	if d.srv, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)}); err != nil {
+		t.Fatalf("listen srv: %v", err)
+	}
+	t.Cleanup(func() { d.srv.Close() })
+	if d.cli, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)}); err != nil {
+		t.Fatalf("listen cli: %v", err)
+	}
+	t.Cleanup(func() { d.cli.Close() })
+	d.peer = d.cli.LocalAddr().(*net.UDPAddr)
+
+	client := &Connection{connIDStr: "client-poison"}
+	client.egressDeviceID.Store(d.exitDev)
+	cips := []util.VirtualIPAssignment{{VirtualIP: d.peer.IP.String()}}
+	client.clientIPs.Store(&cips)
+	connIDMapMu.Lock()
+	connIDMap[client.connIDStr] = client
+	connIDMapMu.Unlock()
+	t.Cleanup(func() {
+		connIDMapMu.Lock()
+		delete(connIDMap, client.connIDStr)
+		connIDMapMu.Unlock()
+	})
+	return d
+}
+
+// awaitInjectedQuery 取出注入给出口的那条查询,返回它的源端口(即本次查询的关联端口)。
+func (d *exitDNSDrive) awaitInjectedQuery(t *testing.T) uint16 {
+	t.Helper()
+	select {
+	case pkt := <-d.exitTun:
+		_, _, sp, dp, _, ok := parseIPv4UDPForReturn(pkt.Buf[:pkt.N])
+		if !ok || dp != 53 {
+			t.Fatalf("注入出口的查询包异常 dp=%d ok=%v", dp, ok)
+		}
+		return sp
+	case <-time.After(2 * time.Second):
+		t.Fatal("超时:没看到注入出口的查询")
+		return 0
+	}
+}
+
+// TestResolveExitDNS_AReplyThatOnlyMatchesTheTXIDIsNotAnAnswer 钉住出口回包的完整绑定。
+//
+// 关联端口、会话身份、TXID 三样都对得上,仍不足以证明这份应答回答的是**本次**查询。出口是一台
+// 由用户自己批准的设备,它被攻破(或本就恶意)时可以对在途查询回一份 TXID 相符、question 却是
+// 另一个域名的合法应答;也可以把查询原样回显(QR=0)。而 exitDNSCache 是**全 egress 共享**的 ——
+// 一份被采纳的错答不是错一次查询,而是让这台出口上所有客户端在 TTL 内都拿到那个答案。
+//
+// 这道校验(把「TXID 相符」升级为「Response 置位 + question 相符」)第二十轮就补上了,但只有
+// dnsReplyMatches 这个判定函数本身有单测:从来没有用例把一份「只有 TXID 对」的应答真的沿投递
+// 路径喂进 resolveExitDNS,所以整段拿掉也没有测试变红(归档变异复跑里唯一一条真逃逸)。
+//
+// 正面对照在 TestTryResolvePublicViaExit_CachesAndServesFromCache:同一套投递路径喂一份**相符**
+// 的应答,必须落缓存并把答案回给客户端。两条合起来才排除「一律不采纳」的实现。
+func TestResolveExitDNS_AReplyThatOnlyMatchesTheTXIDIsNotAnAnswer(t *testing.T) {
+	const qname = "cdn.example.com"
+	cases := []struct {
+		name string
+		// resp 造出口回来的 UDP 载荷。两者的 TXID 都与查询相同(0x4242),差别只在
+		// question / QR ——正是这道校验要看的两样东西。
+		resp func(t *testing.T) []byte
+	}{
+		{
+			name: "question 是另一个域名(张冠李戴)",
+			resp: func(t *testing.T) []byte {
+				return buildDNSResponseA(t, "evil.example.com", 300, "6.6.6.6")
+			},
+		},
+		{
+			name: "把查询原样回显(QR=0)",
+			resp: func(t *testing.T) []byte {
+				return buildDNSQuery(t, qname, dnsmessage.TypeA)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newExitDNSDrive(t)
+			q := dnsmessage.Question{
+				Name:  dnsmessage.MustNewName(qname + "."),
+				Type:  dnsmessage.TypeA,
+				Class: dnsmessage.ClassINET,
+			}
+			query := buildDNSQuery(t, qname, dnsmessage.TypeA)
+			const qid uint16 = 0x4242
+
+			mismatchBefore := exitDNSReplyMismatchCount.Load()
+			done := make(chan bool, 1)
+			go func() { done <- tryResolvePublicViaExit(d.srv, d.peer, query, q, qid) }()
+
+			corrPort := d.awaitInjectedQuery(t)
+			respPkt, ok := buildIPv4UDP(netip.AddrFrom4([4]byte{8, 8, 8, 8}), 53, d.gw, corrPort, tc.resp(t))
+			if !ok {
+				t.Fatal("构造出口回包失败")
+			}
+			// 投递本身必须成功:这份包在端口 / 会话 / TXID 三个维度上都是"正主",拦它的
+			// 只能是后面那道 question+QR 的绑定校验。若这里就返回 false,本条用例就没有
+			// 真的走到被测代码上。
+			if !interceptExitDNSResponseIfPending(d.exit, respPkt) {
+				t.Fatal("端口/会话/TXID 都相符的包应当被截获并交给等待者")
+			}
+
+			if !<-done {
+				t.Fatal("已绑定出口的查询必须由出口路径处置(回 SERVFAIL),不能落回本地上游")
+			}
+			_ = d.cli.SetReadDeadline(time.Now().Add(2 * time.Second))
+			buf := make([]byte, 1500)
+			n, _, err := d.cli.ReadFromUDP(buf)
+			if err != nil {
+				t.Fatalf("客户端应收到一个 SERVFAIL: %v", err)
+			}
+			h, ans := parseDNSResponse(t, buf[:n])
+			if h.ID != qid {
+				t.Fatalf("回给客户端的 TXID 不对: %#x", h.ID)
+			}
+			if h.RCode != dnsmessage.RCodeServerFailure {
+				t.Fatalf("对不上号的应答只能换来 SERVFAIL,实际 rcode=%v answers=%d —— "+
+					"采纳它等于让受损出口决定客户端解析到哪里", h.RCode, len(ans))
+			}
+			if len(ans) != 0 {
+				t.Fatalf("SERVFAIL 不该带答复,got %d 条", len(ans))
+			}
+
+			// 最要紧的一条:这份错答绝不能进共享缓存。进了就不止毒害这一次查询,而是这台
+			// 出口上的所有客户端。
+			if _, hit := exitDNSCacheGet(exitDNSCacheKey(d.exitDev, dnsmessage.TypeA, qname)); hit {
+				t.Fatal("对不上号的应答被写进了全 egress 共享缓存")
+			}
+			if _, hit := exitDNSCacheGet(exitDNSCacheKey(d.exitDev, dnsmessage.TypeA, "evil.example.com")); hit {
+				t.Fatal("按应答里那个域名也不许落缓存")
+			}
+			if got := exitDNSReplyMismatchCount.Load(); got != mismatchBefore+1 {
+				t.Fatalf("应记一次 exitDNSReplyMismatchCount(%d → %d)—— 这个计数是运维发现"+
+					"出口在乱回包的唯一线索", mismatchBefore, got)
+			}
+		})
+	}
+}
