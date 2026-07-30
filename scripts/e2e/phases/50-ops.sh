@@ -135,6 +135,84 @@ _check_deferred_fields_are_reported() {
   check "deferred 这组跑完服务仍然存活" "active" "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')"
 }
 
+# _check_forward_block_bt_installs_port_drops 验 tun.forward_block_bt 真的把 DROP 规则装进内核。
+#
+# 为什么这条测「内核规则」而不是测「BT 流量被挡」:规则是 FORWARD 链上 `-i tun0 --dport 6881:6889`,
+# 唯一能碰到它的流量路径是「客户端 → 服务器自身 NAT 出网」(链里那条 `-i tun0 -o enp1s0 ACCEPT`)。
+# 而本套件里 A 固定选 C 当出口,去程是用户态直投给 C 的会话、压根不碰 tun0;子网路由同理。
+# 所以在当前三机拓扑下没有任何流量路径能打中这条规则 —— 硬造一条端到端断言只会得到一个
+# 无论规则在不在都恒绿的假断言。能测且值得测的是「配置 → 内核规则」这一环。
+#
+# 这一环真有可错的地方:server.go 里 `SetupIptables(..., blockBT, blockTracker6969, blockSMTP25, ...)`
+# 是三个相邻的同类型 bool 实参,串位编译器完全看不出来,串位后开的是 6969 或 25 而不是 6881:6889。
+# 所以反面断言(只开 BT 时 6969 与 25 不许出现)和正面断言一样重要。udp 那条也是:代码注释自己
+# 点了「只挡 tcp 的话 uTP / DHT 走 udp 照样能把出口跑满」,那正是最容易漏的一半。
+#
+# forward_block_bt 是 deferred 字段(只在启动期落链),所以两次切换都要重启 + 等重连。
+_check_forward_block_bt_installs_port_drops() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+
+  # 起始状态必须是「三个封堵开关都关」:否则下面「6969 / 25 不许出现」测的是别的东西,
+  # 而串位缺陷恰好只能靠那两条抓出来。
+  local before
+  before="$(s 'iptables -S FORWARD')"
+  if printf '%s\n' "$before" | grep -qE -- '--dport (6881:6889|6969|25)( |$)'; then
+    env_error "开跑时 FORWARD 链里已有端口封堵规则,这组的反面断言不成立,不测"
+    return
+  fi
+
+  if ! s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun forward_block_bt true && systemctl restart nanotun" >/dev/null; then
+    _restore_forward_block_bt_off
+    env_error "开 forward_block_bt 失败,这组断言测不到"
+    return
+  fi
+  wait_until "BT 封堵 · 开启后两个客户端重连" 90 both_clients_online
+
+  local v4 v6 fam label text proto
+  v4="$(s 'iptables -S FORWARD')"
+  v6="$(s 'ip6tables -S FORWARD')"
+
+  # v4 与 v6 都要装上:BT over IPv6 是真实存在的,而 SetupIp6tables 是另一次调用、
+  # 历史上「只做了 v4」这种漏法在别的规则上出现过。
+  for fam in "IPv4:$v4" "IPv6:$v6"; do
+    label="${fam%%:*}"
+    text="${fam#*:}"
+    for proto in tcp udp; do
+      if printf '%s\n' "$text" | grep -q -- "-i tun.*-p $proto.*--dport 6881:6889.*-j DROP"; then
+        _pass "BT 封堵 · $label $proto 6881:6889 已 DROP 在 tun 入向"
+      else
+        _fail "BT 封堵 · $label 应有 $proto 6881:6889 的 DROP 规则" "$text"
+      fi
+    done
+  done
+
+  # 反面:只开了 BT,另两个开关仍是关的 —— 相邻 bool 实参串位就会在这里露出来。
+  if printf '%s\n' "$v4" | grep -qE -- '--dport (6969|25)( |$)'; then
+    _fail "BT 封堵 · 只开 forward_block_bt 却出现了 6969/25 的 DROP（三个相邻 bool 实参串位了）" "$v4"
+  else
+    _pass "BT 封堵 · 未误开 6969 / 25（三个相邻 bool 实参没串位）"
+  fi
+
+  # 还原并确认规则**消失**:证明上面那四条是这个开关驱动的,而不是某条一直都在的规则。
+  _restore_forward_block_bt_off
+  wait_until "BT 封堵 · 关闭后两个客户端重连" 90 both_clients_online
+  local after
+  after="$(s 'iptables -S FORWARD')"
+  if printf '%s\n' "$after" | grep -q -- '--dport 6881:6889'; then
+    _fail "BT 封堵 · 关掉开关后 6881:6889 的 DROP 仍在（那上面四条就不是它驱动的）" "$after"
+  else
+    _pass "BT 封堵 · 关掉后规则随之消失（确认由开关驱动）"
+  fi
+}
+
+# _restore_forward_block_bt_off 写死 false 并重启,不拷快照 —— 快照式还原会把上一轮的脏状态传下去。
+_restore_forward_block_bt_off() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun forward_block_bt false && systemctl restart nanotun" >/dev/null 2>&1 || true
+}
+
 # _check_jump_host_firewall_fails_closed_without_ipset 验 ipset 不可用时 jump_host_firewall
 # **拒绝启动**,而不是起来了却把受保护端口对全网敞开。
 #
@@ -319,6 +397,9 @@ phase_50_ops() {
   check "恢复配置后服务正常" "active" "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')"
 
   _check_deferred_fields_are_reported
+  # 紧跟在 deferred 后面:那条只验「SIGHUP 会报 forward_block_bt 需重启」,这条才验
+  # 重启之后规则真的落进了内核。两条合起来才把这个开关的链路走完。
+  _check_forward_block_bt_installs_port_drops
 
   # ── 踢线:瞬态关闭 + 自动重连 ─────────────────────────────────────────────
   local cid
