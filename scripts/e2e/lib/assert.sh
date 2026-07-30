@@ -131,6 +131,15 @@ check_rc() {
 
 # wait_until <描述> <超时秒> <命令...>
 # 命令退出码为 0 即算成立。成立后顺带报告耗时,便于发现「虽然通过但明显变慢了」。
+# E2E_SANITY_HOOK:超时**将要**报 FAIL 之前跑一遍的自证函数。返回非 0 表示
+# 「脚手架自己坏了」,这一条于是记成 ENV 而不是 FAIL(见 env_error 的说明)。
+#
+# 2026-07-30 加:那轮五条可达性断言全红(子网 HTTP 200、4via6 HTTP 200、三条端口转发),
+# 看着像子网与端口转发同时回归,实际是 C 上的 HTTP 靶站在中途没了 —— ping 类断言全过、
+# 只有打 :8088 的全红,而这个区别没人去看。定位它花掉的时间远超写这个钩子,而且下次
+# 靶站再挂,红的还是同样那五条、指向的还是同样错误的方向。
+: "${E2E_SANITY_HOOK:=}"
+
 wait_until() {
   local desc="$1" timeout="$2"; shift 2
   local start elapsed
@@ -143,11 +152,20 @@ wait_until() {
     fi
     elapsed=$(( $(date +%s) - start ))
     if (( elapsed >= timeout )); then
-      _fail "$desc" "${timeout}s 内未成立"
+      _fail_or_env "$desc" "${timeout}s 内未成立"
       return 1
     fi
     sleep 1
   done
+}
+
+# _fail_or_env:先给脚手架一次自证机会,自证不过就把这一条判给 ENV。
+_fail_or_env() {
+  if [[ -n "$E2E_SANITY_HOOK" ]] && ! "$E2E_SANITY_HOOK"; then
+    env_error "$1:$2,但脚手架自检未通过($E2E_SANITY_HOOK)—— 这一条测不到,别按产品缺陷查"
+    return 1
+  fi
+  _fail "$1" "$2"
 }
 
 # wait_while <描述> <超时秒> <命令...>

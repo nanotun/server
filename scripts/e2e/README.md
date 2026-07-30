@@ -23,7 +23,27 @@ min、子网撤销后是否立刻黑洞、LAN 回程会不会被源反欺骗守�
 - C 的防火墙放行 `E2E_TARGET_PORT`(默认 8088),否则测出来的「不通」是防火墙挡的;
 - 两台客户端上 `nanotun` 已就绪,且 `E2E_*_CONNECT_ARGS` 是能无人值守直接连上的形式
   (脚本会反复停/起会话);
-- 服务端 `nanotun-admin` 在 PATH 里。
+- 服务端 `nanotun-admin` 在 PATH 里;
+- **带默认路由接管的客户端(不加 `--no-default-route`,A 就是这种)需要一条管理面回程规则**,
+  见下。
+
+### 带默认路由的客户端:先装管理面回程规则
+
+客户端接管默认路由时,`default dev nanotun0` 的 metric 是 0,压过 DHCP 那条 WAN 默认路由。
+于是公网入向连接(比如你的 SSH)的**回包**也被塞进隧道、从出口节点发出去 —— 那些包源地址是
+本机公网 IP,机房出向过滤直接丢掉。表现是「机器活着、隧道正常、公网 SSH 超时」,而且只能从
+隧道内部(`ssh root@<vIP>`,经 SRV 跳)才进得去。
+
+规则只管回程,本机主动发起的流量源地址是 vIP,不匹配,照旧走隧道出口 —— 出口类断言不受影响:
+
+```bash
+# 在客户端上执行。gw/dev/src 三个值取 WAN 那条默认路由的。
+ip route add default via <WAN_网关> dev <WAN_网卡> table 100
+ip rule  add from <本机公网_IP> table 100 priority 100
+```
+
+`ip rule` 重启即失效,而失效之后你就进不去了。做成开机自启的 oneshot unit
+(`After=network-online.target`,不要依赖 nanotun —— 这条规则的意义正是隧道出问题时还能进来)。
 
 ## 用法
 

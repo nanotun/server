@@ -36,6 +36,9 @@ _route_is_pending() {
 
 phase_30_subnet() {
   phase_begin "阶段 3 · 子网路由与 4via6"
+  # 本阶段大半断言都打 C 的 :${E2E_TARGET_PORT} 端口。靶站中途没了会让它们集体变红,
+  # 而红的方向指着子网数据面 —— 挂上自检,让那种情况记成 ENV。
+  local E2E_SANITY_HOOK=target_alive
 
   local site v6target
   site="$(c_site_id)"

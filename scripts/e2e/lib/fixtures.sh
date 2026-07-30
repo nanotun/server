@@ -47,6 +47,14 @@ target_start() {
 
 target_stop() { c "systemctl stop nte2e-target 2>/dev/null; true" >/dev/null; }
 
+# target_alive:靶站还在 C 本机上应答吗。**在 C 上打 127.0.0.1**,不经隧道 ——
+# 这样它只回答「脚手架还在不在」,不掺进任何被测路径的成败。
+# 给 wait_until 的自检钩子用:凡是打 :$E2E_TARGET_PORT 的可达性断言,超时时先问这一句,
+# 靶站已经没了就该记 ENV(本轮不可信),而不是报成子网/端口转发的缺陷。
+target_alive() {
+  c "curl -s -o /dev/null --max-time 3 http://127.0.0.1:$E2E_TARGET_PORT/"
+}
+
 # ── 客户端会话 ──────────────────────────────────────────────────────────────
 # 用 systemd-run 起瞬时 unit:比 nohup 可靠,能拿到 is-active 和 journal,
 # 而且被 kick / disable 打断后的重连行为跟真实部署一致。

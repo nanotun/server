@@ -65,6 +65,30 @@ val="$(_broken_getter)"
 expect "取值未被 ENV 输出污染" "?" "$val"
 expect "父 shell 统计到" 6 "$(envcount)"
 
+echo "── wait_until 超时:脚手架自检不过时记 ENV,不报成产品缺陷 ──"
+# 这条钉的是 2026-07-30 那次:靶站中途没了,五条可达性断言集体变红,红的方向指着
+# 子网与端口转发。有自检钩子时,同样的超时应当落到 ENV 里(本轮不可信),而不是 FAIL。
+_never_true() { return 1; }
+_scaffold_broken() { return 1; }
+_scaffold_ok() { return 0; }
+fail_before=$E2E_FAIL
+env_before=$(envcount)
+E2E_SANITY_HOOK=_scaffold_broken wait_until "自检不过的超时" 1 _never_true
+expect "不计入 FAIL" "$fail_before" "$E2E_FAIL"
+expect "记入 ENV" "$((env_before + 1))" "$(envcount)"
+
+echo "── 自检通过时,超时仍然是正常的 FAIL(不能把真缺陷藏进 ENV)──"
+fail_before=$E2E_FAIL
+env_before=$(envcount)
+E2E_SANITY_HOOK=_scaffold_ok wait_until "自检通过的超时" 1 _never_true
+expect "计入 FAIL" "$((fail_before + 1))" "$E2E_FAIL"
+expect "未记 ENV" "$env_before" "$(envcount)"
+
+echo "── 没挂钩子时行为与从前一致 ──"
+fail_before=$E2E_FAIL
+E2E_SANITY_HOOK= wait_until "无钩子的超时" 1 _never_true
+expect "计入 FAIL" "$((fail_before + 1))" "$E2E_FAIL"
+
 echo "── 退出码:ENV 存在时为 2,优先于 FAIL 的 1 ──"
 e2e_report >/dev/null 2>&1; rc=$?
 expect "退出码" 2 "$rc"

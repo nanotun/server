@@ -39,6 +39,8 @@ ext_blocked() { [[ "$(ext_http_code "$1" 6)" == "000" ]]; }
 
 phase_60_web() {
   phase_begin "阶段 6 · 端口转发与 Web 安全边界"
+  # 三条「从公网可达」最终打的是 C 上那个靶站,理由同阶段 3。
+  local E2E_SANITY_HOOK=target_alive
 
   web_setup
 
