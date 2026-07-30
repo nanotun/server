@@ -135,27 +135,34 @@ _check_deferred_fields_are_reported() {
   check "deferred 这组跑完服务仍然存活" "active" "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')"
 }
 
-# _check_forward_block_bt_installs_port_drops 验 tun.forward_block_bt 真的把 DROP 规则装进内核。
+# _check_forward_port_drops_follow_their_own_knobs 验 tun 的三个端口封堵开关
+# (forward_block_bt / forward_block_tracker_6969 / forward_block_smtp_25)各自只装自己那几条规则。
 #
-# 为什么这条测「内核规则」而不是测「BT 流量被挡」:规则是 FORWARD 链上 `-i tun0 --dport 6881:6889`,
+# 为什么这组测「内核规则」而不是测「BT 流量被挡」:规则是 FORWARD 链上 `-i tun0 --dport ...`,
 # 唯一能碰到它的流量路径是「客户端 → 服务器自身 NAT 出网」(链里那条 `-i tun0 -o enp1s0 ACCEPT`)。
 # 而本套件里 A 固定选 C 当出口,去程是用户态直投给 C 的会话、压根不碰 tun0;子网路由同理。
-# 所以在当前三机拓扑下没有任何流量路径能打中这条规则 —— 硬造一条端到端断言只会得到一个
+# 所以在当前三机拓扑下没有任何流量路径能打中这些规则 —— 硬造一条端到端断言只会得到一个
 # 无论规则在不在都恒绿的假断言。能测且值得测的是「配置 → 内核规则」这一环。
 #
 # 这一环真有可错的地方:server.go 里 `SetupIptables(..., blockBT, blockTracker6969, blockSMTP25, ...)`
-# 是三个相邻的同类型 bool 实参,串位编译器完全看不出来,串位后开的是 6969 或 25 而不是 6881:6889。
-# 所以反面断言(只开 BT 时 6969 与 25 不许出现)和正面断言一样重要。udp 那条也是:代码注释自己
-# 点了「只挡 tcp 的话 uTP / DHT 走 udp 照样能把出口跑满」,那正是最容易漏的一半。
+# 是三个相邻的同类型 bool 实参,串位编译器完全看不出来,而这段是 Linux-only 的无单测代码
+# (纯函数 tunForwardPortDropRules 的单测测的是函数本身,测不到调用点)。
 #
-# forward_block_bt 是 deferred 字段(只在启动期落链),所以两次切换都要重启 + 等重连。
-_check_forward_block_bt_installs_port_drops() {
+# 三个开关**必须各自单独打开**来测,这一点是这组的设计要害:两个开关同时为 true 时,无论实参
+# 怎么对调,装出来的规则集一模一样 —— 于是串位在那种测法下完全不可见。所以每一档只开一个,
+# 并断言另两个的端口**不出现**,这样三个方向上的串位都能抓住。
+#
+# 协议形状也各自钉住:BT 要 tcp+udp(代码注释自己点了「只挡 tcp 的话 uTP / DHT 走 udp 照样能把
+# 出口跑满」),tracker 与 SMTP 只该有 tcp —— 多装一条 udp 会挡掉与这两个开关无关的服务。
+#
+# 三个都是 deferred 字段(只在启动期落链),所以每一档切换都要重启 + 等重连。
+_check_forward_port_drops_follow_their_own_knobs() {
   local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
   s "mkdir -p $dir" >/dev/null
   s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
 
-  # 起始状态必须是「三个封堵开关都关」:否则下面「6969 / 25 不许出现」测的是别的东西,
-  # 而串位缺陷恰好只能靠那两条抓出来。
+  # 起始状态必须是「三个开关都关」:否则每一档的反面断言测的是别的东西,
+  # 而串位缺陷恰好只能靠那些反面断言抓出来。
   local before
   before="$(s 'iptables -S FORWARD')"
   if printf '%s\n' "$before" | grep -qE -- '--dport (6881:6889|6969|25)( |$)'; then
@@ -163,48 +170,105 @@ _check_forward_block_bt_installs_port_drops() {
     return
   fi
 
-  if ! s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun forward_block_bt true && systemctl restart nanotun" >/dev/null; then
-    _restore_forward_block_bt_off
-    env_error "开 forward_block_bt 失败,这组断言测不到"
-    return
-  fi
-  wait_until "BT 封堵 · 开启后两个客户端重连" 90 both_clients_online
+  local stage field label want deny
+  for stage in bt tracker smtp; do
+    case "$stage" in
+      bt)
+        field=forward_block_bt; label="BT"
+        want="tcp:6881:6889 udp:6881:6889"
+        deny="tcp:6969 udp:6969 tcp:25 udp:25"
+        ;;
+      tracker)
+        field=forward_block_tracker_6969; label="tracker"
+        want="tcp:6969"
+        deny="tcp:6881:6889 udp:6881:6889 udp:6969 tcp:25 udp:25"
+        ;;
+      smtp)
+        field=forward_block_smtp_25; label="SMTP"
+        want="tcp:25"
+        deny="tcp:6881:6889 udp:6881:6889 tcp:6969 udp:6969 udp:25"
+        ;;
+    esac
 
-  local v4 v6 fam label text proto
+    if ! _set_forward_blocks "$field"; then
+      _set_forward_blocks ""
+      env_error "只开 tun.$field 失败,端口封堵这组测不到"
+      return
+    fi
+    wait_until "端口封堵 · $label · 只开这一个后两个客户端重连" 90 both_clients_online
+    _assert_forward_drop_stage "$label" "$field" "$want" "$deny"
+  done
+
+  # 三个都关回去,确认规则随之消失:证明上面那些正面断言是开关驱动的,
+  # 而不是某几条一直都在的规则。
+  _set_forward_blocks ""
+  wait_until "端口封堵 · 三个都关回去后两个客户端重连" 90 both_clients_online
+  local after
+  after="$(s 'iptables -S FORWARD')"
+  if printf '%s\n' "$after" | grep -qE -- '--dport (6881:6889|6969|25)( |$)'; then
+    _fail "端口封堵 · 三个都关掉后仍有端口 DROP 残留（那些正面断言就不是开关驱动的）" "$after"
+  else
+    _pass "端口封堵 · 三个都关掉后规则全部消失（确认由各自的开关驱动）"
+  fi
+}
+
+# _fwd_drop_exists <链文本> <tcp|udp> <dport> 判断链里有没有这么一条 tun 入向的 DROP。
+# 限定 `-i tun` 是必要的:不限定的话会捞到与这三个开关无关的规则,反面断言就会假红。
+_fwd_drop_exists() {
+  printf '%s\n' "$1" | grep -qE -- "-i tun.*-p $2 .*--dport $3( |\$).*-j DROP"
+}
+
+# _assert_forward_drop_stage <标签> <字段名> <期望的 proto:port 列表> <禁止的 proto:port 列表>
+_assert_forward_drop_stage() {
+  local label="$1" field="$2" want="$3" deny="$4"
+  local v4 v6 fam famlabel text item proto port bad=""
   v4="$(s 'iptables -S FORWARD')"
   v6="$(s 'ip6tables -S FORWARD')"
 
-  # v4 与 v6 都要装上:BT over IPv6 是真实存在的,而 SetupIp6tables 是另一次调用、
-  # 历史上「只做了 v4」这种漏法在别的规则上出现过。
+  # v4 与 v6 都要装上:这两族走的是 SetupIptables / SetupIp6tables 两次不同的调用,
+  # 「只做了 v4」这种漏法在别的规则上出现过,而 BT / SMTP over IPv6 都是真实存在的。
   for fam in "IPv4:$v4" "IPv6:$v6"; do
-    label="${fam%%:*}"
+    famlabel="${fam%%:*}"
     text="${fam#*:}"
-    for proto in tcp udp; do
-      if printf '%s\n' "$text" | grep -q -- "-i tun.*-p $proto.*--dport 6881:6889.*-j DROP"; then
-        _pass "BT 封堵 · $label $proto 6881:6889 已 DROP 在 tun 入向"
+    for item in $want; do
+      proto="${item%%:*}"
+      port="${item#*:}"
+      if _fwd_drop_exists "$text" "$proto" "$port"; then
+        _pass "端口封堵 · $label · $famlabel $proto $port 已 DROP 在 tun 入向"
       else
-        _fail "BT 封堵 · $label 应有 $proto 6881:6889 的 DROP 规则" "$text"
+        _fail "端口封堵 · $label · $famlabel 应有 $proto $port 的 DROP 规则" "$text"
       fi
     done
   done
 
-  # 反面:只开了 BT,另两个开关仍是关的 —— 相邻 bool 实参串位就会在这里露出来。
-  if printf '%s\n' "$v4" | grep -qE -- '--dport (6969|25)( |$)'; then
-    _fail "BT 封堵 · 只开 forward_block_bt 却出现了 6969/25 的 DROP（三个相邻 bool 实参串位了）" "$v4"
+  # 反面:只开了这一个开关,别的端口一条都不许出现。相邻 bool 实参串位就在这里露出来。
+  for item in $deny; do
+    proto="${item%%:*}"
+    port="${item#*:}"
+    if _fwd_drop_exists "$v4" "$proto" "$port"; then
+      bad+="$proto/$port "
+    fi
+  done
+  if [[ -z "$bad" ]]; then
+    _pass "端口封堵 · $label · 只装了自己那几条，没碰别的开关（三个相邻 bool 实参没串位）"
   else
-    _pass "BT 封堵 · 未误开 6969 / 25（三个相邻 bool 实参没串位）"
+    _fail "端口封堵 · $label · 只开 tun.$field 却多装了 ${bad}（三个相邻 bool 实参串位了）" "$v4"
   fi
+}
 
-  # 还原并确认规则**消失**:证明上面那四条是这个开关驱动的,而不是某条一直都在的规则。
-  _restore_forward_block_bt_off
-  wait_until "BT 封堵 · 关闭后两个客户端重连" 90 both_clients_online
-  local after
-  after="$(s 'iptables -S FORWARD')"
-  if printf '%s\n' "$after" | grep -q -- '--dport 6881:6889'; then
-    _fail "BT 封堵 · 关掉开关后 6881:6889 的 DROP 仍在（那上面四条就不是它驱动的）" "$after"
-  else
-    _pass "BT 封堵 · 关掉后规则随之消失（确认由开关驱动）"
-  fi
+# _set_forward_blocks [要开的字段] 把三个封堵开关显式写成「只开指定那个」并重启。
+#
+# 三个都显式写,而不是只改一个:只改一个就得假定另两个当前是关的,而那个假定一旦不成立
+# (上一档没还原干净、上一轮留了脏状态),表现就是反面断言假红。留空表示三个全关。
+_set_forward_blocks() {
+  local on="${1:-}"
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  local f val cmd=""
+  for f in forward_block_bt forward_block_tracker_6969 forward_block_smtp_25; do
+    if [[ "$f" == "$on" ]]; then val=true; else val=false; fi
+    cmd+="python3 $dir/tomlset.py /etc/nanotun/config.toml tun $f $val && "
+  done
+  s "${cmd}systemctl restart nanotun" >/dev/null
 }
 
 # _check_udp_relay_stays_disabled 验 hysteria.udp_relay_enabled 关着时,通过认证的 hy2 客户端
@@ -369,12 +433,6 @@ _ensure_hy2_probe() {
 _restore_udp_relay_off() {
   local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
   s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria udp_relay_enabled false && systemctl restart nanotun" >/dev/null 2>&1 || true
-}
-
-# _restore_forward_block_bt_off 写死 false 并重启,不拷快照 —— 快照式还原会把上一轮的脏状态传下去。
-_restore_forward_block_bt_off() {
-  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
-  s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun forward_block_bt false && systemctl restart nanotun" >/dev/null 2>&1 || true
 }
 
 # _check_jump_host_firewall_fails_closed_without_ipset 验 ipset 不可用时 jump_host_firewall
@@ -563,7 +621,7 @@ phase_50_ops() {
   _check_deferred_fields_are_reported
   # 紧跟在 deferred 后面:那条只验「SIGHUP 会报 forward_block_bt 需重启」,这条才验
   # 重启之后规则真的落进了内核。两条合起来才把这个开关的链路走完。
-  _check_forward_block_bt_installs_port_drops
+  _check_forward_port_drops_follow_their_own_knobs
   _check_udp_relay_stays_disabled
 
   # ── 踢线:瞬态关闭 + 自动重连 ─────────────────────────────────────────────
