@@ -112,4 +112,95 @@ phase_10_exit() {
   wait_until "出口节点回归后自动恢复" 60 probe_egress_is "$E2E_C_HOST"
   # C 重连后子网宣告要重新生效,后面的阶段依赖它。
   wait_until "出口节点回归后子网重新可达" 30 probe_ping a "$E2E_C_LAN4_HOST"
+
+  _check_exit_mode_isolate_drops_relay_but_keeps_the_server_reachable
+}
+
+# _check_exit_mode_isolate_drops_relay_but_keeps_the_server_reachable
+# 验 [tun] exit_mode = "isolate" 的三件事:掐掉客户端互访、掐掉一切经 peer 的中转、
+# 但**不**掐客户端与服务器本身。
+#
+# 为什么值得实机验:isolate 与「出口节点 / 子网路由」互斥,而这个互斥是**语义**上的,不是配置
+# 校验能拦住的 —— 库里那些 approved 记录在 isolate 下依然显示为 approved,只是再也不承载流量。
+# 2026-07-25 三机实测就踩过:A 经已批准的出口 C 出网 curl 全超时、子网也黑洞,而客户端只收到
+# 一句「出口已离线」。现在 EgressSelect 会当场拒(reason=isolate)并在启动期打一条 WARN 说清
+# 「这些审批在本模式下不会承载流量」—— 那条 WARN 是运维唯一的线索,必须钉住。
+#
+# 判别器是最后那条「A 与服务器自身仍通」。没有它,这组断言无法区分两种局面:
+#   - isolate 按设计只掐客户端之间的转发(正确);
+#   - 规则装错把整个数据面打死(缺陷)。
+# 两者在前三条断言上表现完全一样。isolate 装的是 FORWARD 链 `-i tun -o tun DROP`,而客户端到
+# 服务器自己的包走 INPUT 不走 FORWARD,所以这条必须仍通。
+#
+# exit_mode 不可热更(改 iptables 规则集 + 重建 NAT 表),所以两次切换都要重启 + 等重连。
+_check_exit_mode_isolate_drops_relay_but_keeps_the_server_reachable() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+
+  # 服务器自己的 mesh IPv4 运行时查:env 里没有这一项,而按 A 的 vIP 去猜网关(x.x.x.1)在
+  # 换网段时会静默猜错 —— 猜错的表现是判别器恒为「不通」,于是它再也起不到判别作用。
+  local srv_vip
+  srv_vip="$(s "ip -4 -o addr show | awk '/${E2E_MESH_PREFIX:-10.201.}/{split(\$4,a,\"/\"); print a[1]; exit}'" | tr -d '[:space:]')"
+  if [[ -z "$srv_vip" ]]; then
+    env_error "查不到服务器自己的 mesh IPv4,isolate 这组缺判别器,不测"
+    return
+  fi
+  # 判别器本身要先在 mesh 模式下自证:它现在必须是通的,否则切过去之后「仍通」这条毫无意义。
+  if ! probe_ping a "$srv_vip"; then
+    env_error "mesh 模式下 A 就 ping 不到服务器 mesh 地址($srv_vip),isolate 这组的判别器不成立,不测"
+    return
+  fi
+
+  local since
+  since="$(s 'date +%s' | tr -d '[:space:]')"
+  if ! s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun exit_mode '\"isolate\"' && systemctl restart nanotun" >/dev/null; then
+    _restore_exit_mode_mesh
+    env_error "切 exit_mode=isolate 失败,这组断言测不到"
+    return
+  fi
+  wait_until "isolate · 切换后两个客户端重连" 90 both_clients_online
+
+  wait_while "isolate · A→C mesh 被掐断（DROP i==o）"        25 probe_ping a "$E2E_C_VIP4"
+  wait_while "isolate · A→C 背后的 LAN 也被掐断（子网也是客户端间中转）" 25 probe_ping a "$E2E_C_LAN4_HOST"
+  wait_until "isolate · A 经出口 C 出网被拒（fail-closed，不是静默黑洞）" 30 probe_egress_blocked
+
+  # 判别器:isolate 只掐客户端之间的转发,客户端与服务器自身必须仍通。
+  check "isolate · A 与服务器自身仍可达（说明掐的是转发，不是整个数据面）" "0" \
+    "$(probe_ping a "$srv_vip" && echo 0 || echo 1)"
+
+  # 拒绝要在日志里说明是 isolate 造成的 —— 客户端侧只会显示「出口已离线」,运维查不到真因。
+  local log
+  log="$(s "journalctl -u nanotun --since @$since --no-pager")"
+  if echo "$log" | grep -q "exit_mode=isolate 禁止客户端互通"; then
+    _pass "isolate · 拒绝经 peer 出口时日志点明是 isolate（客户端侧只显示「出口已离线」）"
+  else
+    _fail "isolate · 应有「exit_mode=isolate 禁止客户端互通」的拒绝日志" "$log"
+  fi
+
+  # 启动期那条 WARN 是运维唯一的线索:库里的 approved 记录在 isolate 下是哑弹,列表上却照样显示已批准。
+  if echo "$log" | grep -q "在本模式下不会承载流量"; then
+    _pass "isolate · 启动期就警告「已批准的出口/子网在本模式下不承载流量」（否则审批看着有效实则失效）"
+  else
+    _fail "isolate · 启动期应警告库里已批准的中转类审批在本模式下失效" "$log"
+  fi
+  # 顺带钉住计数的去重:C 同时批了 0.0.0.0/0 与 ::/0,这是**一台**出口设备而不是两条。
+  # 按条计会让运维以为自己有两台出口机 —— 一个只在双栈都批过时才暴露的差一错。
+  # 不拿「WARN 存在」当前置条件:那样一旦 WARN 整条消失,这句会静默不执行 ——
+  # 消失的断言比红的断言危险,它在汇总里看不见。
+  check_contains "isolate · 提醒里出口设备按机器去重（C 的 v4+v6 两条 = 1 台）" "exit_devices=1" \
+    "$(echo "$log" | grep "在本模式下不会承载流量" || echo "(日志里没有这条提醒)")"
+
+  # 还原:写死 mesh 而不是拷快照 —— 快照式还原会把上一轮留下的脏状态一路传下去(见阶段 2 的教训)。
+  _restore_exit_mode_mesh
+  wait_until "isolate · 还原 mesh 后两个客户端重连" 90 both_clients_online
+  wait_until "isolate · 还原后 A→C mesh 恢复"      30 probe_ping a "$E2E_C_VIP4"
+  wait_until "isolate · 还原后经出口 C 出网恢复"    60 probe_egress_is "$E2E_C_HOST"
+  wait_until "isolate · 还原后子网恢复"            30 probe_ping a "$E2E_C_LAN4_HOST"
+}
+
+# _restore_exit_mode_mesh 把 exit_mode 写回 mesh 并重启(不可热更)。
+_restore_exit_mode_mesh() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun exit_mode '\"mesh\"' && systemctl restart nanotun" >/dev/null 2>&1 || true
 }

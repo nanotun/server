@@ -37,6 +37,30 @@ _check_c_subnet_routes_are_approved() {
   return 1
 }
 
+# _check_c_is_an_approved_exit 断言 C 的默认路由(0.0.0.0/0 / ::/0)在库里已批准。
+#
+# 为什么单独立一条:这是后面一大批断言的**隐式前提**,而它缺失时的表现极具误导性。
+# 2026-07-30 单独跑阶段 1 踩到:开跑时 device 31 的 0.0.0.0/0 整行不存在,于是阶段 1 开头
+# 五条(MagicDNS 的 A/AAAA/上游转发、公网 UDP DNS、2MB 下载、DF 边界)集体红 —— 它们全都
+# 要经 C 出网。跑到中段 `exit designate` 把该行建出来之后,后面的断言又全绿了,收尾还多报
+# 一条「残留」。一次开跑状态问题,伪装成了六条互不相干的产品缺陷。
+#
+# 同样只断言不自动 designate:自动补会让「这行为什么会没了」永远查不出来。已知的正常路径
+# (客户端重连、服务端重启)实测都不会删它,所以真出现就是值得查的。
+_check_c_is_an_approved_exit() {
+  local approved
+  approved="$(adm "route list --device $E2E_C_DEVICE_ID --status approved")"
+  if echo "$approved" | grep -q '0\.0\.0\.0/0'; then
+    _pass "基线 · C 的默认路由已批准（后续出口类断言的前提）"
+    return 0
+  fi
+  _fail "基线 · C 应是已批准的出口（缺 0.0.0.0/0 的 approved 记录）" \
+    "$(adm "route list --device $E2E_C_DEVICE_ID")
+提示:nanotun-admin exit designate $E2E_C_DEVICE_ID 可恢复,但请先记下它是怎么丢的 ——
+缺这行时,阶段 1 开头所有经 C 出网的断言都会红,看起来像出口功能坏了,其实是开跑状态不对。"
+  return 1
+}
+
 phase_00_baseline() {
   phase_begin "阶段 0 · 基线"
 
@@ -73,6 +97,7 @@ phase_00_baseline() {
   # C 的子网宣告必须已批准 —— 阶段 3 与阶段 6 的 LAN 目标都建立在它之上,而基线原有的
   # 四条断言全都与审批状态无关(见函数注释里那次跑偏的排查)。
   _check_c_subnet_routes_are_approved || return 1
+  _check_c_is_an_approved_exit || return 1
 
   # 基线四条路径。任意一条不通,后面的「阻断/恢复」类断言都无法解读。
   wait_until "基线 · A 可达公网（经出口 C）" 30 probe_egress_is "$E2E_C_HOST"
