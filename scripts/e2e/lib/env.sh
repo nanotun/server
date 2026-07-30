@@ -132,6 +132,35 @@ s() { _e2e_run "$E2E_SRV_HOST" "${E2E_SRV_PASS:-}" "$@"; }
 a() { _e2e_run "$E2E_A_HOST"   "${E2E_A_PASS:-}"   "$@"; }
 c() { _e2e_run "$E2E_C_HOST"   "${E2E_C_PASS:-}"   "$@"; }
 
+# push_file <s|a|c> <本地路径> <远端路径> 把文件推到指定机器。
+#
+# 已有的 `s "cat > f" < g` 那个写法只适合小文本:它把整个文件塞进 ssh 的 stdin,而
+# _e2e_run 会把 stdout 收进变量 —— 传二进制时既慢又容易被中间环节掺进东西。需要传
+# 可执行文件(比如 remote/hy2udpprobe)时用这个,走 scp。
+push_file() {
+  local who="$1" src="$2" dst="$3"
+  local host pass
+  case "$who" in
+    s) host="$E2E_SRV_HOST"; pass="${E2E_SRV_PASS:-}" ;;
+    a) host="$E2E_A_HOST";   pass="${E2E_A_PASS:-}"   ;;
+    c) host="$E2E_C_HOST";   pass="${E2E_C_PASS:-}"   ;;
+    *) echo "push_file: 未知目标 $who" >&2; return 2 ;;
+  esac
+  local -a opts
+  mapfile -t opts < <(_e2e_ssh_opts)
+  local attempt rc
+  for attempt in 1 2 3; do
+    if [[ -n "$pass" ]]; then
+      sshpass -p "$pass" scp "${opts[@]}" "$src" "$E2E_SSH_USER@$host:$dst" >/dev/null 2>&1; rc=$?
+    else
+      scp "${opts[@]}" "$src" "$E2E_SSH_USER@$host:$dst" >/dev/null 2>&1; rc=$?
+    fi
+    (( rc == 0 )) && return 0
+    sleep $(( attempt * 5 ))
+  done
+  return "$rc"
+}
+
 # 断言「命令应当失败」时取真实退出码。用法:rc_of adm 'lease set ...'
 rc_of() {
   local runner="$1"; shift

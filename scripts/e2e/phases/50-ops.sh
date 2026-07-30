@@ -207,6 +207,170 @@ _check_forward_block_bt_installs_port_drops() {
   fi
 }
 
+# _check_udp_relay_stays_disabled 验 hysteria.udp_relay_enabled 关着时,通过认证的 hy2 客户端
+# 也拿不到 UDP 中转能力;开着时确实能把服务器当通用 UDP 代理用。
+#
+# 这个开关是纯安全开关:关着时服务端设 DisableUDP,hy2 只承担 nanotun 自己的隧道流量;开着时
+# 任何**通过认证的** hy2 客户端都能借它发任意 UDP(DNS 放大、内网横移),代码里那条启动期 WARN
+# 就是为这个打的。误开之后从外部看不出任何异样 —— 隧道照常工作,攻击面悄悄变大。
+#
+# 断言用 remote/hy2udpprobe(用仓库自己依赖的 hysteria 客户端库写的,不必在被测机上装第三方软件)。
+# 它以合法客户端身份完成握手 —— mTLS(服务端是 RequireAndVerifyClientCert)+ salamander 混淆
+# + hy2 口令,三样缺一样都连不上 —— 然后尝试向公网 DNS 发查询并等应答。
+#
+# 正面那半(开启后真的中转成功)是这组的判别器:只有反面那半的话,探针连不上、口令取错、混淆没配
+# 这些脚手架问题全都表现为「udp_disabled」,于是断言恒绿而什么都没测到。
+#
+# udp_relay_enabled 是 deferred 字段(只在启动期构建 hy2 server),所以两次切换都要重启 + 等重连。
+_check_udp_relay_stays_disabled() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  local probe="/tmp/hy2udpprobe"
+  if ! _ensure_hy2_probe "$probe"; then
+    return 0
+  fi
+
+  # 口令与混淆口令都从服务端真配置里取:写死在脚本里会在换环境后静默变成「连不上」,
+  # 而连不上恰好长得像「UDP 被拦住」—— 那正是这组最怕的假绿。
+  # 取值必须**段感知**:password / listen_addr 这些键名在 config.toml 里多个段都有
+  # (server / hysteria / reality / web),按全文 grep 再 head -1 是碰运气 —— 实测
+  # listen_addr 就有四条,拼起来变成一个非法端口,而那个错误长得像「探针连不上」。
+  local pw ob port
+  pw="$(_hy2_conf_value password)"
+  ob="$(_hy2_conf_value obfs_salamander_password)"
+  port="$(_hy2_conf_value listen_addr | grep -oE '[0-9]+$')"
+  if [[ -z "$pw" || -z "$port" ]]; then
+    env_error "取不到 hy2 口令/端口,UDP 中转这组测不到"
+    return 0
+  fi
+
+  local cert_args=""
+  if [[ "$(a "test -f /tmp/probe-cert.pem && echo yes" | tr -d '[:space:]')" == "yes" ]]; then
+    cert_args="-cert /tmp/probe-cert.pem -key /tmp/probe-key.pem"
+  fi
+  local cmd="$probe -addr $E2E_SRV_HOST:$port -password '$pw' -obfs '$ob' $cert_args -sni localhost"
+
+
+  # ── 关着(默认):握手成功,但拿不到 UDP 能力 ──────────────────────────────
+  local out
+  out="$(a "$cmd")"
+  case "$out" in
+    *handshake_failed*)
+      env_error "hy2 探针握不上手($out),UDP 中转这组测不到 —— 连不上会伪装成「UDP 被拦住」"
+      return 0
+      ;;
+    *udp_disabled*) _pass "hy2 UDP 中转 · 关着时通过认证的客户端也拿不到 UDP 能力" ;;
+    *) _fail "hy2 UDP 中转 · 关着时不该给出 UDP 能力" "$out" ;;
+  esac
+
+  # ── 开着:确实能把服务器当通用 UDP 代理 ────────────────────────────────
+  local since
+  since="$(s 'date +%s' | tr -d '[:space:]')"
+  if ! s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria udp_relay_enabled true && systemctl restart nanotun" >/dev/null; then
+    _restore_udp_relay_off
+    env_error "开 udp_relay_enabled 失败,正面那半测不到"
+    return 0
+  fi
+  wait_until "hy2 UDP 中转 · 开启后两个客户端重连" 90 both_clients_online
+
+  out="$(a "$cmd")"
+  if [[ "$out" == *udp_relayed* ]]; then
+    _pass "hy2 UDP 中转 · 开启后真的中转成功（说明上面那条不是「探针连不上」造成的假绿）"
+  else
+    _fail "hy2 UDP 中转 · 开启后应能中转到公网 UDP" "$out"
+  fi
+
+  # 攻击面变大这件事必须在启动日志里说清楚,否则误开之后无人知晓。
+  local log
+  log="$(s "journalctl -u nanotun --since @$since --no-pager")"
+  if echo "$log" | grep -q "作为通用 UDP 代理使用"; then
+    _pass "hy2 UDP 中转 · 开启时启动期就警告攻击面变大"
+  else
+    _fail "hy2 UDP 中转 · 开启时应在启动期警告「作为通用 UDP 代理使用」" "$(echo "$log" | grep -i hy2 | tail -5)"
+  fi
+
+  _restore_udp_relay_off
+  wait_until "hy2 UDP 中转 · 关闭后两个客户端重连" 90 both_clients_online
+  out="$(a "$cmd")"
+  if [[ "$out" == *udp_disabled* ]]; then
+    _pass "hy2 UDP 中转 · 关回去之后能力随之收回"
+  else
+    _fail "hy2 UDP 中转 · 关回去之后不该还能中转" "$out"
+  fi
+}
+
+# _hy2_conf_value <键名> 取 [hysteria] 段里该键的值(去掉引号)。
+_hy2_conf_value() {
+  s "awk '/^\[hysteria\]/{f=1;next} /^\[/{f=0} f && /^$1 *=/{print; exit}' /etc/nanotun/config.toml" \
+    | cut -d'"' -f2 | tr -d '[:space:]'
+}
+
+# _ensure_hy2_probe 保证客户端 A 上有可用的探针与客户端证书,缺就现做。
+#
+# 不做成「缺了就 skip」:skip 在汇总里是一行灰字,换个环境跑就会永远灰着,而这组测的是
+# 一个安全开关 —— 静默不测比红更糟。所以缺二进制就本地交叉编译推上去,缺证书就用服务端
+# 那把客户端 CA 现签一张(hy2 入口是 RequireAndVerifyClientCert,没证书连握手都过不去)。
+_ensure_hy2_probe() {
+  local probe="$1"
+  if [[ "$(a "test -x $probe && echo yes" | tr -d '[:space:]')" != "yes" ]]; then
+    local bin="/tmp/nte2e-hy2udpprobe.$$"
+    if ! (cd "$E2E_ROOT/../.." && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$bin" ./scripts/e2e/remote/hy2udpprobe/) >/dev/null 2>&1; then
+      env_error "编译 hy2udpprobe 失败(需要本机有 Go 工具链),hy2 UDP 中转这组测不到"
+      return 1
+    fi
+    if ! push_file a "$bin" "$probe"; then
+      rm -f "$bin"
+      env_error "把 hy2udpprobe 推到客户端 A 失败,hy2 UDP 中转这组测不到"
+      return 1
+    fi
+    rm -f "$bin"
+    a "chmod +x $probe" >/dev/null
+    note "已把 hy2udpprobe 编译并推到客户端 A"
+  fi
+
+  if [[ "$(a "test -f /tmp/probe-cert.pem && echo yes" | tr -d '[:space:]')" == "yes" ]]; then
+    return 0
+  fi
+  # 现签一张:CA 证书路径取自真配置,私钥按同名 -key 兄弟找(install 脚本就是这么摆的)。
+  local ca
+  ca="$(s "grep -oE '^tls_client_ca_file = \"[^\"]+\"' /etc/nanotun/config.toml | cut -d'\"' -f2" | tr -d '[:space:]')"
+  if [[ -z "$ca" ]]; then
+    note "hy2 入口未开 mTLS,探针不带客户端证书"
+    return 0
+  fi
+  # 配置里这一项通常是相对路径(相对 /etc/nanotun),而远端命令的 cwd 是登录目录 ——
+  # 直接拿去 test -f 会永远说「找不到」,于是这组静默退化成 ENV。先补成绝对路径。
+  [[ "$ca" == /* ]] || ca="/etc/nanotun/$ca"
+  local cadir cabase cakey
+  cadir="$(dirname "$ca")"
+  cabase="$(basename "$ca" .pem)"
+  cakey="$cadir/${cabase}-key.pem"
+  if [[ "$(s "test -f $cakey && echo yes" | tr -d '[:space:]')" != "yes" ]]; then
+    env_error "找不到客户端 CA 私钥($cakey),签不出探针证书,hy2 UDP 中转这组测不到"
+    return 1
+  fi
+  if ! s "cd $cadir && openssl req -newkey rsa:2048 -nodes -keyout /tmp/probe-key.pem -subj '/CN=e2e-hy2-udp-probe' -out /tmp/probe.csr 2>/dev/null && openssl x509 -req -in /tmp/probe.csr -CA $(basename "$ca") -CAkey $(basename "$cakey") -CAcreateserial -days 30 -out /tmp/probe-cert.pem" >/dev/null 2>&1; then
+    env_error "用客户端 CA 签探针证书失败,hy2 UDP 中转这组测不到"
+    return 1
+  fi
+  local f
+  for f in probe-cert.pem probe-key.pem; do
+    s "cat /tmp/$f" > "/tmp/nte2e-$f" 2>/dev/null
+    if ! push_file a "/tmp/nte2e-$f" "/tmp/$f"; then
+      env_error "把探针证书推到客户端 A 失败,hy2 UDP 中转这组测不到"
+      return 1
+    fi
+    rm -f "/tmp/nte2e-$f"
+  done
+  note "已用服务端客户端 CA 现签探针证书并推到 A"
+  return 0
+}
+
+# _restore_udp_relay_off 写死 false 并重启。这个开关关系到攻击面,还原绝不能依赖快照。
+_restore_udp_relay_off() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria udp_relay_enabled false && systemctl restart nanotun" >/dev/null 2>&1 || true
+}
+
 # _restore_forward_block_bt_off 写死 false 并重启,不拷快照 —— 快照式还原会把上一轮的脏状态传下去。
 _restore_forward_block_bt_off() {
   local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
@@ -400,6 +564,7 @@ phase_50_ops() {
   # 紧跟在 deferred 后面:那条只验「SIGHUP 会报 forward_block_bt 需重启」,这条才验
   # 重启之后规则真的落进了内核。两条合起来才把这个开关的链路走完。
   _check_forward_block_bt_installs_port_drops
+  _check_udp_relay_stays_disabled
 
   # ── 踢线:瞬态关闭 + 自动重连 ─────────────────────────────────────────────
   local cid
