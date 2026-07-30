@@ -1,27 +1,38 @@
 name: CI
 
-# 三件套静态门禁 + 构建。作用见 README/提交说明:
-#   - go vet         查可疑写法(格式化串、锁拷贝、unreachable 等)—— 阻断
-#   - staticcheck    查正确性/死代码/误用 API/deprecated  —— 先设为信息性(不阻断),待残留项清零后可翻成阻断
-#   - govulncheck    查依赖 + 标准库中「代码真实调用到」的已知 CVE —— 信息性(存在上游暂无修复的条目,硬阻断会卡死合并)
-# 逻辑层的问题靠 review/测试;这三件套专补「依赖/stdlib 层」这条 review 看不到的盲区。
+# 门禁分三层:
+#   - 静态:go vet 阻断;staticcheck / govulncheck 信息性(理由见各 job)
+#   - 测试:go test ./... 阻断 —— 全仓约 3 分钟,是这个仓最主要的回归网
+#   - 竞态:-race 单独放夜间 —— 太慢(cmd/nanotun-web 单包就 672s),挂在每个 PR 上不现实
+#
+# 为什么必须有测试这一层:此前 CI 只有 build + vet,于是 nanotund 92.5% / web 97.0% /
+# admin 97.1% 的覆盖率、两百多条归档变异、132 项三机 e2e、断言库自测 —— 一条都不拦合并。
+# 那批守卫测试的全部价值在于「改坏了会有人知道」,没有门禁跑它们就只是一次性的历史记录。
 
 on:
   push:
     branches: [ main ]
   pull_request:
+  # 夜间竞态检测(UTC 18:00 = 北京时间凌晨 2 点),另留手动入口。
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 # 同一分支/PR 上新 push 取消旧运行,省 CI 额度。
+# 分组带上 event_name:否则往 main 推一次就会把正在跑的夜间 -race 掐掉(它也在 main 上)。
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
+  # 下面四个 job 在 schedule 上跳过:夜间那轮只为跑 -race,把静态检查再跑一遍纯烧额度。
+  # workflow_dispatch 不跳 —— 手动触发时通常就是想要一次完整的。
   build-vet:
     name: build + go vet (blocking)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,9 +46,61 @@ jobs:
         run: go build ./...
       - name: go vet
         run: go vet ./...
+      # 格式漂移靠人看不住:第 47 轮一次就查出两个文件没格式化,其中一个是历史遗留,
+      # 混在功能 diff 里没人会注意。third_party 是 vendored 的上游代码,不归我们管。
+      - name: gofmt 漂移
+        run: |
+          drift="$(gofmt -l . | grep -v '^third_party/' || true)"
+          if [[ -n "$drift" ]]; then
+            echo "以下文件未格式化,跑 gofmt -w 修:"
+            echo "$drift"
+            exit 1
+          fi
+          echo "gofmt 干净"
+
+  test:
+    name: go test (blocking)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    # 本地(多核)整仓 3 分钟,runner 核少会串行一些。30 分钟够宽,又不至于让卡死的
+    # 用例白烧六小时额度。
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: true
+      # -count=1 关掉结果缓存:门禁要的是「这次真的跑过」。
+      # -timeout 25m 覆盖 go 默认的单包 10 分钟 —— cmd/nanotund 本地就要 180s,
+      # runner 上更慢,默认值会在负载高的时候偶发超时并打出一份看着像死锁的 dump。
+      - name: go test
+        run: go test ./... -count=1 -timeout 25m
+      # 需要 root 的用例(jump_host_firewall、iptables REDIRECT、TUN)都会自己 t.Skip,
+      # 所以非 root 的 runner 上不会误红;代价是那几条在 CI 里等于没跑,只能靠三机 e2e。
+      - name: 三机 e2e 断言库自测（不连机器）
+        run: ./scripts/e2e/selftest.sh
+
+  race:
+    name: go test -race (nightly)
+    # 只在夜间与手动触发时跑:整仓 -race 太慢,cmd/nanotun-web 单包就要 672s。
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: true
+      # -timeout 30m 是必须的:默认 10 分钟会在 cmd/nanotun-web 上超时,而超时打出来的
+      # goroutine dump 看着极像死锁 —— 踩过一次,查了很久才发现是超时不是死锁。
+      - name: go test -race
+        run: go test ./... -race -count=1 -timeout 30m
 
   staticcheck:
     name: staticcheck (informational)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,6 +119,7 @@ jobs:
 
   govulncheck:
     name: govulncheck (informational)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
