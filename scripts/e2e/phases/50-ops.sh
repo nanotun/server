@@ -71,6 +71,61 @@ _check_deferred_fields_are_reported() {
   check "deferred 这组跑完服务仍然存活" "active" "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')"
 }
 
+# _login_success_actor_since 取某用户在 $2 之后最新一条 login.success 的 actor;没有就空串。
+_login_success_actor_since() {
+  s "sqlite3 '$E2E_DB_PATH' \"select actor from audit_logs where action='login.success' and target='$1' and at>=$2 order by id desc limit 1;\"" \
+    | tr -d '[:space:]'
+}
+
+_has_fresh_login() { [[ -n "$(_login_success_actor_since "$1" "$2")" ]]; }
+
+# _check_login_attribution_uses_real_client_ip 验登录归因落在客户端**真实公网 IP** 上。
+#
+# 两个客户端都不是直连:C 走 hy2(QUIC),A 走 REALITY,两条都经本机环回 smux 承载再进
+# handleVPNLink。承载那一跳会把真实客户端地址用 PROXY v2 头带过来 —— 这一步一旦坏掉,
+# 服务端回退成环回地址,于是**所有**经该承载的会话在审计里都成了 127.0.0.1:
+#   - 事后按 IP 追爆破/扫描直接失效(全是同一个地址);
+#   - per-IP 登录限速退化成全局限速,一个客户端能把所有人锁死;
+#   - PoW 难度按 IP 累进也跟着失效。
+# 而这些症状都不会让任何现有断言变红:隧道照通、会话照在。
+#
+# hy2 那条尤其脆:客户端地址来自 QUIC,是 *net.UDPAddr,而 go-proxyproto 要求 src 与 dst
+# 同类型,不归一就整个头静默退化成 LOCAL(无源)。2026-07-25 就这么坏过一次(当时审计
+# actor 仍是 127.0.0.1),靠双机手工实测发现,一直没有自动回归 —— 这条补的就是它。
+#
+# 单测覆盖不到:归一化函数本身可以单测,但「QUIC 地址 → 归一 → PROXY v2 → 服务端解析 →
+# 落进审计」跨了两条真实承载和一次真实登录,只有三机能走通。
+_check_login_attribution_uses_real_client_ip() {
+  # 按 vIP 认连接,不按用户名:审计的 target 是 userID(u2/u4),而 E2E_*_USER 有的是用户名,
+  # 两者对不上。vIP 在 env 里是确定的,且和 connection list 同一行还能取到 userID。
+  _attribution_case "$E2E_C_VIP4" "$E2E_C_HOST" "hy2"
+  _attribution_case "$E2E_A_VIP4" "$E2E_A_HOST" "REALITY"
+}
+
+_attribution_case() {
+  local vip="$1" host="$2" label="$3"
+  local row cid user since actor ip
+
+  row="$(adm "connection list" | awk -v v="$vip" '$3 ~ v {print $1, $2; exit}')"
+  if [[ -z "$row" ]]; then
+    skip "$label 登录归因（未找到 $vip 的在线会话）"
+    return 0
+  fi
+  cid="${row%% *}"; user="${row##* }"
+
+  # 用服务端时钟做起点,只认这次踢线之后的那条登录 —— 否则会读到上一轮跑留下的旧记录,
+  # 归因坏掉了也照样绿。
+  since="$(s 'date +%s' | tr -d '[:space:]')"
+  adm_y "kick session $cid" >/dev/null
+  if ! wait_until "$label 客户端踢线后重新登录" 90 _has_fresh_login "$user" "$since"; then
+    return 0   # wait_until 已经记了红/ENV,再断言 actor 只会多一条同因的红
+  fi
+
+  actor="$(_login_success_actor_since "$user" "$since")"
+  ip="${actor%:*}"
+  check "$label 登录归因是客户端真实公网 IP（不是环回）" "$host" "$ip"
+}
+
 phase_50_ops() {
   phase_begin "阶段 5 · 运维面"
 
@@ -134,6 +189,10 @@ phase_50_ops() {
     check_contains "审计记录 actor 为 admin-kick" "admin-kick" \
       "$(adm "audit list --limit 5")"
   fi
+
+  # ── 登录归因落在真实客户端 IP 上 ─────────────────────────────────────────
+  # 放在踢线之后:它自己也要踢一次来制造全新登录,顺序上挨着更省一次重连等待。
+  _check_login_attribution_uses_real_client_ip
 
   s "rm -f $bk /tmp/nte2e-junk.db /tmp/nte2e-cfg.good" >/dev/null
 }
