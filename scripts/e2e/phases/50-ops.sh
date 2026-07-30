@@ -5,6 +5,70 @@
 # 在共用环境上跑真还原风险太高。真正的「停服→还原→启动→校验」演练请用
 # --with-restore-drill 显式开启,并且只在可以随便重置的环境上跑。
 
+# _check_restore_names_the_other_db_holder 验还原守卫的**第二道**闸:按 /proc 扫真实持有者。
+#
+# 为什么非得停掉 nanotund 才算测到:restore 前有两道闸,第一道探 control socket(只代表
+# nanotund),第二道扫 /proc 找别的持有者(nanotun-web、手工开的 sqlite3)。nanotund 一直在跑,
+# 第一道就先拦下了,第二道**永远走不到** —— 上面那两条"服务运行中拒绝还原"断言其实一条都没碰到
+# 它。而当初真出事的恰恰是第二道要管的场景:按文档「stop nanotun → restore → start nanotun」
+# 走完,web 没人停,继续持有那个已被 unlink 的旧 inode,此后后台建用户照样回 303、照样把一次性
+# PSK 发出去,数据全进孤儿文件,零报错。
+#
+# 单测已经用「合成文件 + 假持有者」钉过这道闸,真机要补的是它在生产布局下**认不认得出**
+# nanotun-web:/proc/<pid>/fd 的软链给的是解析过符号链接的真实路径,而命令侧是
+# filepath.Abs(--db-path),不解析符号链接 —— 库目录哪天成了软链,这道闸就静默失效。
+#
+# 关键是最后那条反向断言:输出里**不能**出现第一道闸的 "control socket"。否则说明 stop 没生效、
+# 短路在第一道,这组断言测的是别的东西却照样绿(母题:断言的观测点没落在要验的那道闸上)。
+#
+# 源刻意用**垃圾文件**而不是真备份:持有者这道闸排在源校验之前(cmd_backup.go 里 149 行 vs
+# 168 行),所以闸在的时候赢的必须是持有者那条消息。这么选有两个好处 ——
+#   - 哪天这道闸真被删了,本用例变红的同时不会顺手把实时库盖掉:失败的代价停在「红」上,
+#     而不是把 e2e 环境连带毁掉(用真备份做源时,删掉闸就等于让测试自己执行一次真还原);
+#   - 钉的力度反而更强:它同时钉住了**顺序**。顺序一旦被挪到源校验之后,删闸就会退化成静默覆盖。
+_check_restore_names_the_other_db_holder() {
+  local junk="$1"
+
+  # 前提得自证:web 不在跑就没人持有库,这条会因为「确实没有持有者」而假绿。
+  if [[ "$(s 'systemctl is-active nanotun-web' | tr -d '[:space:]')" != "active" ]]; then
+    skip "还原守卫第二道 · /proc 扫持有者（nanotun-web 未运行，构造不出持有者）"
+    return
+  fi
+
+  s "systemctl stop nanotun" >/dev/null
+  # 停干净再敲,否则第一道闸先响。
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    [[ "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')" != "active" ]] && break
+    sleep 1
+  done
+
+  local out
+  out="$(adm_y "restore $junk" 2>&1)"
+
+  # 先把服务拉回来,再做断言 —— 断言失败会 return,不能让服务停在那儿。
+  s "systemctl start nanotun" >/dev/null
+
+  check_contains "还原被第二道守卫拦下（/proc 扫到别的持有者）" "other processes still have this DB open" "$out"
+  check_contains "并点名 nanotun-web 这个持有者" "nanotun-web" "$out"
+  check_contains "并说明后果是静默写进旧文件" "silently" "$out"
+  check_contains "并明确要求先停掉它们" "Stop them first" "$out"
+  # 反证没有短路在第一道闸上。
+  if [[ "$out" == *"control socket"* ]]; then
+    _fail "第二道守卫其实没被触发（输出仍是 control socket 那道）" "$out"
+  else
+    _pass "拦下它的确实不是 control socket 那道闸"
+  fi
+  # 也不能是源校验那道:它排在持有者之后,赢了就说明顺序被挪过。
+  if [[ "$out" == *"not a SQLite database"* ]]; then
+    _fail "持有者检查被挪到源校验之后了（删掉它将退化为静默覆盖）" "$out"
+  else
+    _pass "持有者检查仍排在源校验之前"
+  fi
+
+  wait_until "nanotund 重启后客户端重连、出口恢复" 90 probe_egress_is "$E2E_C_HOST"
+}
+
 # _check_deferred_fields_are_reported 验「改了不可热更的字段,SIGHUP 必须报 deferred」。
 #
 # 这一条测的是**信号**而不是数据面:这些字段本来就要重启才生效,e2e 没法在不重启的前提下
@@ -157,6 +221,8 @@ phase_50_ops() {
   out="$(adm_y "restore /tmp/nte2e-junk.db --force-while-running" 2>&1)"
   check_contains "垃圾文件被识别为非 SQLite" "not a SQLite database" "$out"
   check_contains "并明确声明实时库未被改动" "left untouched" "$out"
+
+  _check_restore_names_the_other_db_holder /tmp/nte2e-junk.db
 
   # ── 在线 VACUUM ───────────────────────────────────────────────────────────
   check_rc "在线 VACUUM 成功" 0 adm_y "vacuum"
