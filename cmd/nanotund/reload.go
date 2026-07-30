@@ -385,7 +385,73 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 		}).Error("[reload] server.pow.ttl_sec 不可热更(PoWService 启动时塞死),需重启 server")
 		out = append(out, "server.pow.ttl_sec")
 	}
+	// 三个端口封堵开关与上面 exit_mode / exit_dns_redirect / exit_deny_private 是同一族:
+	// 都由启动时那一次 SetupIptables/SetupIp6tables 落 FORWARD 链(server.go 里它们就是同一次
+	// 调用的相邻实参),SIGHUP 不重建链。前三个早已进 deferred,这三个一直漏着 —— 于是
+	// 「开 BT/SMTP 封堵治滥用 → SIGHUP → 日志一切正常」的运维会以为已经堵上了,实际要等重启,
+	// 而滥用还在继续。这正是 exit_dns_redirect 当年补进来的同一个坑(见上面那段注释)。
+	for _, f := range []struct {
+		name     string
+		from, to bool
+	}{
+		{"tun.forward_block_bt", old.TUN.ForwardBlockBT, newCfg.TUN.ForwardBlockBT},
+		{"tun.forward_block_tracker_6969", old.TUN.ForwardBlockTracker6969, newCfg.TUN.ForwardBlockTracker6969},
+		{"tun.forward_block_smtp_25", old.TUN.ForwardBlockSMTP25, newCfg.TUN.ForwardBlockSMTP25},
+	} {
+		if f.from != f.to {
+			logrus.WithFields(logrus.Fields{
+				"field": f.name,
+				"old":   f.from,
+				"new":   f.to,
+			}).Error("[reload] 端口封堵开关不可热更(FORWARD DROP 规则启动时落链),需重启 server")
+			out = append(out, f.name)
+		}
+	}
+	// jump_host_protected_ports:同族的另两项都已覆盖(开关本身进 deferred、名单是热更),
+	// 唯独「保护哪些端口」只在启动时读一次。漏报的后果和跳板机那两次事故同类 ——
+	// 运维往名单里加一个端口、SIGHUP、看到 applied 里有 jump_host_allowed_ips,合理地以为
+	// 新端口也一起受保护了,而那个端口仍然对全网敞开。
+	//
+	// 比的是**解析后的效果**而不是字符串:大小写、"-" 与 ":"、end<start 的自动交换、非法条目
+	// 被跳过、以及列表顺序(每条各自成一条 INPUT 规则,互不遮挡)都不改变落链结果。直接比字符串
+	// 会让这些等价改写变成常年噪声,而 deferred 一旦有噪声运维就不再看它了。
+	if jumpHostProtectedPortsEffect(newCfg.Server.JumpHostProtectedPorts) !=
+		jumpHostProtectedPortsEffect(old.Server.JumpHostProtectedPorts) {
+		logrus.WithFields(logrus.Fields{
+			"old": old.Server.JumpHostProtectedPorts,
+			"new": newCfg.Server.JumpHostProtectedPorts,
+		}).Error("[reload] server.jump_host_protected_ports 不可热更(受保护端口的 INPUT 规则启动时落链),需重启 server")
+		out = append(out, "server.jump_host_protected_ports")
+	}
+	// hysteria.udp_relay_enabled:同段的 password / listen_addr 都已覆盖,这一项没有。
+	// 它决定服务端是否兼作通用 UDP 代理,危险的方向是**关**:运维为收紧而改成 false、SIGHUP、
+	// 无任何提示,于是认为已经关了,而进程仍在转发任意 UDP 直到下次重启。
+	if newCfg.Hysteria.UDPRelayEnabled != old.Hysteria.UDPRelayEnabled {
+		logrus.WithFields(logrus.Fields{
+			"old": old.Hysteria.UDPRelayEnabled,
+			"new": newCfg.Hysteria.UDPRelayEnabled,
+		}).Error("[reload] hysteria.udp_relay_enabled 不可热更(hy2 出站在启动时构建),需重启 server")
+		out = append(out, "hysteria.udp_relay_enabled")
+	}
 	return out
+}
+
+// jumpHostProtectedPortsEffect 把 jump_host_protected_ports 归一到「效果」维度,供 SIGHUP
+// 前后比较用 —— 与 normalizeExitDNSRedirect 同一个路子。
+//
+// 归一化全部借道真实链路上的那两步(解析 + newJumpHostFirewallWithSpecs 的清洗),而不是另写
+// 一份字符串规整:后者会跟真实语义漂移。区间反写的自动交换就只在 newJumpHostFirewallWithSpecs
+// 里做,单看解析器是看不到的。
+func jumpHostProtectedPortsEffect(in []string) string {
+	specs, _ := parseJumpHostProtectedPortsQuiet(in)
+	// enabled 传什么都不影响 protectedPorts 的清洗结果,这里只取归一化后的 spec。
+	clean := newJumpHostFirewallWithSpecs(false, specs).protectedPorts
+	keys := make([]string, 0, len(clean))
+	for _, s := range clean {
+		keys = append(keys, fmt.Sprintf("%s/%d-%d", s.Proto, s.Port, s.EndPort))
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ",")
 }
 
 // normalizeExitDNSRedirect 把 exit_dns_redirect 归一到「效果」维度用于 diff:大小写不敏感,

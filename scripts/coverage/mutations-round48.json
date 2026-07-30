@@ -1,0 +1,96 @@
+[
+  {
+    "desc": "[mut48] forward_block_bt 改了不报 deferred —— 开 BT 封堵治滥用,SIGHUP 后日志一切正常,实际要等重启",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\t{\"tun.forward_block_bt\", old.TUN.ForwardBlockBT, newCfg.TUN.ForwardBlockBT},\n",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestClassifyDeferredFields"
+  },
+  {
+    "desc": "[mut48] forward_block_tracker_6969 改了不报 deferred",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\t{\"tun.forward_block_tracker_6969\", old.TUN.ForwardBlockTracker6969, newCfg.TUN.ForwardBlockTracker6969},\n",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestClassifyDeferredFields"
+  },
+  {
+    "desc": "[mut48] forward_block_smtp_25 改了不报 deferred",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\t{\"tun.forward_block_smtp_25\", old.TUN.ForwardBlockSMTP25, newCfg.TUN.ForwardBlockSMTP25},\n",
+    "new": "",
+    "test": "./cmd/nanotund/",
+    "run": "TestClassifyDeferredFields"
+  },
+  {
+    "desc": "[mut48] 三个封堵开关的 diff 恒不成立(改了也当没改)—— 整族一起哑掉",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\t\tif f.from != f.to {",
+    "new": "\t\tif false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestClassifyDeferredFields"
+  },
+  {
+    "desc": "[mut48] jump_host_protected_ports 改了不报 deferred —— 加的那个端口仍对全网敞开到下次重启",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\tif jumpHostProtectedPortsEffect(newCfg.Server.JumpHostProtectedPorts) !=\n\t\tjumpHostProtectedPortsEffect(old.Server.JumpHostProtectedPorts) {",
+    "new": "\tif false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestClassifyDeferredFields"
+  },
+  {
+    "desc": "[mut48] protected_ports 改比字符串而不比效果 —— 大小写/分隔符/顺序等价改写会变成常年噪声",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\tif jumpHostProtectedPortsEffect(newCfg.Server.JumpHostProtectedPorts) !=\n\t\tjumpHostProtectedPortsEffect(old.Server.JumpHostProtectedPorts) {",
+    "new": "\tif strings.Join(newCfg.Server.JumpHostProtectedPorts, \",\") !=\n\t\tstrings.Join(old.Server.JumpHostProtectedPorts, \",\") {",
+    "test": "./cmd/nanotund/",
+    "run": "TestClassifyDeferredFields"
+  },
+  {
+    "desc": "[mut48] 效果归一化跳过 newJumpHostFirewallWithSpecs 的清洗 —— 区间反写(5002-5000)会被误报成改动",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\tclean := newJumpHostFirewallWithSpecs(false, specs).protectedPorts",
+    "new": "\tclean := specs",
+    "test": "./cmd/nanotund/",
+    "run": "TestClassifyDeferredFields"
+  },
+  {
+    "desc": "[mut48] 效果归一化不排序 —— 只调换 protected_ports 的顺序就会被误报成改动",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\tsort.Strings(keys)\n\treturn strings.Join(keys, \",\")",
+    "new": "\treturn strings.Join(keys, \",\")",
+    "test": "./cmd/nanotund/",
+    "run": "TestClassifyDeferredFields"
+  },
+  {
+    "desc": "[mut48] udp_relay_enabled 改了不报 deferred —— 为收紧而关掉它,实际仍在转发任意 UDP",
+    "file": "cmd/nanotund/reload.go",
+    "old": "\tif newCfg.Hysteria.UDPRelayEnabled != old.Hysteria.UDPRelayEnabled {",
+    "new": "\tif false {",
+    "test": "./cmd/nanotund/",
+    "run": "TestClassifyDeferredFields"
+  },
+  {
+    "desc": "[mut48] 抽出的 quiet 解析器丢掉区间上界(EndPort 恒 0)—— 端口段退化成单端口",
+    "file": "cmd/nanotund/jump_host_firewall.go",
+    "old": "\t\tout = append(out, jumpHostPortSpec{Proto: proto, Port: start, EndPort: end})",
+    "new": "\t\tout = append(out, jumpHostPortSpec{Proto: proto, Port: start, EndPort: 0})",
+    "test": "./cmd/nanotund/",
+    "run": "TestClassifyDeferredFields|TestParseJumpHostProtectedPorts|TestJumpHost"
+  },
+  {
+    "desc": "[mut48] 抽出后 parseJumpHostProtectedPorts 不再上报被跳过的条目 —— 敲错一行从此无声",
+    "file": "cmd/nanotund/jump_host_firewall.go",
+    "old": "\tfor _, r := range rejected {\n\t\tlogrus.WithField(\"entry\", r.raw).Warn(\"[server] jump_host_protected_ports \" + r.why + \",跳过\")\n\t}",
+    "new": "",
+    "also": [
+      [
+        "\tspecs, rejected := parseJumpHostProtectedPortsQuiet(in)",
+        "\tspecs, _ := parseJumpHostProtectedPortsQuiet(in)"
+      ]
+    ],
+    "test": "./cmd/nanotund/",
+    "run": "TestParseJumpHostProtectedPorts|TestJumpHost"
+  }
+]

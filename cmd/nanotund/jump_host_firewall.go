@@ -297,7 +297,27 @@ func ensureLoopbackIPv4Allowlist(in []string) []string {
 //   - port 区间允许 "start-end" 或 "start:end",end<start 自动交换。
 //   - 全列无效 / 列表为空时,返回 nil(调用方应当退化到「仅保护 listen_addr 单端口」)。
 func parseJumpHostProtectedPorts(in []string) []jumpHostPortSpec {
+	specs, rejected := parseJumpHostProtectedPortsQuiet(in)
+	for _, r := range rejected {
+		logrus.WithField("entry", r.raw).Warn("[server] jump_host_protected_ports " + r.why + ",跳过")
+	}
+	return specs
+}
+
+// jumpHostPortReject 是一条被跳过的原始条目及原因,交给调用方决定要不要打日志。
+type jumpHostPortReject struct {
+	raw string
+	why string
+}
+
+// parseJumpHostProtectedPortsQuiet 是 parseJumpHostProtectedPorts 的不打日志版本。
+//
+// 拆出来是给 classifyDeferredFields 的「效果 diff」用:那里要把 old 和 new 各解析一遍,
+// 若直接用会打日志的版本,每次 SIGHUP 都会为**旧**配置里的错条目再警告一次 —— 而那份配置
+// 正要被替换掉,对着它报错只会让人以为新配置也有问题。
+func parseJumpHostProtectedPortsQuiet(in []string) ([]jumpHostPortSpec, []jumpHostPortReject) {
 	var out []jumpHostPortSpec
+	var rejected []jumpHostPortReject
 	for _, raw := range in {
 		s := strings.TrimSpace(strings.ToLower(raw))
 		if s == "" {
@@ -305,13 +325,13 @@ func parseJumpHostProtectedPorts(in []string) []jumpHostPortSpec {
 		}
 		idx := strings.Index(s, "/")
 		if idx <= 0 || idx == len(s)-1 {
-			logrus.WithField("entry", raw).Warn("[server] jump_host_protected_ports 格式应为 proto/port 或 proto/start-end,跳过")
+			rejected = append(rejected, jumpHostPortReject{raw, "格式应为 proto/port 或 proto/start-end"})
 			continue
 		}
 		proto := s[:idx]
 		portPart := s[idx+1:]
 		if proto != "tcp" && proto != "udp" {
-			logrus.WithField("entry", raw).Warn("[server] jump_host_protected_ports proto 必须 tcp/udp,跳过")
+			rejected = append(rejected, jumpHostPortReject{raw, "proto 必须 tcp/udp"})
 			continue
 		}
 		startStr := portPart
@@ -327,20 +347,20 @@ func parseJumpHostProtectedPorts(in []string) []jumpHostPortSpec {
 		}
 		start, err := strconv.Atoi(startStr)
 		if err != nil || start < 1 || start > 65535 {
-			logrus.WithField("entry", raw).Warn("[server] jump_host_protected_ports 起始端口非法,跳过")
+			rejected = append(rejected, jumpHostPortReject{raw, "起始端口非法"})
 			continue
 		}
 		end := 0
 		if endStr != "" {
 			end, err = strconv.Atoi(endStr)
 			if err != nil || end < 1 || end > 65535 {
-				logrus.WithField("entry", raw).Warn("[server] jump_host_protected_ports 结束端口非法,跳过")
+				rejected = append(rejected, jumpHostPortReject{raw, "结束端口非法"})
 				continue
 			}
 		}
 		out = append(out, jumpHostPortSpec{Proto: proto, Port: start, EndPort: end})
 	}
-	return out
+	return out, rejected
 }
 
 func sanitizeJumpHostIPv4s(in []string) []string {

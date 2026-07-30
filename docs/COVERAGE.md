@@ -1390,6 +1390,41 @@ snake_case。**同一命令族两套形状,而失败模式是无声的**:`device
   `wait_while` 没动:它等的是「某条路径变为不可达」,靶站死了会让它**假绿**而不是变红,同一个钩子在那边
   是反的,需要另想。
 
+### 第 48 轮:SIGHUP 的 deferred 清单漏了五个字段(按配置开关反查)
+
+这一轮的入口不是覆盖率，而是「**e2e 只跑一套服务端配置**」——`client_isolate` / `jump_host_firewall` /
+`forward_block_bt` / `login_rate_limit_per_min` / `udp_relay_enabled` 这些开关的另一个取值只有单测碰过。
+在盘这几个开关的语义时先撞上了一个更基础的问题:改了它们发 SIGHUP，**既不生效、也不告诉你没生效**。
+
+`classifyDeferredFields` 的自我定位是「有意不完整，只覆盖运维最常改的几项，避免 noise」，所以「某字段不在里面」
+本身不算缺陷。判定这五个是漏的，靠的是**同族兄弟已被覆盖**这条更硬的判据:
+
+- `tun.forward_block_bt` / `forward_block_tracker_6969` / `forward_block_smtp_25`:在 `server.go:1175`
+  那一次 `SetupIptables` 调用里，它们和 `ResolveExitMode()` / `ExitDNSRedirect` / `ExitDenyPrivate`
+  **是相邻的实参**。后三个早就进了 deferred（`exit_dns_redirect` 那条的注释还专门记着「此前漏进 deferred
+  列表 → 运维改了 reload 后无任何提示，误以为已生效」），前三个一直漏着。后果是「开 BT/SMTP 封堵治滥用 →
+  SIGHUP → 日志一切正常」，而滥用还在继续。
+- `server.jump_host_protected_ports`:同族另两项都已覆盖（开关本身进 deferred、名单是热更且为它修过两轮
+  深扫）。唯独「保护哪些端口」只在启动时读一次 —— 运维加个端口、SIGHUP、看到 `applied` 里有
+  `jump_host_allowed_ips`，合理地以为新端口也一起受保护了，而它仍对全网敞开。这与跳板机那两次
+  fail-open 事故同类。
+- `hysteria.udp_relay_enabled`:同段 `password` / `listen_addr` 都在。危险方向是**关** —— 为收紧而改
+  `false`、SIGHUP、无任何提示，于是认为已经关了，而进程仍在转发任意 UDP 到下次重启。
+
+`protected_ports` 是列表，比字符串会制造常年噪声（解析器大小写不敏感、`-` 与 `:` 同义、`end<start`
+自动交换、非法条目跳过、顺序也不影响落链），而这个测试文件开头就写明「deferred 里一旦有噪声运维就不再看它」。
+所以按**效果**比:归一化全部借道真实链路上那两步（解析 + `newJumpHostFirewallWithSpecs` 的清洗），不另写
+一份字符串规整 —— 区间反写的自动交换只在后者里做，单看解析器看不到，我第一版就是这么写错的，被反向用例抓住。
+为此把解析拆成不打日志的 `parseJumpHostProtectedPortsQuiet` + 打日志的外壳:diff 要把 old/new 各解析一遍，
+若用会打日志的版本，每次 SIGHUP 都会为**旧**配置里的错条目再警告一次，而那份配置正要被替换掉。
+
+变异 11/11。其中两条专钉反向（比字符串、不排序 → 等价改写被误报），一条钉住那层新外壳不能被当成纯转发删掉
+——「敲错一行只 Warn 不拒服」是有意的，所以那行告警是运维唯一能发现 `tcp/8O8O`（字母 O）的信号，而它此前
+没有任何断言，属重构引入的新风险。
+
+`config` 段仍有大量字段两头不沾（hy2 的 QUIC 窗口那一批、`tun.subnets`、`device_name` 等），但它们不满足
+「同族兄弟已覆盖」这条判据，按该函数自己声明的口径属于有意省略，这轮没动。
+
 ## 单测这一侧的现状（2026-07-28 晚，Linux 实测）
 
 零覆盖函数已经清空，只剩三个 `main` —— 那三个各有子进程冒烟测试（`nanotund` 靠 e2e）。
