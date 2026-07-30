@@ -103,4 +103,133 @@ except Exception as e: print("解析失败: %s" % e)')"
   adm "device set-rate $E2E_A_DEVICE_ID --down-bps 0" >/dev/null
   adm "setting rate --down-bps 0 --up-bps 0" >/dev/null
   sleep 2
+
+  _check_login_rate_limit_refuses_after_burst
+}
+
+# _check_login_rate_limit_refuses_after_burst 验 [server].login_rate_limit_per_min 真的拦人。
+#
+# 这个开关默认是 0(不限制),启用后每 IP 每分钟 N 次、突发固定 3。它此前完全没有实机断言,
+# 而它是「被人拿 PSK 暴破」时运维会去敲的第一个开关 —— 敲完没生效跟没有这个开关一样危险。
+#
+# 难点在于**怎么造出登录尝试**:限速这道闸排在 PoW **之后**(server.go 里 PoW 校验通过才
+# 走 AllowLogin),所以尝试必须先解完 PoW 才会被计数,拿 curl / nc 打是打不进去的。办法是用
+# 客户端自己发:导出一份不含凭据的节点链接(profile show --format url),再配一份**用户名不
+# 存在**的假凭据。这样每次尝试都会正常解 PoW、消耗一个令牌,然后倒在鉴权上。
+#
+# 几处刻意的选择:
+#   - 不复用 A 上保存的那份凭据。传错的 --cred 去连已保存的连接有把它覆盖掉的风险,而 A 的
+#     凭据一坏,整个 e2e 环境就再也起不来 —— 代价远超这条用例的价值。假凭据完全不碰它。
+#   - --no-default-route + 独立 tun-name。登录失败本来走不到建 TUN 那步,但万一走到了,默认
+#     行为是**接管默认路由** —— 那会当场打断 SSH 与 A 的真实隧道。
+#   - 串行而不是并发。客户端即使连接失败也会存/恢复 resolv.conf(输出里那行「已恢复原始 DNS」),
+#     并发跑会互相踩,而 A 的 DNS 是后续阶段的前提。串行代价是每次 ~7 秒,但令牌消耗速率
+#     (~8/min)远高于回填速率(1/min),照样能很快打空。
+#
+# 断言的形状比「出现 429」更要紧:
+#   - 前三次必须是 401 —— 突发额度就是 3。若实现把 burst 当成 0,测试同样能看到 429,但那是
+#     另一种缺陷(正常用户重按一次登录就被拒),不该被当成这条通过;
+#   - 关掉限速后同样的尝试必须**立刻**回到 401。此时桶还是空的,所以这条是真正的判别器:
+#     429 若来自别的原因(比如某处把所有登录都拒了),改配置不会让它消失。
+_check_login_rate_limit_refuses_after_burst() {
+  local node cred out
+  node="$(adm "profile show $E2E_A_USER --dial-host $E2E_SRV_HOST --config /etc/nanotun/config.toml --format url" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+  # profile show 是产品表面,给不出链接算缺陷;造假凭据是本地脚手架(要 python3),归 ENV。
+  if [[ "$node" != nanotun://* ]]; then
+    _fail "登录限速 · profile show 应给出 nanotun:// 节点链接" "$node"
+    return
+  fi
+  cred="$(_bogus_cred_link)"
+  if [[ "$cred" != nanotun-cred://* ]]; then
+    env_error "造不出假凭据(本机 python3?),登录限速这组断言测不到:$cred"
+    return
+  fi
+
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+  s "cp /etc/nanotun/config.toml $dir/cfg.loginrl.bak" >/dev/null
+  # 失败也要还原,否则限速会留在开启状态,把后续阶段的重连全拦下来。
+  local restored=0
+  _restore_login_rl() {
+    (( restored )) && return 0
+    restored=1
+    s "cp $dir/cfg.loginrl.bak /etc/nanotun/config.toml && systemctl reload nanotun" >/dev/null
+    sleep 2
+  }
+
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml server login_rate_limit_per_min 1 && systemctl reload nanotun" >/dev/null
+  sleep 2
+
+  out="$(_login_attempts 6 "$node" "$cred")"
+  local n1 n2 n3 later
+  n1="$(_attempt_code "$out" 1)"; n2="$(_attempt_code "$out" 2)"; n3="$(_attempt_code "$out" 3)"
+  later="$(echo "$out" | sed -n '4,6p')"
+
+  if [[ "$n1" == 401 && "$n2" == 401 && "$n3" == 401 ]]; then
+    _pass "登录限速 · 突发额度内的三次仍走到鉴权（401，不是一刀切全拒）"
+  else
+    _fail "登录限速 · 突发额度内的三次应为 401" "实测 $n1/$n2/$n3;全部输出:$out"
+  fi
+
+  if echo "$later" | grep -q "429"; then
+    _pass "登录限速 · 突发用尽后被拒（429）"
+  else
+    _fail "登录限速 · 突发用尽后应返回 429" "$out"
+  fi
+
+  # 审计必须记下来,否则运维事后没法按 IP 关联到暴破行为(429 只回给了攻击者)。
+  local audit
+  audit="$(adm "audit list --limit 10")"
+  if echo "$audit" | grep "login.fail.ratelimit" | grep -q "$E2E_A_HOST"; then
+    _pass "登录限速 · 审计记下 login.fail.ratelimit 且 actor 是尝试方真实 IP"
+  else
+    _fail "登录限速 · 审计缺 login.fail.ratelimit（或 actor 不是 ${E2E_A_HOST}）" "$audit"
+  fi
+
+  # 关掉限速:桶仍是空的,所以「立刻回到 401」证明 429 来自这个配置项本身。
+  _restore_login_rl
+  out="$(_login_attempts 2 "$node" "$cred")"
+  if [[ "$(_attempt_code "$out" 1)" == 401 && "$(_attempt_code "$out" 2)" == 401 ]]; then
+    _pass "登录限速 · 关掉后立刻回到 401（桶未回填，说明 429 确由该配置产生）"
+  else
+    _fail "登录限速 · 关掉后应立刻回到 401" "$out"
+  fi
+
+  # 真实会话全程不该被这些尝试影响 —— 限速是 per-IP 的,而 A 的真实会话与尝试同源 IP。
+  check "登录限速 · 期间 A 的真实会话未掉线" "0" \
+    "$(probe_egress_is "$E2E_C_HOST" && echo 0 || echo 1)"
+}
+
+# _bogus_cred_link 造一份「用户名不存在」的 nanotun-cred:// 链接。
+# schema 见 util/credentials_url.go(base64url 去 padding,字段顺序不敏感)。
+_bogus_cred_link() {
+  python3 - <<'PY'
+import base64, json, time, uuid
+c = {
+    "version": 1,
+    "id": str(uuid.uuid4()),
+    "username": "nte2e-nobody-ratelimit",
+    "psk": "0" * 32,
+    "created_at": int(time.time()),
+    "host": "",
+    "server_id": "",
+}
+print("nanotun-cred://v1?d=" + base64.urlsafe_b64encode(json.dumps(c).encode()).decode().rstrip("="))
+PY
+}
+
+# _login_attempts 在 A 上串行发 N 次一次性登录尝试,每行输出 "<序号> <code=...>"。
+_login_attempts() {
+  local n="$1" node="$2" cred="$3"
+  a "for i in \$(seq 1 $n); do
+       code=\$(timeout 40 nanotun connect '$node' --cred '$cred' --transport reality \
+                 --no-default-route --tun-name nte2erl0 2>&1 | grep -oE 'code=[0-9]+' | tail -1)
+       echo \"\$i \${code:-code=none}\"
+     done"
+}
+
+# _attempt_code 取第 n 次尝试的数字码。
+_attempt_code() {
+  echo "$1" | awk -v n="$2" '$1==n{sub(/^code=/,"",$2); print $2; exit}'
 }
