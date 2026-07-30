@@ -5,6 +5,54 @@
 # 这条一旦回归,现象是「网还能上」,不会有任何报错 —— 属于最难靠肉眼发现、
 # 后果又最严重的那类(用户以为流量走的是指定出口,实际暴露在服务端 IP 上)。
 
+# _check_per_family_revoke_keeps_device_eligible 验「按族撤销并不会取消出口资格」。
+#
+# 出口资格是**按 device** 判定的:只撤 C 的 0.0.0.0/0、留着 ::/0,C 仍是合法出口,
+# A 的 v4 流量照样经它出网。而 route 子命令把两族显示成两行、也允许单独删一行,
+# 天然暗示了一个并不存在的粒度 —— 2026-07-25 三机实测坐实过这个坑。
+#
+# 当时补的是一条 CLI 告警(单测已钉),但告警**声称的那个数据面事实**一直没人钉。
+# 撤掉 v4 之后有三种可能结局,只有一种是当前行为,而另外两种都不会让任何现有断言变红:
+#   - 仍经 C 出网:当前行为,也正是告警文案告诉运维的那件事;
+#   - 回落到服务端出口:用户以为流量走 C,实际暴露在服务端 IP 上 —— 就是本阶段
+#     开头说的「网还能上、不会有任何报错」那类最难发现的静默泄露;
+#   - 整个阻断:与告警文案矛盾,运维会照着一个错的心智模型去操作。
+# 所以这里两边都钉:告警怎么说,数据面就得怎么做。
+_check_per_family_revoke_keeps_device_eligible() {
+  local delout ip1 ip2
+
+  delout="$(adm_y "route delete $E2E_C_DEVICE_ID 0.0.0.0/0")"
+  check_contains "按族撤 v4 时 CLI 警告该设备仍是出口" "exit revoke" "$delout"
+
+  # 删出口路由会触发 notifyExitsChanged(把绑定它的会话踢回去重新评估)。等这一轮
+  # 踢回/重绑走完再取样,别在过渡态上判。
+  #
+  # 这里刻意**不用** wait_until:它证明的是「某一刻等于 C」,而这条要钉的是「不得回落」。
+  # 若行为退化成过一会儿才翻到服务端出口,轮询会在第一次取样就通过,漏个正着。
+  # 故等待固定时长后隔开采两次,能抓住延迟发生的翻转。
+  sleep 20
+  ip1="$(egress_ip 10)"
+  sleep 8
+  ip2="$(egress_ip 10)"
+
+  if [[ "$ip1" == "$E2E_SRV_HOST" || "$ip2" == "$E2E_SRV_HOST" ]]; then
+    _fail "按族撤 v4 后 v4 流量仍经 C 出网" \
+      "回落到了服务端出口($E2E_SRV_HOST)—— 用户以为走 C,实际暴露在服务端 IP 上"
+  elif [[ "$ip1" == "$E2E_C_HOST" && "$ip2" == "$E2E_C_HOST" ]]; then
+    _pass "按族撤 v4 后 v4 流量仍经 C 出网（与 CLI 告警所述一致）"
+  else
+    _fail "按族撤 v4 后 v4 流量仍经 C 出网" \
+      "期望两次取样都是 $E2E_C_HOST,实测 [$ip1] / [$ip2]"
+  fi
+
+  # 复原:designate 一次把两族都批回来。后面的阶段都依赖 C 是可用出口,
+  # 所以这里要断言复原确实成功,而不是默默往下走。
+  adm_y "exit designate $E2E_C_DEVICE_ID" >/dev/null
+  check_contains "复原:C 的 v4 默认路由回到 approved" "0.0.0.0/0" \
+    "$(adm "route list --device $E2E_C_DEVICE_ID --status approved")"
+  wait_until "复原:出口仍正常工作" 40 probe_egress_is "$E2E_C_HOST"
+}
+
 phase_10_exit() {
   phase_begin "阶段 1 · 出口节点与 MagicDNS"
 
@@ -53,6 +101,8 @@ phase_10_exit() {
 
   adm_y "exit designate $E2E_C_DEVICE_ID" >/dev/null
   wait_until "重新指定出口后自动恢复（无需客户端重连）" 40 probe_egress_is "$E2E_C_HOST"
+
+  _check_per_family_revoke_keeps_device_eligible
 
   # ── 出口离线 → 上线 ───────────────────────────────────────────────────────
   client_c_stop
