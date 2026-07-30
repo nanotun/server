@@ -4,6 +4,39 @@
 # 这一阶段的作用是「结论可信度的前置条件」:如果版本没对齐或者基线就不通,
 # 后面所有阶段的红绿都没有意义,应当直接停在这里而不是继续跑完再来猜。
 
+# _check_c_subnet_routes_are_approved 验进入后续阶段前,C 的子网宣告确实是 approved。
+#
+# 加它的起因:2026-07-30 有一轮跑到基线时这两条 LAN 路由是 pending 的。基线原有四条断言
+# (两会话在线 / A 经出口出网 / A→C 的 **vIP** 可达 / 靶站 200)全都与审批状态无关,于是一路
+# 全绿,而阶段 3 第一条断言打的是 C 背后的 LAN,20 秒等满报「子网 HTTP 200 失败」——
+# 那个红看起来像子网数据面坏了,真因是一条没批的路由,排查方向从一开始就被带偏。
+#
+# **这里只断言,不自动批准。** 曾有一版实现是「发现 pending 就就地批准」,那样每轮都能自愈,
+# 代价是永久遮住「为什么会变成 pending」:
+#   - 已查明的是,正常路径不会造成它 —— 重新宣告走 `ON CONFLICT DO UPDATE SET advertised_at`,
+#     只动宣告时间;`DeleteAdvertisedRoutesForDevice` 只删 pending 行;没有任何调用点把状态设回
+#     pending(SetRouteStatus 的调用方只写 approved / rejected)。2026-07-30 实测重启 nanotund
+#     并等客户端重连,两条路由都稳稳留在 approved。
+#   - 也就是说真因未明。这种时候自动修复正是最坏的选择:它让现象再也不会出现,于是也再也
+#     查不出来。断言失败会停在基线并把 route list 原样打出来,那是能往下查的形状。
+_check_c_subnet_routes_are_approved() {
+  local missing=""
+  local cidr
+  for cidr in "$E2E_C_LAN4" "$E2E_C_LAN6"; do
+    [[ -n "$cidr" ]] || continue
+    adm "route list --device $E2E_C_DEVICE_ID --status approved" | grep -q "$cidr" || missing+="$cidr "
+  done
+  if [[ -z "$missing" ]]; then
+    _pass "基线 · C 的子网宣告均为 approved"
+    return 0
+  fi
+  _fail "基线 · C 的子网宣告应为 approved（缺:${missing}）" \
+    "$(adm "route list --device $E2E_C_DEVICE_ID")
+提示:先 nanotun-admin route approve $E2E_C_DEVICE_ID <cidr> 让状态回到已知,再重跑;
+但请顺手记下它是**怎么**变成 pending 的 —— 已知正常路径不会造成这个状态。"
+  return 1
+}
+
 phase_00_baseline() {
   phase_begin "阶段 0 · 基线"
 
@@ -36,6 +69,10 @@ phase_00_baseline() {
 
   target_start || { _fail "C 上的 HTTP 靶站启动失败"; return 1; }
   _pass "C 上的 HTTP 靶站就绪（:${E2E_TARGET_PORT}）"
+
+  # C 的子网宣告必须已批准 —— 阶段 3 与阶段 6 的 LAN 目标都建立在它之上,而基线原有的
+  # 四条断言全都与审批状态无关(见函数注释里那次跑偏的排查)。
+  _check_c_subnet_routes_are_approved || return 1
 
   # 基线四条路径。任意一条不通,后面的「阻断/恢复」类断言都无法解读。
   wait_until "基线 · A 可达公网（经出口 C）" 30 probe_egress_is "$E2E_C_HOST"

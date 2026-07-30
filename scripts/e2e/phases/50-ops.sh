@@ -135,6 +135,83 @@ _check_deferred_fields_are_reported() {
   check "deferred 这组跑完服务仍然存活" "active" "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')"
 }
 
+# _check_jump_host_firewall_fails_closed_without_ipset 验 ipset 不可用时 jump_host_firewall
+# **拒绝启动**,而不是起来了却把受保护端口对全网敞开。
+#
+# 钉的是第 23 轮深扫的那条 HIGH:在那之前 jumpFW.Replace 失败只打一行红字,启动照常继续,
+# reload 还照样把它记成「已热更新」并回报成功。运维据配置认为入口已限制到跳板机名单,实际
+# 对全网敞开 —— 而 `ipset 未装` 正是代码注释里列在第一位的触发条件。这条修复此前只有单测
+# (用假 exec 注入失败),真机上从没验过。
+#
+# 为什么这台机器现成就能测:它**没装 ipset**(iptables 有,ipset 没有)。也就是说这里不需要
+# 构造任何故障,生产条件本来就在。ipset 哪天被装上,这条就不再成立 —— 那时它必须**跳过并说
+# 清楚**,而不是静默变成一条永远绿的空断言。
+#
+# 最要紧的是那条反向断言:名单必须填一个**合法非空**的 IPv4。留空的话会被更早的
+# ValidateJumpHostFirewall 拦下(「留空等于全网开放」),Fatal 照样发生、断言照样绿,但测到的
+# 是另一道闸 —— 第 51 轮刚在还原守卫上踩过同一个坑(一道闸被更早的同族闸永久遮住)。
+_check_jump_host_firewall_fails_closed_without_ipset() {
+  if s "command -v ipset >/dev/null 2>&1 || ls /sbin/ipset /usr/sbin/ipset >/dev/null 2>&1" >/dev/null 2>&1; then
+    skip "跳板机防火墙 · 缺 ipset 时 fail-closed（本机装了 ipset，这条测不到：它要的正是「ipset 不可用」这个条件）"
+    return 0
+  fi
+
+  local bak=/tmp/nte2e-cfg.jumpfw.bak
+  s "cp /etc/nanotun/config.toml $bak" >/dev/null
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+
+  # 名单填 A 的真实 IP:合法 IPv4、非空,足以走过所有 config 期校验,失败必须来自运行期应用。
+  local setrc=0
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml server jump_host_allowed_ips '[\"$E2E_A_HOST\"]'" >/dev/null || setrc=1
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml server jump_host_firewall true" >/dev/null || setrc=1
+  if (( setrc != 0 )); then
+    s "cp $bak /etc/nanotun/config.toml" >/dev/null
+    env_error "改写 config.toml 失败,跳板机防火墙这组断言测不到"
+    return 0
+  fi
+
+  # 预期起不来。restart 因此会返回非零,不能让它中断本函数。
+  local since status log
+  since="$(s 'date +%s' | tr -d '[:space:]')"
+  s "systemctl restart nanotun" >/dev/null 2>&1 || true
+  sleep 4
+  status="$(s 'systemctl is-active nanotun' | tr -d '[:space:]')"
+  log="$(s "journalctl -u nanotun --since @$since --no-pager")"
+
+  if [[ "$status" == "active" ]]; then
+    _fail "跳板机防火墙 · ipset 不可用时必须拒绝启动" \
+      "服务仍是 active —— 受保护端口此刻对全网敞开,而配置上写着已限制到名单内。这正是第 23 轮修掉的形态。
+$log"
+  else
+    _pass "跳板机防火墙 · ipset 不可用时拒绝启动（fail-closed，不是带着敞开的端口跑起来）"
+  fi
+
+  # 退出码要是「配置语义错」(11) 而不是 panic / 通用 1:运维靠它区分「配置写错了」和「崩了」。
+  local rc
+  rc="$(s "systemctl show -p ExecMainStatus --value nanotun" | tr -d '[:space:]')"
+  check "跳板机防火墙 · 退出码是配置语义错 ExitConfigSemantic(11)" "11" "$rc"
+
+  if echo "$log" | grep -q "受保护端口当前"; then
+    _pass "跳板机防火墙 · 日志明说「受保护端口当前未受限」（运维据此知道现在是没保护的）"
+  else
+    _fail "跳板机防火墙 · 日志应明说受保护端口未受限" "$log"
+  fi
+
+  # 反向断言:不能是被「名单留空」那道更早的闸拦下的 —— 那样测的是另一回事。
+  if echo "$log" | grep -q "留空等于全网开放"; then
+    _fail "跳板机防火墙 · 拦下它的是「名单留空」那道更早的闸，本条没测到运行期应用失败" "$log"
+  else
+    _pass "跳板机防火墙 · 拦下它的确实是运行期应用失败，不是名单校验"
+  fi
+
+  s "cp $bak /etc/nanotun/config.toml && rm -f $bak && systemctl restart nanotun" >/dev/null 2>&1 || true
+  sleep 3
+  check "跳板机防火墙 · 恢复配置后服务重新起来" "active" "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')"
+  wait_until "跳板机防火墙 · 客户端重连、出口恢复" 90 probe_egress_is "$E2E_C_HOST"
+}
+
 # _login_success_actor_since 取某用户在 $2 之后最新一条 login.success 的 actor;没有就空串。
 _login_success_actor_since() {
   s "sqlite3 '$E2E_DB_PATH' \"select actor from audit_logs where action='login.success' and target='$1' and at>=$2 order by id desc limit 1;\"" \
@@ -259,6 +336,9 @@ phase_50_ops() {
   # ── 登录归因落在真实客户端 IP 上 ─────────────────────────────────────────
   # 放在踢线之后:它自己也要踢一次来制造全新登录,顺序上挨着更省一次重连等待。
   _check_login_attribution_uses_real_client_ip
+
+  # 放在最后:它要重启 nanotund 并等两个客户端重连,后面不该再挂别的断言。
+  _check_jump_host_firewall_fails_closed_without_ipset
 
   s "rm -f $bk /tmp/nte2e-junk.db /tmp/nte2e-cfg.good" >/dev/null
 }

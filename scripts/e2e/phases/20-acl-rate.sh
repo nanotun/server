@@ -148,18 +148,24 @@ _check_login_rate_limit_refuses_after_burst() {
   local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
   s "mkdir -p $dir" >/dev/null
   s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
-  s "cp /etc/nanotun/config.toml $dir/cfg.loginrl.bak" >/dev/null
-  # 失败也要还原,否则限速会留在开启状态,把后续阶段的重连全拦下来。
-  local restored=0
-  _restore_login_rl() {
-    (( restored )) && return 0
-    restored=1
-    s "cp $dir/cfg.loginrl.bak /etc/nanotun/config.toml && systemctl reload nanotun" >/dev/null
-    sleep 2
-  }
 
-  s "python3 $dir/tomlset.py /etc/nanotun/config.toml server login_rate_limit_per_min 1 && systemctl reload nanotun" >/dev/null
-  sleep 2
+  # 进来时必须是关闭状态。这条不是形式主义:2026-07-30 我在这个函数的**失败分支**里让一个裸
+  # 变量引用紧跟了一个全角右括号(首字节被 bash 并进变量名),set -u 下当场中断,还原因此没跑,
+  # 限速被留在开启状态。
+  # 而当时的还原写法是「进函数时把 config 备份、出函数时拷回去」—— 于是污染变成粘性的:
+  # 之后每一轮都把这份脏状态备份下来、又忠实地还原回去,连着三轮的红都指着错方向。
+  #
+  # 所以这里改成两条规矩:
+  #   - 还原回**已知的安全默认值**(0),不回「进来时的样子」;
+  #   - 进来时若不是 0,说成 ENV 并停下 —— 那说明上一轮留了脏状态,继续跑只会得到不可信的红。
+  local cur
+  cur="$(s "grep -E '^[[:space:]]*login_rate_limit_per_min' /etc/nanotun/config.toml | tail -1 | tr -d ' '" | tr -d '[:space:]')"
+  if [[ -n "$cur" && "$cur" != "login_rate_limit_per_min=0" ]]; then
+    env_error "开跑前 login_rate_limit_per_min 不是 0($cur)—— 上一轮留下了脏状态,先手工归零再跑,否则这组断言不可信"
+    return
+  fi
+
+  _apply_login_rate_limit 1 || { _restore_login_rl; return; }
 
   out="$(_login_attempts 6 "$node" "$cred")"
   local n1 n2 n3 later
@@ -188,7 +194,7 @@ _check_login_rate_limit_refuses_after_burst() {
   fi
 
   # 关掉限速:桶仍是空的,所以「立刻回到 401」证明 429 来自这个配置项本身。
-  _restore_login_rl
+  _apply_login_rate_limit 0 || { _restore_login_rl; return; }
   out="$(_login_attempts 2 "$node" "$cred")"
   if [[ "$(_attempt_code "$out" 1)" == 401 && "$(_attempt_code "$out" 2)" == 401 ]]; then
     _pass "登录限速 · 关掉后立刻回到 401（桶未回填，说明 429 确由该配置产生）"
@@ -199,6 +205,45 @@ _check_login_rate_limit_refuses_after_burst() {
   # 真实会话全程不该被这些尝试影响 —— 限速是 per-IP 的,而 A 的真实会话与尝试同源 IP。
   check "登录限速 · 期间 A 的真实会话未掉线" "0" \
     "$(probe_egress_is "$E2E_C_HOST" && echo 0 || echo 1)"
+
+  _restore_login_rl
+}
+
+# _apply_login_rate_limit 把 login_rate_limit_per_min 改成 $1 并**等到它真的生效**。
+#
+# 不用 sleep 猜:reload 里 SetRatePerMin 调用完才打那行「已热更」日志,所以看见日志就说明新
+# 速率已经在 AllowLogin 的观测范围内了。2026-07-30 全套里红过一次正是因为原先写的 `sleep 2`
+# ——单跑阶段 2 够用,全套里第一发仍撞在旧速率上,于是「关掉后回到 401」拿到 429 变红,
+# 而红的方向指着产品,真因是脚手架在猜时间。
+_apply_login_rate_limit() {
+  local want="$1" since
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  since="$(s 'date +%s' | tr -d '[:space:]')"
+  if ! s "python3 $dir/tomlset.py /etc/nanotun/config.toml server login_rate_limit_per_min $want && systemctl reload nanotun" >/dev/null; then
+    env_error "改写/热加载 login_rate_limit_per_min=$want 失败,这组断言测不到"
+    return 1
+  fi
+  wait_until "登录限速 · SIGHUP 已生效（login_rate_limit_per_min=${want}）" 20 \
+    _login_rl_log_shows "$since" "$want"
+}
+
+# _login_rl_log_shows 判「本次 SIGHUP 之后确实打出了切到 $2 的那行热更日志」。
+_login_rl_log_shows() {
+  s "journalctl -u nanotun --since @$1 --no-pager" \
+    | grep "server.login_rate_limit_per_min 已热更" | grep -q "new=$2"
+}
+
+# _restore_login_rl 把限速归零。
+#
+# 刻意**不**从快照拷回,而是显式写 0:快照式还原会把上一轮留下的脏状态一路传下去(见上面
+# 那段注释里的实例)。写死安全默认值则无论进来时是什么样,出去时都是关闭的。
+#
+# 无条件 reload 而不是「值已经是 0 就省掉」:中途任何一步失败都会走到这里,那时运行中的值
+# 可能还是 1 —— 限速留在开启状态会把后续阶段客户端的重连一并拦下,把一条本地失败放大成
+# 后面十几条方向错误的红。
+_restore_login_rl() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml server login_rate_limit_per_min 0 && systemctl reload nanotun" >/dev/null 2>&1 || true
 }
 
 # _bogus_cred_link 造一份「用户名不存在」的 nanotun-cred:// 链接。
