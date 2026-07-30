@@ -98,6 +98,50 @@ jobs:
       - name: go test -race
         run: go test ./... -race -count=1 -timeout 30m
 
+  fuzz:
+    name: go test -fuzz (nightly)
+    # 与 -race 同理放夜间。常规 go test 只跑 seed corpus —— 那等于把 fuzz 目标当普通单测用,
+    # 挂着 fuzz 的名字却没做 fuzz 该做的事。真跑一段才有意义,而每个 PR 上跑不现实。
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: true
+      # -fuzz 一次只能跑一个目标,故逐个来。120s/个 在本地约能跑到两千万次执行。
+      #
+      # 崩溃输入会被 Go 写进 testdata/fuzz/<目标>/ 并成为永久回归种子,但 CI 的工作区跑完就没了 ——
+      # 所以失败时把它捞成 artifact,否则只剩一行日志,复现要靠人重新撞一次。
+      - name: go test -fuzz
+        run: |
+          set -u
+          rc=0
+          for t in FuzzReadLinkFrame FuzzParseLoginReq FuzzParseRouteAdvertise \
+                   FuzzNormalizeAdvertisedCIDR FuzzMarshalLoginReqJSON \
+                   FuzzLinkFrameRoundTrip FuzzReadLinkFrameReencodes \
+                   FuzzNormalizeAdvertisedCIDRIsIdempotent FuzzLoginReqRoundTrip; do
+            echo "::group::$t"
+            go test -run '^$' -fuzz="^$t\$" -fuzztime=120s ./util/ || rc=1
+            echo "::endgroup::"
+          done
+          for t in FuzzHandleMagicDNSPacket; do
+            echo "::group::$t"
+            go test -run '^$' -fuzz="^$t\$" -fuzztime=120s ./cmd/nanotund/ || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
+      - name: 收集崩溃输入
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: |
+            **/testdata/fuzz/**
+          if-no-files-found: ignore
+
   staticcheck:
     name: staticcheck (informational)
     if: github.event_name != 'schedule'
