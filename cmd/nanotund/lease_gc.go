@@ -24,7 +24,9 @@ import (
 //   - per-iteration 30s opCtx,确保 SIGTERM 时不会拖死 shutdown。
 //
 // 配置:
-//   - [server].lease_gc_idle_days       默认 30,0/负 = 关闭定时回收(回归手动 cron 模型)
+//   - [server].lease_gc_idle_days       不写 / 写 0 都是默认 30;**要关闭得写负数**(如 -1),
+//     关闭后回归手动 cron 模型。理由见 config.LeaseGCIdleDays 的注释 —— int 零值分不出
+//     「没配」与「显式 0」,把 0 当关闭会让没配过它的部署统统静默停掉回收。
 //   - [server].lease_gc_interval_hours  默认 24
 //
 // 关闭后 admin CLI 的 lease gc 子命令仍可工作,不受影响。
@@ -45,7 +47,7 @@ func startLeaseGCLoop(gw *gatewayState, idleDays, intervalHours int) func() {
 	}
 	if idleDays <= 0 {
 		// 显式关闭。打一条 INFO 留痕,运维事后查日志能确认。
-		logrus.Info("[lease-gc] 已通过 [server].lease_gc_idle_days<=0 显式关闭定时回收,如需启用请重新设置")
+		logrus.Info("[lease-gc] 已通过 [server].lease_gc_idle_days 负值显式关闭定时回收,如需启用请设为正数天数")
 		return func() {}
 	}
 	if intervalHours <= 0 {
@@ -53,6 +55,14 @@ func startLeaseGCLoop(gw *gatewayState, idleDays, intervalHours int) func() {
 	}
 	idle := time.Duration(idleDays) * 24 * time.Hour
 	interval := time.Duration(intervalHours) * time.Hour
+	// 启用也要留痕,与上面关闭那条对称:这套机制会**删库里的行**(vIP 占位),而在此之前
+	// 启用侧一个字都不打 —— 只有真删到东西时才有 INFO。于是「按 30 天在回收」这件事在
+	// 日志里不可见,运维照文档写了 0 以为关掉了也无从发现(2026-07-30 那处文档与代码矛盾
+	// 之所以能一直活着,缺的就是这条)。
+	logrus.WithFields(logrus.Fields{
+		"idle":     idle.String(),
+		"interval": interval.String(),
+	}).Info("[lease-gc] 定时回收已启用")
 	go safeGlobalGoroutine("leaseGC", globalContextCancel, func() {
 		runLeaseGCLoop(globalContext, gw.store, idle, interval)
 	})

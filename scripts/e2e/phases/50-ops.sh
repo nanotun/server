@@ -943,6 +943,7 @@ phase_50_ops() {
   _check_udp_relay_stays_disabled
   _check_exit_guard_installs_both_chains
   _check_data_plane_keepalive_reaps_only_the_wedged_session
+  _check_lease_gc_reclaims_only_what_it_should
 
   # ── 踢线:瞬态关闭 + 自动重连 ─────────────────────────────────────────────
   local cid
@@ -968,3 +969,194 @@ phase_50_ops() {
 }
 
 _kick_log_has_902() { client_log c "$E2E_C_UNIT" 60 | grep -q "code=902"; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _check_lease_gc_reclaims_only_what_it_should 验 [server].lease_gc_idle_days。
+#
+# 这个开关此前 e2e 零命中。它的两个方向都会伤人,而且都是安静地伤:
+#   - **不回收**:leases 表堆满「设备半年没上线」的 vIP 占位,新设备拿不到地址(IPv4 私网池尤其);
+#   - **回收错**:把还在用的地址收走,设备重连换 IP —— 按 vIP 钉的 ACL / 端口转发就此指向空处。
+#
+# 判定条件是 `manual=0 AND device_id IN (select id from devices where last_seen_at < cutoff)`,
+# 外加一道「lease 的 vip 正是该设备 fixed_vip 就永不回收」的兜底。所以要钉三件事:
+# 过期的非手动租约会被收;**未过期的**非手动租约不许被收(cutoff 的算术);手动租约永不被收。
+#
+# 触发点选**启动那一次**:定时器周期以小时计(默认 24h),e2e 里等不到;而 lease_gc 启动时
+# 会先跑一次(代码注释:「启动跑一次(防错过 tick)」),重启即触发。
+#
+# 观测量用 lease_gc_total 而不是 grep 日志:它是进程内计数器,重启归零,所以「这一次启动
+# 回收了几条」能精确断言成 1 或 0。日志只在 n>0 时打 INFO(n==0 走 Debug,默认级别看不见),
+# 只靠 grep 的话「没回收」和「日志没打出来」分辨不开。
+#
+# 靶子用 E2E_SPARE_DEVICE_ID(harness 指定的备用设备),租约由本用例自建自收,不动别人的。
+# 阈值刻意取 90 天、把靶子回拨 200 天:库里另一台闲置设备(闲置数天、同样是非手动租约)
+# 因此成为**天然对照** —— 它必须活下来,谁把 cutoff 的单位或方向写错,它就会跟着一起死。
+_check_lease_gc_reclaims_only_what_it_should() {
+  local dev="${E2E_SPARE_DEVICE_ID:-}"
+  if [[ -z "$dev" ]]; then
+    skip "lease_gc（未配置 E2E_SPARE_DEVICE_ID，没有可安全回收的靶子）"
+    return 0
+  fi
+
+  # 现场取证用:开跑前把「除靶子之外的租约」记下来,回收后逐条比对。
+  local others_before
+  others_before="$(_lease_rows_except "$dev")"
+  if [[ -z "$others_before" ]]; then
+    env_error "库里除靶子外没有别的租约,lease_gc 的「不许连坐」这组测不到"
+    return 0
+  fi
+
+  local seen_before
+  seen_before="$(s "sqlite3 '$E2E_DB_PATH' 'select last_seen_at from devices where id=$dev;'" | tr -d '[:space:]')"
+  if [[ ! "$seen_before" =~ ^[0-9]+$ ]]; then
+    env_error "取不到设备 $dev 的 last_seen_at,lease_gc 这组测不到"
+    return 0
+  fi
+
+  # ── 第一档:过期的非手动租约应当被收,且只收它 ────────────────────────────
+  _lease_gc_arm_target "$dev" false || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
+  if ! _lease_gc_set_days 90; then
+    _lease_gc_restore "$dev" "$seen_before"
+    env_error "写不进 lease_gc_idle_days,这组测不到"
+    return 0
+  fi
+  _lease_gc_restart || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
+
+  check "lease_gc · 启动那一次恰好回收 1 条（过期的非手动租约）" "1" "$(srv_field lease_gc_total)"
+  check "lease_gc · 靶子的租约确实没了" "0" "$(_lease_count_of "$dev")"
+  # 对照:另一台设备同样是非手动租约,但闲置天数没到阈值,必须一条不少地留着。
+  # 这条是 cutoff 算术的判别器 —— 单位写成秒、或把 < 写成 >,它就会跟着被收走。
+  check "lease_gc · 未过期的非手动租约一条没动（cutoff 的算术没写错）" "$others_before" \
+    "$(_lease_rows_except "$dev")"
+
+  # ── 第二档:未过期的非手动租约不许被收 ───────────────────────────────────
+  # 这一档是 cutoff **方向与单位**的判别器,而且刻意用自己管的靶子设备来做,不靠库里
+  # 恰好存在的某条别人的租约:后者一旦不在(比如被上一次反向验证吃掉了),剩下的全是手动
+  # 租约 —— 它们因**另一个**原因免疫,于是「不许连坐」变成恒绿。2026-07-30 就是这么发现的。
+  _lease_gc_arm_target "$dev" false fresh || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
+  _lease_gc_restart || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
+  check "lease_gc · 未过期的非手动租约不被回收（cutoff 的方向与单位没写错）" "0" "$(srv_field lease_gc_total)"
+  check "lease_gc · 未过期的靶子租约仍在库里" "1" "$(_lease_count_of "$dev")"
+
+  # ── 第三档:手动(管理员钉的固定地址)租约永不回收 ────────────────────────
+  # 同样过期 200 天,唯一差别是 manual=1。收走它等于把管理员手钉的地址抢掉,
+  # 设备再上线拿不回原地址,而按该地址写的 ACL / 端口转发全部落空。
+  _lease_gc_arm_target "$dev" true || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
+  local since_manual
+  since_manual="$(s "date +%s" | tr -d '[:space:]')"
+  _lease_gc_restart || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
+  check "lease_gc · 手动租约过期同样不回收（管理员钉的地址不许被抢）" "0" "$(srv_field lease_gc_total)"
+  check "lease_gc · 手动租约仍在库里" "1" "$(_lease_count_of "$dev")"
+  # 正面对照:上面那个 0 也可能是「GC 压根没跑」得来的(配置没写进去、循环没起来都会这样)。
+  # 启动日志证明这一轮回收确实执行了,那个 0 才是「跑了但没动手动租约」的意思。
+  check_contains "lease_gc · 手动那一档里回收确实跑了（0 不是因为压根没跑）" "定时回收已启用" \
+    "$(s "journalctl -u nanotun --since @$since_manual --no-pager | grep lease-gc")"
+
+  # ── 第四档:负值才是关闭 ──────────────────────────────────────────────────
+  _lease_gc_arm_target "$dev" false || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
+  if ! _lease_gc_set_days -1; then
+    _lease_gc_restore "$dev" "$seen_before"
+    env_error "写不进 lease_gc_idle_days=-1,关闭这一档测不到"
+    return 0
+  fi
+  local since
+  since="$(s "date +%s" | tr -d '[:space:]')"
+  _lease_gc_restart || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
+  check "lease_gc · 负值关闭后一条都不回收（过期的非手动租约也留着）" "0" "$(srv_field lease_gc_total)"
+  check "lease_gc · 负值关闭后靶子的租约仍在" "1" "$(_lease_count_of "$dev")"
+  # 关闭这一档必须在日志里留痕,否则运维事后无从确认「到底是关了还是没跑」。
+  check_contains "lease_gc · 关闭时日志留痕（运维事后能确认是关了而非没跑）" "显式关闭定时回收" \
+    "$(s "journalctl -u nanotun --since @$since --no-pager | grep lease-gc")"
+
+  # ── 第五档:写 0 是「用默认的 30 天」,不是关闭 ───────────────────────────
+  # 这一档钉的是 2026-07-30 查出来的那处文档与代码矛盾:三处注释都写着「<=0 关闭」,
+  # 而 server.go 里是 `== 0 → 30`。真语义(0 == 默认 30)必须被钉住,否则后来人照注释
+  # 「修」成「0 = 关闭」时,所有**从没配过这个键**的部署会一起静默停掉回收 ——
+  # int 的零值分不出「没配」与「显式 0」,而那正是这个功能要防的 vIP 池耗尽。
+  # 靶子回拨了 200 天,远超默认的 30 天,所以「按默认跑」的表现就是它被收掉。
+  _lease_gc_arm_target "$dev" false || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
+  if ! _lease_gc_set_days 0; then
+    _lease_gc_restore "$dev" "$seen_before"
+    env_error "写不进 lease_gc_idle_days=0,这一档测不到"
+    return 0
+  fi
+  since="$(s "date +%s" | tr -d '[:space:]')"
+  _lease_gc_restart || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
+  check "lease_gc · 写 0 等于默认 30 天而非关闭（没配过的部署不会被静默停掉回收）" "1" \
+    "$(srv_field lease_gc_total)"
+  # 启用侧也必须留痕:在此之前只有「真删到东西」才打 INFO,于是「正按 30 天回收」这件事
+  # 在日志里完全不可见 —— 照文档写 0 以为关掉了的人无从发现。
+  check_contains "lease_gc · 启用时日志点明生效阈值（否则「按默认在跑」不可见）" "定时回收已启用" \
+    "$(s "journalctl -u nanotun --since @$since --no-pager | grep lease-gc")"
+  check_contains "lease_gc · 启用日志里的阈值是默认的 720h（30 天）" "idle=720h" \
+    "$(s "journalctl -u nanotun --since @$since --no-pager | grep lease-gc")"
+
+  _lease_gc_restore "$dev" "$seen_before"
+}
+
+# _lease_rows_except <设备> 除该设备之外的全部租约,一行一条,用于「不许连坐」的整体比对。
+_lease_rows_except() {
+  s "sqlite3 '$E2E_DB_PATH' \"select device_id||':'||coalesce(vip_v4,'')||':'||coalesce(vip_v6,'')||':'||manual from leases where device_id<>$1 order by device_id;\""
+}
+
+_lease_count_of() {
+  s "sqlite3 '$E2E_DB_PATH' 'select count(*) from leases where device_id=$1;'" | tr -d '[:space:]'
+}
+
+# _lease_gc_arm_target <设备> <是否手动> [fresh] 给靶子装一条租约并设定 last_seen_at。
+# 第三个参数给 fresh 表示「未过期」(设为当下),否则回拨 200 天(远超本组用的 90 天阈值)。
+# 地址取池里明确空闲的一个;已有租约先收掉,保证 manual 位是这次想要的值。
+_lease_gc_arm_target() {
+  local dev="$1" manual="$2" fresh="${3:-}" vip="${E2E_LEASE_GC_PROBE_VIP:-10.201.9.9}" seen
+  adm_y "lease release $dev" >/dev/null 2>&1
+  if ! adm "lease set $dev --v4 $vip --manual=$manual" >/dev/null 2>&1; then
+    env_error "给设备 $dev 装租约失败(manual=$manual),lease_gc 这组测不到"
+    return 1
+  fi
+  # 时间戳在**库那一侧**算(strftime),不用本地 date:本地是开发机,与服务器有时钟差,
+  # 而这一组的判定就是拿 last_seen_at 跟服务器的 now 比。
+  if [[ "$fresh" == "fresh" ]]; then
+    seen="strftime('%s','now')"
+  else
+    seen="strftime('%s','now') - 200*86400"
+  fi
+  s "sqlite3 '$E2E_DB_PATH' \"update devices set last_seen_at=$seen where id=$dev;\"" >/dev/null
+  if [[ "$(_lease_count_of "$dev")" != "1" ]]; then
+    env_error "设备 $dev 的租约没装上,lease_gc 这组测不到"
+    return 1
+  fi
+  return 0
+}
+
+_lease_gc_set_days() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml server lease_gc_idle_days $1" >/dev/null
+}
+
+# _lease_gc_restart 重启并等两个客户端回来。lease_gc_idle_days 不可热更(reload 会报 deferred),
+# 而启动那一次 GC 正是本组要观测的触发点,所以这里只能重启。
+_lease_gc_restart() {
+  s "systemctl restart nanotun" >/dev/null 2>&1
+  if ! wait_until "lease_gc · 重启后两个客户端重连" 90 both_clients_online; then
+    env_error "重启后客户端没能重连,lease_gc 余下的断言测不到"
+    return 1
+  fi
+  return 0
+}
+
+# _lease_gc_restore 收掉靶子的租约、还原它的 last_seen_at、删掉本用例写进配置的那一行,再重启。
+# 配置的还原用「删行」而不是「写回默认值 30」:后者虽与默认等价,却会在参考部署里留下一行
+# 本来没有的配置,下次有人读配置时会以为这是刻意设的。
+_lease_gc_restore() {
+  local dev="$1" seen="$2" n
+  adm_y "lease release $dev" >/dev/null 2>&1
+  s "sqlite3 '$E2E_DB_PATH' 'update devices set last_seen_at=$seen where id=$dev;'" >/dev/null
+  n="$(s "grep -cE '^lease_gc_idle_days = ' /etc/nanotun/config.toml" | tr -d '[:space:]')"
+  if [[ "$n" == "1" ]]; then
+    s "grep -vE '^lease_gc_idle_days = ' /etc/nanotun/config.toml > /tmp/nte2e-cfg.nogc && cat /tmp/nte2e-cfg.nogc > /etc/nanotun/config.toml" >/dev/null
+  fi
+  s "systemctl restart nanotun" >/dev/null 2>&1
+  wait_until "lease_gc · 还原后两个客户端重连" 90 both_clients_online
+}

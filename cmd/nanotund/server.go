@@ -1544,8 +1544,9 @@ func main() {
 	userInvalidateCleanup := startUserInvalidationLoop(gw, time.Duration(gw.cfg.Server.UserInvalidateIntervalSec)*time.Second)
 	defer userInvalidateCleanup()
 
-	// P1#9(2026-05-22):lease_gc 定时回收 idle device 的 vIP。默认 30 天 idle,24h 一轮;
-	// <=0 关闭定时回收(回归 admin CLI cron 模型)。
+	// P1#9(2026-05-22):lease_gc 定时回收 idle device 的 vIP。默认 30 天 idle,24h 一轮。
+	// 不写 / 写 0 都走默认 30 天,**要关闭得写负数**(见 config.LeaseGCIdleDays 的注释:
+	// int 零值分不出「没配」与「显式 0」,把 0 当关闭会让没配过的部署统统静默停掉回收)。
 	leaseGCIdleDays := gw.cfg.Server.LeaseGCIdleDays
 	if leaseGCIdleDays == 0 {
 		leaseGCIdleDays = defaultLeaseGCIdleDays

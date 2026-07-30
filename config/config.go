@@ -539,7 +539,13 @@ type ServerConfig struct {
 
 	// LeaseGCIdleDays(P1#9):server 内置 lease_gc 定时任务的 idle 阈值(天)。
 	// 默认 30 天(GcOrphanLeases 只删 manual=0 且对应 device.last_seen_at >
-	// 阈值的 lease)。<=0 显式关闭定时回收,回归 admin CLI cron 模型。
+	// 阈值的 lease)。
+	//
+	// **不写 / 写 0 都表示「用默认的 30 天」,要关闭得写负数**(如 -1)。int 的零值分不出
+	// 「没配这个键」和「显式写了 0」,而把 0 解释成关闭会让所有从没配过它的部署统统静默
+	// 停掉回收 —— 正好造成这个功能本来要防的 vIP 池耗尽。2026-07-30 之前这三处注释都写的
+	// 是「<=0 关闭」,与 server.go 里 `== 0 → 30` 的代码矛盾:照文档写 0 的人以为关掉了,
+	// 实际仍按 30 天回收,且启用侧当时没有任何启动日志,无从发现。
 	LeaseGCIdleDays int `toml:"lease_gc_idle_days,omitempty"`
 
 	// LeaseGCIntervalHours(P1#9):lease_gc 循环间隔(小时)。默认 24。
