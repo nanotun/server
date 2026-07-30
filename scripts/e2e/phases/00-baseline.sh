@@ -54,9 +54,24 @@ _check_c_is_an_approved_exit() {
     _pass "基线 · C 的默认路由已批准（后续出口类断言的前提）"
     return 0
   fi
+  # 失败时把定案所需的证据一次抓齐。2026-07-30 这个现象出现过一次(阶段 1 开头五条集体红),
+  # 事后回查却查不出因:服务端自身没有任何能删 approved 路由的代码路径(store 层只有两个删除
+  # 函数,一个只删 pending,另一个只被 admin CLI / web 调用且都有审计),而那段窗口的审计里
+  # 没有未被还原的删除。也就是说光靠事后回查是不够的 —— 必须在**现场**把这几样抓下来:
+  #   - 该设备全部路由(含非 approved 状态,区分「行不存在」与「状态不对」);
+  #   - 审计尾部(唯一能指出「谁删的」的东西);
+  #   - 库文件的 inode / mtime 与 WAL 大小(用来判断库文件是否被换过 —— 换掉之后进程还握着
+  #     旧 inode 写,CLI 读到的是新文件,表现恰好就是「行凭空消失」)。
   _fail "基线 · C 应是已批准的出口（缺 0.0.0.0/0 的 approved 记录）" \
     "$(adm "route list --device $E2E_C_DEVICE_ID")
-提示:nanotun-admin exit designate $E2E_C_DEVICE_ID 可恢复,但请先记下它是怎么丢的 ——
+
+── 审计尾部（谁动过出口/路由）──
+$(adm "audit list --limit 15" 2>&1 | grep -E 'exit_|route_' | head -10)
+
+── 库文件身份（判断是否被换过）──
+$(s "stat -c 'inode=%i mtime=%y size=%s' $E2E_DB_PATH; ls -l ${E2E_DB_PATH}-wal 2>/dev/null || echo '(无 WAL)'" 2>&1)
+
+提示:nanotun-admin exit designate $E2E_C_DEVICE_ID 可恢复,但请先把上面这几段留下来 ——
 缺这行时,阶段 1 开头所有经 C 出网的断言都会红,看起来像出口功能坏了,其实是开跑状态不对。"
   return 1
 }

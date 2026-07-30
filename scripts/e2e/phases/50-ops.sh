@@ -212,6 +212,338 @@ _check_forward_port_drops_follow_their_own_knobs() {
   fi
 }
 
+# ── 数据面保活(server→client Ping/Pong)────────────────────────────────────────
+#
+# 这组是 [server].data_plane_ping_interval / _miss_threshold 的行为验证。参考部署里这两个键
+# **一个都没配**,也就是说这套机制线上一直是关着的、从没在真机上跑过。所以第一件要钉的不是
+# 「卡死能不能检出」,而是**打开它会不会把健康会话也一起杀掉** —— 客户端若压根不回 Pong,
+# 这个开关就是个地雷:每 N×interval 把所有正常会话杀一遍,表现为全员周期性掉线。
+#
+# 三条都要:
+#   1. 健康会话不被误杀(会话年龄必须远大于 miss 窗口 —— 只看「在线」抓不到「反复被杀又重连」);
+#   2. 卡死会话被检出并关掉,且**只关那一个**(C 的会话不能受牵连);
+#   3. 关掉开关后同样的卡死不再被检出(证明上面两条是这个开关驱动的,不是别的机制顺手做的)。
+#
+# 用 SIGSTOP 冻客户端来造「卡死」:进程停了但 TCP 连接还在,正是这套心跳存在的理由 ——
+# 拔网线那种断法底层 read 会直接报错,根本走不到判活逻辑。
+#
+# 冻结按**进程名**(pgrep -x nanotun)而不是命令行模式匹配:2026-07-30 踩过 ——
+# pkill -f 'nanotun connect' 会把远端执行这条命令的 bash 自己一起匹配上,把自己也冻死,
+# SSH 就此挂住。
+_check_data_plane_keepalive_reaps_only_the_wedged_session() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+
+  # 上一轮若在 STOP 与 CONT 之间断了,A 的客户端会一直冻着,后面所有阶段都会红成一片。
+  # 进门先无条件解冻一次,把「粘性污染」变成自愈。
+  _thaw_a_client
+
+  # ── 打开 5s / 2 次(判活窗口 10s)─────────────────────────────────────────
+  if ! s "python3 $dir/tomlset.py /etc/nanotun/config.toml server data_plane_ping_interval '\"5s\"' && python3 $dir/tomlset.py /etc/nanotun/config.toml server data_plane_ping_miss_threshold 2 && systemctl restart nanotun" >/dev/null; then
+    _restore_data_plane_keepalive_off
+    env_error "打开数据面保活失败,这组测不到"
+    return 0
+  fi
+  wait_until "数据面保活 · 打开后两个客户端重连" 90 both_clients_online
+
+  local since_healthy cid_before up_before
+  since_healthy="$(s "date +%s" | tr -d '[:space:]')"
+  cid_before="$(_conn_id_of_device "${E2E_A_DEVICE_ID:-1}")"
+  up_before="$(srv_field uptime 2>/dev/null)"
+  # 等 4 个判活窗口。误杀的话这段时间里会被杀 3~4 次。
+  sleep 45
+  local warns
+  warns="$(s "journalctl -u nanotun --since @$since_healthy --no-pager | grep -c 僵尸连接" | tr -d '[:space:]')"
+  [[ "$warns" =~ ^[0-9]+$ ]] || warns=0
+  if [[ "$warns" == "0" ]] && both_clients_online; then
+    _pass "数据面保活 · 健康会话不被误杀（4 个判活窗口内零告警、两个会话都在）"
+  else
+    _fail "数据面保活 · 健康会话被误杀了（客户端很可能压根不回 Pong，这个开关就是个地雷）" \
+      "僵尸告警 ${warns} 次,在线会话 $(conn_count) 个
+$(s "journalctl -u nanotun --since @$since_healthy --no-pager | grep 僵尸连接 | tail -3")"
+  fi
+  # 只看「在线」抓不到「被杀了又立刻重连」——那种退化下每次取样都是「在线」。
+  # 判据用 conn_id 是否还是同一个:被杀过必然换号。
+  #
+  # 不用会话年龄:年龄要跟一个绝对阈值比,而阈值同时受本函数自己的重启节奏和 SSH 往返
+  # 耗时影响,2026-07-30 实测出过「零告警但年龄偏小」的自相矛盾结果 —— 一条测不准
+  # 自己声称的东西的断言,比没有更糟。
+  local cid_after up_after grew
+  cid_after="$(_conn_id_of_device "${E2E_A_DEVICE_ID:-1}")"
+  up_after="$(srv_field uptime 2>/dev/null)"
+  # 同一个进程里 uptime 只会单调增长,且至少要涨够上面 sleep 的时长;涨得不够多
+  # 就说明中途重启过(重启后 uptime 从零重新开始计)。
+  #
+  # 刻意**不**用「uptime 字符串是否相等」来判有没有重启:它是个时长,同一进程里每次读都不一样,
+  # 那样写会让「conn_id 变了」永远被归成环境问题 —— 真缺陷被静默降级,比没有这条断言更糟。
+  grew=$(( $(_dur_secs "$up_after") - $(_dur_secs "$up_before") ))
+  if [[ "$cid_after" == "$cid_before" && -n "$cid_before" ]]; then
+    _pass "数据面保活 · A 的会话全程是同一条（conn_id 没变，没被杀掉又重连）"
+  elif (( grew >= 40 )); then
+    # 服务端没重启过,那换号只能是会话被杀了 —— 真缺陷。
+    _fail "数据面保活 · A 的会话在健康窗口内换了 conn_id（被杀掉又重连了）" \
+      "窗口前 ${cid_before:-空} → 窗口后 ${cid_after:-空}
+$(adm 'connection list')"
+  else
+    # 服务端在窗口中间自己重启了,换号是重启的必然结果,与保活无关。
+    # 这是脚手架/环境层面的干扰,报成环境问题而不是产品缺陷。
+    env_error "健康窗口里服务端重启过(uptime ${up_before} → ${up_after}),A 的会话连续性这条测不准"
+  fi
+
+  # ── 冻住 A:该被检出,且只该杀这一条 ─────────────────────────────────────
+  local since_wedge
+  since_wedge="$(s "date +%s" | tr -d '[:space:]')"
+  if ! _freeze_a_client; then
+    _restore_data_plane_keepalive_off
+    env_error "冻结 A 的客户端失败,卡死检出这几条测不到"
+    return 0
+  fi
+
+  if wait_until "数据面保活 · 卡死会话被判定为僵尸并关闭" 60 \
+      _keepalive_reaped_a "$since_wedge"; then
+    # 精确性:被杀的必须只有卡死那条。连坐会把一个客户端的故障放大成全员掉线。
+    if [[ "$(conn_count)" == "1" ]]; then
+      _pass "数据面保活 · 只关掉卡死那一条，C 的会话没被连坐"
+    else
+      _fail "数据面保活 · 期望只剩 C 的会话，实际在线 $(conn_count) 个" "$(adm 'connection list')"
+    fi
+  fi
+
+  _thaw_a_client
+  wait_until "数据面保活 · 解冻后 A 自行重连" 90 both_clients_online
+  wait_until "数据面保活 · 解冻后出口恢复" 60 probe_egress_is "$E2E_C_HOST"
+
+  # ── 关掉开关:同样的卡死不该再被检出 ────────────────────────────────────
+  _restore_data_plane_keepalive_off
+  wait_until "数据面保活 · 关掉后两个客户端重连" 90 both_clients_online
+
+  local since_off
+  since_off="$(s "date +%s" | tr -d '[:space:]')"
+  if ! _freeze_a_client; then
+    env_error "第二次冻结 A 失败,反面这条测不到"
+    _thaw_a_client
+    return 0
+  fi
+  # 只等 25s:比上面检出用的时间宽裕,又稳稳短于 smux 自己那套 30s 保活超时 ——
+  # 等过 30s 的话会话可能被 smux 收走,那测的就是另一套机制了。
+  sleep 25
+  if _keepalive_warned_for_a "$since_off"; then
+    _fail "数据面保活 · 关掉开关后仍在判僵尸（上面那几条就不是这个开关驱动的）" \
+      "$(s "journalctl -u nanotun --since @$since_off --no-pager | grep 僵尸连接 | tail -3")"
+  elif [[ "$(conn_count)" == "2" ]]; then
+    _pass "数据面保活 · 关掉后同样的卡死不再被检出（确认由开关驱动）"
+  else
+    _fail "数据面保活 · 关掉后会话仍然掉了（是别的机制收走的，本条没能证明开关驱动）" \
+      "$(adm 'connection list')"
+  fi
+
+  _thaw_a_client
+  wait_until "数据面保活 · 收尾:A 重新在线" 90 both_clients_online
+  wait_until "数据面保活 · 收尾:出口恢复" 60 probe_egress_is "$E2E_C_HOST"
+}
+
+# _keepalive_warned_for_a <起始 unix 秒> 判断 $1 之后有没有针对 A 的僵尸判定告警。
+#
+# 按 remote 里的 A 公网 IP 匹配,不按 user_id:后者是 u2 这种展示形式,和 E2E_A_USER
+# (登录名)对不上,按名字匹配会永远落空、静默变成一条恒绿的假断言。
+_keepalive_warned_for_a() {
+  s "journalctl -u nanotun --since @$1 --no-pager | grep 僵尸连接 | grep -c '$E2E_A_HOST'" \
+    | tr -d '[:space:]' | grep -qvE '^0?$'
+}
+
+# _keepalive_reaped_a 要求两件事都成立:告警打了,**而且**那条会话真的没了。
+# 只查告警的话,「记了日志却忘了 Close」这种退化会从这条断言底下溜过去 —— 而它恰恰是
+# 最难发现的一种:日志看起来一切正常,僵尸连接却一直挂着占着 vIP 和配额。
+_keepalive_reaped_a() {
+  _keepalive_warned_for_a "$1" || return 1
+  ! adm "connection list" | awk -v v="$E2E_A_VIP4" '$3 ~ v {found=1} END {exit !found}'
+}
+
+# _dur_secs <时长串> 把 1h2m3s / 1m34s / 43s 这类 Go 风格时长折成秒。取不到就 0。
+_dur_secs() {
+  printf '%s' "${1:-}" | awk '
+    { t=$0; s=0
+      if (match(t, /[0-9]+h/)) { s += substr(t, RSTART, RLENGTH-1) * 3600 }
+      if (match(t, /[0-9]+m/)) { s += substr(t, RSTART, RLENGTH-1) * 60 }
+      if (match(t, /[0-9]+s/)) { s += substr(t, RSTART, RLENGTH-1) }
+      print s+0 }
+    END { if (NR == 0) print 0 }'
+}
+
+# _conn_id_of_device <device_id> 取该设备当前在线会话的 conn_id;不在线就空串。
+#
+# 按 device_id 取,不按 user_id:后者是 u2 这种展示形式,和登录名对不上(与 conn_rate_down 同一个坑)。
+_conn_id_of_device() {
+  srv_status_json 2>/dev/null | python3 -c '
+import json,sys
+dev = int(sys.argv[1])
+for s in json.load(sys.stdin).get("sessions", []):
+    if s.get("device_id") == dev:
+        print(s.get("conn_id", ""))
+        break
+else:
+    print("")
+' "$1"
+}
+
+# _freeze_a_client 用 SIGSTOP 冻住 A 上的客户端,并确认它真的停住了(状态含 T)。
+# 不确认的话,信号没生效会让后面几条断言变成「什么都没测」。
+_freeze_a_client() {
+  local pid stat
+  pid="$(_a_client_pid)"
+  [[ -n "$pid" ]] || return 1
+  a "kill -STOP $pid" >/dev/null 2>&1 || return 1
+  sleep 2
+  stat="$(a "ps -o stat= -p $pid" | tr -d '[:space:]')"
+  [[ "$stat" == *T* ]]
+}
+
+# _thaw_a_client 解冻 A 上所有停住的客户端进程。幂等,没冻也能安全调用。
+_thaw_a_client() {
+  local pid
+  pid="$(_a_client_pid)"
+  [[ -n "$pid" ]] && a "kill -CONT $pid" >/dev/null 2>&1
+  return 0
+}
+
+# _a_client_pid 取 A 上客户端进程号。按进程名精确匹配,绝不按命令行 ——
+# 按命令行会把远端执行这条命令的 shell 自己一起匹配上(见本节顶部注释)。
+_a_client_pid() { a "pgrep -x nanotun | head -1" | tr -d '[:space:]'; }
+
+# _restore_data_plane_keepalive_off 把保活写死为关闭并重启。
+# interval = "0s"、miss_threshold = 0 都与「键不存在」等价,故还原不依赖任何快照。
+#
+# 阈值也要归零:留着 2 的话,将来谁把 interval 打开就会拿到 2 而不是代码里的默认 3 ——
+# 一个由测试残留造成、且没人会想到去查配置文件的行为偏差。
+_restore_data_plane_keepalive_off() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml server data_plane_ping_interval '\"0s\"' && python3 $dir/tomlset.py /etc/nanotun/config.toml server data_plane_ping_miss_threshold 0 && systemctl restart nanotun" >/dev/null 2>&1 || true
+}
+
+# _check_exit_guard_installs_both_chains 验 tun.exit_deny_private 在 FORWARD **和** INPUT 两条链上
+# 都装了链路本地/私网目的地的 DROP,而且是这个开关驱动的。
+#
+# 重点在 INPUT 那一半。代码注释把它的作用写得很明确:目的地是服务器**自己**的地址时走 INPUT 而不是
+# FORWARD,「不装这条的话内部管理面服务照样对 VPN 用户敞开」。也就是说 FORWARD 装上了、INPUT 漏了
+# 这种退化,是一个真实的暴露面缺陷 —— 而它在任何流量断言里都看不见(见下)。
+#
+# 为什么这组同样测「内核规则」而不是测流量:2026-07-30 实测,客户端 A 访问云元数据地址
+# 169.254.169.254 时,A 自己的路由表把它送出 A 的 WAN(`via <A 的网关> dev enp1s0`)——
+# 压根不进隧道。加上 A 固定选 C 当出口(去程用户态直投、不碰服务器 tun0),当前拓扑下没有任何
+# 流量路径能打中服务端这两条规则。硬造端到端断言只会得到一个无论规则在不在都恒绿的假断言。
+#
+# exit_deny_private 是 deferred 字段(只在启动期落链),所以两次切换都要重启 + 等重连。
+_check_exit_guard_installs_both_chains() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+
+  # 出网网卡名运行时取:写死 enp1s0 会在换机器后让 FORWARD 那半永远匹配不上,
+  # 而匹配不上的表现是「规则没装」—— 一个指向错误方向的红。
+  local wan
+  wan="$(s "ip route show default | awk '{print \$5; exit}'" | tr -d '[:space:]')"
+  if [[ -z "$wan" ]]; then
+    env_error "取不到出网网卡名,出口守卫这组测不到"
+    return 0
+  fi
+
+  # ── 默认档(auto):四条规则都该在 ────────────────────────────────────────
+  _assert_exit_guard_present "$wan" "默认档(auto)"
+
+  # 反面:mesh 网段绝不能进拦截列表。真进了的话整个 mesh 会被打死 —— 那种失败会以
+  # 「所有 mesh 断言一起红」的形式出现,没人会想到根因在这个守卫上,所以这里点名钉住。
+  local guard4 mesh4 bad=""
+  guard4="$(s "iptables -S INPUT; iptables -S FORWARD" | grep -E -- "-i tun.*-j DROP" | grep -v -- "--dport")"
+  mesh4="$(echo "${E2E_A_VIP4:-10.201.0.77}" | awk -F. '{print $1"."$2"."}')"
+  if echo "$guard4" | grep -q -- "-d ${mesh4}"; then
+    bad="yes"
+  fi
+  if [[ -z "$bad" ]]; then
+    _pass "出口守卫 · mesh 网段没被拦（进了拦截列表会把整个 mesh 打死）"
+  else
+    _fail "出口守卫 · mesh 网段被拦进去了（会把整个 mesh 打死）" "$guard4"
+  fi
+
+  # 运维唯一能看到「到底拦了哪些网段」的地方就是这行日志,故一并钉住档位与前缀。
+  local log
+  log="$(s "journalctl -u nanotun --no-pager | grep 'exit-guard' | tail -4")"
+  check_contains "出口守卫 · 启动日志点明生效档位" "mode=auto" "$log"
+  check_contains "出口守卫 · 启动日志点明实际拦了哪些网段（v4）" "169.254.0.0/16" "$log"
+  check_contains "出口守卫 · 启动日志点明实际拦了哪些网段（v6）" "fe80::/10" "$log"
+
+  # ── 关掉:四条规则都该消失 ─────────────────────────────────────────────
+  if ! s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun exit_deny_private '\"off\"' && systemctl restart nanotun" >/dev/null; then
+    _restore_exit_deny_private_auto
+    env_error "把 exit_deny_private 设为 off 失败,这组测不到"
+    return 0
+  fi
+  wait_until "出口守卫 · 关掉后两个客户端重连" 90 both_clients_online
+
+  local fam bin chain prefix text still=""
+  for fam in "iptables|169.254.0.0/16" "ip6tables|fe80::/10"; do
+    bin="${fam%%|*}"
+    prefix="${fam#*|}"
+    for chain in FORWARD INPUT; do
+      text="$(s "$bin -S $chain")"
+      if printf '%s\n' "$text" | grep -qE -- "-d $prefix -i tun.*-j DROP"; then
+        still+="$bin/$chain "
+      fi
+    done
+  done
+  if [[ -z "$still" ]]; then
+    _pass "出口守卫 · off 档下四条规则全部消失（确认由开关驱动）"
+  else
+    _fail "出口守卫 · off 档下仍残留 ${still}（那上面四条就不是这个开关驱动的）" \
+      "$(s 'iptables -S INPUT; iptables -S FORWARD')"
+  fi
+
+  # ── 还原 auto:四条规则该回来 ──────────────────────────────────────────
+  _restore_exit_deny_private_auto
+  wait_until "出口守卫 · 还原 auto 后两个客户端重连" 90 both_clients_online
+  _assert_exit_guard_present "$wan" "还原 auto"
+}
+
+# _assert_exit_guard_present <出网网卡> <档位标签> 断言四条守卫规则都在。
+#
+# FORWARD 那半额外要求带 `-o <wan>`:少了它会连 tun→tun 一起拦,把已批准子网路由和 mesh
+# 里指向链路本地的流量也打掉 —— 代码注释专门解释了为什么要限定出网方向。
+_assert_exit_guard_present() {
+  local wan="$1" tag="$2"
+  local fam bin rest prefix label line
+  # 用 | 而不是 : 分隔:v6 前缀自己就带冒号。
+  for fam in "iptables|169.254.0.0/16|IPv4" "ip6tables|fe80::/10|IPv6"; do
+    bin="${fam%%|*}"
+    rest="${fam#*|}"
+    prefix="${rest%%|*}"
+    label="${rest#*|}"
+
+    line="$(s "$bin -S FORWARD" | grep -E -- "-d $prefix -i tun.*-j DROP")"
+    if [[ -n "$line" ]] && [[ "$line" == *" -o $wan"* ]]; then
+      _pass "出口守卫 · $tag · $label FORWARD 拦 $prefix 且限定出网方向（-o ${wan}）"
+    elif [[ -n "$line" ]]; then
+      _fail "出口守卫 · $tag · $label FORWARD 那条没限定 -o ${wan}（会连 tun→tun 一起拦）" "$line"
+    else
+      _fail "出口守卫 · $tag · $label FORWARD 应拦 $prefix" "$(s "$bin -S FORWARD")"
+    fi
+
+    # INPUT 这条是关键:目的地是服务器自己的地址时走 INPUT 不走 FORWARD,漏了它
+    # 内部管理面就对 VPN 用户敞开,而且任何流量断言都看不见。
+    line="$(s "$bin -S INPUT" | grep -E -- "-d $prefix -i tun.*-j DROP")"
+    if [[ -n "$line" ]]; then
+      _pass "出口守卫 · $tag · $label INPUT 拦 ${prefix}（否则服务器自己的私网地址对 VPN 用户敞开）"
+    else
+      _fail "出口守卫 · $tag · $label INPUT 应拦 $prefix" "$(s "$bin -S INPUT")"
+    fi
+  done
+}
+
+# _restore_exit_deny_private_auto 写死 auto 并重启。auto 是安全默认,还原绝不能依赖快照。
+_restore_exit_deny_private_auto() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun exit_deny_private '\"auto\"' && systemctl restart nanotun" >/dev/null 2>&1 || true
+}
+
 # _fwd_drop_exists <链文本> <tcp|udp> <dport> 判断链里有没有这么一条 tun 入向的 DROP。
 # 限定 `-i tun` 是必要的:不限定的话会捞到与这三个开关无关的规则,反面断言就会假红。
 _fwd_drop_exists() {
@@ -623,6 +955,8 @@ phase_50_ops() {
   # 重启之后规则真的落进了内核。两条合起来才把这个开关的链路走完。
   _check_forward_port_drops_follow_their_own_knobs
   _check_udp_relay_stays_disabled
+  _check_exit_guard_installs_both_chains
+  _check_data_plane_keepalive_reaps_only_the_wedged_session
 
   # ── 踢线:瞬态关闭 + 自动重连 ─────────────────────────────────────────────
   local cid
