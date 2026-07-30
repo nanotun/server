@@ -20,6 +20,12 @@ import (
 // 而文档与配置注释一直承诺「listen 串里写在最前的那个就是 primary」。
 // 2026-07-25 已把实现改回按书写顺序取首个端口(见 util.PrimaryPortFromUDPListenAddr),
 // 于是这里断言 gotPort == 写在最前的 a,与端口数值大小无关(也就不会 flaky)。
+//
+// 端口跳跃的安装从 setupHy2PortHopFn 接缝桩掉:真安装要写 iptables,Linux 上非 root 直接
+// `Permission denied (you must be root)`。此前没桩,于是这条在开发机(macOS 不编 iptables 那支)
+// 和三机(root)上一直绿,**在 CI runner 上首次实跑就红** —— 而它要验的是「绑哪个端口」,
+// 跟规则装不装毫无关系。桩掉比 `Geteuid() != 0 就 Skip` 好:后者会让 runner 上白丢这份覆盖。
+// 真安装那条路径由 hysteria_porthop_e2e_linux_test.go 负责(它才该要求 root)。
 func TestStartEmbeddedHysteria_PortUnionBindsPrimary(t *testing.T) {
 	dir := t.TempDir()
 	cert, key := writeTestHy2ServerTLS(t, dir)
@@ -30,6 +36,18 @@ func TestStartEmbeddedHysteria_PortUnionBindsPrimary(t *testing.T) {
 	}
 	// 按「a,b」写入 listen 串:不论 b 是否比 a 小,绑定的都该是写在最前的 a。
 	listen := fmt.Sprintf("127.0.0.1:%d,%d", a, b)
+
+	// 顺带把接缝收到的实参也钉住:主端口必须是书写顺序首个,并集必须是整串端口 ——
+	// 只看 gotPort 的话,「绑对了但拿错的端口去装 redirect」这种错配是看不见的。
+	var gotHopPrimary uint16
+	var gotHopUnion string
+	prevHop := setupHy2PortHopFn
+	setupHy2PortHopFn = func(primary uint16, union, iface string) (func(), error) {
+		gotHopPrimary, gotHopUnion = primary, union
+		return func() {}, nil
+	}
+	t.Cleanup(func() { setupHy2PortHopFn = prevHop })
+
 	cfg := testHysteriaConfig(t, listen, "test-hop-pw", cert, key)
 
 	hySrv, gotPort, hopCleanup, err := startEmbeddedHysteria(&cfg, ":0", "ws://127.0.0.1:9/", nil, nil)
@@ -49,6 +67,12 @@ func TestStartEmbeddedHysteria_PortUnionBindsPrimary(t *testing.T) {
 	}
 	if _, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", expectedFree)); err != nil {
 		t.Fatalf("free port %d should remain bindable before redirect: %v", expectedFree, err)
+	}
+	if gotHopPrimary != uint16(expectedBound) {
+		t.Errorf("装 redirect 用的主端口=%d,want %d —— 绑一个端口却把另一个装成 redirect 目标,入包会被打到没人听的端口上", gotHopPrimary, expectedBound)
+	}
+	if want := fmt.Sprintf("%d,%d", a, b); gotHopUnion != want {
+		t.Errorf("装 redirect 用的端口并集=%q,want %q", gotHopUnion, want)
 	}
 	go func() { _ = hySrv.Serve() }()
 	time.Sleep(100 * time.Millisecond)
