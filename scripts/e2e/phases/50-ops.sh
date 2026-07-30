@@ -5,6 +5,72 @@
 # 在共用环境上跑真还原风险太高。真正的「停服→还原→启动→校验」演练请用
 # --with-restore-drill 显式开启,并且只在可以随便重置的环境上跑。
 
+# _check_deferred_fields_are_reported 验「改了不可热更的字段,SIGHUP 必须报 deferred」。
+#
+# 这一条测的是**信号**而不是数据面:这些字段本来就要重启才生效,e2e 没法在不重启的前提下
+# 观察它们生效。真正会伤人的是「改了、SIGHUP、日志一切正常」——运维于是以为已经生效了。
+# 第 48 轮补进 deferred 的五个字段就是这么漏了很久:它们和早已被覆盖的 exit_mode /
+# exit_dns_redirect 在 server.go 里是同一次 SetupIptables 调用的相邻实参。
+#
+# 断言点取审计里那条 config_reload 的 detail(applied=[...] deferred=[...]),而不是日志 ——
+# 审计是结构化的、可按 action 过滤,不受日志等级与轮转影响。
+_check_deferred_fields_are_reported() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+
+  s "cp /etc/nanotun/config.toml /tmp/nte2e-cfg.deferred-bak" >/dev/null
+
+  # 三个字段各来自一个不同的段/机制,覆盖第 48 轮那三族。同一次 SIGHUP 一起改完再断言:
+  # 「只报改动的那一项」由单测钉,这里要的是「真二进制读真配置文件后确实报得出来」。
+  local setrc=0
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun forward_block_bt true" >/dev/null || setrc=1
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml server jump_host_protected_ports '[\"tcp/9099\"]'" >/dev/null || setrc=1
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria udp_relay_enabled true" >/dev/null || setrc=1
+  if (( setrc != 0 )); then
+    env_error "改写 config.toml 失败(见 tomlset.py 输出),deferred 这组断言测不到"
+    s "cp /tmp/nte2e-cfg.deferred-bak /etc/nanotun/config.toml && systemctl reload nanotun" >/dev/null
+    return 0
+  fi
+
+  # 取服务端自己的时钟做起点:下面只看**这一次**reload 的日志。
+  # 用 --since '-30s' 这种相对窗口会捞到上面那条坏配置用例留下的「保留旧配置」
+  # (两次 SIGHUP 只隔二十几秒),于是自证钩子把一次正常的 reload 误判成坏配置。
+  local since
+  since="$(s 'date +%s' | tr -d '[:space:]')"
+  s "systemctl reload nanotun" >/dev/null
+  sleep 3
+
+  # 改的是合法字段,配置必须解析成功 —— 否则 reload 走的是「保留旧配置」分支,
+  # deferred 永远是空的,下面三条会红在一个完全无关的原因上。
+  local rlog
+  rlog="$(s "journalctl -u nanotun --since '@$since' --no-pager | grep -i reload")"
+  if [[ "$rlog" == *保留旧配置* ]]; then
+    env_error "SIGHUP 把这份配置判成坏配置(见 reload 日志),deferred 这组断言测不到"
+    s "cp /tmp/nte2e-cfg.deferred-bak /etc/nanotun/config.toml && systemctl reload nanotun" >/dev/null
+    return 0
+  fi
+
+  local detail
+  detail="$(adm "audit list --limit 20" | grep config_reload | head -1)"
+  check_contains "SIGHUP 报出 tun.forward_block_bt 需重启" "tun.forward_block_bt" "$detail"
+  check_contains "SIGHUP 报出 server.jump_host_protected_ports 需重启" "server.jump_host_protected_ports" "$detail"
+  check_contains "SIGHUP 报出 hysteria.udp_relay_enabled 需重启" "hysteria.udp_relay_enabled" "$detail"
+
+  # 恢复,并确认恢复后的 SIGHUP 不再报这些字段(证明上面那三条是这次改动引起的,
+  # 而不是审计里捞到了一条陈旧记录)。
+  s "cp /tmp/nte2e-cfg.deferred-bak /etc/nanotun/config.toml && systemctl reload nanotun" >/dev/null
+  sleep 3
+  local after
+  after="$(adm "audit list --limit 20" | grep config_reload | head -1)"
+  if [[ "$after" == *forward_block_bt* ]]; then
+    _fail "恢复配置后仍报 forward_block_bt" "$after"
+  else
+    _pass "恢复配置后不再报这些字段（说明断言捞的是本次 reload）"
+  fi
+  check "deferred 这组跑完服务仍然存活" "active" "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')"
+}
+
 phase_50_ops() {
   phase_begin "阶段 5 · 运维面"
 
@@ -53,6 +119,8 @@ phase_50_ops() {
   s "cp /tmp/nte2e-cfg.good /etc/nanotun/config.toml && systemctl reload nanotun" >/dev/null
   sleep 2
   check "恢复配置后服务正常" "active" "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')"
+
+  _check_deferred_fields_are_reported
 
   # ── 踢线:瞬态关闭 + 自动重连 ─────────────────────────────────────────────
   local cid
