@@ -249,7 +249,7 @@ _check_data_plane_keepalive_reaps_only_the_wedged_session() {
 
   local since_healthy cid_before up_before
   since_healthy="$(s "date +%s" | tr -d '[:space:]')"
-  cid_before="$(_conn_id_of_device "${E2E_A_DEVICE_ID:-1}")"
+  cid_before="$(conn_id_of_device "${E2E_A_DEVICE_ID:-1}")"
   up_before="$(srv_field uptime 2>/dev/null)"
   # 等 4 个判活窗口。误杀的话这段时间里会被杀 3~4 次。
   sleep 45
@@ -270,7 +270,7 @@ $(s "journalctl -u nanotun --since @$since_healthy --no-pager | grep 僵尸连�
   # 耗时影响,2026-07-30 实测出过「零告警但年龄偏小」的自相矛盾结果 —— 一条测不准
   # 自己声称的东西的断言,比没有更糟。
   local cid_after up_after grew
-  cid_after="$(_conn_id_of_device "${E2E_A_DEVICE_ID:-1}")"
+  cid_after="$(conn_id_of_device "${E2E_A_DEVICE_ID:-1}")"
   up_after="$(srv_field uptime 2>/dev/null)"
   # 同一个进程里 uptime 只会单调增长,且至少要涨够上面 sleep 的时长;涨得不够多
   # 就说明中途重启过(重启后 uptime 从零重新开始计)。
@@ -371,21 +371,7 @@ _dur_secs() {
     END { if (NR == 0) print 0 }'
 }
 
-# _conn_id_of_device <device_id> 取该设备当前在线会话的 conn_id;不在线就空串。
-#
-# 按 device_id 取,不按 user_id:后者是 u2 这种展示形式,和登录名对不上(与 conn_rate_down 同一个坑)。
-_conn_id_of_device() {
-  srv_status_json 2>/dev/null | python3 -c '
-import json,sys
-dev = int(sys.argv[1])
-for s in json.load(sys.stdin).get("sessions", []):
-    if s.get("device_id") == dev:
-        print(s.get("conn_id", ""))
-        break
-else:
-    print("")
-' "$1"
-}
+# conn_id_of_device 在 lib/fixtures.sh(阶段 2 的平台限速也要用它判「是不是同一条会话」)。
 
 # _freeze_a_client 用 SIGSTOP 冻住 A 上的客户端,并确认它真的停住了(状态含 T)。
 # 不确认的话,信号没生效会让后面几条断言变成「什么都没测」。

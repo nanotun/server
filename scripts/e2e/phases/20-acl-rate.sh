@@ -105,6 +105,176 @@ except Exception as e: print("解析失败: %s" % e)')"
   sleep 2
 
   _check_login_rate_limit_refuses_after_burst
+  _check_platform_rate_limit_only_hits_its_own_platform
+}
+
+# _check_platform_rate_limit_only_hits_its_own_platform 验 [server].rate_limit_by_platform ——
+# 四层限速里的**第 3 层**,上面那组只覆盖了设备 / 全局 / 用户三层。
+#
+# 这一层与那三层有两处不同,都值得单独钉:
+#
+#  1. **它在登录期读**(linkRatesForPlatform 只在建限流器时调一次),所以热更后现役会话不受影响。
+#     reload 日志明写「仅对未来登录生效」—— 这句声称此前没人验过。若哪天实现改成也回改现役会话,
+#     运维照着这句话做的容量规划就全错了(以为改了要等重连,实际立刻生效)。
+#  2. **它按 platform 键匹配**。写错成「有任何一个条目就套到所有会话」的话,给 android 配的限速
+#     会把 linux 客户端一起限住 —— 表现是「莫名其妙变慢」,而配置文件里明明没写 linux。
+#     所以先只给 A **不是**的那个平台配一档,断言 A 不受影响,这是这组的判别器。
+#
+# 平台名取自客户端登录时上报的 platform 字段(A 的 REALITY 会话报 linux,启动日志里能看到)。
+_check_platform_rate_limit_only_hits_its_own_platform() {
+  # 进门先清掉可能残留的追加段(上一轮若中途断了会留着)。
+  _platform_block_reset
+
+  local baseline
+  baseline="$(conn_rate_down "$E2E_A_DEVICE_ID")"
+  if [[ ! "$baseline" =~ ^[0-9]+$ ]] || (( baseline <= 300000 )); then
+    # 基线必须是个「比待测限值宽松」的数,否则 min 之后看不出平台层有没有生效,
+    # 断言会恒绿。取不到或已经很严都属于前置状态不对。
+    env_error "取不到 A 的基线限速(或基线已严于待测值):${baseline:-空},平台层限速这组测不到"
+    return 0
+  fi
+
+  # ── 只给 android 配:linux 的 A 不该有任何变化 ────────────────────────────
+  # 刻意**只写 android 一个表**,不给 linux 留一个零值条目 —— 那才是真实部署的形状
+  # (运维只写要限的那个平台)。留着零值 linux 条目会让 m[p] 永远命中,于是
+  # 「键匹配写错」这一类故障压根走不到,断言看着绿实际上覆盖不到。
+  _platform_write_block android 200000
+  _sighup_and_wait_platform_reload
+  # 正面对照:确认服务端**真的**载入了一个平台条目。少了这条,「追加没成功」
+  # 会让下面那条断言恒绿通过 —— 没配限速当然不影响别的平台,什么都没测到。
+  if _platform_count_is 1; then
+    _pass "平台限速 · 服务端确认载入了 android 这一条（下面那条不是因为没配上才绿的）"
+  else
+    env_error "服务端载入了 $(_platform_count_now) 个平台条目,期望 1,平台层限速这组测不到"
+    _platform_block_reset
+    return 0
+  fi
+  _relogin_a || { _restore_platform_rates; return 0; }
+  if [[ "$(conn_rate_down "$E2E_A_DEVICE_ID")" == "$baseline" ]]; then
+    _pass "平台限速 · 只给 android 配时不影响 linux 客户端（按平台匹配，不是有条目就套所有人）"
+  else
+    _fail "平台限速 · 给 android 配的限速套到了 linux 客户端身上" \
+      "基线 ${baseline} → 现在 $(conn_rate_down "$E2E_A_DEVICE_ID")"
+  fi
+
+  # ── 换成只给 linux 配:先钉「现役会话不受影响」,再钉「下次登录生效」──────
+  # 这一档同样只写 linux。若两个都写,android 的 200000 比 linux 的 150000 宽,
+  # min 之后仍是 150000 —— 「串平台」的故障会被 min 掩盖掉,断言就分辨不出来了。
+  _platform_write_block linux 150000
+  _sighup_and_wait_platform_reload
+  # 刻意用固定等待而非轮询:要断言的是「一直没变」,轮询会在第一次取样就通过,
+  # 把「过几秒才回改现役会话」的实现漏个正着。
+  sleep 6
+  if [[ "$(conn_rate_down "$E2E_A_DEVICE_ID")" == "$baseline" ]]; then
+    _pass "平台限速 · 热更不回改现役会话（与 reload 日志所述「仅对未来登录生效」一致）"
+  else
+    _fail "平台限速 · 热更把现役会话也改了，与 reload 日志所述矛盾" \
+      "基线 ${baseline} → 现在 $(conn_rate_down "$E2E_A_DEVICE_ID")"
+  fi
+
+  _relogin_a || { _restore_platform_rates; return 0; }
+  wait_until "平台限速 · 重新登录后取到平台层的 150000（参与四层 min）" 25 \
+    rate_is "$E2E_A_DEVICE_ID" 150000
+
+  # 吞吐只做**单边**校验:限值以下多慢都算过(公网抖动只会让它更慢),
+  # 只有跑出远超限值的速度才说明限流器压根没装上。
+  local speed
+  speed="$(a "curl -s -o /dev/null -w '%{speed_download}' --max-time 30 'https://speed.cloudflare.com/__down?bytes=1500000'" |
+    tr -d '[:space:]' | cut -d. -f1)"
+  if [[ "$speed" =~ ^[0-9]+$ ]] && (( speed > 0 && speed < 300000 )); then
+    _pass "平台限速 · 实测吞吐不超过限值量级（${speed} B/s，限 150000）"
+  elif [[ "$speed" =~ ^[0-9]+$ ]] && (( speed == 0 )); then
+    env_error "测速取到 0 B/s(公网不通?),平台层的吞吐校验这条测不到"
+  else
+    _fail "平台限速 · 实测吞吐远超限值，限流器很可能没装上" "限 150000 B/s,实测 ${speed:-空} B/s"
+  fi
+
+  # ── 归零:回到基线 ──────────────────────────────────────────────────────
+  _restore_platform_rates
+  _relogin_a || return 0
+  wait_until "平台限速 · 归零后回到基线 ${baseline}" 25 rate_is "$E2E_A_DEVICE_ID" "$baseline"
+}
+
+# 平台限速的配置段用「哨兵行 + 追加到文件末尾」来管:
+#
+#   - 追加在**末尾**:段头会终止上一个表,末尾是唯一不会改变已有键归属的位置。插在中间会把
+#     [server] 后面的键全切进子表里 —— 一个「TOML 仍然合法但语义全变」的改动,自证也拦不住。
+#   - 用**哨兵行**界定本用例写的那一段,还原就是「删掉哨兵行到文件末尾」。这样每一档都能精确
+#     控制「哪些平台表存在」(真实部署就是只写要限的那个),而还原不依赖任何内容快照 ——
+#     快照式还原会把污染一路传给后续跑动(见第 53 轮那次事故)。
+#
+# 不用 tomlset 改段内 key:那需要段先存在,而「让段一直存在(值置零)」正是上面说的、
+# 会让键匹配类故障走不到的那个设计错误。
+_platform_block_sentinel='# nte2e-platform-rate-block'
+
+# _platform_block_reset 删掉哨兵行及其后所有内容。幂等,没写过也能安全调用。
+# 用 cat 回写而不是 mv:保住原 inode 与权限。
+_platform_block_reset() {
+  s "awk '/^${_platform_block_sentinel}\$/{exit} {print}' /etc/nanotun/config.toml > /tmp/nte2e-cfg.noblock && cat /tmp/nte2e-cfg.noblock > /etc/nanotun/config.toml" >/dev/null
+}
+
+# _platform_write_block <平台> <下行字节/秒> 重写追加段,使其中**只有**这一个平台表。
+_platform_write_block() {
+  _platform_block_reset
+  s "printf '%s\n[server.rate_limit_by_platform.%s]\ndownload_rate = %s\n' '${_platform_block_sentinel}' '$1' '$2' >> /etc/nanotun/config.toml" >/dev/null
+}
+
+# _sighup_and_wait_platform_reload 发 SIGHUP 并等到日志确认这一项已热更。
+# 不用固定 sleep:reload 是异步的,睡太短会在旧值上判,睡太长白等。
+_sighup_and_wait_platform_reload() {
+  # 记进全局:platform_count 必须只在**这一次** reload 的日志里找,否则会读到上一档的数,
+  # 于是「这次改动没进到进程里」被上一次的成功记录掩盖过去。
+  _PLATFORM_RELOAD_SINCE="$(s "date +%s" | tr -d '[:space:]')"
+  s "systemctl reload nanotun" >/dev/null 2>&1
+  wait_until "平台限速 · SIGHUP 后日志确认 rate_limit_by_platform 已热更" 30 \
+    _platform_reload_logged "$_PLATFORM_RELOAD_SINCE"
+}
+
+_platform_reload_logged() {
+  s "journalctl -u nanotun --since @$1 --no-pager | grep -c 'rate_limit_by_platform 已热更'" \
+    | tr -d '[:space:]' | grep -qvE '^0?$'
+}
+
+# _platform_count_now 取本次热更日志里的 platform_count(服务端实际载入的平台条目数)。
+# 这是唯一能从外面看出「配置到底有没有进到进程里」的数。
+_platform_count_now() {
+  s "journalctl -u nanotun --since @${_PLATFORM_RELOAD_SINCE:-0} --no-pager | grep 'rate_limit_by_platform 已热更' | tail -1" \
+    | sed -nE 's/.*platform_count=([0-9]+).*/\1/p'
+}
+
+_platform_count_is() { [[ "$(_platform_count_now)" == "$1" ]]; }
+
+# _relogin_a 踢掉 A 的会话逼它重新登录 —— 平台层只在登录期读,不重连就看不到新值。
+# 返回非 0 表示没能造出重新登录(此时调用方该还原配置并放弃这组,而不是在旧会话上判)。
+_relogin_a() {
+  local cid
+  cid="$(_conn_id_of_device_a)"
+  if [[ -z "$cid" ]]; then
+    env_error "取不到 A 的会话 conn_id,平台层限速这组测不到"
+    return 1
+  fi
+  adm_y "kick session $cid" >/dev/null 2>&1
+  if ! wait_until "平台限速 · 踢线后 A 重新登录" 90 _a_relogged "$cid"; then
+    env_error "A 踢线后没能重新登录,平台层限速这组测不到"
+    return 1
+  fi
+  return 0
+}
+
+# _a_relogged <老 conn_id> A 在线且 conn_id 已经换成新的。
+# 只判「在线」会在老会话还没断时就通过,于是后面在老限流器上取值。
+_a_relogged() {
+  local now
+  now="$(_conn_id_of_device_a)"
+  [[ -n "$now" && "$now" != "$1" ]]
+}
+
+_conn_id_of_device_a() { conn_id_of_device "${E2E_A_DEVICE_ID:-1}"; }
+
+# _restore_platform_rates 删掉追加段并热更,回到「压根没配平台限速」的出厂形状。
+_restore_platform_rates() {
+  _platform_block_reset
+  _sighup_and_wait_platform_reload
 }
 
 # _check_login_rate_limit_refuses_after_burst 验 [server].login_rate_limit_per_min 真的拦人。

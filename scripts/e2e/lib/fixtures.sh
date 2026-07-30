@@ -81,6 +81,26 @@ conn_count() { srv_field conn_count 2>/dev/null || echo 0; }
 
 both_clients_online() { [[ "$(conn_count)" == "2" ]]; }
 
+# conn_id_of_device <device_id> → 该设备当前在线会话的 conn_id;不在线就空串。
+#
+# 用来判「还是不是同一条会话」:被踢 / 被杀之后重连必然换号,而只看「在线」在那种情形下
+# 每次取样都是在线,什么都判不出来。
+#
+# 按 device_id 取,不按 user_id:后者是 u2 这种展示形式,和管理命令用的登录名对不上
+# (与 conn_rate_down 同一个坑)。
+conn_id_of_device() {
+  srv_status_json 2>/dev/null | python3 -c '
+import json,sys
+dev = int(sys.argv[1])
+for s in json.load(sys.stdin).get("sessions", []):
+    if s.get("device_id") == dev:
+        print(s.get("conn_id", ""))
+        break
+else:
+    print("")
+' "$1"
+}
+
 # conn_rate_down <device_id> → 该设备在线会话的**有效**下行限速。
 #
 # 按 device_id 而不是用户名匹配:JSON 里的 user_id 是 "u2" 这种展示形式
