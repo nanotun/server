@@ -43,7 +43,7 @@ func TestRunLeaseGCLoop_PrunesIdle(t *testing.T) {
 	defer cancel()
 	// idle=1s, interval=10s — interval 不重要,runLeaseGCLoop 进入立刻 doOnce 一次,
 	// 然后被 loopCtx 50ms 后 ctx.Done 退出。
-	runLeaseGCLoop(loopCtx, st, 1*time.Second, 10*time.Second)
+	runLeaseGCLoop(loopCtx, st, 1*time.Second, 10*time.Second, 0)
 
 	// lease 应已删除。
 	rows, err := st.DB().QueryContext(ctx, `SELECT COUNT(*) FROM leases WHERE device_id=?`, dev.ID)
@@ -96,7 +96,7 @@ func TestRunLeaseGCLoop_ActiveSessionProtected(t *testing.T) {
 
 	loopCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
-	runLeaseGCLoop(loopCtx, st, 1*time.Second, 10*time.Second)
+	runLeaseGCLoop(loopCtx, st, 1*time.Second, 10*time.Second, 0)
 
 	rows, err := st.DB().QueryContext(ctx, `SELECT COUNT(*) FROM leases WHERE device_id=?`, dev.ID)
 	if err != nil {

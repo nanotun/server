@@ -299,6 +299,13 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 		}).Error("[reload] server.lease_gc_interval_hours 不可热更,需重启 server")
 		out = append(out, "server.lease_gc_interval_hours")
 	}
+	if newCfg.Server.LeaseGCStartupGraceSec != old.Server.LeaseGCStartupGraceSec {
+		logrus.WithFields(logrus.Fields{
+			"old": old.Server.LeaseGCStartupGraceSec,
+			"new": newCfg.Server.LeaseGCStartupGraceSec,
+		}).Error("[reload] server.lease_gc_startup_grace_sec 不可热更(只在进程启动时读一次),需重启 server")
+		out = append(out, "server.lease_gc_startup_grace_sec")
+	}
 	if time.Duration(newCfg.Server.DataPlanePingInterval) != time.Duration(old.Server.DataPlanePingInterval) {
 		logrus.Error("[reload] server.data_plane_ping_interval 不可热更(WSS 启动时塞死),需重启 server")
 		out = append(out, "server.data_plane_ping_interval")

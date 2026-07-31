@@ -551,6 +551,15 @@ type ServerConfig struct {
 	// LeaseGCIntervalHours(P1#9):lease_gc 循环间隔(小时)。默认 24。
 	LeaseGCIntervalHours int `toml:"lease_gc_interval_hours,omitempty"`
 
+	// LeaseGCStartupGraceSec(2026-07-30):首轮回收在进程启动后延后多少秒再跑。
+	// 不写 / 写 0 = 默认 120;**负数 = 不延后**(与 LeaseGCIdleDays 同一套零值约定)。
+	//
+	// 存在的理由是一处真实缺陷:回收前那段「把在线会话持有的 device 的 last_seen_at 顶到 now」
+	// 依赖当前会话快照,而启动那一瞬间还没有任何会话重连上来,快照为空、防误伤空转。于是
+	// 一台连续在线超过 idle 天数、期间没重新登录的设备(last_seen_at 只在登录时刷),每次重启
+	// 都会被收掉粘性租约。延后到客户端重连之后再跑首轮即可。天级清扫任务晚两分钟没有代价。
+	LeaseGCStartupGraceSec int `toml:"lease_gc_startup_grace_sec,omitempty"`
+
 	// ControlSocketPath(P1#6/7/8):admin <-> server 本地控制 socket(unix domain)。
 	// 默认 /run/nanotun/control.sock,空串关闭(不提供 reload/kick/list 等接口)。
 	//

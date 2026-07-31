@@ -648,8 +648,8 @@ func TestBackgroundLoopStarters_AreNoOpsWithoutAStore(t *testing.T) {
 		"aclDropAuditFlusher/无 store": func() func() {
 			return startACLDropAuditFlusher(&gatewayState{}, time.Second)
 		},
-		"leaseGC":         func() func() { return startLeaseGCLoop(nil, 1, 1) },
-		"leaseGC/无 store": func() func() { return startLeaseGCLoop(&gatewayState{}, 1, 1) },
+		"leaseGC":         func() func() { return startLeaseGCLoop(nil, 1, 1, 0) },
+		"leaseGC/无 store": func() func() { return startLeaseGCLoop(&gatewayState{}, 1, 1, 0) },
 		"userInvalidate":  func() func() { return startUserInvalidationLoop(nil, time.Second) },
 		"userInvalidate/无 store": func() func() {
 			return startUserInvalidationLoop(&gatewayState{}, time.Second)
@@ -682,7 +682,7 @@ func TestStartLeaseGCLoop_NonPositiveIdleDaysMeansOffNotDefault(t *testing.T) {
 	})
 
 	for _, idle := range []int{0, -1} {
-		stop := startLeaseGCLoop(gw, idle, 1)
+		stop := startLeaseGCLoop(gw, idle, 1, 0)
 		if stop == nil {
 			t.Fatal("应返回可调用的 stop")
 		}

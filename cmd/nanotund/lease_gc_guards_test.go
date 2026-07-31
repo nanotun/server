@@ -79,7 +79,7 @@ func TestLeaseGC_NeverReclaimsTheAddressOfALongLivedSession(t *testing.T) {
 	// 直接报 context canceled(回收根本没执行,而断言看起来像「保护生效了」)。
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	runLeaseGCLoop(ctx, gw.store, 24*time.Hour, time.Hour)
+	runLeaseGCLoop(ctx, gw.store, 24*time.Hour, time.Hour, 0)
 
 	if leaseCount(t, gw.store, onlineDev) != 1 {
 		t.Error("回收掉了一个长在线会话的 vIP —— 下一个登录的设备会拿到同一个地址,两台机器同址、时通时不通")
@@ -89,14 +89,93 @@ func TestLeaseGC_NeverReclaimsTheAddressOfALongLivedSession(t *testing.T) {
 	}
 }
 
+// TestLeaseGC_StartupGraceLetsClientsReconnectBeforeTheFirstSweep 首轮回收的启动宽限期。
+//
+// 上面那条用例证明了「回收前先把在线会话顶到 now」这道防御在跑,但它有个前提:**得先有会话**。
+// 而首轮回收就跑在进程启动的那一瞬间,那时一条会话都还没重连上来,activeDeviceIDsSnapshot()
+// 必然是空的 —— 这道防御在首轮完全空转。后果是:一台连续在线超过 idle 天数、期间没重新登录的
+// 设备(last_seen_at 只在登录时刷),**每次重启都会被收掉粘性租约**,重连后换 IP,按 vIP 钉的
+// ACL / 端口转发一起落空。2026-07-30 补 lease_gc 的 e2e 时发现。
+//
+// 修法是首轮延后到客户端重连之后再跑。这条用例钉两件事:延后期间不回收(否则就是没延后),
+// 以及延后结束后、会话已经上来时,在线设备的租约不再被误收。
+func TestLeaseGC_StartupGraceLetsClientsReconnectBeforeTheFirstSweep(t *testing.T) {
+	resetServerGlobals(t)
+	gw := newRouteTestGateway(t)
+
+	// 这台设备「很久没露面」,但它其实一直在线 —— 只是 last_seen_at 停在上次登录那一刻。
+	dev := seedIdleLease(t, gw.store, "grace", "10.82.0.10", 90*24*time.Hour)
+
+	const grace = 200 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), grace+500*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runLeaseGCLoop(ctx, gw.store, 24*time.Hour, time.Hour, grace)
+	}()
+
+	// 宽限期过半时还不该动手 —— 会话正是在这段时间里重连上来的。
+	time.Sleep(grace / 2)
+	if leaseCount(t, gw.store, dev) != 1 {
+		t.Fatal("宽限期还没过就回收了 —— 等于没有宽限期,客户端来不及重连上来顶新 last_seen_at")
+	}
+
+	// 模拟「客户端在宽限期内重连上来了」:挂一条会话到这台设备上。
+	c := &Connection{userID: "u-grace", connIDStr: "reconnected", deviceID: dev}
+	connIDMapMu.Lock()
+	connIDMap[c.connIDStr] = c
+	connIDMapMu.Unlock()
+	t.Cleanup(func() {
+		connIDMapMu.Lock()
+		delete(connIDMap, c.connIDStr)
+		connIDMapMu.Unlock()
+	})
+
+	<-done
+	if leaseCount(t, gw.store, dev) != 1 {
+		t.Error("首轮回收把一台在线设备的租约收走了 —— 宽限期没起到作用,重启即丢粘性地址")
+	}
+}
+
+// TestLeaseGC_StartupGraceDoesNotOutlastShutdown 宽限期不能拖住关机。
+//
+// 首轮延后是用等待实现的,等待期间若不看 ctx,SIGTERM 之后这条 goroutine 还会挂着直到宽限期满 ——
+// 默认 120s,足以让 systemd 等到超时后 SIGKILL,而那正是「硬杀不走清理路径」那一类问题的来源。
+func TestLeaseGC_StartupGraceDoesNotOutlastShutdown(t *testing.T) {
+	resetServerGlobals(t)
+	gw := newRouteTestGateway(t)
+	dev := seedIdleLease(t, gw.store, "shutdown", "10.83.0.10", 90*24*time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runLeaseGCLoop(ctx, gw.store, 24*time.Hour, time.Hour, time.Hour) // 宽限期故意取得很长
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ctx 取消后循环没退出 —— 宽限期把关机拖住了,systemd 会等到超时再 SIGKILL")
+	}
+	if leaseCount(t, gw.store, dev) != 1 {
+		t.Error("宽限期内被取消却仍然回收了一轮 —— 关机路径上不该再动库")
+	}
+}
+
 // TestStartLeaseGCLoop_RespectsTheOffSwitchAndClampsTheInterval 开关与夹取。
 //
 // idleDays<=0 是**显式关闭**(运维不想让自动回收动地址池,靠 CLI 手动跑)。误把它当默认值处理就
 // 违背了配置意图。intervalHours<=0 则必须夹取:time.NewTicker(0) 直接 panic,而这个值来自配置。
 func TestStartLeaseGCLoop_RespectsTheOffSwitchAndClampsTheInterval(t *testing.T) {
 	t.Run("没有 store 时 no-op", func(t *testing.T) {
-		startLeaseGCLoop(nil, 30, 24)()
-		startLeaseGCLoop(&gatewayState{}, 30, 24)()
+		startLeaseGCLoop(nil, 30, 24, 0)()
+		startLeaseGCLoop(&gatewayState{}, 30, 24, 0)()
 	})
 
 	t.Run("idleDays<=0 是显式关闭", func(t *testing.T) {
@@ -105,7 +184,7 @@ func TestStartLeaseGCLoop_RespectsTheOffSwitchAndClampsTheInterval(t *testing.T)
 		gw := newRouteTestGateway(t)
 		dev := seedIdleLease(t, gw.store, "offsw", "10.81.0.10", 90*24*time.Hour)
 
-		startLeaseGCLoop(gw, 0, 24)()
+		startLeaseGCLoop(gw, 0, 24, 0)()
 		time.Sleep(50 * time.Millisecond)
 
 		if leaseCount(t, gw.store, dev) != 1 {
@@ -118,7 +197,7 @@ func TestStartLeaseGCLoop_RespectsTheOffSwitchAndClampsTheInterval(t *testing.T)
 		withTestGlobalContext(t)
 		gw := newRouteTestGateway(t)
 		// 夹取成默认 24h,所以这条 goroutine 只会跑一次 doOnce 就停在 select 上。
-		startLeaseGCLoop(gw, 30, 0)()
+		startLeaseGCLoop(gw, 30, 0, 0)()
 		time.Sleep(50 * time.Millisecond)
 	})
 }
@@ -137,7 +216,7 @@ func TestRunLeaseGCLoop_KeepsGoingAfterADBFailure(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLeaseGCLoop(ctx, gw.store, 0, 5*time.Millisecond)
+		runLeaseGCLoop(ctx, gw.store, 0, 5*time.Millisecond, 0)
 	}()
 	time.Sleep(60 * time.Millisecond) // 足够跑好几轮失败
 	cancel()

@@ -1013,6 +1013,10 @@ _check_lease_gc_reclaims_only_what_it_should() {
     return 0
   fi
 
+  # 前四档只关心「收谁 / 不收谁」,把首轮宽限期压到 1s 免得每档白等两分钟。
+  # 宽限期本身单独在最后一档验(它是这一轮修掉的那个缺陷的正面证明)。
+  _lease_gc_set_grace 1
+
   # ── 第一档:过期的非手动租约应当被收,且只收它 ────────────────────────────
   _lease_gc_arm_target "$dev" false || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
   if ! _lease_gc_set_days 90; then
@@ -1091,7 +1095,81 @@ _check_lease_gc_reclaims_only_what_it_should() {
   check_contains "lease_gc · 启用日志里的阈值是默认的 720h（30 天）" "idle=720h" \
     "$(s "journalctl -u nanotun --since @$since --no-pager | grep lease-gc")"
 
+  _check_lease_gc_startup_grace_protects_online_devices "$dev" "$seen_before"
+
   _lease_gc_restore "$dev" "$seen_before"
+}
+
+# _check_lease_gc_startup_grace_protects_online_devices 验启动宽限期 —— 这一轮修掉的那个缺陷
+# 的正面证明,而且只有三机能证:回收前那段「把在线会话的 last_seen_at 顶到 now」依赖当前会话
+# 快照,而首轮回收跑在进程启动那一瞬间,那时一条会话都没重连上来,防御空转。后果是一台连续在线
+# 超过 idle 天数、期间没重新登录的设备,每次重启都丢粘性租约 —— 重连换 IP,按 vIP 钉的
+# ACL / 端口转发一起落空。
+#
+# 造这个现场需要一台**在线**且租约是**非手动**的设备。A 与 C 的租约都是 manual=1(管理员钉过
+# 固定地址),天然免疫,打不中这个缺陷 —— 所以这里临时把 A 的租约改成非手动、清掉 fixed_vip,
+# 测完原样钉回去。改的是租约的 manual 位与 fixed_vip,vIP 本身自始至终没变。
+_check_lease_gc_startup_grace_protects_online_devices() {
+  local spare="$1" spare_seen="$2"
+  local adev="${E2E_A_DEVICE_ID:-1}" v4 v6 fv4 fv6
+
+  read -r v4 v6 <<<"$(s "sqlite3 -separator ' ' '$E2E_DB_PATH' \"select coalesce(vip_v4,'-'),coalesce(vip_v6,'-') from leases where device_id=$adev;\"")"
+  read -r fv4 fv6 <<<"$(s "sqlite3 -separator ' ' '$E2E_DB_PATH' \"select coalesce(fixed_vip_v4,'-'),coalesce(fixed_vip_v6,'-') from devices where id=$adev;\"")"
+  if [[ "$v4" == "-" || -z "$v4" ]]; then
+    env_error "取不到 A 的租约地址,启动宽限期这组测不到"
+    return 0
+  fi
+
+  # 靶子设备留着当**探针**:它是可回收的,所以计数器从 0 变 1 的那一刻,就是首轮回收真的跑了
+  # 的那一刻。没有它的话「首轮还没跑」和「跑了但什么都没收」在外面看是一模一样的 0。
+  _lease_gc_arm_target "$spare" false || return 0
+
+  # 把 A 变成「在线 + 非手动租约 + last_seen_at 很旧」—— 正是缺陷要打中的形状。
+  s "sqlite3 '$E2E_DB_PATH' \"update devices set fixed_vip_v4=null,fixed_vip_v6=null where id=$adev;\"" >/dev/null
+  if ! adm "lease set $adev --v4 $v4 $([[ "$v6" != "-" && -n "$v6" ]] && echo "--v6 $v6") --manual=false" >/dev/null 2>&1; then
+    _lease_gc_repin_a "$adev" "$v4" "$v6" "$fv4" "$fv6"
+    env_error "把 A 的租约临时改成非手动失败,启动宽限期这组测不到"
+    return 0
+  fi
+  s "sqlite3 '$E2E_DB_PATH' \"update devices set last_seen_at=strftime('%s','now') - 200*86400 where id=$adev;\"" >/dev/null
+
+  # 宽限期取 90s:两个客户端重连实测 ~30s 完成,断言「还没扫」要在那之后、宽限期之前落地,
+  # 90s 留了约一分钟的余量。
+  _lease_gc_set_grace 90
+  _lease_gc_set_days 90
+  local since
+  since="$(s "date +%s" | tr -d '[:space:]')"
+  if ! _lease_gc_restart; then
+    _lease_gc_repin_a "$adev" "$v4" "$v6" "$fv4" "$fv6"
+    return 0
+  fi
+  check_contains "lease_gc · 启用日志报出启动宽限期" "startup_grace=1m30s" \
+    "$(s "journalctl -u nanotun --since @$since --no-pager | grep lease-gc")"
+
+  # 客户端都重连上来了(约 30s),而宽限期是 90s —— 此刻探针必须还活着。
+  # 这条就是「不是启动即扫」的正面证据:去掉宽限期的话,首轮在 t≈0 就把探针收走了。
+  check "lease_gc · 客户端重连时首轮还没开扫（不是启动即扫）" "0" "$(srv_field lease_gc_total)"
+
+  # 再等到有东西被收走,证明首轮确实跑了、只是晚了 —— 否则上面那个 0 也可能是「压根不回收」。
+  # 这里只等「>=1」而不是恰好 1:首轮若连坐了在线设备,计数是 2,等「恰好 1」会一直等不到,
+  # 于是整组以 env_error 中止 —— 真缺陷被降级成脚手架问题,下面那条最关键的断言根本跑不到。
+  if ! wait_until "lease_gc · 宽限期过后首轮确实执行了（探针被回收）" 120 _lease_gc_total_at_least 1; then
+    _lease_gc_repin_a "$adev" "$v4" "$v6" "$fv4" "$fv6"
+    env_error "等不到首轮回收执行,启动宽限期这组测不到"
+    return 0
+  fi
+  check "lease_gc · 首轮只收走了探针那一条（在线设备没被连坐）" "1" "$(srv_field lease_gc_total)"
+  # 关键的一条是**地址**而不是条数:租约被收走之后设备重连会立刻拿到一条新的,条数照样是 1 ——
+  # 变了的是地址。真实伤害正是这个:设备悄悄换了 IP,按 vIP 钉的 ACL / 端口转发一起落空。
+  # 2026-07-30 反向验证时,「仍持有租约」是绿的而「地址没变」是红的,就是这么看出来的。
+  check "lease_gc · 在线设备重启后仍持有租约" "1" "$(_lease_count_of "$adev")"
+  check "lease_gc · 在线设备的粘性地址扛过了重启（首轮没把它当 idle 收走）" "$v4" \
+    "$(s "sqlite3 '$E2E_DB_PATH' \"select coalesce(vip_v4,'') from leases where device_id=$adev;\"")"
+
+  _lease_gc_repin_a "$adev" "$v4" "$v6" "$fv4" "$fv6"
+  _lease_gc_set_grace 1
+  # 还原靶子设备的 last_seen_at,后面 _lease_gc_restore 还要用它收尾。
+  s "sqlite3 '$E2E_DB_PATH' \"update devices set last_seen_at=$spare_seen where id=$spare;\"" >/dev/null
 }
 
 # _lease_rows_except <设备> 除该设备之外的全部租约,一行一条,用于「不许连坐」的整体比对。
@@ -1135,6 +1213,37 @@ _lease_gc_set_days() {
   s "python3 $dir/tomlset.py /etc/nanotun/config.toml server lease_gc_idle_days $1" >/dev/null
 }
 
+_lease_gc_set_grace() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml server lease_gc_startup_grace_sec $1" >/dev/null
+}
+
+# _lease_gc_total_at_least <n> 已回收总数是否达到 n。用「至少」而不是「恰好」:
+# 恰好会在「多收了」的情形下永远等不到,把真缺陷变成超时中止。
+_lease_gc_total_at_least() {
+  local n
+  n="$(srv_field lease_gc_total)"
+  [[ "$n" =~ ^[0-9]+$ ]] && (( n >= $1 ))
+}
+
+# _lease_gc_repin_a 把 A 的固定地址原样钉回去(vIP 全程没变,只还原 manual 位与 fixed_vip)。
+_lease_gc_repin_a() {
+  local dev="$1" v4="$2" v6="$3" fv4="$4" fv6="$5" args=""
+  [[ "$v4" != "-" && -n "$v4" ]] && args="--v4 $v4"
+  [[ "$v6" != "-" && -n "$v6" ]] && args="$args --v6 $v6"
+  adm_y "lease release $dev" >/dev/null 2>&1
+  adm "lease set $dev $args --manual=true" >/dev/null 2>&1
+  # fixed_vip 那两列是 lease set --manual 之外的东西,原来有就写回去,原来没有就保持空。
+  if [[ "$fv4" != "-" && -n "$fv4" ]]; then
+    s "sqlite3 '$E2E_DB_PATH' \"update devices set fixed_vip_v4='$fv4' where id=$dev;\"" >/dev/null
+  fi
+  if [[ "$fv6" != "-" && -n "$fv6" ]]; then
+    s "sqlite3 '$E2E_DB_PATH' \"update devices set fixed_vip_v6='$fv6' where id=$dev;\"" >/dev/null
+  fi
+}
+
 # _lease_gc_restart 重启并等两个客户端回来。lease_gc_idle_days 不可热更(reload 会报 deferred),
 # 而启动那一次 GC 正是本组要观测的触发点,所以这里只能重启。
 _lease_gc_restart() {
@@ -1153,9 +1262,9 @@ _lease_gc_restore() {
   local dev="$1" seen="$2" n
   adm_y "lease release $dev" >/dev/null 2>&1
   s "sqlite3 '$E2E_DB_PATH' 'update devices set last_seen_at=$seen where id=$dev;'" >/dev/null
-  n="$(s "grep -cE '^lease_gc_idle_days = ' /etc/nanotun/config.toml" | tr -d '[:space:]')"
-  if [[ "$n" == "1" ]]; then
-    s "grep -vE '^lease_gc_idle_days = ' /etc/nanotun/config.toml > /tmp/nte2e-cfg.nogc && cat /tmp/nte2e-cfg.nogc > /etc/nanotun/config.toml" >/dev/null
+  n="$(s "grep -cE '^lease_gc_(idle_days|startup_grace_sec) = ' /etc/nanotun/config.toml" | tr -d '[:space:]')"
+  if [[ "$n" =~ ^[12]$ ]]; then
+    s "grep -vE '^lease_gc_(idle_days|startup_grace_sec) = ' /etc/nanotun/config.toml > /tmp/nte2e-cfg.nogc && cat /tmp/nte2e-cfg.nogc > /etc/nanotun/config.toml" >/dev/null
   fi
   s "systemctl restart nanotun" >/dev/null 2>&1
   wait_until "lease_gc · 还原后两个客户端重连" 90 both_clients_online

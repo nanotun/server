@@ -1551,7 +1551,13 @@ func main() {
 	if leaseGCIdleDays == 0 {
 		leaseGCIdleDays = defaultLeaseGCIdleDays
 	}
-	leaseGCCleanup := startLeaseGCLoop(gw, leaseGCIdleDays, gw.cfg.Server.LeaseGCIntervalHours)
+	// 同一套零值约定:不写 / 写 0 走默认,负数表示不延后。
+	leaseGCGraceSec := gw.cfg.Server.LeaseGCStartupGraceSec
+	if leaseGCGraceSec == 0 {
+		leaseGCGraceSec = defaultLeaseGCStartupGraceSec
+	}
+	leaseGCCleanup := startLeaseGCLoop(gw, leaseGCIdleDays, gw.cfg.Server.LeaseGCIntervalHours,
+		time.Duration(leaseGCGraceSec)*time.Second)
 	defer leaseGCCleanup()
 
 	// isolate 与出口节点 / 子网路由互斥,库里已批过的在本模式下只会黑洞 —— 启动期说一次。
