@@ -962,6 +962,10 @@ phase_50_ops() {
   # 放在踢线之后:它自己也要踢一次来制造全新登录,顺序上挨着更省一次重连等待。
   _check_login_attribution_uses_real_client_ip
 
+  # 放在踢线之后、jump_host 之前:它会把 A 挤下线再拉回来,自带一次完整的重连等待,
+  # 挨着上面那条同样要重连的踢线断言,省掉一次冷启动。
+  _check_max_sessions_evicts_the_oldest
+
   # 放在最后:它要重启 nanotund 并等两个客户端重连,后面不该再挂别的断言。
   _check_jump_host_firewall_fails_closed_without_ipset
 
@@ -1268,4 +1272,280 @@ _lease_gc_restore() {
   fi
   s "systemctl restart nanotun" >/dev/null 2>&1
   wait_until "lease_gc · 还原后两个客户端重连" 90 both_clients_online
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _check_max_sessions_evicts_the_oldest 验按账号的并发会话上限(两级叠加)。
+#
+# 这个开关此前 e2e 零命中,而它的三个语义每一个错了都很难被发现:
+#   - **超限不拒登**:超了要挤掉老的、放新的进来。写反成「拒绝新登录」,用户换了台设备
+#     就再也上不来,而老会话还挂在那儿 —— 报障时看到的是「账号能用但新手机连不上」;
+#   - **踢最老**:按 createdAt 升序挑。挑错方向就变成「刚登录的立刻被自己挤掉」,
+#     表现为新设备连上一秒又断,循环重连;
+#   - **不回踢现役**:上限只在**登录那一刻**判。要是改成 reload 后按新上限回收,
+#     运维把上限调小的瞬间会批量踢线 —— 一次配置改动打断所有人。
+#
+# 三台机只有两个账号(A=testcli、C 另一个),不造第二条同账号会话就完全测不到,
+# 所以这里用 mount 命名空间在 A 上起额外的探针会话:复制一份 /etc/nanotun、换掉
+# device_id,再在私有挂载命名空间里 bind 回原路径。探针因此有独立身份、独立 tun,
+# 而 A 自己的客户端毫发无损。
+#
+# 淘汰的受害者必然是 A:它是全场最老的一条会话。这不是巧合而是这组的**设计** ——
+# 受害者是真客户端,于是「被踢方收到 406 终态关闭」这条能用真实客户端的日志来钉,
+# 比读探针日志强得多。代价是收尾要把 A 重新拉起来,这一步已经并入下面的还原。
+_check_max_sessions_evicts_the_oldest() {
+  local adev="${E2E_A_DEVICE_ID:-1}" u saved a_conn
+
+  saved="$(s "sqlite3 '$E2E_DB_PATH' \"select coalesce(max_sessions,0) from users where username='$E2E_A_USER';\"" | tr -d '[:space:]')"
+  if [[ ! "$saved" =~ ^-?[0-9]+$ ]]; then
+    env_error "读不到 $E2E_A_USER 的账号级会话上限,max_sessions 这组测不到"
+    return 0
+  fi
+  u="$(_ms_user_json_id "$adev")"
+  a_conn="$(conn_id_of_device "$adev")"
+  if [[ -z "$u" || -z "$a_conn" ]]; then
+    env_error "A 当前不在线,取不到它的账号标识,max_sessions 这组测不到"
+    return 0
+  fi
+  # 计数是这组唯一的观测量,开跑时多一条少一条,后面每一条断言的数字都跟着错位。
+  if [[ "$(_ms_count "$u")" != "1" ]]; then
+    env_error "开跑时 $E2E_A_USER 名下不是恰好 1 条会话(实际 $(_ms_count "$u")),max_sessions 这组的计数全部无效"
+    return 0
+  fi
+  # 配置里本来就写着这个键的话,收尾时的「删掉这一行」会把参考部署改脏。
+  if [[ "$(s "grep -c '^max_sessions_per_user = ' /etc/nanotun/config.toml" | tr -d '[:space:]')" != "0" ]]; then
+    env_error "配置里已存在 max_sessions_per_user,本用例会改写它且收尾会删掉整行,先人工确认再跑"
+    return 0
+  fi
+
+  # ── 一:账号级 -1(不限)下,同账号第二条会话能并存 ──────────────────────────
+  # 探针 unit 是瞬时的,但它的 journal 会跨轮留存。下面查「幸存者收没收到 406」必须
+  # 只看本次窗口,否则会数到上一轮(尤其是反向验证那轮,探针本就该被踢)的旧记录 ——
+  # 2026-07-31 全套里就红在这儿,而产品侧一切正常。时钟取 A 自己的,日志在 A 上。
+  local since_a
+  since_a="$(a "date +%s" | tr -d '[:space:]')"
+  adm "user set-max-sessions $E2E_A_USER -1" >/dev/null
+  _ms_probe_start 1
+  if ! wait_until "max_sessions · 账号级 -1 时同账号第二条会话登录成功" 90 _ms_count_is "$u" 2; then
+    _ms_cleanup 1 "" "" "$saved"
+    return 0
+  fi
+  check "max_sessions · 不限时新登录没有挤掉老会话" "$a_conn" "$(conn_id_of_device "$adev")"
+
+  # ── 二:现役 2 条的情况下把全局上限热更成 1,现役一条都不许被回踢 ───────────
+  # 顺序是刻意的:先把会话堆到超限,再改上限。反过来(先改上限再登录)走的是登录那条
+  # 判定路径,根本碰不到「回踢」这个问题。
+  if ! _ms_reload_global_to 1; then
+    _ms_cleanup 1 "" "" "$saved"
+    return 0
+  fi
+  check_contains "max_sessions · 热更日志讲明只对未来登录生效" "现役会话不会被回踢" \
+    "$(s "journalctl -u nanotun --since '-60s' --no-pager | grep max_sessions_per_user")"
+  sleep 12
+  check "max_sessions · 现役会话数超过新上限也不会被回踢" "2" "$(_ms_count "$u")"
+  check "max_sessions · 回踢没有发生在 A 身上（还是同一条会话）" "$a_conn" "$(conn_id_of_device "$adev")"
+
+  # ── 三:账号级 -1 压过全局的 1 ────────────────────────────────────────────
+  # 全局明写着「限 1」,而这个账号仍然能开到第三条 —— 两级叠加里「账号级优先」的正面证据。
+  _ms_probe_start 2
+  if ! wait_until "max_sessions · 账号级 -1 压过全局限 1（第三条会话仍能登录）" 90 _ms_count_is "$u" 3; then
+    _ms_cleanup 1 2 "" "$saved"
+    return 0
+  fi
+
+  # ── 四:改回跟随全局,超限时挤掉最老那条 ──────────────────────────────────
+  # 全局设 3、现役 3 条,第四条登录时恰好只淘汰 1 条 —— 只淘汰一条才分得清「踢的是谁」。
+  # 全局若设 1,四条里死三条,「踢最老」和「踢错人」看起来一模一样。
+  adm "user set-max-sessions $E2E_A_USER 0" >/dev/null
+  if ! _ms_reload_global_to 3; then
+    _ms_cleanup 1 2 "" "$saved"
+    return 0
+  fi
+  # 受害者按 conn_id 认(要钉的就是「这一条连接」没了),幸存者按 device_id 认。
+  # 幸存者不能按 conn_id 认:A 被挤掉会带走隧道默认路由,探针的「换网」检测随即触发重连,
+  # conn_id 就换了号 —— 按 conn_id 判会把这次重连误报成「幸存者也被连坐」(首轮如此)。
+  # 设备这一层不受影响:被挤下线是 406 终态,客户端不会重连,设备也就不会再出现。
+  local oldest survivor_a survivor_b
+  oldest="$(_ms_sessions "$u" | awk 'NR==1{print $1}')"
+  survivor_a="$(_ms_sessions "$u" | awk 'NR==2{print $3}')"
+  survivor_b="$(_ms_sessions "$u" | awk 'NR==3{print $3}')"
+  if [[ -z "$oldest" || -z "$survivor_b" ]]; then
+    env_error "取不到三条会话的先后次序,「踢最老」这条测不到"
+    _ms_cleanup 1 2 "" "$saved"
+    return 0
+  fi
+  # 期望里 A 就是最老那条。真不是的话下面的断言仍然成立(它们只认 conn_id 不认身份),
+  # 只是 406 那条日志要去别处找 —— 如实记一句,别让读日志的人以为断言写错了。
+  [[ "$oldest" != "$a_conn" ]] && note "最老的一条不是 A（${oldest}），406 那条断言改为只看会话消失"
+
+  local since_login
+  since_login="$(s "date +%s" | tr -d '[:space:]')"
+  _ms_probe_start 3
+  # 等的是**新会话真的建立**,不是「总数等于 3」。淘汰在登录之后异步关老连接,而登录
+  # 之前的总数本来就是 3 —— 跟淘汰完成后一模一样。拿总数当信号会在「什么都还没发生」
+  # 的那一瞬就判定成立,后面每一条断言都跑在这张空快照上(2026-07-30 首跑就是这样:
+  # 「被挤掉的正是最老那条」红,而几秒后 A 其实真被挤掉了)。
+  # 这一条同时也是「超限不拒登」的证据:新登录被拒的话它永远等不到。
+  if ! wait_until "max_sessions · 超限时第四条登录仍然成功（不是拒登）" 90 _ms_conn_since "$u" "$since_login"; then
+    _ms_cleanup 1 2 3 "$saved"
+    return 0
+  fi
+  if ! wait_until "max_sessions · 淘汰完成后账号会话数回落到上限 3" 60 _ms_count_is "$u" 3; then
+    _ms_cleanup 1 2 3 "$saved"
+    return 0
+  fi
+  # 静默等局面稳定(幸存者可能正因换网在重连),再逐条判定。这里刻意不用 wait_until:
+  # 它超时会记一条笼统的红,盖住下面三条各自指名道姓的结论。
+  _ms_wait_settle "$u" "$oldest" "$survivor_a" "$survivor_b"
+
+  # 三条断言合起来才把「踢最老」钉死:少了幸存者那两条,「见谁踢谁」也会绿。
+  check "max_sessions · 被挤掉的正是最老那条" "no" "$(_ms_has_conn "$u" "$oldest" && echo yes || echo no)"
+  check "max_sessions · 次老的那台设备没有被连坐" "yes" "$(_ms_has_device "$u" "$survivor_a" && echo yes || echo no)"
+  check "max_sessions · 最新的那台设备没有被连坐" "yes" "$(_ms_has_device "$u" "$survivor_b" && echo yes || echo no)"
+  # 上面按设备判「还在线」,这条补上「不是被踢了又回来」:406 是终态、客户端不会重连,
+  # 所以幸存者的日志里出现 406 就等于连坐了,哪怕它此刻看起来是在线的。
+  check "max_sessions · 两个幸存者都没收到过 406（不是被踢了又重连）" "0" \
+    "$(a "journalctl -u nt-p1 -u nt-p2 --since @$since_a --no-pager 2>/dev/null | grep -c 'code=406'" | tr -d '[:space:]')"
+
+  if [[ "$oldest" == "$a_conn" ]]; then
+    check_contains "max_sessions · 被挤掉的一方收到 406 终态关闭" "code=406" \
+      "$(client_log a "$E2E_A_UNIT" 180)"
+    check_contains "max_sessions · 关闭原因讲清是被较新的登录挤下线" "挤下线" \
+      "$(client_log a "$E2E_A_UNIT" 180)"
+  fi
+
+  _ms_cleanup 1 2 3 "$saved"
+}
+
+# _ms_user_json_id <设备> → 控制面 JSON 里该设备所属账号的 user_id(u2 这种展示形式)。
+# 按 device_id 反查而不是直接用登录名:JSON 里的 user_id 跟管理命令用的登录名对不上
+# (与 conn_rate_down 同一个坑),按名字过滤会永远过滤不到、静默退化成 0 条。
+_ms_user_json_id() {
+  srv_status_json 2>/dev/null | python3 -c '
+import json,sys
+dev = int(sys.argv[1])
+for s in json.load(sys.stdin).get("sessions", []):
+    if s.get("device_id") == dev:
+        print(s.get("user_id", ""))
+        break
+else:
+    print("")
+' "$1"
+}
+
+# _ms_sessions <user_id> → 该账号的在线会话,**按 createdAt 从老到新**,
+# 每行「conn_id created_at device_id」。
+# 次序由服务端的时间戳定,不靠脚本这边推测谁先谁后:探针带 --auto-reconnect,
+# 中途抖一下重连过的话登录次序就跟启动次序不一样了。
+_ms_sessions() {
+  srv_status_json 2>/dev/null | python3 -c '
+import json,sys
+u = sys.argv[1]
+rows = [s for s in json.load(sys.stdin).get("sessions", []) if s.get("user_id") == u]
+rows.sort(key=lambda s: s.get("created_at", 0))
+for s in rows:
+    print(s.get("conn_id", ""), s.get("created_at", 0), s.get("device_id", 0))
+' "$1"
+}
+
+_ms_count()      { _ms_sessions "$1" | grep -c .; }
+_ms_count_is()   { [[ "$(_ms_count "$1")" == "$2" ]]; }
+_ms_has_conn()   { _ms_sessions "$1" | awk '{print $1}' | grep -qx "$2"; }
+_ms_has_device() { _ms_sessions "$1" | awk '{print $3}' | grep -qx "$2"; }
+# _ms_conn_since <user_id> <时间戳> 该账号有没有一条在这之后建立的会话。
+_ms_conn_since() { [[ -n "$(_ms_sessions "$1" | awk -v t="$2" '$2>=t{print $1; exit}')" ]]; }
+
+# _ms_wait_settle <user_id> <受害者 conn> <幸存设备> <幸存设备> 等淘汰的余波过去。
+# 不记任何断言:它只是让后面那几条判定跑在一张稳定的快照上。等不到就直接返回,
+# 由后面的断言各自给出指名道姓的结论。
+_ms_wait_settle() {
+  local u="$1" victim="$2" da="$3" db="$4" i
+  for i in $(seq 1 60); do
+    if [[ "$(_ms_count "$u")" == "3" ]] && ! _ms_has_conn "$u" "$victim" \
+       && _ms_has_device "$u" "$da" && _ms_has_device "$u" "$db"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# _ms_probe_start <n> 在 A 上起一条**同账号**的额外会话。
+#
+# --no-default-route:不许它抢 A 的默认路由。抢走的话后面所有走隧道的出口断言都会跑偏,
+# 而且表现成「出口坏了」这种指向完全错误的假故障。
+# --auto-reconnect:探针要扛得住 A 侧路由变动带来的抖动。这不会掩盖「被挤下线」——
+# 挤下线是 406 终态,客户端收到就不再重连(这一点本身也由上面的断言钉着)。
+_ms_probe_start() {
+  local n="$1" profile="${E2E_A_CONNECT_ARGS%% *}"
+  a "rm -rf /tmp/nt-p$n && cp -a /etc/nanotun /tmp/nt-p$n \
+     && cat /proc/sys/kernel/random/uuid > /tmp/nt-p$n/device_id" >/dev/null
+  a "systemctl stop nt-p$n 2>/dev/null
+     systemd-run --unit=nt-p$n --collect --setenv=HOME=/root \
+       unshare -m --propagation private bash -c \
+       'mount --bind /tmp/nt-p$n /etc/nanotun && exec nanotun connect $profile --auto-reconnect --no-default-route --tun-name ntp$n'" >/dev/null 2>&1
+}
+
+# _ms_probe_stop <n> 停掉探针并把它在库里建出来的设备行删掉。
+# 设备行必须删:收尾快照比对包含 devices,留一行下来整轮会以「状态被改脏」收场。
+# 顺序上先读 uuid 再删目录 —— 反过来就再也认不出该删哪一行了。
+_ms_probe_stop() {
+  local n="$1" uuid id
+  uuid="$(a "cat /tmp/nt-p$n/device_id 2>/dev/null" | tr -d '[:space:]')"
+  a "systemctl stop nt-p$n 2>/dev/null; rm -rf /tmp/nt-p$n; true" >/dev/null
+  [[ -z "$uuid" ]] && return 0
+  id="$(s "sqlite3 '$E2E_DB_PATH' \"select id from devices where device_uuid='$uuid';\"" | tr -d '[:space:]')"
+  [[ "$id" =~ ^[0-9]+$ ]] && adm_y "device delete $id" >/dev/null 2>&1
+  return 0
+}
+
+# _ms_reload_global_to <n> 改全局上限并热更,等日志确认新值已生效。
+# 不用固定 sleep:reload 是异步的,睡得短了后面的断言测的还是旧值 —— 而且会绿。
+_ms_reload_global_to() {
+  local want="$1" dir="${E2E_REMOTE_DIR:-/tmp/nte2e}" since out
+  since="$(s "date +%s" | tr -d '[:space:]')"
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+  # 不吞 tomlset 的输出:它静默失败过一次,结果是整组「测了个寂寞」却全绿。
+  out="$(s "python3 $dir/tomlset.py /etc/nanotun/config.toml server max_sessions_per_user $want" 2>&1)"
+  if [[ "$out" == *rror* || "$out" == *Traceback* ]]; then
+    env_error "改 max_sessions_per_user 失败:$out"
+    return 1
+  fi
+  s "systemctl reload nanotun" >/dev/null
+  wait_until "max_sessions · 全局上限热更到 ${want}（日志确认已应用）" 30 _ms_reload_logged "$since" "$want"
+}
+
+_ms_reload_logged() {
+  s "journalctl -u nanotun --since @$1 --no-pager | grep -F 'max_sessions_per_user 已热更'" \
+    | grep -q "new=$2"
+}
+
+# _ms_cleanup <探针1|""> <探针2|""> <探针3|""> <账号级原值>
+# 收尾:停探针 → 删本用例写进配置的那一行 → 还原账号级 → 把 A 拉回来。
+# 顺序不能换:探针还在的时候 conn_count 不是 2,「两个客户端在线」永远等不到。
+_ms_cleanup() {
+  local p1="$1" p2="$2" p3="$3" saved="$4" n
+  [[ -n "$p1" ]] && _ms_probe_stop "$p1"
+  [[ -n "$p2" ]] && _ms_probe_stop "$p2"
+  [[ -n "$p3" ]] && _ms_probe_stop "$p3"
+
+  # 还原用「删行」而不是「写回 0」:两者行为等价,但后者会在参考部署里留下一行本来
+  # 没有的配置,下次有人读配置会以为这是刻意设的(与 lease_gc 那组同一个考虑)。
+  n="$(s "grep -c '^max_sessions_per_user = ' /etc/nanotun/config.toml" | tr -d '[:space:]')"
+  if [[ "$n" == "1" ]]; then
+    s "grep -v '^max_sessions_per_user = ' /etc/nanotun/config.toml > /tmp/nte2e-cfg.noms \
+       && cat /tmp/nte2e-cfg.noms > /etc/nanotun/config.toml && rm -f /tmp/nte2e-cfg.noms" >/dev/null
+    s "systemctl reload nanotun" >/dev/null
+  fi
+  adm "user set-max-sessions $E2E_A_USER $saved" >/dev/null 2>&1
+
+  # A 多半已经被挤下线了(这正是本组要的),把它按 harness 的原始参数重新拉起来。
+  if ! client_active a "$E2E_A_UNIT"; then
+    client_a_start
+  fi
+  wait_until "max_sessions · 收尾后两个客户端都在线" 120 both_clients_online
+  # 出口这条是给**后面的阶段**兜底的:A 刚重连,隧道路由要是没回来,后续每一条走隧道的
+  # 断言都会红,而红的原因全在这里。宁可在这儿就报出来。
+  wait_until "max_sessions · 收尾后 A 的隧道出口恢复" 90 probe_egress_is "$E2E_C_HOST"
 }
