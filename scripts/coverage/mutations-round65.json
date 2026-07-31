@@ -1,0 +1,178 @@
+[
+  {
+    "desc": "protocol: 删掉 device_name 的长度上限(逐字段单测应精确抓住这一条)",
+    "file": "util/protocol.go",
+    "old": "\tif n := len(req.DeviceName); n > maxLoginReqDeviceName {\n\t\treturn nil, fmt.Errorf(\"login_req: device_name 字段过长(%d > %d)\", n, maxLoginReqDeviceName)\n\t}\n",
+    "new": "",
+    "test": "./util/",
+    "run": "TestParseLoginReqLinkPayload_EnforcesEveryFieldLengthCap"
+  },
+  {
+    "desc": "protocol: 删掉 pow.signature 的长度上限(PoW 子字段那三条不能靠前面的字段遮蔽)",
+    "file": "util/protocol.go",
+    "old": "\tif n := len(req.Pow.Signature); n > maxLoginReqPowSignature {\n\t\treturn nil, fmt.Errorf(\"login_req: pow.signature 字段过长(%d > %d)\", n, maxLoginReqPowSignature)\n\t}\n",
+    "new": "",
+    "test": "./util/",
+    "run": "TestParseLoginReqLinkPayload_EnforcesEveryFieldLengthCap"
+  },
+  {
+    "desc": "protocol: name 上限的比较号 > 改成 >=(边界值被误拒 —— 只测「超长被拒」抓不到)",
+    "file": "util/protocol.go",
+    "old": "if n := len(req.Name); n > maxLoginReqName {",
+    "new": "if n := len(req.Name); n >= maxLoginReqName {",
+    "test": "./util/",
+    "run": "TestParseLoginReqLinkPayload_EnforcesEveryFieldLengthCap"
+  },
+  {
+    "desc": "protocol: 超长时返回已解析对象而非 nil(调用方可能误用半个请求)",
+    "file": "util/protocol.go",
+    "old": "\tif n := len(req.Token); n > maxLoginReqToken {\n\t\treturn nil, fmt.Errorf(\"login_req: token 字段过长(%d > %d)\", n, maxLoginReqToken)",
+    "new": "\tif n := len(req.Token); n > maxLoginReqToken {\n\t\treturn &req, fmt.Errorf(\"login_req: token 字段过长(%d > %d)\", n, maxLoginReqToken)",
+    "test": "./util/",
+    "run": "TestParseLoginReqLinkPayload_EnforcesEveryFieldLengthCap"
+  },
+  {
+    "desc": "protocol: 畸形 JSON 吞掉错误(返回零值请求 = 未认证方可绕过字段校验)",
+    "file": "util/protocol.go",
+    "old": "\tvar req LoginReq\n\tif err := json.Unmarshal(data, &req); err != nil {\n\t\treturn nil, err\n\t}",
+    "new": "\tvar req LoginReq\n\tif err := json.Unmarshal(data, &req); err != nil {\n\t\treturn &req, nil\n\t}",
+    "test": "./util/",
+    "run": "TestParseLoginReqLinkPayload_RejectsMalformedJSON"
+  },
+  {
+    "desc": "protocol: TakenOver 截断 JSON 当成空负载处理(坏通知被当正常零值)",
+    "file": "util/protocol.go",
+    "old": "\tif err := json.Unmarshal(data, &m); err != nil {\n\t\treturn nil, err\n\t}\n\treturn &m, nil",
+    "new": "\tif err := json.Unmarshal(data, &m); err != nil {\n\t\treturn &m, nil\n\t}\n\treturn &m, nil",
+    "test": "./util/",
+    "run": "TestParseTakenOverLinkPayload"
+  },
+  {
+    "desc": "protocol: splitDNSByIPVersion 不再跳过非法项(把 nil IP 当 v6 塞进去)",
+    "file": "util/protocol.go",
+    "old": "\t\tip := net.ParseIP(s)\n\t\tif ip == nil {\n\t\t\tcontinue\n\t\t}\n\t\tif ip.To4() != nil {",
+    "new": "\t\tip := net.ParseIP(s)\n\t\tif ip.To4() != nil {",
+    "test": "./util/",
+    "run": "TestSplitDNSByIPVersion_SkipsUnparsable"
+  },
+  {
+    "desc": "protocol: ConvSaltEffectiveDNS 对 nil 不再短路(应 panic 或返回非 nil)",
+    "file": "util/protocol.go",
+    "old": "\tif lite == nil {\n\t\treturn nil\n\t}\n\tn := len(lite.DNSServersV4) + len(lite.DNSServersV6)",
+    "new": "\tn := len(lite.DNSServersV4) + len(lite.DNSServersV6)",
+    "test": "./util/",
+    "run": "TestConvSaltEffectiveDNS_NilAndEmpty"
+  },
+  {
+    "desc": "protocol: SanitizeDNSServers 空输入返回空切片而非 nil(JSON 会序列化出 [] 而非省略)",
+    "file": "util/protocol.go",
+    "old": "func SanitizeDNSServers(in []string) []string {\n\tif len(in) == 0 {\n\t\treturn nil\n\t}",
+    "new": "func SanitizeDNSServers(in []string) []string {\n\tif len(in) == 0 {\n\t\treturn []string{}\n\t}",
+    "test": "./util/",
+    "run": "TestSanitizeDNSServers_EmptyInputAndBlankEntries"
+  },
+  {
+    "desc": "record: AEAD 帧长判断 || 手误成 &&(条件恒假 = 闸门失效,对端给多大就 make 多大)",
+    "file": "util/tcp_record.go",
+    "old": "\tif frameLen < minFrame || frameLen > maxFrame {\n\t\treturn errors.New(\"tcp record: invalid AEAD frame length\")\n\t}",
+    "new": "\tif frameLen < minFrame && frameLen > maxFrame {\n\t\treturn errors.New(\"tcp record: invalid AEAD frame length\")\n\t}",
+    "test": "./util/",
+    "run": "TestTCPRecordRead_RejectsFrameLengthOutOfRange"
+  },
+  {
+    "desc": "record: block 帧长判断 || 手误成 &&(条件恒假)",
+    "file": "util/tcp_record.go",
+    "old": "\tif frameLen < minFrame || frameLen > maxFrame {\n\t\treturn errors.New(\"tcp record: invalid block frame length\")\n\t}",
+    "new": "\tif frameLen < minFrame && frameLen > maxFrame {\n\t\treturn errors.New(\"tcp record: invalid block frame length\")\n\t}",
+    "test": "./util/",
+    "run": "TestTCPRecordRead_RejectsFrameLengthOutOfRange"
+  },
+  {
+    "desc": "record: 拆掉 none 帧长闸门",
+    "file": "util/tcp_record.go",
+    "old": "\tif frameLen == 0 || frameLen > uint32(c.maxPlain) {\n\t\treturn errors.New(\"tcp record: invalid none frame length\")\n\t}\n",
+    "new": "",
+    "test": "./util/",
+    "run": "TestTCPRecordRead_RejectsFrameLengthOutOfRange"
+  },
+  {
+    "desc": "record: 拆掉 nonce 方向前缀比对(服务端会接受自己发出的帧 —— 反射)",
+    "file": "util/tcp_record.go",
+    "old": "\tif nonce[0] != c.peerPrefix[0] || nonce[1] != c.peerPrefix[1] ||\n\t\tnonce[2] != c.peerPrefix[2] || nonce[3] != c.peerPrefix[3] {\n\t\treturn errors.New(\"tcp record: nonce direction prefix mismatch\")\n\t}\n",
+    "new": "",
+    "test": "./util/",
+    "run": "TestTCPRecordRead_RejectsWrongNonceDirectionPrefix|TestTCPRecordRead_AcceptsCorrectDirectionPrefix"
+  },
+  {
+    "desc": "record: 拆掉 nonce 序号比对(AEAD 拦不住重放,这是唯一防线)",
+    "file": "util/tcp_record.go",
+    "old": "\tif gotSeq != c.rSeq {\n\t\treturn fmt.Errorf(\"tcp record: nonce seq mismatch, expected %d got %d\", c.rSeq, gotSeq)\n\t}\n",
+    "new": "\t_ = gotSeq\n",
+    "test": "./util/",
+    "run": "TestTCPRecordRead_RejectsNonceSeqMismatch"
+  },
+  {
+    "desc": "record: 读侧序号回绕不跳过 0(回绕瞬间与写侧错位一格,此后每帧都不符)",
+    "file": "util/tcp_record.go",
+    "old": "\tc.rSeq++\n\tif c.rSeq == 0 {\n\t\tc.rSeq = 1\n\t}\n",
+    "new": "\tc.rSeq++\n",
+    "test": "./util/",
+    "run": "TestTCPRecordAEAD_SeqWrapsPastZero"
+  },
+  {
+    "desc": "record: 写侧序号回绕不跳过 0(0 号 nonce 被约定为未使用)",
+    "file": "util/tcp_record.go",
+    "old": "\tc.wSeq++\n\tif c.wSeq == 0 {\n\t\tc.wSeq = 1\n\t}\n",
+    "new": "\tc.wSeq++\n",
+    "test": "./util/",
+    "run": "TestTCPRecordAEAD_SeqWrapsPastZero"
+  },
+  {
+    "desc": "record: maxPlaintext<=0 不回落默认值(maxFrame 退化成只剩 nonce+tag,一帧都收不了)",
+    "file": "util/tcp_record.go",
+    "old": "\tif maxPlaintext <= 0 {\n\t\tmaxPlaintext = DefaultMaxPlaintext\n\t}\n",
+    "new": "",
+    "test": "./util/",
+    "run": "TestNewTCPRecordConn_ClampsMaxPlaintext"
+  },
+  {
+    "desc": "record: 去掉明文上限硬顶(调用方一个笔误就能把内存闸门开到天上)",
+    "file": "util/tcp_record.go",
+    "old": "\tif maxPlaintext > maxPlaintextHardCap {\n\t\tmaxPlaintext = maxPlaintextHardCap\n\t}\n",
+    "new": "",
+    "test": "./util/",
+    "run": "TestNewTCPRecordConn_ClampsMaxPlaintext"
+  },
+  {
+    "desc": "record: AEAD 建连错误不加前缀(日志里看不出坏在记录层哪一侧)",
+    "file": "util/tcp_record.go",
+    "old": "\t\t\treturn nil, fmt.Errorf(\"tcp record aead: %w\", err)",
+    "new": "\t\t\treturn nil, err",
+    "test": "./util/",
+    "run": "TestNewTCPRecordConn_RejectsBadConfig"
+  },
+  {
+    "desc": "record: block 建连错误不加前缀",
+    "file": "util/tcp_record.go",
+    "old": "\t\t\treturn nil, fmt.Errorf(\"tcp record block: %w\", err)",
+    "new": "\t\t\treturn nil, err",
+    "test": "./util/",
+    "run": "TestNewTCPRecordConn_RejectsBadConfig"
+  },
+  {
+    "desc": "record: 写失败时谎报已写字节数(上层以为数据已经出去了)",
+    "file": "util/tcp_record.go",
+    "old": "\t\tif err := c.writeOneFrame(chunk); err != nil {\n\t\t\treturn written, err\n\t\t}",
+    "new": "\t\tif err := c.writeOneFrame(chunk); err != nil {\n\t\t\treturn written + len(chunk), err\n\t\t}",
+    "test": "./util/",
+    "run": "TestTCPRecordWrite_PropagatesConnError"
+  },
+  {
+    "desc": "record: CRC 计算里 salt 不参与(攻击者可自行算出正确 CRC 伪造帧)",
+    "file": "util/tcp_record.go",
+    "old": "\th := crc32.NewIEEE()\n\th.Write(data)\n\th.Write(salt)\n\treturn h.Sum32()",
+    "new": "\th := crc32.NewIEEE()\n\th.Write(data)\n\treturn h.Sum32()",
+    "test": "./util/",
+    "run": "TestCRC32WithSalt_SaltActuallyParticipates"
+  }
+]

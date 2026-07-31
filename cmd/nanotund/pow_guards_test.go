@@ -177,8 +177,24 @@ func TestVerifyPoWProof_EveryRejectionHasItsOwnReasonAndCounter(t *testing.T) {
 			wantErr: ErrPoWDifficultyLow, counter: diffLow,
 		},
 		{
-			name:    "nonce 不满足难度",
-			tweak:   func(_ *testing.T, _ *PoWService, p *PoWProof) { p.Nonce++ },
+			name: "nonce 不满足难度",
+			// 这里不能简单写 p.Nonce++:递增后的 nonce 有 1/2^difficulty 的概率**也**满足难度
+			// (本用例难度 8,即 1/256)。那样这条用例会随机变绿 —— 2026-08-01 一次全量跑就撞上了,
+			// 报的是「want pow: hash does not meet difficulty, got <nil>」,看着像 PoW 回归,
+			// 其实是用例自己掷骰子。显式找一个确定不满足的 nonce,把随机性去掉。
+			tweak: func(t *testing.T, _ *PoWService, p *PoWProof) {
+				salt, err := base64.StdEncoding.DecodeString(p.Salt)
+				if err != nil {
+					t.Fatalf("解 salt: %v", err)
+				}
+				for n := p.Nonce + 1; n != p.Nonce; n++ {
+					if !powVerify(p.ChallengeID, salt, p.Difficulty, n) {
+						p.Nonce = n
+						return
+					}
+				}
+				t.Fatal("找不到任何不满足难度的 nonce —— 难度校验恒真?")
+			},
 			wantErr: ErrPoWInvalid, counter: invalid,
 		},
 	}

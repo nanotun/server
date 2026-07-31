@@ -39,7 +39,17 @@ import (
 var argon2Sema = semaphore.NewWeighted(int64(computeArgon2Capacity()))
 
 func computeArgon2Capacity() int {
-	n := runtime.NumCPU() * 2
+	return clampArgon2Capacity(runtime.NumCPU())
+}
+
+// clampArgon2Capacity 从 CPU 核数推出信号量容量,上下限的用意见 argon2Sema 注释。
+//
+// 单拆出来是为了让上下限可测:原先钳位内联在 computeArgon2Capacity 里、直接读
+// runtime.NumCPU(),两条边界能不能触发全看跑测试的机器有几个核 —— 上限那条在
+// 32 核以下的机器上永远执行不到。这两个边界都不是装饰:下限挡的是 1c2g 小机型
+// 算出 cap=2 把生产堵死,上限挡的是大机型把 RAM 全压在登录上饿死数据面。
+func clampArgon2Capacity(numCPU int) int {
+	n := numCPU * 2
 	if n < 8 {
 		n = 8
 	}

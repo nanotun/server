@@ -1,0 +1,208 @@
+[
+  {
+    "desc": "psk: 不再校验算法名(argon2i 等弱档会被当 argon2id 接受)",
+    "file": "auth/psk.go",
+    "old": "\tif parts[0] != \"argon2id\" {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: unsupported algo %q\", parts[0])\n\t}\n",
+    "new": "",
+    "test": "./auth/",
+    "run": "TestDecodePSK_RejectsMalformedHeader"
+  },
+  {
+    "desc": "psk: 不再检查版本段的 v= 前缀",
+    "file": "auth/psk.go",
+    "old": "\tif !strings.HasPrefix(parts[1], \"v=\") {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: bad version field %q\", parts[1])\n\t}\n",
+    "new": "\tif !strings.HasPrefix(parts[1], \"v=\") {\n\t\treturn nil, nil, 0, 0, 0, nil\n\t}\n",
+    "test": "./auth/",
+    "run": "TestDecodePSK_RejectsMalformedHeader"
+  },
+  {
+    "desc": "psk: 版本号解析失败被吞(非数字版本当成 0 继续)",
+    "file": "auth/psk.go",
+    "old": "\tver, err := strconv.Atoi(parts[1][2:])\n\tif err != nil {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: parse version: %w\", err)\n\t}\n",
+    "new": "\tver, _ := strconv.Atoi(parts[1][2:])\n",
+    "test": "./auth/",
+    "run": "TestDecodePSK_RejectsMalformedHeader"
+  },
+  {
+    "desc": "psk: 不再比对 argon2 版本(v=18 与 v=19 的 KDF 输出不可互换)",
+    "file": "auth/psk.go",
+    "old": "\tif ver != argon2.Version {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: argon2 version mismatch: got %d want %d\", ver, argon2.Version)\n\t}\n",
+    "new": "\t_ = ver\n",
+    "test": "./auth/",
+    "run": "TestDecodePSK_RejectsMalformedHeader"
+  },
+  {
+    "desc": "psk: salt 的 base64 解码错误被吞(得到半截 salt 照样 verify)",
+    "file": "auth/psk.go",
+    "old": "\tsalt, err = base64.RawStdEncoding.DecodeString(parts[3])\n\tif err != nil {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: decode salt: %w\", err)\n\t}\n",
+    "new": "\tsalt, _ = base64.RawStdEncoding.DecodeString(parts[3])\n",
+    "test": "./auth/",
+    "run": "TestDecodePSK_RejectsMalformedHeader"
+  },
+  {
+    "desc": "psk: hash 的 base64 解码错误被吞",
+    "file": "auth/psk.go",
+    "old": "\thash, err = base64.RawStdEncoding.DecodeString(parts[4])\n\tif err != nil {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: decode hash: %w\", err)\n\t}\n",
+    "new": "\thash, _ = base64.RawStdEncoding.DecodeString(parts[4])\n",
+    "test": "./auth/",
+    "run": "TestDecodePSK_RejectsMalformedHeader"
+  },
+  {
+    "desc": "psk: 参数项缺等号时不报错(整项被忽略)",
+    "file": "auth/psk.go",
+    "old": "\t\tk, v, ok := strings.Cut(kv, \"=\")\n\t\tif !ok {\n\t\t\treturn 0, 0, 0, fmt.Errorf(\"auth: bad param %q\", kv)\n\t\t}\n",
+    "new": "\t\tk, v, ok := strings.Cut(kv, \"=\")\n\t\tif !ok {\n\t\t\tcontinue\n\t\t}\n",
+    "test": "./auth/",
+    "run": "TestParseArgonParams_RejectsMalformedAndWeakParams"
+  },
+  {
+    "desc": "psk: 参数值非数字/负数不报错(当成 0)",
+    "file": "auth/psk.go",
+    "old": "\t\tn, perr := strconv.Atoi(v)\n\t\tif perr != nil || n < 0 {\n\t\t\treturn 0, 0, 0, fmt.Errorf(\"auth: bad param %s: %w\", kv, perr)\n\t\t}\n",
+    "new": "\t\tn, _ := strconv.Atoi(v)\n",
+    "test": "./auth/",
+    "run": "TestParseArgonParams_RejectsMalformedAndWeakParams"
+  },
+  {
+    "desc": "psk: 不认识的参数键被静默忽略(可藏东西在参数段里)",
+    "file": "auth/psk.go",
+    "old": "\t\tdefault:\n\t\t\treturn 0, 0, 0, fmt.Errorf(\"auth: unknown param %s\", k)\n",
+    "new": "\t\tdefault:\n",
+    "test": "./auth/",
+    "run": "TestParseArgonParams_RejectsMalformedAndWeakParams"
+  },
+  {
+    "desc": "psk: 缺 m/t/p 任一项不再报错(缺的那项按 0 跑 argon2)",
+    "file": "auth/psk.go",
+    "old": "\tif memory == 0 || time == 0 || threads == 0 {\n\t\treturn 0, 0, 0, errors.New(\"auth: missing argon param\")\n\t}\n",
+    "new": "",
+    "test": "./auth/",
+    "run": "TestParseArgonParams_RejectsMalformedAndWeakParams"
+  },
+  {
+    "desc": "psk: 去掉 m 的下限(m=1MiB 的弱哈希被接受 —— 安全降级,不报错)",
+    "file": "auth/psk.go",
+    "old": "\tif memory < minArgonMemoryKiB {\n\t\treturn 0, 0, 0, fmt.Errorf(\"auth: argon m=%d below floor %d KiB\", memory, minArgonMemoryKiB)\n\t}\n",
+    "new": "",
+    "test": "./auth/",
+    "run": "TestParseArgonParams_RejectsMalformedAndWeakParams"
+  },
+  {
+    "desc": "psk: m 下限的比较号 < 改成 <=(恰好合规的条目被误判为弱参数,对应用户彻底登不上)",
+    "file": "auth/psk.go",
+    "old": "\tif memory < minArgonMemoryKiB {",
+    "new": "\tif memory <= minArgonMemoryKiB {",
+    "test": "./auth/",
+    "run": "TestParseArgonParams_RejectsMalformedAndWeakParams"
+  },
+  {
+    "desc": "psk: 去掉信号量容量下限(1 核机型算出 cap=2,生产被堵死)",
+    "file": "auth/psk.go",
+    "old": "\tn := numCPU * 2\n\tif n < 8 {\n\t\tn = 8\n\t}\n",
+    "new": "\tn := numCPU * 2\n",
+    "test": "./auth/",
+    "run": "TestClampArgon2Capacity_HonoursFloorAndCeiling"
+  },
+  {
+    "desc": "psk: 去掉信号量容量上限(128 核算出 256 slot × 64MiB = 16GiB 压在登录上)",
+    "file": "auth/psk.go",
+    "old": "\tif n > 64 {\n\t\tn = 64\n\t}\n\treturn n\n",
+    "new": "\treturn n\n",
+    "test": "./auth/",
+    "run": "TestClampArgon2Capacity_HonoursFloorAndCeiling"
+  },
+  {
+    "desc": "psk: NewVerifier 收到 nil store 不再 panic(留一个用起来才崩的对象)",
+    "file": "auth/psk.go",
+    "old": "\tif s == nil {\n\t\tpanic(\"auth: nil store\")\n\t}\n",
+    "new": "",
+    "test": "./auth/",
+    "run": "TestNewVerifier_PanicsOnNilStore"
+  },
+  {
+    "desc": "psk: VerifyLogin 不再兜 nil 接收者(登录路径上 panic 会带走整个进程)",
+    "file": "auth/psk.go",
+    "old": "\tif v == nil || v.store == nil {\n\t\treturn nil, errors.New(\"auth: nil verifier\")\n\t}\n",
+    "new": "",
+    "test": "./auth/",
+    "run": "TestVerifyLogin_NilReceiverOrStoreReturnsError"
+  },
+  {
+    "desc": "psk: 容量/ctx 失败不再用 ErrVerifyUnavailable 包裹(调用方会当成密码错误计入锁定)",
+    "file": "auth/psk.go",
+    "old": "\t\treturn nil, fmt.Errorf(\"%w: argon2 capacity/ctx: %v\", ErrVerifyUnavailable, err)\n\t}\n\tdefer argon2Sema.Release(1)\n\n\tu, err := v.store.GetUserByUsername(ctx, username)",
+    "new": "\t\treturn nil, fmt.Errorf(\"argon2 capacity/ctx: %v\", err)\n\t}\n\tdefer argon2Sema.Release(1)\n\n\tu, err := v.store.GetUserByUsername(ctx, username)",
+    "test": "./auth/",
+    "run": "TestVerifyLogin_CancelledContextIsNotAFailedPassword"
+  },
+  {
+    "desc": "psk: 数据库故障被映射成「用户不存在」(运维看不到故障,用户被告知账号不存在)",
+    "file": "auth/psk.go",
+    "old": "\t\tif errors.Is(err, store.ErrNotFound) {\n\t\t\trunDecoyVerify(plaintext)\n\t\t\treturn nil, ErrUnknownUser\n\t\t}\n\t\treturn nil, err",
+    "new": "\t\trunDecoyVerify(plaintext)\n\t\treturn nil, ErrUnknownUser",
+    "test": "./auth/",
+    "run": "TestVerifyLogin_DatabaseFailureIsNotAnUnknownUser"
+  },
+  {
+    "desc": "psk: 存储 hash 畸形时原样上报(泄漏「此账号 hash 异常」,原先是 500)",
+    "file": "auth/psk.go",
+    "old": "\t\trunDecoyVerify(plaintext)\n\t\treturn nil, ErrBadPSK\n\t}\n\tif !ok {",
+    "new": "\t\trunDecoyVerify(plaintext)\n\t\treturn nil, verr\n\t}\n\tif !ok {",
+    "test": "./auth/",
+    "run": "TestVerifyLogin_CorruptStoredHashLooksExactlyLikeAWrongPassword"
+  },
+  {
+    "desc": "psk: 存储 hash 畸形时不跑 decoy(响应明显偏快,可据此枚举 hash 异常的账号)",
+    "file": "auth/psk.go",
+    "old": "\t\trunDecoyVerify(plaintext)\n\t\treturn nil, ErrBadPSK\n\t}\n\tif !ok {",
+    "new": "\t\treturn nil, ErrBadPSK\n\t}\n\tif !ok {",
+    "test": "./auth/",
+    "run": "TestVerifyLogin_CorruptStoredHashLooksExactlyLikeAWrongPassword"
+  },
+
+  {
+    "desc": "冗余防线 · 超长 hash:同时拆掉 b64 预检与解码后兜底(单拆任一层都会被另一层挡住,证明这对防线真实存在)",
+    "file": "auth/psk.go",
+    "old": "\tif len(parts[4]) > base64.RawStdEncoding.EncodedLen(maxHashBytes) {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: hash b64 too long: %d chars\", len(parts[4]))\n\t}\n",
+    "new": "",
+    "also": [
+      ["\tif len(hash) > maxHashBytes {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: hash too long: %d (max %d)\", len(hash), maxHashBytes)\n\t}\n", ""]
+    ],
+    "test": "./auth/",
+    "run": "TestDecodePSK_RejectsOversizedHashAndSalt"
+  },
+  {
+    "desc": "冗余防线 · 超长 salt:同时拆掉 b64 预检与解码后兜底",
+    "file": "auth/psk.go",
+    "old": "\tif len(parts[3]) > base64.RawStdEncoding.EncodedLen(maxSaltBytes) {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: salt b64 too long: %d chars\", len(parts[3]))\n\t}\n",
+    "new": "",
+    "also": [
+      ["\tif len(salt) > maxSaltBytes {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: salt too long: %d (max %d)\", len(salt), maxSaltBytes)\n\t}\n", ""]
+    ],
+    "test": "./auth/",
+    "run": "TestDecodePSK_RejectsOversizedHashAndSalt"
+  },
+  {
+    "desc": "冗余防线 · m 超上限:同时拆掉 int 域预检与转换后兜底(单拆 int 域那层会被回绕后的兜底挡住,反之亦然)",
+    "file": "auth/psk.go",
+    "old": "\t\t\tif n > int(maxArgonMemoryKiB) {\n\t\t\t\treturn 0, 0, 0, fmt.Errorf(\"auth: argon m=%d exceeds cap %d\", n, maxArgonMemoryKiB)\n\t\t\t}\n",
+    "new": "",
+    "also": [
+      ["\tif memory > maxArgonMemoryKiB {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: argon m=%d KiB exceeds cap %d\", memory, maxArgonMemoryKiB)\n\t}\n", ""]
+    ],
+    "test": "./auth/",
+    "run": "TestParseArgonParams_RejectsMalformedAndWeakParams"
+  },
+  {
+    "desc": "冗余防线 · 空/短 hash 的 verify bypass:同时拆掉 DecodePSK 与 VerifyPSK 两处长度下限(拆光之后 ConstantTimeCompare(empty,empty)==1,任意密码都能登)",
+    "file": "auth/psk.go",
+    "old": "\tif len(hash) < minHashBytes {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: hash too short: %d (min %d)\", len(hash), minHashBytes)\n\t}\n",
+    "new": "",
+    "also": [
+      ["\tif len(salt) < minSaltBytes {\n\t\treturn nil, nil, 0, 0, 0, fmt.Errorf(\"auth: salt too short: %d (min %d)\", len(salt), minSaltBytes)\n\t}\n", ""],
+      ["\tif len(hash) < minHashBytes || len(salt) < minSaltBytes {\n\t\treturn false, fmt.Errorf(\"auth: psk encoding too short (hash=%d salt=%d)\", len(hash), len(salt))\n\t}\n", ""]
+    ],
+    "test": "./auth/",
+    "run": "TestVerifyPSK_RejectsShortHashSalt"
+  }
+]
