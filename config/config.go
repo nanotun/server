@@ -621,12 +621,31 @@ type ServerConfig struct {
 	Pow PoWConfig `toml:"pow,omitempty"`
 }
 
-// PoWConfig 见 ServerConfig.Pow 注释。所有字段缺省时 NewPoWService 用内置默认值,
+// PoW 各字段的推荐默认值。**唯一事实来源** —— NewPoWService 的零值替换与 reload 的
+// 「生效值比较」都必须引用这里,不许再各自写字面量。
+//
+// 之所以收到这里:这一族默认值原本只存在于 NewPoWService 内部,读 config.go 的人看不到,
+// 于是 failures_enable 漏了零值替换整整没人发现 —— 而它一漏,base_difficulty 就完全不可达
+// (`failures < 0` 恒假),文档里那张曲线表全表错位一档。默认值和字段声明离得越远越容易这样。
+const (
+	PoWDefaultFailuresEnable  = 3
+	PoWDefaultBaseDifficulty  = 8
+	PoWDefaultRampDifficulty  = 14
+	PoWDefaultStepPerFailure  = 2
+	PoWDefaultAdaptiveCeiling = 22
+	PoWDefaultTTLSec          = int64(300)
+)
+
+// PoWConfig 见 ServerConfig.Pow 注释。所有字段缺省(0)时取上面那组默认值,
 // 确保「不配也能跑」的开箱即用语义。
 type PoWConfig struct {
 	// FailuresEnable:IP 失败 < 此值时下发 BaseDifficulty,>= 此值时跳 RampDifficulty。
-	// 默认 0 = 从第 1 次登录就要 PoW(用 BaseDifficulty);设 3 = 头 3 次免 ramp(只要 8-bit)。
+	// 缺省(0)= 用默认 3:头 3 次(含 0 次失败)只要 base_difficulty=8。
+	// 想「第 1 次失败就 ramp」写 1(failures=0 仍走 base,失败一次即进 ramp)。
 	// **不**让用户设负值。
+	//
+	// 注意 0 的含义是「未配」而不是「阈值为 0」—— 后者会让 `failures < 0` 恒假、
+	// BaseDifficulty 永不可达,而那正是修掉的那个缺陷(见 NewPoWService 里的说明)。
 	FailuresEnable int `toml:"failures_enable,omitempty"`
 
 	// BaseDifficulty:平时难度。默认 8(~5ms M1 客户端,无感)。下限 4 上限 22。
@@ -645,6 +664,53 @@ type PoWConfig struct {
 	// 设得短一点能减少 powUsed sync.Map 的大小,但移动端弱网下解题 + LoginReq 往返
 	// 可能需要 10s+,所以最好 ≥ 60。
 	TTLSec int64 `toml:"ttl_sec,omitempty"`
+}
+
+// Resolve* 返回各字段的**生效值**(0 = 未配 → 默认)。
+//
+// 只做「零值 → 默认」这一步,不做合法性判断:越界 / 顺序倒置仍由 NewPoWService fail-fast,
+// 那里才是唯一有权拒绝启动的地方。这里存在的意义是让 reload 能按**生效值**比较 ——
+// 否则「未配」改成「显式写默认值」会被误报成 deferred,而 deferred 一有噪声运维就不看了。
+func (p PoWConfig) ResolveFailuresEnable() int {
+	if p.FailuresEnable == 0 {
+		return PoWDefaultFailuresEnable
+	}
+	return p.FailuresEnable
+}
+
+func (p PoWConfig) ResolveBaseDifficulty() int {
+	if p.BaseDifficulty == 0 {
+		return PoWDefaultBaseDifficulty
+	}
+	return p.BaseDifficulty
+}
+
+func (p PoWConfig) ResolveRampDifficulty() int {
+	if p.RampDifficulty == 0 {
+		return PoWDefaultRampDifficulty
+	}
+	return p.RampDifficulty
+}
+
+func (p PoWConfig) ResolveStepPerFailure() int {
+	if p.StepPerFailure == 0 {
+		return PoWDefaultStepPerFailure
+	}
+	return p.StepPerFailure
+}
+
+func (p PoWConfig) ResolveAdaptiveCeiling() int {
+	if p.AdaptiveCeiling == 0 {
+		return PoWDefaultAdaptiveCeiling
+	}
+	return p.AdaptiveCeiling
+}
+
+func (p PoWConfig) ResolveTTLSec() int64 {
+	if p.TTLSec == 0 {
+		return PoWDefaultTTLSec
+	}
+	return p.TTLSec
 }
 
 // LogConfig 日志配置

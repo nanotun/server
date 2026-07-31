@@ -336,6 +336,12 @@ type controlStatusResp struct {
 	MagicDNS              MagicDNSStats       `json:"magic_dns,omitempty"`
 	RouteAdvertise        RouteAdvertiseStats `json:"route_advertise,omitempty"`
 
+	// PoW:登录侧按 IP 累进的防爆破闸门。此前它在生产里**没有任何观测面** —— /status 里一个
+	// 字段都没有,而 /metrics 挂在 health endpoint 上默认不开(同 src_spoof_drops 那一族当年
+	// 搬过来的理由)。于是两件事都看不见:真被爆破时判断不了闸门在起作用;ComputeDifficulty
+	// 一旦回归(2026-07-31 修的 failures_enable 零值默认就是一例)也不留任何痕迹。
+	Pow PowStats `json:"pow,omitempty"`
+
 	// ExitNode:出口节点选择(控制面)+ 转发(数据面)计数。出口 = approved 0/0 子网路由的特例,
 	// 数据面已落地(见 ExitNodeDataplaneEnabled),与下方「任意 CIDR subnet route 数据面」相互独立。
 	ExitNode ExitNodeStats `json:"exit_node,omitempty"`
@@ -375,6 +381,36 @@ const routeDataplaneEnabled = true
 // 出口是 0/0 的特例(转进公网);任意 CIDR 的 subnet route 数据面见 routeDataplaneEnabled(同样已落地)。
 const exitNodeDataplaneEnabled = true
 
+// PowStats 是 /status 里的 PoW 段。只放三个量,合起来刚好能判断闸门的状态:
+//
+//	ChallengesIssued  出了多少题 —— 判别器。它不涨说明压根没人在登录,后两个为 0 不代表闸门坏了。
+//	ChallengesRamped   其中多少是「高于 base」的,即自适应确实加压了。持续上涨 = 有人在被累进施压。
+//	IPFailuresTracked  失败计数表里有多少个 IP。它是 ramped 的**上游**:
+//	                   两个都是 0 → 失败压根没被记(接线断了);
+//	                   它涨而 ramped 不涨 → 记了但分档逻辑没生效。
+//
+// 不暴露 per-IP 维度(高基数),与 /metrics 侧口径一致。
+type PowStats struct {
+	ChallengesIssued  uint64 `json:"challenges_issued"`
+	ChallengesRamped  uint64 `json:"challenges_ramped"`
+	IPFailuresTracked int    `json:"ip_failures_tracked"`
+}
+
+func snapshotPowStats(gw *gatewayState) PowStats {
+	var svc *PoWService
+	if gw != nil {
+		svc = gw.effectivePoWService()
+	} else {
+		svc = lazyPoWService()
+	}
+	snap := svc.MetricsSnapshot()
+	return PowStats{
+		ChallengesIssued:  snap.Issued,
+		ChallengesRamped:  snap.IssuedRamped,
+		IPFailuresTracked: snap.IPFailuresTracked,
+	}
+}
+
 var controlStartTime = time.Now()
 
 func controlHandleStatus(gw *gatewayState) http.HandlerFunc {
@@ -412,6 +448,7 @@ func controlHandleStatus(gw *gatewayState) http.HandlerFunc {
 			ExitNode:                       snapshotExitNodeStats(),
 			ExitNodeDataplaneEnabled:       exitNodeDataplaneEnabled,
 			SubnetRoute:                    snapshotSubnetRouteStats(),
+			Pow:                            snapshotPowStats(gw),
 		}
 		resp.OK = resp.TUNReady && resp.StoreReady
 

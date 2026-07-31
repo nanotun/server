@@ -200,6 +200,13 @@ func writePrometheusMetrics(w io.Writer, gw *gatewayState) {
 	fmt.Fprintln(w, "# TYPE nanotun_pow_challenges_issued_total counter")
 	fmt.Fprintf(w, "nanotun_pow_challenges_issued_total %d\n", snap.Issued)
 
+	// 分档:issued 里有多少是「该 IP 已进 ramp」的。自适应难度此前在生产里完全不可观测
+	// (只有 ip_failures_tracked 说跟踪了几个 IP,不说难度有没有涨),于是既看不出闸门在
+	// 起作用,也看不出它坏了。rate() > 0 就是「正在有人被累进加压」。
+	fmt.Fprintln(w, "# HELP nanotun_pow_challenges_ramped_total PoW challenges issued above base difficulty (adaptive ramp engaged; brute-force indicator)")
+	fmt.Fprintln(w, "# TYPE nanotun_pow_challenges_ramped_total counter")
+	fmt.Fprintf(w, "nanotun_pow_challenges_ramped_total %d\n", snap.IssuedRamped)
+
 	fmt.Fprintln(w, "# HELP nanotun_pow_verify_success_total PoW proofs verified ok")
 	fmt.Fprintln(w, "# TYPE nanotun_pow_verify_success_total counter")
 	fmt.Fprintf(w, "nanotun_pow_verify_success_total %d\n", snap.VerifySuccess)

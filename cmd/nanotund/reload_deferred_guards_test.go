@@ -122,6 +122,23 @@ func TestClassifyDeferredFields_StaysQuietWhenNothingReallyChanged(t *testing.T)
 			},
 		},
 		{
+			// PoW 这一族六个字段都是「0 = 未配 → 用默认」,所以「未配」与「显式写默认值」等价。
+			// 比较必须按生效值,否则运维把默认值显式写进配置(常见的自证式改法:把隐式默认
+			// 落到纸面上)就会收到一串假的 deferred。
+			name: "pow 未配与显式写默认值等价",
+			mut: func(o, n *config.Config) {
+				o.Server.Pow = config.PoWConfig{}
+				n.Server.Pow = config.PoWConfig{
+					FailuresEnable:  config.PoWDefaultFailuresEnable,
+					BaseDifficulty:  config.PoWDefaultBaseDifficulty,
+					RampDifficulty:  config.PoWDefaultRampDifficulty,
+					StepPerFailure:  config.PoWDefaultStepPerFailure,
+					AdaptiveCeiling: config.PoWDefaultAdaptiveCeiling,
+					TTLSec:          config.PoWDefaultTTLSec,
+				}
+			},
+		},
+		{
 			// 留空即取内置默认长路径,与显式写出那条路径完全等价。
 			name: "vpn_websocket_path 空值与显式默认路径等价",
 			mut: func(o, n *config.Config) {

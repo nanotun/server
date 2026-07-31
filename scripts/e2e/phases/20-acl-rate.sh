@@ -104,6 +104,9 @@ except Exception as e: print("解析失败: %s" % e)')"
   adm "setting rate --down-bps 0 --up-bps 0" >/dev/null
   sleep 2
 
+  # PoW 累进排在登录限速**之前**:后者要打空令牌桶,会连带在 A 的 IP 上堆一串失败,
+  # 而 PoW 累进这组进门就要求失败表是干净的。顺序换过来就会稳定地报 ENV。
+  _check_pow_difficulty_ramps_with_failures
   _check_login_rate_limit_refuses_after_burst
   _check_platform_rate_limit_only_hits_its_own_platform
 }
@@ -377,6 +380,100 @@ _check_login_rate_limit_refuses_after_burst() {
     "$(probe_egress_is "$E2E_C_HOST" && echo 0 || echo 1)"
 
   _restore_login_rl
+}
+
+# _check_pow_difficulty_ramps_with_failures 验 PoW 自适应难度这条接线真的通着。
+#
+# 单测已经把曲线逐点钉死了(见 pow_difficulty_curve_test.go),这里要验的是**单测证不了的那半**:
+# 真实登录失败会不会被记到发起方 IP 上、并让下一次出题落进更高的档。这条链子跨了三段 ——
+# 登录失败分支调 MarkFailure、出题前 Count(ip) 取回失败数、ComputeDifficulty 据此分档 ——
+# 任何一段断开,曲线单测照样全绿,而线上的防爆破闸门实际是平的。
+#
+# 断言的形状按「上游 → 下游」排,好让红的时候一眼看出断在哪一段:
+#   challenges_issued  涨了没 → 判别器。不涨说明这些尝试压根没走到出题这一步(假凭据写错、
+#                      客户端没跑起来),后面两个为 0 不代表闸门坏了。
+#   ip_failures_tracked 涨了没 → 失败到底有没有被记(MarkFailure 这一段)。
+#   challenges_ramped   涨了没 → 记下来之后有没有真的换档(ComputeDifficulty 这一段)。
+#
+# 「阈值以下不许加压」这一条同样重要,而且它正是 2026-07-31 那个缺陷的照妖镜:failures_enable
+# 漏了零值默认时,一次都没失败的客户端就已经在 ramp 档上,于是这一条会当场红。少了它,只剩
+# 「失败够多之后会加压」的话,一个恒定高难度的实现也能全绿 —— 而那实现让每个正常用户白付 64 倍哈希。
+#
+# 刻意把失败次数压在 4 次:默认曲线下 failures=4 → 16-bit(客户端零点几秒),而 7 次就到 22-bit
+# 封顶(注释自己写的是「~10s 客户端 / iPhone 15s」)。A 的真实客户端与这些尝试同源 IP,后续阶段
+# 若重启它就要按当时的档解题 —— 停在 16-bit 无感,冲到 22-bit 会让后面每次重连都慢十秒。
+# 失败窗口是 5 分钟,且 A 成功登录一次会把失败数减半,所以这点残留会自愈。
+_check_pow_difficulty_ramps_with_failures() {
+  local node cred
+  node="$(adm "profile show $E2E_A_USER --dial-host $E2E_SRV_HOST --config /etc/nanotun/config.toml --format url" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+  if [[ "$node" != nanotun://* ]]; then
+    _fail "PoW 累进 · profile show 应给出 nanotun:// 节点链接" "$node"
+    return
+  fi
+  cred="$(_bogus_cred_link)"
+  if [[ "$cred" != nanotun-cred://* ]]; then
+    env_error "造不出假凭据(本机 python3?),PoW 累进这组断言测不到:$cred"
+    return
+  fi
+
+  # 进来时失败表应当是干净的。不干净说明上一组用例(或上一轮)留了失败计数,那么「阈值以下
+  # 不加压」会以一个与本组无关的原因变红 —— 说成 ENV 而不是拿去当产品结论。
+  local pre_tracked
+  pre_tracked="$(_pow_stat ip_failures_tracked)"
+  if [[ "$pre_tracked" != "0" ]]; then
+    env_error "开跑前 PoW 失败表已有 $pre_tracked 个 IP(上一组留下的失败计数还在 5 分钟窗口里),PoW 累进这组不可信"
+    return
+  fi
+
+  local base_issued base_ramped
+  base_issued="$(_pow_stat challenges_issued)"
+  base_ramped="$(_pow_stat challenges_ramped)"
+
+  # ── 阈值以下(默认 failures_enable=3):出题必须仍在 base 档 ────────────────
+  _login_attempts 2 "$node" "$cred" >/dev/null
+
+  local d_issued
+  d_issued=$(( $(_pow_stat challenges_issued) - base_issued ))
+  if (( d_issued >= 2 )); then
+    _pass "PoW 累进 · 失败尝试确实走到了出题这一步（issued +${d_issued}，判别器）"
+  else
+    env_error "两次失败尝试后出题数只涨了 ${d_issued},说明尝试没走到 PoW —— 下面的断言测不到"
+    return
+  fi
+
+  if [[ "$(_pow_stat ip_failures_tracked)" != "0" ]]; then
+    _pass "PoW 累进 · 失败被记到了发起方 IP 上（MarkFailure 这一段通着）"
+  else
+    _fail "PoW 累进 · 失败应被记进 IP 失败表" "ip_failures_tracked 仍是 0,失败计数这一段断了,难度永远不会涨"
+  fi
+
+  local d_ramped
+  d_ramped=$(( $(_pow_stat challenges_ramped) - base_ramped ))
+  if (( d_ramped == 0 )); then
+    _pass "PoW 累进 · 阈值以下仍是 base 档，没有给正常用户白加难度"
+  else
+    _fail "PoW 累进 · 阈值以下不该加压" "ramped +${d_ramped};failures_enable 若没取到默认 3,一次没失败的客户端就已在 ramp 档,每次正常登录白付 64 倍哈希"
+  fi
+
+  # ── 跨过阈值:必须换档 ──────────────────────────────────────────────────
+  base_ramped="$(_pow_stat challenges_ramped)"
+  _login_attempts 2 "$node" "$cred" >/dev/null
+
+  d_ramped=$(( $(_pow_stat challenges_ramped) - base_ramped ))
+  if (( d_ramped >= 1 )); then
+    _pass "PoW 累进 · 失败累计过阈值后出题换到 ramp 档（+${d_ramped}）"
+  else
+    _fail "PoW 累进 · 失败过阈值后应换到 ramp 档" "ramped 一动不动,防爆破闸门实际是平的"
+  fi
+
+  # 这些尝试与 A 的真实会话同源 IP,不该把它带下去。
+  check "PoW 累进 · 期间 A 的真实会话未受影响" "0" \
+    "$(probe_egress_is "$E2E_C_HOST" && echo 0 || echo 1)"
+}
+
+# _pow_stat <字段> 取 /status 里 pow 段的一个计数,取不到回 0。
+_pow_stat() {
+  srv_field "pow.$1" 2>/dev/null || echo 0
 }
 
 # _apply_login_rate_limit 把 login_rate_limit_per_min 改成 $1 并**等到它真的生效**。

@@ -216,6 +216,7 @@ type PoWService struct {
 	//
 	// 设计:不暴露 per-IP 维度(高基数),只暴露聚合 counter。
 	issuedTotal        atomic.Uint64 // IssueChallenge 成功次数
+	issuedRampedTotal  atomic.Uint64 // 其中难度高于 base 的次数(该 IP 已进 ramp)
 	verifySuccessTotal atomic.Uint64 // VerifyPoWProof 返回 nil 次数
 	// 失败分原因:每个 ErrPoW* 对应一个 counter,便于运维分析 attack pattern。
 	verifyFailBadCID        atomic.Uint64
@@ -255,36 +256,49 @@ func NewPoWService(
 	// 历史:round-3 deep scan 修过「零值被误当非法夹到 4 导致 PoW 近乎失效」;本轮把剩下的"非法即夹断"
 	// 也改成"非法即报错",零值→默认的语义保持不变。
 	var perrs []string
-	if failuresEnable < 0 {
-		// failuresEnable=0 合法("从第 1 次失败就 ramp");仅负数非法。
-		perrs = append(perrs, fmt.Sprintf("[server.pow].failures_enable=%d 不能为负(0=从第 1 次失败即 ramp)", failuresEnable))
+	// failures_enable 也要走「==0 视作未配 → 用默认」,和下面每一个难度字段一致。
+	//
+	// 它以前是唯一没有零值默认的字段,而 ComputeDifficulty 的判据是 `failures < failuresEnable`:
+	// 取 0 时这个条件恒假,于是**永远走 ramp 分支**,baseDifficulty 完全不可达。后果是参考部署
+	// (没有 [server.pow] 段 → 全零)实际跑出来的曲线和文档承诺的整体错位一档:
+	//   实际  failures=0→14, 3→20, 4→22(封顶)
+	//   承诺  failures=0→8,  3→14, 4→16, 7→22
+	// 也就是说:每次正常登录都在付 14-bit 而不是设计的 8-bit(多 64 倍哈希),而**普通用户连输错
+	// 4 次密码就撞上 22-bit 封顶**(注释自己写的是「~10s 客户端 / iPhone 15s」),而设计上要 7 次。
+	//
+	// 「从第 1 次失败就 ramp」并没有因此失去表达方式 —— 那正是 failures_enable=1:
+	// failures=0 时 0<1 走 base,第 1 次失败后进 ramp。
+	if failuresEnable == 0 {
+		failuresEnable = config.PoWDefaultFailuresEnable // 头 3 次(含 0 次失败)只要 base_difficulty
+	} else if failuresEnable < 0 {
+		perrs = append(perrs, fmt.Sprintf("[server.pow].failures_enable=%d 不能为负(0=用默认 3;1=从第 1 次失败即 ramp)", failuresEnable))
 	}
 	// 各难度字段:==0 视作未配 → 用默认;其余(含负数)必须落在 [powMinDifficulty, powMaxDifficulty]。
 	if baseDifficulty == 0 {
-		baseDifficulty = 8 // 业务推荐默认,~5ms M1 客户端
+		baseDifficulty = config.PoWDefaultBaseDifficulty // ~5ms M1 客户端
 	} else if baseDifficulty < powMinDifficulty || baseDifficulty > powMaxDifficulty {
 		perrs = append(perrs, fmt.Sprintf("[server.pow].base_difficulty=%d 越界(须 %d..%d;0=用默认 8)",
 			baseDifficulty, powMinDifficulty, powMaxDifficulty))
 	}
 	if rampDifficulty == 0 {
-		rampDifficulty = 14 // 业务推荐默认,~50ms 跳档
+		rampDifficulty = config.PoWDefaultRampDifficulty // ~50ms 跳档
 	} else if rampDifficulty < powMinDifficulty || rampDifficulty > powMaxDifficulty {
 		perrs = append(perrs, fmt.Sprintf("[server.pow].ramp_difficulty=%d 越界(须 %d..%d;0=用默认 14)",
 			rampDifficulty, powMinDifficulty, powMaxDifficulty))
 	}
 	if stepPerFailure == 0 {
-		stepPerFailure = 2
+		stepPerFailure = config.PoWDefaultStepPerFailure
 	} else if stepPerFailure < 0 {
 		perrs = append(perrs, fmt.Sprintf("[server.pow].step_per_failure=%d 不能为负(0=用默认 2)", stepPerFailure))
 	}
 	if adaptiveCeiling == 0 {
-		adaptiveCeiling = 22 // 业务推荐默认,~10s 封顶
+		adaptiveCeiling = config.PoWDefaultAdaptiveCeiling // ~10s 封顶
 	} else if adaptiveCeiling < powMinDifficulty || adaptiveCeiling > powMaxDifficulty {
 		perrs = append(perrs, fmt.Sprintf("[server.pow].adaptive_ceiling=%d 越界(须 %d..%d;0=用默认 22)",
 			adaptiveCeiling, powMinDifficulty, powMaxDifficulty))
 	}
 	if ttlSec == 0 {
-		ttlSec = 300
+		ttlSec = config.PoWDefaultTTLSec
 	} else if ttlSec < 0 {
 		perrs = append(perrs, fmt.Sprintf("[server.pow].ttl_sec=%d 不能为负(0=用默认 300)", ttlSec))
 	}
@@ -324,7 +338,9 @@ func NewPoWService(
 //	failures <  failuresEnable        → baseDifficulty   (平时,~5ms)
 //	failures >= failuresEnable        → ramp + step * (failures - failuresEnable),封顶 adaptiveCeiling
 //
-// 默认值下:
+// 默认值下(failuresEnable=3 / base=8 / ramp=14 / step=2 / ceiling=22):
+// 这张表**整体依赖 failuresEnable 的默认值**;它曾经漏了零值默认,于是全表向上错位一档
+// 而没人看得出来(详见 NewPoWService 里那段)。改这里的默认值必须同时改这张表。
 //
 //	failures=0  → 8-bit (~5ms 客户端无感)
 //	failures=3  → 14-bit(~50ms 触发警觉)
@@ -378,6 +394,18 @@ func (s *PoWService) IssueChallenge(d int) (PoWChallenge, error) {
 	saltB64 := base64.StdEncoding.EncodeToString(salt)
 	exp := time.Now().Unix() + s.ttlSec
 	s.issuedTotal.Add(1)
+	// 按档分计:难度高于 base 说明这个 IP 已经进了 ramp。
+	//
+	// 自适应难度是登录侧唯一「按 IP 累进」的防爆破闸门,而在此之前它**在生产里完全不可观测**:
+	// 既没有日志也没有指标,已有的 pow_ip_failures_tracked 只说「跟踪了几个 IP」,不说难度有没有涨。
+	// 于是两件事都看不见:真被爆破时运维判断不了闸门在不在起作用;而 ComputeDifficulty 一旦回归
+	// (本轮修的那个默认值缺陷就是一例)也不会留下任何痕迹。
+	//
+	// 口径说明:ramp_difficulty == base_difficulty 时(合法配置,ramp ≥ base)进 ramp 的出题会被
+	// 记成 base —— 这种配置本身就放弃了分档,不额外区分。
+	if d > s.baseDifficulty {
+		s.issuedRampedTotal.Add(1)
+	}
 	return PoWChallenge{
 		ChallengeID: cid,
 		Salt:        saltB64,
@@ -441,6 +469,7 @@ func (s *PoWService) VerifyPoWProof(p PoWProof, serverWants int) error {
 // 读出,避免每个 metric 独立读多次造成快照不一致。
 type PoWMetricsSnapshot struct {
 	Issued        uint64
+	IssuedRamped  uint64 // 其中难度高于 base 的部分:自适应闸门是否正在起作用的唯一信号
 	VerifySuccess uint64
 	FailBadCID    uint64
 	FailBadSig    uint64
@@ -466,6 +495,7 @@ func (s *PoWService) MetricsSnapshot() PoWMetricsSnapshot {
 	}
 	return PoWMetricsSnapshot{
 		Issued:            s.issuedTotal.Load(),
+		IssuedRamped:      s.issuedRampedTotal.Load(),
 		VerifySuccess:     s.verifySuccessTotal.Load(),
 		FailBadCID:        s.verifyFailBadCID.Load(),
 		FailBadSig:        s.verifyFailBadSignature.Load(),

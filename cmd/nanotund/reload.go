@@ -382,45 +382,45 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 	// PoWService(否则会让运行中的所有 challenge 一次失效,等价于踢所有 pre-login
 	// 连接,反而比 restart 更激进)。统一 ERROR 提示 + 进 deferred 列表,让运维
 	// 通过 SIGHUP audit / log shipper 监控感知"我改的 PoW 没生效"。
-	if newCfg.Server.Pow.FailuresEnable != old.Server.Pow.FailuresEnable {
+	if oldV, newV := old.Server.Pow.ResolveFailuresEnable(), newCfg.Server.Pow.ResolveFailuresEnable(); oldV != newV {
 		logrus.WithFields(logrus.Fields{
-			"old": old.Server.Pow.FailuresEnable,
-			"new": newCfg.Server.Pow.FailuresEnable,
+			"old": oldV,
+			"new": newV,
 		}).Error("[reload] server.pow.failures_enable 不可热更(PoWService 启动时塞死),需重启 server")
 		out = append(out, "server.pow.failures_enable")
 	}
-	if newCfg.Server.Pow.BaseDifficulty != old.Server.Pow.BaseDifficulty {
+	if oldV, newV := old.Server.Pow.ResolveBaseDifficulty(), newCfg.Server.Pow.ResolveBaseDifficulty(); oldV != newV {
 		logrus.WithFields(logrus.Fields{
-			"old": old.Server.Pow.BaseDifficulty,
-			"new": newCfg.Server.Pow.BaseDifficulty,
+			"old": oldV,
+			"new": newV,
 		}).Error("[reload] server.pow.base_difficulty 不可热更(PoWService 启动时塞死),需重启 server")
 		out = append(out, "server.pow.base_difficulty")
 	}
-	if newCfg.Server.Pow.RampDifficulty != old.Server.Pow.RampDifficulty {
+	if oldV, newV := old.Server.Pow.ResolveRampDifficulty(), newCfg.Server.Pow.ResolveRampDifficulty(); oldV != newV {
 		logrus.WithFields(logrus.Fields{
-			"old": old.Server.Pow.RampDifficulty,
-			"new": newCfg.Server.Pow.RampDifficulty,
+			"old": oldV,
+			"new": newV,
 		}).Error("[reload] server.pow.ramp_difficulty 不可热更(PoWService 启动时塞死),需重启 server")
 		out = append(out, "server.pow.ramp_difficulty")
 	}
-	if newCfg.Server.Pow.StepPerFailure != old.Server.Pow.StepPerFailure {
+	if oldV, newV := old.Server.Pow.ResolveStepPerFailure(), newCfg.Server.Pow.ResolveStepPerFailure(); oldV != newV {
 		logrus.WithFields(logrus.Fields{
-			"old": old.Server.Pow.StepPerFailure,
-			"new": newCfg.Server.Pow.StepPerFailure,
+			"old": oldV,
+			"new": newV,
 		}).Error("[reload] server.pow.step_per_failure 不可热更(PoWService 启动时塞死),需重启 server")
 		out = append(out, "server.pow.step_per_failure")
 	}
-	if newCfg.Server.Pow.AdaptiveCeiling != old.Server.Pow.AdaptiveCeiling {
+	if oldV, newV := old.Server.Pow.ResolveAdaptiveCeiling(), newCfg.Server.Pow.ResolveAdaptiveCeiling(); oldV != newV {
 		logrus.WithFields(logrus.Fields{
-			"old": old.Server.Pow.AdaptiveCeiling,
-			"new": newCfg.Server.Pow.AdaptiveCeiling,
+			"old": oldV,
+			"new": newV,
 		}).Error("[reload] server.pow.adaptive_ceiling 不可热更(PoWService 启动时塞死),需重启 server")
 		out = append(out, "server.pow.adaptive_ceiling")
 	}
-	if newCfg.Server.Pow.TTLSec != old.Server.Pow.TTLSec {
+	if oldV, newV := old.Server.Pow.ResolveTTLSec(), newCfg.Server.Pow.ResolveTTLSec(); oldV != newV {
 		logrus.WithFields(logrus.Fields{
-			"old": old.Server.Pow.TTLSec,
-			"new": newCfg.Server.Pow.TTLSec,
+			"old": oldV,
+			"new": newV,
 		}).Error("[reload] server.pow.ttl_sec 不可热更(PoWService 启动时塞死),需重启 server")
 		out = append(out, "server.pow.ttl_sec")
 	}

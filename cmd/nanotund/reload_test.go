@@ -307,7 +307,9 @@ func TestApplyConfigReload_KnownNonHotFieldsDeferred(t *testing.T) {
 // deferred,防止运维"以为改了生效"踩坑。
 func TestApplyConfigReload_PoWFieldsDeferred(t *testing.T) {
 	cur := newReloadCfg()
-	cur.Server.Pow.FailuresEnable = 0
+	// failures_enable 这里必须用两个**显式且生效值不同**的数:0 的含义是「未配 → 默认 3」,
+	// 所以 0→3 是等价改写,按生效值比较时(有意地)不再上报。
+	cur.Server.Pow.FailuresEnable = 2
 	cur.Server.Pow.BaseDifficulty = 8
 	cur.Server.Pow.RampDifficulty = 14
 	cur.Server.Pow.StepPerFailure = 2
@@ -317,7 +319,7 @@ func TestApplyConfigReload_PoWFieldsDeferred(t *testing.T) {
 
 	loader := func(path string) (config.Config, error) {
 		nc := newReloadCfg()
-		nc.Server.Pow.FailuresEnable = 3
+		nc.Server.Pow.FailuresEnable = 5
 		nc.Server.Pow.BaseDifficulty = 10
 		nc.Server.Pow.RampDifficulty = 16
 		nc.Server.Pow.StepPerFailure = 3
