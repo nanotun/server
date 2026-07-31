@@ -91,6 +91,9 @@ _check_deferred_fields_are_reported() {
   s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun forward_block_bt true" >/dev/null || setrc=1
   s "python3 $dir/tomlset.py /etc/nanotun/config.toml server jump_host_protected_ports '[\"tcp/9099\"]'" >/dev/null || setrc=1
   s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria udp_relay_enabled true" >/dev/null || setrc=1
+  # 每虚拟 IP 并发上限:与 forward_block_bt 是同一次 SetupIptables 的相邻实参,补那一族时漏了。
+  # 收紧上限是应急动作,「reload 没提示」会让人以为已经摁住(见 reload.go 里那段注释)。
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun tcp_connlimit_per_ip 5" >/dev/null || setrc=1
   if (( setrc != 0 )); then
     env_error "改写 config.toml 失败(见 tomlset.py 输出),deferred 这组断言测不到"
     s "cp /tmp/nte2e-cfg.deferred-bak /etc/nanotun/config.toml && systemctl reload nanotun" >/dev/null
@@ -120,6 +123,7 @@ _check_deferred_fields_are_reported() {
   check_contains "SIGHUP 报出 tun.forward_block_bt 需重启" "tun.forward_block_bt" "$detail"
   check_contains "SIGHUP 报出 server.jump_host_protected_ports 需重启" "server.jump_host_protected_ports" "$detail"
   check_contains "SIGHUP 报出 hysteria.udp_relay_enabled 需重启" "hysteria.udp_relay_enabled" "$detail"
+  check_contains "SIGHUP 报出 tun.tcp_connlimit_per_ip 需重启" "tun.tcp_connlimit_per_ip" "$detail"
 
   # 恢复,并确认恢复后的 SIGHUP 不再报这些字段(证明上面那三条是这次改动引起的,
   # 而不是审计里捞到了一条陈旧记录)。
@@ -940,6 +944,8 @@ phase_50_ops() {
   # 紧跟在 deferred 后面:那条只验「SIGHUP 会报 forward_block_bt 需重启」,这条才验
   # 重启之后规则真的落进了内核。两条合起来才把这个开关的链路走完。
   _check_forward_port_drops_follow_their_own_knobs
+  # 紧挨着上一条:同样是 FORWARD 链上的规则,而且两者装在同一次 SetupIptables 里。
+  _check_connlimit_caps_concurrency_without_hurting_mesh
   _check_udp_relay_stays_disabled
   _check_exit_guard_installs_both_chains
   _check_data_plane_keepalive_reaps_only_the_wedged_session
@@ -1275,6 +1281,275 @@ _lease_gc_restore() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# _check_connlimit_caps_concurrency_without_hurting_mesh 验每虚拟 IP 并发连接上限。
+#
+# [tun] tcp_connlimit_per_ip / udp_connlimit_per_ip 此前 e2e 零覆盖,而这个开关**已经出过
+# 两次事故**,两次都写在 network_setup_linux.go 的注释里,两次都极难现场定位:
+#
+#   - 规则漏了 `-o <wan>`:xt_connlimit 按 conntrack 原始方向的源地址归类,于是「某客户端
+#     公网连接数超标」会把它的 mesh 互访、子网路由、出口回程**一起打死**。三机实测时的现象是
+#     A↔C 的 TCP 握手永远收不到 SYN-ACK(ICMP 却通),conntrack 表里一条相关条目都没有,
+#     规则计数器经 nft-compat 层还不自增 —— 几乎没有任何线索指向这条规则。
+#   - 规则装在 `-i tun -o wan ACCEPT` **之后**:两者都用 `-I FORWARD 1`,后插入的更靠前,
+#     于是 ACCEPT 盖在 connlimit 上方,出公网的包第一条就被放行 —— 限流**整条静默失效**,
+#     而 `iptables -S` 里两条规则一应俱全,看不出任何异常。
+#
+# 所以这一组既钉规则的**形状**(有没有 -o wan / -s subnet),也钉它们的**次序**,还要用真流量
+# 证明限流真的在拦 —— 三者缺一不可:形状对、次序对,也可能因为 mask 或模块问题根本不生效;
+# 而只测行为的话,「限住了」不能区分是 connlimit 干的还是别的什么东西挡的。
+#
+# **拓扑上的前提**:connlimit 只管 `-i tun0 -o <wan>` 这一段,也就是「客户端经服务器自身
+# NAT 出网」。而本套件里 A 固定用 C 当出口,它的公网流量是 tun→tun 直投给 C 的,压根碰不到
+# 这条规则(FORWARD 里那条 tun→wan ACCEPT 的计数器长期为 0 就是证据)。所以本组会先把 A 的
+# 客户端**去掉 --exit** 重启一次,让它改从服务器出网,测完再原样恢复。不做这一步的话,
+# 无论规则在不在、次序对不对,并发都能全成 —— 又一个恒绿的假断言。
+#
+# 靶子选 C 的 22 端口:C 的 ufw 只放行了 22,而这条路径要求靶子从**服务器的公网侧**可达
+# (服务器 SNAT 之后才连过去),所以 8088 那个靶站在这里用不了。sshd 连上后会保持到
+# LoginGraceTime,足够把并发攥在手里;并发数压在 7 以内,不去碰 MaxStartups 的 10。
+_check_connlimit_caps_concurrency_without_hurting_mesh() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}" wan dev cidr subnet vip saved limit=3 attempts=7
+  wan="$(s "ip route show default | awk '{print \$5; exit}'" | tr -d '[:space:]')"
+  # 期望的网段与设备名取自**配置和内核接口**,不从被测规则里反推。
+  # 反推是自我实现的断言:规则少了 -s 时,sed 匹配不上就把整行当成「期望网段」,
+  # 于是断言比的是「这一行包含它自己」—— 既永远比不出问题,失败信息还是一坨乱码
+  # (2026-07-31 反向验证时正是这个形状)。
+  dev="$(s "grep -m1 '^device_name' /etc/nanotun/config.toml | sed 's/.*= *//; s/\"//g'" | tr -d '[:space:]')"
+  [[ -z "$dev" ]] && dev="tun0"
+  cidr="$(s "ip -4 -o addr show $dev 2>/dev/null | awk '{print \$4; exit}'" | tr -d '[:space:]')"
+  if [[ -n "$cidr" ]]; then
+    subnet="$(s "python3 -c \"import ipaddress;print(ipaddress.ip_interface('$cidr').network)\"" | tr -d '[:space:]')"
+  fi
+  vip="${E2E_A_VIP4:-}"
+  saved="$(s "grep -m1 '^tcp_connlimit_per_ip' /etc/nanotun/config.toml | sed 's/.*= *//'" | tr -d '[:space:]')"
+  if [[ -z "$wan" || -z "$subnet" || -z "$vip" || ! "$saved" =~ ^-?[0-9]+$ ]]; then
+    env_error "取不到 WAN 网卡 / 客户端网段 / A 的 vIP / 原上限(wan=$wan subnet=$subnet vip=$vip saved=$saved),connlimit 这组测不到"
+    return 0
+  fi
+
+  # ① 让 A 改从服务器出网(去掉 --exit),否则它的公网流量走 tun→tun,碰不到被测规则。
+  if ! _cl_switch_a_to_server_egress; then
+    _cl_restore "$saved"
+    return 0
+  fi
+
+  # ② 收紧上限并重启(这两个键只在启动时落链,SIGHUP 不重建 —— 这一点由 deferred 那组钉着)。
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+  local out
+  out="$(s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun tcp_connlimit_per_ip $limit" 2>&1)"
+  if [[ "$out" == *rror* || "$out" == *Traceback* ]]; then
+    env_error "改 tcp_connlimit_per_ip 失败:$out"
+    _cl_restore "$saved"
+    return 0
+  fi
+  s "systemctl restart nanotun" >/dev/null 2>&1
+  if ! wait_until "connlimit · 收紧上限重启后两个客户端重连" 90 both_clients_online; then
+    env_error "重启后客户端没能重连,connlimit 这组测不到"
+    _cl_restore "$saved"
+    return 0
+  fi
+
+  # ③ 规则的形状与次序。
+  _cl_assert_rule_shape "tcp" "$limit" "$wan" "$subnet"
+  _cl_assert_rule_shape "udp" "" "$wan" "$subnet"
+  _cl_assert_rule_order "$wan" "$dev"
+
+  # ④ 真流量:并发到上限为止。
+  # 先清掉 A 在 conntrack 里的残留 —— 上面那次「确认出口改到服务器」的 curl 会留下条目,
+  # 它照样占 connlimit 的名额,不清的话这里会少成一条,而失败长得就像「上限算错了」。
+  _cl_flush_conntrack "$vip"
+  local got
+  got="$(_cl_concurrent_ok "$attempts")"
+  check "connlimit · 并发到上限为止(试 ${attempts} 条只成 ${limit} 条)" "$limit" "$got"
+  # 计数器是「这条规则有没有被上面的 ACCEPT 盖住」的判据(注释里点名的那个):
+  # 盖住时它长期为 0,而规则本身在 iptables -S 里一应俱全。
+  local drops
+  drops="$(_cl_rule_pkts tcp)"
+  if [[ "$drops" =~ ^[0-9]+$ ]] && (( drops > 0 )); then
+    _pass "connlimit · 超限的包真的落在这条规则上（计数器 ${drops}，没被上面的 ACCEPT 盖住）"
+  else
+    _fail "connlimit · 超限的包没有落在这条规则上（计数器 ${drops}）" \
+      "规则装在 tun→wan ACCEPT 之后就会这样:限流静默失效,而 iptables -S 看起来一切正常"
+  fi
+
+  # ⑤ 超限期间不许误伤 —— 这一条对应第一次事故。
+  # 必须**在超限的同时**测:不超限的话 connlimit 根本不参与判决,mesh 当然是通的。
+  _cl_assert_no_collateral "$attempts"
+
+  # ⑥ 放开上限后同样的并发全成 —— 证明上面那个 3 是被这个开关卡住的,不是别的什么东西坏了。
+  out="$(s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun tcp_connlimit_per_ip $saved" 2>&1)"
+  s "systemctl restart nanotun" >/dev/null 2>&1
+  if wait_until "connlimit · 放开上限重启后两个客户端重连" 90 both_clients_online; then
+    _cl_flush_conntrack "$vip"
+    got="$(_cl_concurrent_ok "$attempts")"
+    check "connlimit · 上限放回 ${saved} 后同样的并发全部成功" "$attempts" "$got"
+  fi
+
+  _cl_restore "$saved"
+}
+
+# _cl_switch_a_to_server_egress 把 A 的客户端换成「不指定出口」重启,使它改从服务器 NAT 出网。
+# 参数取自 harness 的原始参数去掉 --exit 那一段,别的一律不动 —— 顺手改别的会让「出口变了」
+# 之外多出无关变量。
+_cl_switch_a_to_server_egress() {
+  local args
+  args="$(printf '%s' "$E2E_A_CONNECT_ARGS" | sed -E 's/ --exit [^ ]+//')"
+  if [[ "$args" == "$E2E_A_CONNECT_ARGS" ]]; then
+    env_error "A 的连接参数里没有 --exit,无法构造「经服务器出网」的场景,connlimit 这组测不到"
+    return 1
+  fi
+  client_start a "$E2E_A_UNIT" "$args"
+  # 这一条既是前置条件的证明,也是后面所有并发断言的地基:出口没换过来的话,
+  # 并发流量走的是 tun→tun,规则在不在都全成 —— 断言会恒绿。
+  if ! wait_until "connlimit · A 去掉 --exit 后改从服务器出网（被测路径已就位）" 90 \
+       probe_egress_is "$E2E_SRV_HOST"; then
+    env_error "A 没能切到服务器出口,connlimit 这组的并发断言全部无效"
+    return 1
+  fi
+  return 0
+}
+
+# _cl_assert_rule_shape <proto> <期望上限|""> <wan> <subnet>
+# 上限传空表示只看形状不看数值(udp 那条本组不改它的值)。
+_cl_assert_rule_shape() {
+  local proto="$1" want="$2" wan="$3" subnet="$4" line
+  line="$(s "iptables -S FORWARD 2>/dev/null | grep -- '-m connlimit' | grep -- '-p $proto'")"
+  if [[ -z "$line" ]]; then
+    _fail "connlimit · ${proto} 的并发上限规则不存在" "FORWARD 链里没有 -p $proto 的 connlimit 规则"
+    return 0
+  fi
+  # -o <wan>:第一次事故就是漏了它,后果是把 tun→tun 的 mesh / 子网 / 出口回程一起算进来。
+  if [[ "$line" == *" -o $wan"* ]]; then
+    _pass "connlimit · ${proto} 规则限定了出网方向（-o ${wan}）"
+  else
+    _fail "connlimit · ${proto} 规则没限定 -o ${wan}（会把 mesh 与子网一起算进并发）" "$line"
+  fi
+  # -s <subnet>:少了它,出口回程(源是公网 CDN 的 IP)会按 CDN 源计数,热门站点整站卡死。
+  if [[ "$line" == *" -s $subnet"* ]]; then
+    _pass "connlimit · ${proto} 规则只按客户端网段计数（-s ${subnet}）"
+  else
+    _fail "connlimit · ${proto} 规则没限定 -s ${subnet}（回程会按公网源 IP 计数）" "$line"
+  fi
+  # 按 /32 的源地址计数:换成别的掩码会把整个网段的客户端合并成一个配额,
+  # 一个人跑满就把所有人一起卡死。
+  if [[ "$line" == *"--connlimit-saddr"* && "$line" == *"--connlimit-mask 32"* ]]; then
+    _pass "connlimit · ${proto} 规则按单个客户端 IP 计数（saddr /32）"
+  else
+    _fail "connlimit · ${proto} 规则不是按 saddr /32 计数（配额会被多个客户端共享）" "$line"
+  fi
+  if [[ -n "$want" ]]; then
+    check_contains "connlimit · ${proto} 规则用的是配置里的上限 ${want}" "--connlimit-above $want" "$line"
+  fi
+}
+
+# _cl_assert_rule_order 验 connlimit 排在 tun→wan 的 ACCEPT **之前**。
+#
+# 这是第二次事故的判据,也是本组最容易被改坏又最看不出来的一条:两条规则都用 -I FORWARD 1,
+# 谁后插入谁靠前,所以调用顺序一挪,ACCEPT 就盖在 connlimit 上方 —— 限流整条静默失效,
+# 而 iptables -S 里两条规则都在。
+_cl_assert_rule_order() {
+  local wan="$1" dev="$2" nlimit naccept
+  nlimit="$(s "iptables -S FORWARD 2>/dev/null | grep -n -- '-m connlimit' | tail -1 | cut -d: -f1" | tr -d '[:space:]')"
+  # 必须带 -j ACCEPT:出口私网守卫那条 `-d 169.254.0.0/16 -i <dev> -o <wan> ... -j DROP`
+  # 长得几乎一样且排在更前面,不区分的话会拿它当参照,于是次序永远判成「装反了」。
+  naccept="$(s "iptables -S FORWARD 2>/dev/null | grep -n -- '-i $dev -o $wan -m comment' | grep -- '-j ACCEPT' | head -1 | cut -d: -f1" | tr -d '[:space:]')"
+  if [[ ! "$nlimit" =~ ^[0-9]+$ || ! "$naccept" =~ ^[0-9]+$ ]]; then
+    env_error "取不到规则行号(connlimit=$nlimit accept=$naccept),「次序」这条测不到"
+    return 0
+  fi
+  if (( nlimit < naccept )); then
+    _pass "connlimit · 规则排在 tun→wan 的 ACCEPT 之前（第 ${nlimit} 条 vs 第 ${naccept} 条）"
+  else
+    _fail "connlimit · 规则排在 tun→wan 的 ACCEPT 之后（第 ${nlimit} 条 vs 第 ${naccept} 条）" \
+      "出公网的包会被 ACCEPT 先放行,限流整条静默失效 —— 而 iptables -S 里两条规则一应俱全"
+  fi
+}
+
+# _cl_concurrent_ok <条数> → 同时开这么多条 TCP 到 C 的 22 端口,返回握手成功的条数。
+#
+# 靶子必须从**服务器的公网侧**可达(服务器 SNAT 之后才连过去),C 的 ufw 只放行 22,
+# 所以用它而不是 8088 那个靶站。SO_LINGER 0 让关闭时发 RST:conntrack 条目立刻消失,
+# 不会给下一次测量留下占着名额的 TIME_WAIT。
+_cl_concurrent_ok() {
+  local k="$1"
+  a "cat > /tmp/nt_conc.py <<'PYEOF'
+import socket, struct, sys, time
+host, port, k, hold = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+socks, ok = [], 0
+for _ in range(k):
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+    s.settimeout(6)
+    try:
+        s.connect((host, port)); socks.append(s); ok += 1
+    except Exception:
+        try: s.close()
+        except Exception: pass
+print('OK=%d' % ok)
+sys.stdout.flush()
+time.sleep(hold)
+for s in socks:
+    try: s.close()
+    except Exception: pass
+PYEOF
+python3 /tmp/nt_conc.py $E2E_C_HOST 22 $k 0" 2>/dev/null | sed -n 's/^OK=//p' | tr -d '[:space:]'
+}
+
+# _cl_assert_no_collateral <条数> 在**超限的同时**验 mesh / 子网仍然可用。
+# 探针放后台攥住连接,窗口里再打 mesh 与子网 —— 不并行的话 connlimit 根本没参与判决。
+_cl_assert_no_collateral() {
+  local k="$1" res
+  res="$(a "nohup python3 /tmp/nt_conc.py $E2E_C_HOST 22 $k 20 >/tmp/nt_conc.out 2>&1 &
+     sleep 6
+     timeout 6 bash -c '</dev/tcp/$E2E_C_VIP4/22' >/dev/null 2>&1 && echo meshtcp=ok || echo meshtcp=bad
+     ping -c1 -W3 $E2E_C_VIP4 >/dev/null 2>&1 && echo meshping=ok || echo meshping=bad
+     ping -c1 -W3 $E2E_C_LAN4_HOST >/dev/null 2>&1 && echo subnet=ok || echo subnet=bad")"
+  # 三条分开断言:第一次事故里 ICMP 是通的、只有 TCP 握手收不到 SYN-ACK,
+  # 只测 ping 的话那次事故完全测不出来。
+  check "connlimit · 超限期间 mesh 的 TCP 仍能握手（没被连坐）" "ok" \
+    "$(printf '%s\n' "$res" | sed -n 's/^meshtcp=//p')"
+  check "connlimit · 超限期间 mesh 的 ICMP 仍然可达" "ok" \
+    "$(printf '%s\n' "$res" | sed -n 's/^meshping=//p')"
+  check "connlimit · 超限期间已批准的子网路由仍然可达" "ok" \
+    "$(printf '%s\n' "$res" | sed -n 's/^subnet=//p')"
+  a "pkill -f nt_conc.py 2>/dev/null; true" >/dev/null
+}
+
+# _cl_rule_pkts <proto> → 该 connlimit 规则的丢包计数。
+#
+# 过滤词是 `#conn` 而不是 `connlimit`:`iptables -vnL` 的详细格式把这个 match 渲染成
+# `#conn src/32 > 3`,整行里没有 "connlimit" 三个字(只有 `-S` 的形式里才有)。
+# 按 connlimit 过滤会一条都匹配不到,于是计数恒为空 —— 而失败文案会指向「规则被盖住了」,
+# 把人引向一个完全不存在的产品缺陷。
+_cl_rule_pkts() {
+  s "iptables -vnL FORWARD 2>/dev/null | awk '/#conn/ && /^ *[0-9]/ {print \$1, \$4}'" \
+    | awk -v p="$1" '$2==p{print $1; exit}' | tr -d '[:space:]'
+}
+
+# _cl_flush_conntrack <vip> 清掉该客户端在 conntrack 里的全部条目。
+# 已关闭但仍在 TIME_WAIT 的条目照样占 connlimit 的名额,不清的话「恰好等于上限」会随机少一条。
+_cl_flush_conntrack() {
+  s "conntrack -D -s $1 >/dev/null 2>&1; true" >/dev/null
+}
+
+# _cl_restore <原上限> 还原配置与 A 的客户端。
+# 顺序:先把配置写回去并重启(A 会跟着重连),再用原始参数把 A 拉回带 --exit 的形态。
+_cl_restore() {
+  local saved="$1" dir="${E2E_REMOTE_DIR:-/tmp/nte2e}" now
+  now="$(s "grep -m1 '^tcp_connlimit_per_ip' /etc/nanotun/config.toml | sed 's/.*= *//'" | tr -d '[:space:]')"
+  if [[ "$now" != "$saved" ]]; then
+    s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun tcp_connlimit_per_ip $saved" >/dev/null 2>&1
+    s "systemctl restart nanotun" >/dev/null 2>&1
+  fi
+  a "pkill -f nt_conc.py 2>/dev/null; rm -f /tmp/nt_conc.py /tmp/nt_conc.out; true" >/dev/null
+  client_a_start
+  wait_until "connlimit · 还原后两个客户端都在线" 120 both_clients_online
+  # 出口必须回到 C:后面的阶段全都按「A 经 C 出网」写的,漏还原的话它们会一片红,
+  # 而红的原因全在这里。
+  wait_until "connlimit · 还原后 A 的出口回到 C" 90 probe_egress_is "$E2E_C_HOST"
+}
+
 # _check_max_sessions_evicts_the_oldest 验按账号的并发会话上限(两级叠加)。
 #
 # 这个开关此前 e2e 零命中,而它的三个语义每一个错了都很难被发现:

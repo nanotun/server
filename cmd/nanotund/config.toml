@@ -106,6 +106,8 @@ level = "info"
 
 [tun]
 device_name = "tun0"
+# 每个虚拟 IP 的并发连接上限(iptables connlimit)。≤0 按 40。
+# 只在**启动时**落 FORWARD 链,SIGHUP 不重建 —— 改完必须 restart 才生效。
 tcp_connlimit_per_ip = 40
 udp_connlimit_per_ip = 60
 # 从 TUN 转发出站按目的端口 DROP（不需要时改为 false）

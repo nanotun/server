@@ -198,11 +198,13 @@ type SmuxConfig struct {
 
 // TUNConfig 虚拟网卡配置：从 subnets 中选一个合法网段，只创建一张虚拟网卡
 type TUNConfig struct {
-	DeviceName        string   `toml:"device_name"`          // 虚拟网卡名称，如 "tun0"；程序启动时先删除该设备（若存在）再创建
-	TCPConnlimitPerIP int      `toml:"tcp_connlimit_per_ip"` // 每虚拟 IP 最大并发 TCP 连接（iptables connlimit）；≤0 时按 40
-	UDPConnlimitPerIP int      `toml:"udp_connlimit_per_ip"` // 每虚拟 IP 最大并发 UDP 连接；≤0 时按 40
-	Subnets           []string `toml:"subnets"`              // VPN IPv4 网段候选列表；仅内网，不与本机网段冲突
-	SubnetsV6         []string `toml:"subnets_v6"`           // VPN IPv6 网段候选列表（ULA 段，如 "fd00:200::/64"），可选；为空则不分配 IPv6 虚拟地址
+	DeviceName string `toml:"device_name"` // 虚拟网卡名称，如 "tun0"；程序启动时先删除该设备（若存在）再创建
+	// 每虚拟 IP 最大并发连接（iptables connlimit）；≤0 时按 DefaultConnlimitPerIP。
+	// 只在启动时落 FORWARD 链，SIGHUP 不重建（改了会进 deferred 列表提示需重启）。
+	TCPConnlimitPerIP int      `toml:"tcp_connlimit_per_ip"`
+	UDPConnlimitPerIP int      `toml:"udp_connlimit_per_ip"`
+	Subnets           []string `toml:"subnets"`    // VPN IPv4 网段候选列表；仅内网，不与本机网段冲突
+	SubnetsV6         []string `toml:"subnets_v6"` // VPN IPv6 网段候选列表（ULA 段，如 "fd00:200::/64"），可选；为空则不分配 IPv6 虚拟地址
 	// DNSServersV4/V6 登录成功后经 ConvSaltLite 下发；无 IPv6 隧道时服务端不附带 dns_servers_v6
 	DNSServersV4 []string `toml:"dns_servers_v4,omitempty"`
 	DNSServersV6 []string `toml:"dns_servers_v6,omitempty"`
@@ -361,6 +363,27 @@ func (t *TUNConfig) ResolveExitMode() string {
 		}
 		return TUNExitModeMesh
 	}
+}
+
+// DefaultConnlimitPerIP 是 tcp/udp 每虚拟 IP 并发上限在「没配 / 配了非正数」时的取值。
+const DefaultConnlimitPerIP = 40
+
+// ResolveTCPConnlimitPerIP / ResolveUDPConnlimitPerIP 把配置值翻译成**真正落进 iptables
+// 的那个数**(≤0 一律按 DefaultConnlimitPerIP)。
+//
+// 单独抽出来是因为有两个调用方必须看到同一个数:启动时装规则的那一处,以及 SIGHUP 判断
+// 「这个字段改了但不生效」的那一处。后者若直接比原始值,`0` 改成 `40` 这种**效果完全没变**
+// 的改写会被报成需要重启 —— 而 deferred 列表一旦有噪声,运维就不再看它了
+// (与 exit_dns_redirect / jump_host_protected_ports 归一化后再比是同一个考虑)。
+func (t *TUNConfig) ResolveTCPConnlimitPerIP() int { return resolveConnlimit(t.TCPConnlimitPerIP) }
+
+func (t *TUNConfig) ResolveUDPConnlimitPerIP() int { return resolveConnlimit(t.UDPConnlimitPerIP) }
+
+func resolveConnlimit(v int) int {
+	if v <= 0 {
+		return DefaultConnlimitPerIP
+	}
+	return v
 }
 
 // ValidateExitMode 在启动早期校验 tun.exit_mode。

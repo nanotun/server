@@ -1018,14 +1018,8 @@ func main() {
 		if deviceName == "" {
 			deviceName = "tun0"
 		}
-		tcpConnlimit := cfg.TUN.TCPConnlimitPerIP
-		if tcpConnlimit <= 0 {
-			tcpConnlimit = 40
-		}
-		udpConnlimit := cfg.TUN.UDPConnlimitPerIP
-		if udpConnlimit <= 0 {
-			udpConnlimit = 40
-		}
+		tcpConnlimit := cfg.TUN.ResolveTCPConnlimitPerIP()
+		udpConnlimit := cfg.TUN.ResolveUDPConnlimitPerIP()
 
 		// 上次实际用过的 mesh 网段（server 启动落库的 mesh_cidrs 快照）。只要这次仍可用就继续沿用，
 		// 避免重启换网段作废全部 lease 与 admin 钉住的 fixed vIP（详见 tun_subnet_sticky.go）。

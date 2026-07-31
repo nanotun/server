@@ -54,6 +54,11 @@ func TestClassifyDeferredFields_ReportsEveryFieldThatWontTakeEffect(t *testing.T
 		{"hysteria.udp_relay_enabled", func(c *config.Config) {
 			c.Hysteria.UDPRelayEnabled = !c.Hysteria.UDPRelayEnabled
 		}},
+		// 这两个是上面三个端口封堵开关在 SetupIptables 里的相邻实参,补那一族时漏了。
+		// 典型场景是应急:某客户端把机器打满,当场把上限从 40 收到 5、SIGHUP、日志一切正常,
+		// 于是以为摁住了 —— 内核里那条规则仍写着 40。
+		{"tun.tcp_connlimit_per_ip", func(c *config.Config) { c.TUN.TCPConnlimitPerIP = 5 }},
+		{"tun.udp_connlimit_per_ip", func(c *config.Config) { c.TUN.UDPConnlimitPerIP = 5 }},
 	}
 
 	for _, tc := range cases {
@@ -147,6 +152,23 @@ func TestClassifyDeferredFields_StaysQuietWhenNothingReallyChanged(t *testing.T)
 			mut: func(o, n *config.Config) {
 				o.Server.JumpHostProtectedPorts = []string{"tcp/8080"}
 				n.Server.JumpHostProtectedPorts = []string{"tcp/8080", "sctp/99"}
+			},
+		},
+		// connlimit 的 ≤0 一律按 40 落链,所以「没配」与「显式写 40」装出来是同一条规则。
+		// 把这种改写报成需要重启,等于告诉运维去做一次毫无必要的重启。
+		{
+			name: "tcp_connlimit 没配与显式 40 等价",
+			mut: func(o, n *config.Config) {
+				o.TUN.TCPConnlimitPerIP = 0
+				n.TUN.TCPConnlimitPerIP = config.DefaultConnlimitPerIP
+			},
+		},
+		{
+			// 负数同样归一到默认值,不是「关闭限制」。
+			name: "udp_connlimit 负数与显式 40 等价",
+			mut: func(o, n *config.Config) {
+				o.TUN.UDPConnlimitPerIP = -1
+				n.TUN.UDPConnlimitPerIP = config.DefaultConnlimitPerIP
 			},
 		},
 	}

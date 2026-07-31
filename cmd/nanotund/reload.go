@@ -414,6 +414,32 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 			out = append(out, f.name)
 		}
 	}
+	// 每虚拟 IP 并发上限:上面那三个开关的**同一次调用的相邻实参**(server.go 里
+	// SetupIptables(..., tcpConnlimit, udpConnlimit, forwardBlockBT, ...)),同样只在
+	// 启动时落 FORWARD 链。补这一族的时候把这两个漏了。
+	//
+	// 漏报的后果比端口封堵更贴近应急场景:某个客户端把服务器打满、运维当场把
+	// tcp_connlimit_per_ip 从 40 收到 5、SIGHUP、日志一切正常没有任何提示 —— 于是认为
+	// 已经摁住了,而内核里那条规则仍然写着 40,滥用照旧。
+	//
+	// 比的是**解析后的生效值**:0 与 40 在落链时是同一个数,直接比原始值会把这类
+	// 「效果没变」的改写报成需要重启,给 deferred 列表添噪声。
+	for _, f := range []struct {
+		name     string
+		from, to int
+	}{
+		{"tun.tcp_connlimit_per_ip", old.TUN.ResolveTCPConnlimitPerIP(), newCfg.TUN.ResolveTCPConnlimitPerIP()},
+		{"tun.udp_connlimit_per_ip", old.TUN.ResolveUDPConnlimitPerIP(), newCfg.TUN.ResolveUDPConnlimitPerIP()},
+	} {
+		if f.from != f.to {
+			logrus.WithFields(logrus.Fields{
+				"field": f.name,
+				"old":   f.from,
+				"new":   f.to,
+			}).Error("[reload] 每虚拟 IP 并发上限不可热更(connlimit 规则启动时落链),需重启 server")
+			out = append(out, f.name)
+		}
+	}
 	// jump_host_protected_ports:同族的另两项都已覆盖(开关本身进 deferred、名单是热更),
 	// 唯独「保护哪些端口」只在启动时读一次。漏报的后果和跳板机那两次事故同类 ——
 	// 运维往名单里加一个端口、SIGHUP、看到 applied 里有 jump_host_allowed_ips,合理地以为
