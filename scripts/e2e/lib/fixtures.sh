@@ -70,6 +70,21 @@ client_active() { [[ "$("$1" "systemctl is-active $2" | tr -d '[:space:]')" == "
 
 client_a_start() { client_start a "$E2E_A_UNIT" "$E2E_A_CONNECT_ARGS"; }
 client_c_start() { client_start c "$E2E_C_UNIT" "$E2E_C_CONNECT_ARGS"; }
+
+# client_a_start_no_exit 用「不指定出口」的参数重起 A,使它改从**服务器自身** NAT 出网。
+#
+# 默认拓扑里 A 固定拿 C 当出口,它的公网流量是 tun→tun 直投给 C 的,完全不碰服务器的
+# `-i tun -o wan` 那条路径。凡是要验这条路径的用例(connlimit 的并发上限、exit_mode=off
+# 的出网封堵),不先切过来的话,规则在不在、对不对,断言都会一样绿。
+#
+# 只摘掉 --exit,别的参数一律不动:顺手改别的会在「出口变了」之外多出无关变量。
+# 返回非 0 表示参数里压根没有 --exit,调用方应报 env_error 而不是当成产品缺陷。
+client_a_start_no_exit() {
+  local args
+  args="$(printf '%s' "$E2E_A_CONNECT_ARGS" | sed -E 's/ --exit [^ ]+//')"
+  [[ "$args" == "$E2E_A_CONNECT_ARGS" ]] && return 1
+  client_start a "$E2E_A_UNIT" "$args"
+}
 client_a_stop()  { client_stop a "$E2E_A_UNIT"; }
 client_c_stop()  { client_stop c "$E2E_C_UNIT"; }
 

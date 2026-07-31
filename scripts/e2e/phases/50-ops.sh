@@ -1389,17 +1389,12 @@ _check_connlimit_caps_concurrency_without_hurting_mesh() {
   _cl_restore "$saved"
 }
 
-# _cl_switch_a_to_server_egress 把 A 的客户端换成「不指定出口」重启,使它改从服务器 NAT 出网。
-# 参数取自 harness 的原始参数去掉 --exit 那一段,别的一律不动 —— 顺手改别的会让「出口变了」
-# 之外多出无关变量。
+# _cl_switch_a_to_server_egress 把 A 换成「不指定出口」重启,并确认出口真的落到服务器身上。
 _cl_switch_a_to_server_egress() {
-  local args
-  args="$(printf '%s' "$E2E_A_CONNECT_ARGS" | sed -E 's/ --exit [^ ]+//')"
-  if [[ "$args" == "$E2E_A_CONNECT_ARGS" ]]; then
+  if ! client_a_start_no_exit; then
     env_error "A 的连接参数里没有 --exit,无法构造「经服务器出网」的场景,connlimit 这组测不到"
     return 1
   fi
-  client_start a "$E2E_A_UNIT" "$args"
   # 这一条既是前置条件的证明,也是后面所有并发断言的地基:出口没换过来的话,
   # 并发流量走的是 tun→tun,规则在不在都全成 —— 断言会恒绿。
   if ! wait_until "connlimit · A 去掉 --exit 后改从服务器出网（被测路径已就位）" 90 \

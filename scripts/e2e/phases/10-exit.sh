@@ -114,6 +114,7 @@ phase_10_exit() {
   wait_until "出口节点回归后子网重新可达" 30 probe_ping a "$E2E_C_LAN4_HOST"
 
   _check_exit_mode_isolate_drops_relay_but_keeps_the_server_reachable
+  _check_exit_mode_off_shuts_the_door_to_wan_only
 }
 
 # _check_exit_mode_isolate_drops_relay_but_keeps_the_server_reachable
@@ -197,6 +198,141 @@ _check_exit_mode_isolate_drops_relay_but_keeps_the_server_reachable() {
   wait_until "isolate · 还原后 A→C mesh 恢复"      30 probe_ping a "$E2E_C_VIP4"
   wait_until "isolate · 还原后经出口 C 出网恢复"    60 probe_egress_is "$E2E_C_HOST"
   wait_until "isolate · 还原后子网恢复"            30 probe_ping a "$E2E_C_LAN4_HOST"
+}
+
+# _check_exit_mode_off_shuts_the_door_to_wan_only 验 [tun] exit_mode = "off" ——
+# 三档里最后一档,此前从没测过(isolate 与 mesh 都有用例)。
+#
+# off 是个**容纳性保证**:纯组网部署(合规、计费、防滥用)靠它承诺「没有流量经本机出公网」。
+# 这类保证坏掉的样子和别的缺陷不一样 —— 不报错、不断连,流量照样出得去,一切看起来都正常,
+# 直到某天有人去查账单或出口日志。所以这一组的重心是「真的出不去」,而不是「规则装上了」。
+#
+# **拓扑上先要造出被测路径**:off 掐的是服务器自身的 `-i tun -o wan`,而默认 A 拿 C 当出口,
+# 公网流量是 tun→tun 直投给 C 的,压根不碰那条规则。不先把 A 切成「不指定出口」的话,
+# 无论 off 有没有生效,A 都照样从 C 出网 —— 断言恒绿(与 connlimit 那组同一个坑)。
+#
+# **判别器是 mesh 与子网仍通**。off 的定义就是「只掐出网、不掐互访」,没有这两条就无法区分:
+#   - off 按设计只掐 tun→wan(正确);
+#   - 规则装错把整个数据面打死(缺陷)。
+# 两者在「出不去了」这一条上表现完全一样。
+#
+# 还钉一条**容易被误读的语义**:off 只关「经本机 WAN 出网」,不关「经 peer 中转出网」。
+# A 带 --exit 时仍能从 C 出去,因为那条路是 tun→tun 转发 + C 自己的 WAN。选 off 的运维
+# 若以为「没人能上网了」会判断失误 —— 这条断言把真实语义固定下来。
+#
+# 最后钉**切换路径上的残留**:上一轮 mesh 装的 tun→wan ACCEPT 与 SNAT 必须消失。
+#
+# 这一段刻意用 `SIGKILL + systemd 拉起` 而不是 `systemctl restart` 来切档,理由是第一次
+# 写这组时踩的坑:优雅退出会在 defer 里 teardown 掉全部 nanotun_main 规则,于是新进程启动时
+# **压根不存在残留** —— 两条「残留已清掉」的断言恒绿,而绿的原因跟清理逻辑毫无关系
+# (禁掉启动期 sweep 做变异,14 条一条都没红,就是这么发现的)。硬杀才留得下残留,而
+# 「在 mesh 档崩了、运维改成 off 再拉起来」本身就是个真实场景。
+#
+# 残留的危害是**可审计性**而不是直接泄漏:新装的 DROP 用 `-I FORWARD 1` 排在链首,残留的
+# ACCEPT 在它后面,包先命中 DROP。但链上同时挂着一条 ACCEPT 和一条相反的 DROP,排查的人
+# 极易据此判断「出网是开着的」;而一旦将来插入位置变了,它就会从误导变成真泄漏。
+_check_exit_mode_off_shuts_the_door_to_wan_only() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}" wan since log
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+  wan="$(s "ip route show default | awk '{print \$5; exit}'" | tr -d '[:space:]')"
+  if [[ -z "$wan" ]]; then
+    env_error "查不到服务器的出网网卡,off 这组测不到"
+    return
+  fi
+
+  # 先把 A 切成「不指定出口」,并确认它此刻**确实**从服务器出网。
+  # 这一条同时是前置条件的证明:mesh 档下都出不去的话,off 档「出不去」就什么也证明不了。
+  if ! client_a_start_no_exit; then
+    env_error "A 的连接参数里没有 --exit,构造不出「经服务器出网」的场景,off 这组测不到"
+    return
+  fi
+  if ! wait_until "off · 前置:mesh 档下 A 经服务器出网是通的（判别器成立）" 90 \
+       probe_egress_is "$E2E_SRV_HOST"; then
+    env_error "mesh 档下 A 就没能从服务器出网,off 这组的「出不去」证明不了任何事"
+    client_a_start
+    return
+  fi
+
+  # 切档:先写配置,再 SIGKILL 让 systemd 拉起 —— 硬杀不走 defer 里的 teardown,
+  # 于是 mesh 那套规则原样留在内核里,下面「残留已清掉」两条才有东西可测。
+  # 顺带确认残留**确实**产生了,否则那两条又会退化成恒绿的装饰品。
+  local since residue
+  since="$(s 'date +%s' | tr -d '[:space:]')"
+  if ! s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun exit_mode '\"off\"'" >/dev/null; then
+    _restore_exit_mode_mesh
+    client_a_start
+    env_error "切 exit_mode=off 失败,这组断言测不到"
+    return
+  fi
+  residue="$(s "pkill -KILL -x nanotund; sleep 0.5; iptables-save 2>/dev/null | grep -c 'nanotun_main.*ACCEPT'" | tr -d '[:space:]')"
+  if [[ ! "$residue" =~ ^[0-9]+$ ]] || (( residue == 0 )); then
+    env_error "硬杀之后内核里没留下 mesh 的 ACCEPT 残留(residue=$residue),「残留已清掉」两条测不到"
+  fi
+  wait_until "off · 硬杀切档后 systemd 拉起、两个客户端重连" 120 both_clients_online
+
+  # ① 真流量:经服务器出网被封死。这一条是这一档的全部意义。
+  wait_until "off · A 经服务器出网被封死（容纳性保证成立）" 40 probe_egress_blocked
+
+  # ② 判别器:掐的只是出网,不是整个数据面。
+  wait_until "off · mesh 互访仍然可用（off 的定义就是只掐出网）" 30 probe_ping a "$E2E_C_VIP4"
+  wait_until "off · 已批准的子网路由仍然可达"                    30 probe_ping a "$E2E_C_LAN4_HOST"
+
+  # ③ 规则形状:显式 DROP 必须在(很多发行版 -P FORWARD ACCEPT,不显式 DROP 就直接漏出去)。
+  local fwd
+  fwd="$(s "iptables -S FORWARD 2>/dev/null")"
+  # 整行锚定,不用子串:出口私网守卫那条是 `-d 169.254.0.0/16 -i tun0 -o <wan> ... -j DROP`,
+  # 子串 `-i tun0 -o <wan> ... -j DROP` 在它身上照样成立 —— 于是 off 档一条 DROP 都没装时
+  # 这句仍然是绿的(2026-07-31 用「off 退化成 mesh」的变异抓到的假绿)。off 装的那条不带
+  # 任何 -s/-d 限定,所以锚在 `-A FORWARD ` 之后就能把守卫类规则排除干净。
+  if printf '%s' "$fwd" | grep -qx -- "-A FORWARD -i tun0 -o $wan -m comment --comment nanotun_main -j DROP"; then
+    _pass "off · FORWARD 上有显式的 tun→wan DROP（默认 ACCEPT 的发行版也不会漏出去）"
+  else
+    _fail "off · FORWARD 上没有无限定的 tun→wan DROP" "$fwd"
+  fi
+  # ④ 残留:mesh 留下的 ACCEPT 与 SNAT 必须已经消失。
+  # 这两条针对的是**切换路径**而不是冷启动 —— 前一轮是 mesh,链上本来就挂着它们。
+  if printf '%s' "$fwd" | grep -q -- "-i tun0 -o $wan -m comment.*-j ACCEPT"; then
+    _fail "off · 链上还留着上一条命 mesh 装的 tun→wan ACCEPT" \
+      "一条 ACCEPT 和一条相反的 DROP 同时挂着,排查的人会据此判断「出网是开着的」"
+  else
+    _pass "off · 硬杀留下的 mesh tun→wan ACCEPT 已被清掉"
+  fi
+  local snat
+  snat="$(s "iptables -t nat -S POSTROUTING 2>/dev/null | grep -- '-j SNAT' | grep 'nanotun_main' || true")"
+  if [[ -z "$snat" ]]; then
+    _pass "off · 硬杀留下的客户端网段 SNAT 已被清掉"
+  else
+    # off 分支自己只删 ACCEPT、不删 SNAT,这一条全靠启动期 sweep 兜底 ——
+    # sweep 哪天改成只扫 filter 表,这里就是唯一的哨兵。
+    _fail "off · 客户端网段的 SNAT 仍挂在 nat 表上（off 分支不删它，只有启动期 sweep 会清）" "$snat"
+  fi
+
+  # ⑤ 启动日志要说清现在是 off,否则运维只能靠猜。
+  # 匹配的是 off 分支**独有**的那句话,不是 `exit_mode=off` 这个字段。
+  # 后者是结构化日志里原样回显的配置值,策略生没生效它都会打 —— 拿它当判据的话,
+  # 「配置写了 off 但根本没按 off 装规则」会一路绿灯(同上,变异抓到的假绿)。
+  log="$(s "journalctl -u nanotun --since @$since --no-pager")"
+  check_contains "off · 启动日志点明已 DROP tun→WAN（运维据此确认档位真的生效）" \
+    "已 DROP FORWARD device->WAN" \
+    "$(printf '%s' "$log" | grep '已 DROP FORWARD device->WAN' | head -1 || echo '(日志里没有这一句)')"
+
+  # ⑥ 语义:off 只关「经本机 WAN 出网」,经 peer 中转仍然可用。
+  # 这条容易被误读成「off = 没人能上网」,写死在断言里免得日后按错误的理解去改。
+  client_a_start
+  wait_until "off · 经 peer 出口中转仍然可用（off 只关本机 WAN，不关中转）" 90 \
+    probe_egress_is "$E2E_C_HOST"
+
+  # ⑦ 还原并确认闸门是可逆的:回 mesh 之后经服务器出网必须重新通。
+  # 只还原不验的话,「off 把某样东西永久改坏了」会留到后面的阶段才炸,且指向完全错误。
+  _restore_exit_mode_mesh
+  wait_until "off · 还原 mesh 后两个客户端重连" 90 both_clients_online
+  if client_a_start_no_exit; then
+    wait_until "off · 还原后经服务器出网恢复（闸门可逆）" 90 probe_egress_is "$E2E_SRV_HOST"
+  fi
+  client_a_start
+  wait_until "off · 收尾:A 的出口回到 C" 90 probe_egress_is "$E2E_C_HOST"
+  wait_until "off · 收尾:子网仍然可达"    30 probe_ping a "$E2E_C_LAN4_HOST"
 }
 
 # _restore_exit_mode_mesh 把 exit_mode 写回 mesh 并重启(不可热更)。
