@@ -254,6 +254,38 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 	if newCfg.Hysteria.ListenAddr != old.Hysteria.ListenAddr {
 		out = append(out, "hysteria.listen_addr")
 	}
+	// 三个「为安全而轮换」的字段,与上面 hysteria.password / server.tls_cert_file 同族:
+	// 都在启动时构建 hy2 服务器 / 建监听时读一次,SIGHUP 不重建。此前只有那两个进了名单。
+	//
+	// 这一族漏报的后果是**双向**的,比一般的「改了不生效」更难查:
+	//   - 加固没发生:运维因为怀疑被识别而轮换混淆口令 / 客户端 CA,reload 后毫无提示,
+	//     于是认为旧口令已经作废 —— 而旧口令仍然能握上手;
+	//   - 新签的客户端配置连不上:profile / 客户端证书是照**配置文件**签发的(admin 读的是
+	//     磁盘上那份),而在跑的进程用的还是旧值。两边一错开,新客户端表现为握手直接失败,
+	//     而且报错指向的是「认证失败 / 证书不受信」,完全指不到「服务端没重启」这个真因。
+	// 比较口径要跟各字段**自己的读取语义**对齐,否则等价改写会被误报:
+	// 混淆口令在读取点(buildHysteriaServerConfig)是 TrimSpace 后用的,所以按 trim 比;
+	// tls_client_ca_file 是原样当文件名开的,前后空格会真的改变行为,故按原值比;
+	// ws 路径的 ""→内置默认、缺前导斜杠→补斜杠 两条归一化都发生在启动路径上,按归一化后比。
+	if strings.TrimSpace(newCfg.Hysteria.ObfsSalamanderPassword) != strings.TrimSpace(old.Hysteria.ObfsSalamanderPassword) {
+		logrus.Error("[reload] hysteria.obfs_salamander_password 不可热更(hy2 服务器启动时构建),需重启 server;在此之前旧口令仍然有效")
+		out = append(out, "hysteria.obfs_salamander_password")
+	}
+	if newCfg.Hysteria.TLSClientCAFile != old.Hysteria.TLSClientCAFile {
+		logrus.Error("[reload] hysteria.tls_client_ca_file 不可热更(hy2 服务器启动时构建),需重启 server;在此之前旧 CA 仍被信任")
+		out = append(out, "hysteria.tls_client_ca_file")
+	}
+	// vpn_websocket_path 由数据面 WSS 监听与 REALITY 前端在启动期各捕获一次。
+	// 改了它而不重启:进程仍服务旧路径,而 admin 新签出的 profile 写的是新路径 ——
+	// 新客户端连不上,老客户端照常。直连 WSS 部署(前面挂 nginx/CDN)时它还是个公开指纹,
+	// 那种部署下「以为换了路径」的误判直接等于加固没做。
+	if oldPath, newPath := normalizeVPNWebSocketPath(old.Server.VPNWebSocketPath), normalizeVPNWebSocketPath(newCfg.Server.VPNWebSocketPath); oldPath != newPath {
+		logrus.WithFields(logrus.Fields{
+			"old": oldPath,
+			"new": newPath,
+		}).Error("[reload] server.vpn_websocket_path 不可热更(监听启动时捕获),需重启 server;在此之前新签的 profile 会连不上")
+		out = append(out, "server.vpn_websocket_path")
+	}
 	if newCfg.Reality.ListenAddr != old.Reality.ListenAddr {
 		out = append(out, "reality.listen_addr")
 	}

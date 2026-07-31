@@ -8,6 +8,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nanotun/server/config"
+	"github.com/nanotun/server/util"
 )
 
 // SIGHUP 只能热更一小部分字段,其余改了要么无效、要么会让在跑的连接遭殃。所以 reload 把它们
@@ -59,6 +60,18 @@ func TestClassifyDeferredFields_ReportsEveryFieldThatWontTakeEffect(t *testing.T
 		// 于是以为摁住了 —— 内核里那条规则仍写着 40。
 		{"tun.tcp_connlimit_per_ip", func(c *config.Config) { c.TUN.TCPConnlimitPerIP = 5 }},
 		{"tun.udp_connlimit_per_ip", func(c *config.Config) { c.TUN.UDPConnlimitPerIP = 5 }},
+		// 「为安全而轮换」的一族:漏报是双向的 —— 旧口令 / 旧 CA 仍然有效(加固没发生),
+		// 而照配置文件新签出来的 profile 与客户端证书连不上(在跑的进程还用着旧值)。
+		// hysteria.password 与 server.tls_cert_file 早就在名单里,这三个一直漏着。
+		{"hysteria.obfs_salamander_password", func(c *config.Config) {
+			c.Hysteria.ObfsSalamanderPassword = "rotated-" + c.Hysteria.ObfsSalamanderPassword
+		}},
+		{"hysteria.tls_client_ca_file", func(c *config.Config) {
+			c.Hysteria.TLSClientCAFile = "certs/rotated-client-ca.pem"
+		}},
+		{"server.vpn_websocket_path", func(c *config.Config) {
+			c.Server.VPNWebSocketPath = "/internal/rotated/path"
+		}},
 	}
 
 	for _, tc := range cases {
@@ -106,6 +119,30 @@ func TestClassifyDeferredFields_StaysQuietWhenNothingReallyChanged(t *testing.T)
 			mut: func(o, n *config.Config) {
 				o.TUN.ExitDNSRedirect = ""
 				n.TUN.ExitDNSRedirect = "Auto"
+			},
+		},
+		{
+			// 留空即取内置默认长路径,与显式写出那条路径完全等价。
+			name: "vpn_websocket_path 空值与显式默认路径等价",
+			mut: func(o, n *config.Config) {
+				o.Server.VPNWebSocketPath = ""
+				n.Server.VPNWebSocketPath = util.DefaultVPNWebSocketPath
+			},
+		},
+		{
+			// 缺前导斜杠会被补上,补前补后是同一条路径。
+			name: "vpn_websocket_path 前导斜杠可省",
+			mut: func(o, n *config.Config) {
+				o.Server.VPNWebSocketPath = "internal/ws/v1"
+				n.Server.VPNWebSocketPath = "/internal/ws/v1"
+			},
+		},
+		{
+			// 读取点是 TrimSpace 后用的,首尾空白不改变实际口令。
+			name: "obfs_salamander_password 首尾空白不算改动",
+			mut: func(o, n *config.Config) {
+				o.Hysteria.ObfsSalamanderPassword = "s3cret"
+				n.Hysteria.ObfsSalamanderPassword = "  s3cret\t"
 			},
 		},
 		{

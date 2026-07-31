@@ -94,6 +94,17 @@ _check_deferred_fields_are_reported() {
   # 每虚拟 IP 并发上限:与 forward_block_bt 是同一次 SetupIptables 的相邻实参,补那一族时漏了。
   # 收紧上限是应急动作,「reload 没提示」会让人以为已经摁住(见 reload.go 里那段注释)。
   s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun tcp_connlimit_per_ip 5" >/dev/null || setrc=1
+  # 「为安全而轮换」的一族:混淆口令 / 客户端 CA / 数据面 WS 路径。这一族漏报是双向的 ——
+  # 旧口令与旧 CA 仍然有效(以为的加固没发生),而照配置文件新签出来的 profile 和客户端证书
+  # 连不上(在跑的进程还用着旧值),报错还指向「认证失败/证书不受信」,指不到真因。
+  #
+  # CA 这一项刻意指向真 CA 的一份**副本**:万一它哪天真的生效了(比如本组中途挂掉、
+  # 恢复没跑到,后面有别的用例重启了服务),hy2 入口仍然能验客户端证书,不会把整个
+  # 数据面连带打死。换成一个不存在的路径就没有这层保险。
+  s "cp -n \"\$(awk '/^\[hysteria\]/{f=1;next} /^\[/{f=0} f && /^tls_client_ca_file *=/{print}' /etc/nanotun/config.toml | cut -d'\"' -f2)\" /etc/nanotun/certs/nte2e-ca-copy.pem" >/dev/null 2>&1
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria tls_client_ca_file '\"certs/nte2e-ca-copy.pem\"'" >/dev/null || setrc=1
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria obfs_salamander_password '\"nte2e-rotated-obfs\"'" >/dev/null || setrc=1
+  s "python3 $dir/tomlset.py /etc/nanotun/config.toml server vpn_websocket_path '\"/internal/nte2e/deferred-probe\"'" >/dev/null || setrc=1
   if (( setrc != 0 )); then
     env_error "改写 config.toml 失败(见 tomlset.py 输出),deferred 这组断言测不到"
     s "cp /tmp/nte2e-cfg.deferred-bak /etc/nanotun/config.toml && systemctl reload nanotun" >/dev/null
@@ -124,6 +135,9 @@ _check_deferred_fields_are_reported() {
   check_contains "SIGHUP 报出 server.jump_host_protected_ports 需重启" "server.jump_host_protected_ports" "$detail"
   check_contains "SIGHUP 报出 hysteria.udp_relay_enabled 需重启" "hysteria.udp_relay_enabled" "$detail"
   check_contains "SIGHUP 报出 tun.tcp_connlimit_per_ip 需重启" "tun.tcp_connlimit_per_ip" "$detail"
+  check_contains "SIGHUP 报出 hysteria.obfs_salamander_password 需重启" "hysteria.obfs_salamander_password" "$detail"
+  check_contains "SIGHUP 报出 hysteria.tls_client_ca_file 需重启" "hysteria.tls_client_ca_file" "$detail"
+  check_contains "SIGHUP 报出 server.vpn_websocket_path 需重启" "server.vpn_websocket_path" "$detail"
 
   # 恢复,并确认恢复后的 SIGHUP 不再报这些字段(证明上面那三条是这次改动引起的,
   # 而不是审计里捞到了一条陈旧记录)。
@@ -137,6 +151,18 @@ _check_deferred_fields_are_reported() {
     _pass "恢复配置后不再报这些字段（说明断言捞的是本次 reload）"
   fi
   check "deferred 这组跑完服务仍然存活" "active" "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')"
+
+  # 这一条是给**后面的阶段**兜底。本组为了触发上报,会把数据面 WS 路径改成一个假值;
+  # 它不热更,所以在本组内部无害 —— 但只要留在配置里,下一次有人重启服务,进程就会去
+  # 服务那条假路径,而所有客户端 profile 里写的还是真路径,于是全体连不上。这类污染
+  # 上一次(login_rate_limit)就是靠快照机制一路传染到后续整轮的。
+  local wspath
+  wspath="$(s "awk '/^\[server\]/{f=1;next} /^\[/{f=0} f && /^vpn_websocket_path *=/{print}' /etc/nanotun/config.toml" | cut -d'"' -f2)"
+  if [[ "$wspath" == *nte2e* ]]; then
+    _fail "deferred 这组收尾后 vpn_websocket_path 没还原（会让下次重启后所有客户端连不上）" "$wspath"
+  else
+    _pass "deferred 这组收尾后数据面 WS 路径已还原"
+  fi
 }
 
 # _check_forward_port_drops_follow_their_own_knobs 验 tun 的三个端口封堵开关
@@ -684,6 +710,127 @@ _check_udp_relay_stays_disabled() {
   fi
 }
 
+# _check_rotating_hy2_obfs_revokes_the_old_password 验「轮换 salamander 混淆口令,旧口令必须立刻失效」。
+#
+# 为什么单独测这一项:混淆口令是**为安全而轮换**的东西 —— 运维会在怀疑入口被识别、
+# 或口令可能已泄漏时换掉它。换完之后唯一重要的问题是「旧的还能不能用」。这件事在
+# 上面那组 deferred 里只体现为一行日志,而日志说的是「需重启」,不是「重启后旧的真的没用了」。
+# 两者之间隔着一整个 hy2 服务端的构建路径。
+#
+# 这组同时把那行 deferred 警告的**代价**摆出来:第三段刻意只发 SIGHUP 不重启,然后证明
+# 上一把口令仍然握得上手 —— 也就是说,运维如果只 reload 就以为轮换完成了,旧口令实际
+# 一直有效到下次重启。这正是 reload.go 里给这个字段加上报的理由。
+#
+# 判别器是必须的:混淆口令不对的表现就是 handshake_failed,而探针坏了、口令取错、证书
+# 没签上,表现**一模一样**。所以每一段「旧口令失败」的断言旁边都配一条「当前口令成功」。
+_check_rotating_hy2_obfs_revokes_the_old_password() {
+  local dir="${E2E_REMOTE_DIR:-/tmp/nte2e}"
+  local probe="/tmp/hy2udpprobe"
+  if ! _ensure_hy2_probe "$probe"; then
+    return 0
+  fi
+  s "mkdir -p $dir" >/dev/null
+  s "cat > $dir/tomlset.py" < "$E2E_ROOT/remote/tomlset.py"
+
+  local orig_ob
+  orig_ob="$(_hy2_conf_value obfs_salamander_password)"
+  if [[ -z "$orig_ob" ]]; then
+    env_error "这台的 hy2 没配 obfs_salamander_password（salamander 没开），轮换这组测不到"
+    return 0
+  fi
+
+  # ── 第一段:基线判别器 ──────────────────────────────────────────────────
+  # 先证明「用当前口令能握上手」。少了这一步,后面每一条断言都可能是探针坏了造成的假绿。
+  if [[ "$(_obfs_probe "$probe" "$orig_ob")" == "ok" ]]; then
+    _pass "hy2 混淆口令 · 基线:用当前口令能完成握手（判别器）"
+  else
+    env_error "用当前口令都握不上手，轮换这组测不到 —— 否则后面的「旧口令失效」全是假绿"
+    return 0
+  fi
+
+  local new_ob="nte2e-obfs-$(date +%s)"
+
+  # ── 第二段:真轮换(改配置 + 重启)—— 旧口令必须失效,新口令必须可用 ──────
+  if ! s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria obfs_salamander_password '\"$new_ob\"' && systemctl restart nanotun" >/dev/null; then
+    _restore_hy2_obfs "$dir" "$orig_ob"
+    env_error "轮换 obfs 口令失败，这组测不到"
+    return 0
+  fi
+  wait_until "hy2 混淆口令 · 轮换重启后两个客户端重连" 90 both_clients_online
+
+  if [[ "$(_obfs_probe "$probe" "$orig_ob")" == "failed" ]]; then
+    _pass "hy2 混淆口令 · 轮换重启后旧口令再也握不上手（旧口令真的被吊销）"
+  else
+    _fail "hy2 混淆口令 · 轮换重启后旧口令仍然可用" "$(_obfs_probe_raw "$probe" "$orig_ob")"
+  fi
+  if [[ "$(_obfs_probe "$probe" "$new_ob")" == "ok" ]]; then
+    _pass "hy2 混淆口令 · 轮换重启后新口令可用（说明上一条不是「服务坏了」）"
+  else
+    _fail "hy2 混淆口令 · 轮换重启后新口令应可用" "$(_obfs_probe_raw "$probe" "$new_ob")"
+  fi
+
+  # ── 第三段:只 SIGHUP 不重启 —— 上报 deferred,且上一把口令仍然有效 ──────
+  # 这一段是把 deferred 警告的代价变成可观测的事实。
+  local third_ob="nte2e-obfs-sighup-$(date +%s)" since
+  since="$(s 'date +%s' | tr -d '[:space:]')"
+  if s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria obfs_salamander_password '\"$third_ob\"' && systemctl reload nanotun" >/dev/null; then
+    sleep 3
+    local detail
+    detail="$(adm "audit list --limit 20" | grep config_reload | head -1)"
+    check_contains "hy2 混淆口令 · 只 reload 时上报需重启" "hysteria.obfs_salamander_password" "$detail"
+
+    if [[ "$(_obfs_probe "$probe" "$third_ob")" == "failed" ]]; then
+      _pass "hy2 混淆口令 · 只 reload 时新写的口令并没有生效"
+    else
+      _fail "hy2 混淆口令 · 只 reload 时新口令不该已经生效（那样 deferred 就报错了）" "$(_obfs_probe_raw "$probe" "$third_ob")"
+    fi
+    # 这条是这一段的重点:运维以为换掉了,而上一把口令一直有效到下次重启。
+    if [[ "$(_obfs_probe "$probe" "$new_ob")" == "ok" ]]; then
+      _pass "hy2 混淆口令 · 只 reload 时上一把口令仍然有效（这正是必须上报 deferred 的代价）"
+    else
+      _fail "hy2 混淆口令 · 只 reload 后上一把口令应仍然有效" "$(_obfs_probe_raw "$probe" "$new_ob")"
+    fi
+  else
+    env_error "写第三把 obfs 口令 / reload 失败，SIGHUP 那半测不到"
+  fi
+
+  # ── 收尾:写回原口令并重启,确认基线口令重新可用 ─────────────────────────
+  _restore_hy2_obfs "$dir" "$orig_ob"
+  if [[ "$(_obfs_probe "$probe" "$orig_ob")" == "ok" ]]; then
+    _pass "hy2 混淆口令 · 还原后原口令重新可用"
+  else
+    _fail "hy2 混淆口令 · 还原后原口令应重新可用" "$(_obfs_probe_raw "$probe" "$orig_ob")"
+  fi
+}
+
+# _obfs_probe_raw <探针> <混淆口令> 用指定混淆口令跑一次探针,回原始输出。
+# 口令/端口/证书都从服务端真配置取(理由同 udp_relay 那组:写死会在换环境后静默变成「连不上」)。
+_obfs_probe_raw() {
+  local probe="$1" ob="$2" pw port cert_args=""
+  pw="$(_hy2_conf_value password)"
+  port="$(_hy2_conf_value listen_addr | grep -oE '[0-9]+$')"
+  if [[ "$(a "test -f /tmp/probe-cert.pem && echo yes" | tr -d '[:space:]')" == "yes" ]]; then
+    cert_args="-cert /tmp/probe-cert.pem -key /tmp/probe-key.pem"
+  fi
+  # 超时压短些:这组要连着跑六七次探针,而「握不上手」这一侧每次都要等满超时。
+  a "$probe -addr $E2E_SRV_HOST:$port -password '$pw' -obfs '$ob' $cert_args -sni localhost -timeout 5s"
+}
+
+# _obfs_probe <探针> <混淆口令> 回 ok / failed。
+# 混淆口令不对时 salamander 收到的是一堆无法解包的字节,握手只能等到超时,故判 failed。
+_obfs_probe() {
+  case "$(_obfs_probe_raw "$1" "$2")" in
+    *udp_disabled*|*udp_relayed*) echo ok ;;
+    *) echo failed ;;
+  esac
+}
+
+# _restore_hy2_obfs <远端目录> <原口令> 写回原混淆口令并重启(不可热更),等客户端回来。
+_restore_hy2_obfs() {
+  s "python3 $1/tomlset.py /etc/nanotun/config.toml hysteria obfs_salamander_password '\"$2\"' && systemctl restart nanotun" >/dev/null
+  wait_until "hy2 混淆口令 · 还原后两个客户端重连" 90 both_clients_online
+}
+
 # _hy2_conf_value <键名> 取 [hysteria] 段里该键的值(去掉引号)。
 _hy2_conf_value() {
   s "awk '/^\[hysteria\]/{f=1;next} /^\[/{f=0} f && /^$1 *=/{print; exit}' /etc/nanotun/config.toml" \
@@ -947,6 +1094,8 @@ phase_50_ops() {
   # 紧挨着上一条:同样是 FORWARD 链上的规则,而且两者装在同一次 SetupIptables 里。
   _check_connlimit_caps_concurrency_without_hurting_mesh
   _check_udp_relay_stays_disabled
+  # 紧跟 udp_relay:同一套探针、同一个 hy2 入口。那组验「能力开关」,这组验「凭据轮换」。
+  _check_rotating_hy2_obfs_revokes_the_old_password
   _check_exit_guard_installs_both_chains
   _check_data_plane_keepalive_reaps_only_the_wedged_session
   _check_lease_gc_reclaims_only_what_it_should

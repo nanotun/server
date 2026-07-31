@@ -652,7 +652,15 @@ type LogConfig struct {
 	Level string `toml:"level"`
 }
 
-// KCPConfig KCP 协议相关配置
+// KCPConfig KCP 协议相关配置。
+//
+// 遗留段:nanotund **只**读其中的 UploadRate / DownloadRate,而且仅当 [server] 未配限速时
+// 作为回退值(见 server.go 里那处)。其余字段(分片、加密、窗口、DSCP、sockbuf、conv_id、salt …)
+// 在 config 包之外没有任何读取点 —— 保留结构体是为了兼容既有配置文件:一旦删掉,StrictCheck
+// 就会把带 [kcp] 段的老配置判成「未知字段」,升级时全都要改。
+//
+// 这一段的键设了不会生效,也**不会有任何提示**(StrictCheck 只管未知字段,这些是「已知但没人读」)。
+// 第 63 轮清点确认过,别再为它们写用例。
 type KCPConfig struct {
 	ListenAddr   string `toml:"listen_addr"`
 	ClientAddr   string `toml:"client_addr"` // 下发给客户端的 KCP 连接地址:端口
@@ -683,7 +691,13 @@ type KCPConfig struct {
 	Key    string `toml:"key"`     // 简单模式 base64 密钥，与客户端一致（不填则服务端随机生成并下发，仅原 server 用）
 }
 
-// TCPConfig 数据面走 TCP + 记录层时的监听与参数
+// TCPConfig 数据面走 TCP + 记录层时的监听与参数。
+//
+// 遗留段:nanotund 对这一段**没有任何读取点**(第 63 轮逐字段清点确认)。当前数据面入口是
+// REALITY / hy2 / WSS,不存在「裸 TCP + 记录层」这条监听。保留结构体的理由同 KCPConfig。
+//
+// 其中 UploadRate / DownloadRate 最容易骗人:下面的 Validate 会专门校验它们的取值合法性,
+// 于是看起来像个活旋钮 —— 而限速一侧永远读不到。想限速请用 [server].upload_rate/download_rate。
 type TCPConfig struct {
 	ListenAddr         string `toml:"listen_addr"`          // 监听地址，如 :3401
 	ClientAddr         string `toml:"client_addr"`          // 下发给客户端的地址:端口；空则取 ListenAddr 端口拼公网占位（同 KCP）
