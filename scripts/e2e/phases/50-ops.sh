@@ -101,8 +101,16 @@ _check_deferred_fields_are_reported() {
   # CA 这一项刻意指向真 CA 的一份**副本**:万一它哪天真的生效了(比如本组中途挂掉、
   # 恢复没跑到,后面有别的用例重启了服务),hy2 入口仍然能验客户端证书,不会把整个
   # 数据面连带打死。换成一个不存在的路径就没有这层保险。
-  s "cp -n \"\$(awk '/^\[hysteria\]/{f=1;next} /^\[/{f=0} f && /^tls_client_ca_file *=/{print}' /etc/nanotun/config.toml | cut -d'\"' -f2)\" /etc/nanotun/certs/nte2e-ca-copy.pem" >/dev/null 2>&1
-  s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria tls_client_ca_file '\"certs/nte2e-ca-copy.pem\"'" >/dev/null || setrc=1
+  # 配置里的 CA 路径是**相对** /etc/nanotun 的,所以要先 cd 过去再 cp;直接拿去 cp 会失败。
+  # 这层保险必须确认真的建起来了 —— 建不起来就别改这个字段,否则「保险」只存在于注释里,
+  # 而万一它哪天真生效,hy2 会因为 CA 文件不存在而起不来,比不做这条断言糟得多。
+  local caok=0
+  if s "cd /etc/nanotun && cp -f \"\$(awk '/^\[hysteria\]/{f=1;next} /^\[/{f=0} f && /^tls_client_ca_file *=/{print}' config.toml | cut -d'\"' -f2)\" certs/nte2e-ca-copy.pem && test -s certs/nte2e-ca-copy.pem && echo ok" | grep -q ok; then
+    caok=1
+    s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria tls_client_ca_file '\"certs/nte2e-ca-copy.pem\"'" >/dev/null || setrc=1
+  else
+    env_error "备份客户端 CA 失败，tls_client_ca_file 那条 deferred 断言跳过（不冒「改了却没有可用 CA」的风险）"
+  fi
   s "python3 $dir/tomlset.py /etc/nanotun/config.toml hysteria obfs_salamander_password '\"nte2e-rotated-obfs\"'" >/dev/null || setrc=1
   s "python3 $dir/tomlset.py /etc/nanotun/config.toml server vpn_websocket_path '\"/internal/nte2e/deferred-probe\"'" >/dev/null || setrc=1
   if (( setrc != 0 )); then
@@ -136,7 +144,9 @@ _check_deferred_fields_are_reported() {
   check_contains "SIGHUP 报出 hysteria.udp_relay_enabled 需重启" "hysteria.udp_relay_enabled" "$detail"
   check_contains "SIGHUP 报出 tun.tcp_connlimit_per_ip 需重启" "tun.tcp_connlimit_per_ip" "$detail"
   check_contains "SIGHUP 报出 hysteria.obfs_salamander_password 需重启" "hysteria.obfs_salamander_password" "$detail"
-  check_contains "SIGHUP 报出 hysteria.tls_client_ca_file 需重启" "hysteria.tls_client_ca_file" "$detail"
+  if (( caok )); then
+    check_contains "SIGHUP 报出 hysteria.tls_client_ca_file 需重启" "hysteria.tls_client_ca_file" "$detail"
+  fi
   check_contains "SIGHUP 报出 server.vpn_websocket_path 需重启" "server.vpn_websocket_path" "$detail"
 
   # 恢复,并确认恢复后的 SIGHUP 不再报这些字段(证明上面那三条是这次改动引起的,
@@ -156,6 +166,8 @@ _check_deferred_fields_are_reported() {
   # 它不热更,所以在本组内部无害 —— 但只要留在配置里,下一次有人重启服务,进程就会去
   # 服务那条假路径,而所有客户端 profile 里写的还是真路径,于是全体连不上。这类污染
   # 上一次(login_rate_limit)就是靠快照机制一路传染到后续整轮的。
+  s "rm -f /etc/nanotun/certs/nte2e-ca-copy.pem" >/dev/null 2>&1
+
   local wspath
   wspath="$(s "awk '/^\[server\]/{f=1;next} /^\[/{f=0} f && /^vpn_websocket_path *=/{print}' /etc/nanotun/config.toml" | cut -d'"' -f2)"
   if [[ "$wspath" == *nte2e* ]]; then
