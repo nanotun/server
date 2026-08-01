@@ -113,9 +113,12 @@ func newFakeNetTools(t *testing.T) *fakeNetTools {
 	return f
 }
 
-func (f *fakeNetTools) failOn(t *testing.T, re string)     { t.Helper(); t.Setenv("FAKE_FAIL_RE", re) }
-func (f *fakeNetTools) ruleExists(t *testing.T, re string) { t.Helper(); t.Setenv("FAKE_EXISTS_RE", re) }
-func (f *fakeNetTools) saveOutput(t *testing.T, s string)  { t.Helper(); t.Setenv("FAKE_SAVE_OUT", s) }
+func (f *fakeNetTools) failOn(t *testing.T, re string) { t.Helper(); t.Setenv("FAKE_FAIL_RE", re) }
+func (f *fakeNetTools) ruleExists(t *testing.T, re string) {
+	t.Helper()
+	t.Setenv("FAKE_EXISTS_RE", re)
+}
+func (f *fakeNetTools) saveOutput(t *testing.T, s string) { t.Helper(); t.Setenv("FAKE_SAVE_OUT", s) }
 
 // ruleExistsOnce 让匹配的规则「第一次查在、删掉后就不在」,用于走完历史残留的清理循环。
 func (f *fakeNetTools) ruleExistsOnce(t *testing.T, re string) {
