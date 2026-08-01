@@ -1,6 +1,6 @@
 name: CI
 
-# 门禁分三层:
+# 门禁分三层(这是「合并门」,不是「发版门」):
 #   - 静态:go vet 阻断;staticcheck / govulncheck 信息性(理由见各 job)
 #   - 测试:go test ./... 阻断 —— 全仓约 3 分钟,是这个仓最主要的回归网
 #   - 竞态:-race 单独放夜间 —— 太慢(cmd/nanotun-web 单包就 672s),挂在每个 PR 上不现实
@@ -8,6 +8,9 @@ name: CI
 # 为什么必须有测试这一层:此前 CI 只有 build + vet,于是 nanotund 92.5% / web 97.0% /
 # admin 97.1% 的覆盖率、两百多条归档变异、132 项三机 e2e、断言库自测 —— 一条都不拦合并。
 # 那批守卫测试的全部价值在于「改坏了会有人知道」,没有门禁跑它们就只是一次性的历史记录。
+#
+# 发版另有硬门禁(三机 e2e 00–70 + 戳 + cut.sh),CI 覆盖不到特权路径与真机行为。
+# 见 docs/RELEASE.md;禁止只凭本 workflow 绿就打 dist tar。
 
 on:
   push:

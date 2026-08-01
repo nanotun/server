@@ -203,6 +203,15 @@ go test -v -count=1 -timeout 120s ./cmd/nanotund/
 go test -bench="BenchmarkLoginFlow" -benchtime=10s -count=1 ./cmd/nanotund/
 ```
 
+三机行为回归与**发版门禁**见 [`docs/RELEASE.md`](docs/RELEASE.md)。
+合并绿只过 CI；打发布包必须走:
+
+```bash
+./scripts/e2e/run.sh 00 10 20 30 40 50 60 70
+./scripts/release/stamp-e2e.sh
+./scripts/release/cut.sh
+```
+
 ## 升级 / 部署脚本
 
 生产部署一般用 `scripts/install-self-hosted.sh`,会自动安装 systemd 单元 /

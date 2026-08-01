@@ -1,0 +1,16 @@
+---
+description: 发版必须走 docs/RELEASE.md 硬门禁,禁止直接 build-release
+alwaysApply: true
+---
+
+# 发版纪律
+
+打 `dist/nanotun-*.tar.gz` 或宣称「可以发版」时:
+
+1. **唯一入口**是 `./scripts/release/cut.sh`(见 `docs/RELEASE.md`)。
+2. 禁止建议用户直接跑 `scripts/build-release.sh` 作为发版步骤;该脚本无门禁时会拒绝。
+3. 发版前三机 e2e 必须含阶段 **70**,命令是阶段号列表:
+   `./scripts/e2e/run.sh 00 10 20 30 40 50 60 70`
+   (`00 60` 只跑两个阶段,不是范围)。
+4. e2e 全绿后 `./scripts/release/stamp-e2e.sh`,再 `cut.sh`。
+5. 不要把「改用户 PSK 需要重启」写进发版说明 —— 用户 PSK 热失效;要重启的是 hy2 `password` 等 deferred 字段。

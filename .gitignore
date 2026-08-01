@@ -25,6 +25,9 @@ vendor/
 # e2e 的环境描述:含被测机器的地址与口令,只提交 e2e.env.example
 scripts/e2e/e2e.env
 
+# 发版门的本地 e2e 戳(scripts/release/stamp-e2e.sh);不得进仓库
+.release/
+
 # 编辑器 / 系统
 .DS_Store
 .idea/
