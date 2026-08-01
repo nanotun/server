@@ -1186,7 +1186,14 @@ _check_lease_gc_reclaims_only_what_it_should() {
 
   # 前四档只关心「收谁 / 不收谁」,把首轮宽限期压到 1s 免得每档白等两分钟。
   # 宽限期本身单独在最后一档验(它是这一轮修掉的那个缺陷的正面证明)。
+  #
+  # 必须先**关掉回收并重启**再装靶:阶段 5 前面的用例也会重启 nanotund,现场常留下一条
+  # 「默认 startup_grace=2m、idle=30d」的进程。若直接把过期靶子写进库,那条进程的首轮 GC
+  # 会在我们自己的 restart 之前把租约偷走 —— 新进程 lease_gc_total 恒为 0,而靶子已经没了
+  # (2026-08-01 实撞:journal 里旧进程 reclaimed=1,紧接着新进程 grace=1s 却无可回收)。
+  _lease_gc_set_days -1
   _lease_gc_set_grace 1
+  _lease_gc_restart || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
 
   # ── 第一档:过期的非手动租约应当被收,且只收它 ────────────────────────────
   _lease_gc_arm_target "$dev" false || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
@@ -1197,6 +1204,12 @@ _check_lease_gc_reclaims_only_what_it_should() {
   fi
   _lease_gc_restart || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
 
+  # 宽限期 1s,而 _lease_gc_restart 要等客户端重连(~30s),通常回来时首轮早已跑完。
+  # 仍 wait 一下:慢启动 / 控制面短暂不可达时,立刻读计数器会假红成 0。
+  if ! wait_until "lease_gc · 启动宽限期后回收发生" 30 _lease_gc_total_at_least 1; then
+    _lease_gc_restore "$dev" "$seen_before"
+    return 0
+  fi
   check "lease_gc · 启动那一次恰好回收 1 条（过期的非手动租约）" "1" "$(srv_field lease_gc_total)"
   check "lease_gc · 靶子的租约确实没了" "0" "$(_lease_count_of "$dev")"
   # 对照:另一台设备同样是非手动租约,但闲置天数没到阈值,必须一条不少地留着。
@@ -1257,6 +1270,11 @@ _check_lease_gc_reclaims_only_what_it_should() {
   fi
   since="$(s "date +%s" | tr -d '[:space:]')"
   _lease_gc_restart || { _lease_gc_restore "$dev" "$seen_before"; return 0; }
+  # 同第一档:宽限期 1s,立刻读计数器会假红成 0。
+  if ! wait_until "lease_gc · 写 0 后启动宽限期回收发生" 30 _lease_gc_total_at_least 1; then
+    _lease_gc_restore "$dev" "$seen_before"
+    return 0
+  fi
   check "lease_gc · 写 0 等于默认 30 天而非关闭（没配过的部署不会被静默停掉回收）" "1" \
     "$(srv_field lease_gc_total)"
   # 启用侧也必须留痕:在此之前只有「真删到东西」才打 INFO,于是「正按 30 天回收」这件事
