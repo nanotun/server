@@ -1,0 +1,82 @@
+[
+  {
+    "desc": "去掉 WATCHDOG_PID 检查 —— 继承了 socket 的进程会替主进程「代打卡」,看门狗静默失效",
+    "file": "cmd/nanotund/sdnotify_linux.go",
+    "old": "\tif pidStr := os.Getenv(\"WATCHDOG_PID\"); pidStr != \"\" {\n\t\tif pid, err := strconv.Atoi(pidStr); err == nil && pid != os.Getpid() {\n\t\t\treturn false\n\t\t}\n\t}",
+    "new": "\t_ = os.Getenv(\"WATCHDOG_PID\")",
+    "test": "./cmd/nanotund/",
+    "run": "TestSDWatchdog"
+  },
+  {
+    "desc": "WATCHDOG_PID 比较写反 —— 只有「不是本进程」时才发心跳",
+    "file": "cmd/nanotund/sdnotify_linux.go",
+    "old": "\t\tif pid, err := strconv.Atoi(pidStr); err == nil && pid != os.Getpid() {",
+    "new": "\t\tif pid, err := strconv.Atoi(pidStr); err == nil && pid == os.Getpid() {",
+    "test": "./cmd/nanotund/",
+    "run": "TestSDWatchdog"
+  },
+  {
+    "desc": "abstract socket 的 '@' 前缀不再翻成 NUL —— systemd 默认地址下所有 notify 静默失效",
+    "file": "cmd/nanotund/sdnotify_linux.go",
+    "old": "\t\tif addr[0] == '@' {\n\t\t\tua.Name = \"\\x00\" + addr[1:]\n\t\t} else {\n\t\t\tua.Name = addr\n\t\t}",
+    "new": "\t\tua.Name = addr",
+    "test": "./cmd/nanotund/",
+    "run": "TestSDNotify"
+  },
+  {
+    "desc": "心跳间隔的 1 秒下限被去掉 —— WatchdogSec 配小时打成每秒数千次写入",
+    "file": "cmd/nanotund/sdnotify_linux.go",
+    "old": "\tinterval := time.Duration(usec/2) * time.Microsecond\n\tif interval < time.Second {\n\t\tinterval = time.Second\n\t}",
+    "new": "\tinterval := time.Duration(usec/2) * time.Microsecond",
+    "test": "./cmd/nanotund/",
+    "run": "TestSDWatchdog"
+  },
+  {
+    "desc": "WATCHDOG_USEC 非正数不再拒绝 —— 0 / 负数也去启用看门狗",
+    "file": "cmd/nanotund/sdnotify_linux.go",
+    "old": "\tusec, err := strconv.ParseInt(usecStr, 10, 64)\n\tif err != nil || usec <= 0 {\n\t\treturn false\n\t}",
+    "new": "\tusec, _ := strconv.ParseInt(usecStr, 10, 64)",
+    "test": "./cmd/nanotund/",
+    "run": "TestSDWatchdog"
+  },
+  {
+    "desc": "WATCHDOG_USEC 为空时不再短路 —— 没配 WatchdogSec 也报告看门狗已启用",
+    "file": "cmd/nanotund/sdnotify_linux.go",
+    "old": "\tusecStr := os.Getenv(\"WATCHDOG_USEC\")\n\tif usecStr == \"\" {\n\t\treturn false\n\t}",
+    "new": "\tusecStr := os.Getenv(\"WATCHDOG_USEC\")",
+    "test": "./cmd/nanotund/",
+    "run": "TestSDWatchdog"
+  },
+  {
+    "desc": "ctx 取消后心跳不再停 —— graceful shutdown 期间仍向 systemd 报平安",
+    "file": "cmd/nanotund/sdnotify_linux.go",
+    "old": "\t\t\tcase <-ctx.Done():\n\t\t\t\treturn",
+    "new": "\t\t\tcase <-ctx.Done():\n\t\t\t\ttime.Sleep(10 * time.Millisecond)",
+    "test": "./cmd/nanotund/",
+    "run": "TestSDWatchdog_StopsOnContextCancel"
+  },
+  {
+    "desc": "NOTIFY_SOCKET 未设置时不再短路 —— 非 systemd 部署下 addr[0] 直接越界 panic",
+    "file": "cmd/nanotund/sdnotify_linux.go",
+    "old": "\t\tif addr == \"\" {\n\t\t\tnotifyErr = errors.New(\"NOTIFY_SOCKET 未设置(未运行在 systemd Type=notify 下)\")\n\t\t\treturn\n\t\t}",
+    "new": "\t\tif addr == \"__never__\" {\n\t\t\tnotifyErr = errors.New(\"NOTIFY_SOCKET 未设置(未运行在 systemd Type=notify 下)\")\n\t\t\treturn\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSDNotify_NoSocketMeansDisabled"
+  },
+  {
+    "desc": "READY=1 变成别的字样 —— systemd 收不到就绪信号,卡在 activating 直到超时重启",
+    "file": "cmd/nanotund/sdnotify_linux.go",
+    "old": "\tif _, err := notifyConn.Write([]byte(\"READY=1\\nSTATUS=ready\\n\")); err != nil {",
+    "new": "\tif _, err := notifyConn.Write([]byte(\"STATUS=ready\\n\")); err != nil {",
+    "test": "./cmd/nanotund/",
+    "run": "TestSDNotify_ReadyAndStoppingReachSystemd|TestSDNotify_AbstractSocketAddressIsTranslated"
+  },
+  {
+    "desc": "STOPPING=1 不再发 —— systemctl status 在停服期间看着像卡住",
+    "file": "cmd/nanotund/sdnotify_linux.go",
+    "old": "\t_, _ = notifyConn.Write([]byte(\"STOPPING=1\\nSTATUS=stopping\\n\"))",
+    "new": "\t_, _ = notifyConn.Write([]byte(\"STATUS=stopping\\n\"))",
+    "test": "./cmd/nanotund/",
+    "run": "TestSDNotify_ReadyAndStoppingReachSystemd"
+  }
+]

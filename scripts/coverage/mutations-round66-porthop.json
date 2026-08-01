@@ -1,0 +1,74 @@
+[
+  {
+    "desc": "安装中途失败不再回滚 —— 留下「一部分端口能跳、一部分不能」的半残状态",
+    "file": "cmd/nanotund/hysteria_porthop_linux.go",
+    "old": "\t\t\tteardownHy2UDPPortHopRules(rules, primary, iface)\n\t\t\treturn nil, fmt.Errorf(\"iptables %v: %w (%s)\", addArgs, err, strings.TrimSpace(string(out)))",
+    "new": "\t\t\treturn nil, fmt.Errorf(\"iptables %v: %w (%s)\", addArgs, err, strings.TrimSpace(string(out)))",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupHy2PortHop"
+  },
+  {
+    "desc": "安装失败被咽下去 —— 端口跳跃没装上,调用方以为已生效",
+    "file": "cmd/nanotund/hysteria_porthop_linux.go",
+    "old": "\t\tif out, err := exec.Command(\"iptables\", addArgs...).CombinedOutput(); err != nil {\n\t\t\tteardownHy2UDPPortHopRules(rules, primary, iface)\n\t\t\treturn nil, fmt.Errorf(\"iptables %v: %w (%s)\", addArgs, err, strings.TrimSpace(string(out)))\n\t\t}",
+    "new": "\t\tif out, err := exec.Command(\"iptables\", addArgs...).CombinedOutput(); err != nil {\n\t\t\tlogrus.WithError(err).Warn(strings.TrimSpace(string(out)))\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupHy2PortHop"
+  },
+  {
+    "desc": "失败时仍返回 cleanup 函数 —— 调用方 defer 它会对没装上的规则做二次删除",
+    "file": "cmd/nanotund/hysteria_porthop_linux.go",
+    "old": "\t\t\treturn nil, fmt.Errorf(\"iptables %v: %w (%s)\", addArgs, err, strings.TrimSpace(string(out)))",
+    "new": "\t\t\treturn func() {}, fmt.Errorf(\"iptables %v: %w (%s)\", addArgs, err, strings.TrimSpace(string(out)))",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupHy2PortHop"
+  },
+  {
+    "desc": "port_hop_iface 不再注入 -i —— 规则在所有接口生效,含内网管理口",
+    "file": "cmd/nanotund/hysteria_porthop_linux.go",
+    "old": "\t\tif iface != \"\" {\n\t\t\truleArgs = append(ruleArgs, \"-i\", iface)\n\t\t}",
+    "new": "\t\t_ = iface",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupHy2PortHop_ScopesToIfaceWhenGiven"
+  },
+  {
+    "desc": "-C 幂等探测失效 —— 同一 dport 叠出多条 REDIRECT,匹配行为飘忽",
+    "file": "cmd/nanotund/hysteria_porthop_linux.go",
+    "old": "\t\tif err := exec.Command(\"iptables\", checkArgs...).Run(); err == nil {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tif err := exec.Command(\"iptables\", checkArgs...).Run(); err != nil && false {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupHy2PortHop_SkipsInsertWhenRuleAlreadyPresent"
+  },
+  {
+    "desc": "cleanup 不再真的删规则 —— 进程退出后 REDIRECT 永久留在系统里",
+    "file": "cmd/nanotund/hysteria_porthop_linux.go",
+    "old": "\t\t_ = exec.Command(\"iptables\", args...).Run()",
+    "new": "\t\t_ = args",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupHy2PortHop"
+  },
+  {
+    "desc": "sweep 不再按 comment 过滤 —— 每次启动清掉 docker 在 PREROUTING 上的 DNAT",
+    "file": "cmd/nanotund/hysteria_porthop_linux.go",
+    "old": "\t\tif !strings.Contains(line, hy2PortHopIptComment) {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tif !strings.Contains(line, \"-A \") {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSweepHy2PortHop"
+  },
+  {
+    "desc": "sweep 不再限定 PREROUTING 链 —— 会越界删到 POSTROUTING 上的规则",
+    "file": "cmd/nanotund/hysteria_porthop_linux.go",
+    "old": "\t\tif !strings.HasPrefix(line, \"-A PREROUTING\") {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tif !strings.HasPrefix(line, \"-A \") {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSweepHy2PortHop"
+  },
+  {
+    "desc": "主端口不再从并集里排除 —— 给 443 装一条 REDIRECT 到 443 自己",
+    "file": "cmd/nanotund/hysteria_porthop_plan.go",
+    "old": "\t\tif r.Start == primaryPort && r.End == primaryPort {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tif r.Start == primaryPort && r.End == primaryPort && false {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupHy2PortHop|TestPlanHy2PortHopDportRules"
+  }
+]

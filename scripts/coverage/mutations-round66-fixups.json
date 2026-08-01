@@ -1,0 +1,32 @@
+[
+  {
+    "desc": "[配对] WATCHDOG_USEC 的空值早退 + ParseInt 兜底同时拆掉 —— 证明这对冗余防线两层都真实存在",
+    "file": "cmd/nanotund/sdnotify_linux.go",
+    "old": "\tusecStr := os.Getenv(\"WATCHDOG_USEC\")\n\tif usecStr == \"\" {\n\t\treturn false\n\t}",
+    "new": "\tusecStr := os.Getenv(\"WATCHDOG_USEC\")",
+    "also": [
+      [
+        "\tusec, err := strconv.ParseInt(usecStr, 10, 64)\n\tif err != nil || usec <= 0 {\n\t\treturn false\n\t}",
+        "\tusec, _ := strconv.ParseInt(usecStr, 10, 64)"
+      ]
+    ],
+    "test": "./cmd/nanotund/",
+    "run": "TestSDWatchdog"
+  },
+  {
+    "desc": "安装失败被咽下去 —— 端口跳跃没装上,调用方以为已生效(改写成能编过的形状:保留 fmt 的使用)",
+    "file": "cmd/nanotund/hysteria_porthop_linux.go",
+    "old": "\t\tif out, err := exec.Command(\"iptables\", addArgs...).CombinedOutput(); err != nil {\n\t\t\tteardownHy2UDPPortHopRules(rules, primary, iface)\n\t\t\treturn nil, fmt.Errorf(\"iptables %v: %w (%s)\", addArgs, err, strings.TrimSpace(string(out)))\n\t\t}",
+    "new": "\t\tif out, err := exec.Command(\"iptables\", addArgs...).CombinedOutput(); err != nil {\n\t\t\tlogrus.Warn(fmt.Sprintf(\"iptables %v: %v (%s)\", addArgs, err, strings.TrimSpace(string(out))))\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupHy2PortHop"
+  },
+  {
+    "desc": "sweep 不再限定 PREROUTING 链 —— 会越界删到 POSTROUTING 上同 comment 的规则(补强 fixture 后重验)",
+    "file": "cmd/nanotund/hysteria_porthop_linux.go",
+    "old": "\t\tif !strings.HasPrefix(line, \"-A PREROUTING\") {\n\t\t\tcontinue\n\t\t}",
+    "new": "\t\tif !strings.HasPrefix(line, \"-A \") {\n\t\t\tcontinue\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSweepHy2PortHop"
+  }
+]

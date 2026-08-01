@@ -1,0 +1,162 @@
+[
+  {
+    "desc": "off 模式的 device→WAN DROP 装失败被咽下去 —— 用户买的是纯组网,流量却漏到公网",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\t\tif err := exec.Command(\"iptables\", args...).Run(); err != nil {\n\t\t\t\treturn fmt.Errorf(\"iptables off FORWARD drop: %w\", err)\n\t\t\t}",
+    "new": "\t\t\tif err := exec.Command(\"iptables\", args...).Run(); err != nil {\n\t\t\t\tlogrus.WithError(err).Warn(\"iptables off FORWARD drop 失败\")\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables_RuleInstallFailureAbortsStartup"
+  },
+  {
+    "desc": "NAT SNAT 装失败被咽下去 —— 客户端出不了网,而启动日志一切正常",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\t\tif err := exec.Command(\"iptables\", args...).Run(); err != nil {\n\t\t\t\treturn fmt.Errorf(\"iptables NAT -s %s: %w\", subnet, err)\n\t\t\t}",
+    "new": "\t\t\tif err := exec.Command(\"iptables\", args...).Run(); err != nil {\n\t\t\t\tlogrus.WithError(err).Warn(\"iptables NAT 失败\")\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables_RuleInstallFailureAbortsStartup"
+  },
+  {
+    "desc": "connlimit 装失败被咽下去 —— 并发上限形同虚设",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\t\tif err := exec.Command(bin, args...).Run(); err != nil {\n\t\t\t\treturn fmt.Errorf(\"%s connlimit %s: %w\", bin, pl.proto, err)\n\t\t\t}",
+    "new": "\t\t\tif err := exec.Command(bin, args...).Run(); err != nil {\n\t\t\t\tlogrus.WithError(err).Warn(\"connlimit 失败\")\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables_RuleInstallFailureAbortsStartup|TestSetupIp6tables_RuleInstallFailureAbortsStartup"
+  },
+  {
+    "desc": "iptablesInsertForward 吞掉插入失败 —— FORWARD 规则全线可静默缺失",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\tout, err := exec.Command(\"iptables\", insert...).CombinedOutput()\n\tif err != nil {\n\t\treturn fmt.Errorf(\"iptables -I FORWARD: %w (%s)\", err, strings.TrimSpace(string(out)))\n\t}",
+    "new": "\tout, err := exec.Command(\"iptables\", insert...).CombinedOutput()\n\tif err != nil {\n\t\tlogrus.WithError(err).Warn(strings.TrimSpace(string(out)))\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables_RuleInstallFailureAbortsStartup"
+  },
+  {
+    "desc": "幂等短路反了:规则已存在时反而重复插入,不存在时反而跳过安装",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\tcheck := append([]string{\"-C\", \"FORWARD\"}, ruleArgs...)\n\tif exec.Command(\"iptables\", check...).Run() == nil {\n\t\treturn nil // 已存在\n\t}",
+    "new": "\tcheck := append([]string{\"-C\", \"FORWARD\"}, ruleArgs...)\n\tif exec.Command(\"iptables\", check...).Run() != nil {\n\t\treturn nil // 已存在\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables_IdempotentWhenRulesAlreadyExist|TestSetupIptables_SucceedsWhenEveryCommandSucceeds"
+  },
+  {
+    "desc": "rp_filter 的 sysctl 失败被升级成致命 —— 容器/只读 sysctl 的部署会直接起不来",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\tlogrus.WithError(err).WithField(\"out\", strings.TrimSpace(string(out))).\n\t\t\tWarnf(\"sysctl %s 失败;若发行版 rp_filter 默认 strict,出口回程会被内核丢弃\", key)\n\t\treturn",
+    "new": "\t\tpanic(fmt.Sprintf(\"sysctl %s 失败: %v (%s)\", key, err, strings.TrimSpace(string(out))))",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables_SysctlFailureIsNotFatal"
+  },
+  {
+    "desc": "ICMP redirect 只关本设备不关 all —— 内核取 OR,等于没关",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\treturn []string{\n\t\t\"net.ipv4.conf.all.send_redirects=0\",\n\t\tfmt.Sprintf(\"net.ipv4.conf.%s.send_redirects=0\", deviceName),\n\t}",
+    "new": "\treturn []string{\n\t\tfmt.Sprintf(\"net.ipv4.conf.%s.send_redirects=0\", deviceName),\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables_SysctlFailureIsNotFatal|TestRedirectSysctlKeys_CoversAllAndDevice"
+  },
+  {
+    "desc": "清理历史残留规则失败被升级成致命 —— 机器上有别人留的同名规则就永远起不来",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\t\t\tlogrus.WithError(err).Warn(\"iptables: 清理历史 device->device DROP 规则失败\")\n\t\t\t\tbreak",
+    "new": "\t\t\t\treturn fmt.Errorf(\"清理历史 DROP: %w\", err)",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables_HistoryCleanupFailureIsNotFatal"
+  },
+  {
+    "desc": "connlimit 不再跳过空网段 —— 装出一条 -s 为空的规则",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\t\tif subnet == \"\" {\n\t\t\t\tcontinue\n\t\t\t}",
+    "new": "\t\t\tif subnet == \"__never__\" {\n\t\t\t\tcontinue\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestInstallConnlimitRules_SkipsNonPositiveLimitsAndEmptySubnets"
+  },
+  {
+    "desc": "GetWAN 探测失败不报错 —— 后续 NAT 规则带空 -o 装上去",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\tout, err := exec.Command(\"ip\", \"route\", \"get\", \"1.1.1.1\").CombinedOutput()\n\tif err != nil {\n\t\treturn \"\", \"\", fmt.Errorf(\"ip route get: %w\", err)\n\t}",
+    "new": "\tout, err := exec.Command(\"ip\", \"route\", \"get\", \"1.1.1.1\").CombinedOutput()\n\tif err != nil {\n\t\treturn \"eth0\", \"127.0.0.1\", nil\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestGetWAN_ReportsErrorWhenRouteLookupFails"
+  },
+  {
+    "desc": "EnableIPForward 吞掉 sysctl 失败 —— 转发没开,出口整体不通而启动继续",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\tout, err := exec.Command(\"sysctl\", \"-w\", \"net.ipv4.ip_forward=1\").CombinedOutput()\n\tif err != nil {\n\t\treturn fmt.Errorf(\"sysctl ip_forward: %w (%s)\", err, strings.TrimSpace(string(out)))\n\t}",
+    "new": "\tout, err := exec.Command(\"sysctl\", \"-w\", \"net.ipv4.ip_forward=1\").CombinedOutput()\n\tif err != nil {\n\t\tlogrus.WithError(err).Warn(strings.TrimSpace(string(out)))\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestEnableIPForward_ReportsSysctlFailure"
+  },
+  {
+    "desc": "MagicDNS 例外的端口闸门放宽 —— 非 53 端口也去装 nat 例外",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\tif gwV4 == \"\" || port != 53 || deviceName == \"\" {\n\t\treturn nil\n\t}",
+    "new": "\tif gwV4 == \"\" || deviceName == \"\" {\n\t\treturn nil\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestMagicDNSException_SkippedUnlessPort53"
+  },
+  {
+    "desc": "MagicDNS 的 filter INPUT ACCEPT 装失败被咽下去 —— 客户端够不到 MagicDNS",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\tif out, err := exec.Command(bin, insert...).CombinedOutput(); err != nil {\n\t\t\treturn fmt.Errorf(\"%s filter INPUT MagicDNS ACCEPT: %w (%s)\", bin, err, strings.TrimSpace(string(out)))\n\t\t}",
+    "new": "\t\tif out, err := exec.Command(bin, insert...).CombinedOutput(); err != nil {\n\t\t\tlogrus.WithError(err).Warn(strings.TrimSpace(string(out)))\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestMagicDNSException_InstallFailureAbortsStartup"
+  },
+  {
+    "desc": "出口 DNS DNAT 装失败被咽下去 —— 客户端域名解析在墙内部署里静默失败",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\tif out, err := exec.Command(bin, args...).CombinedOutput(); err != nil {\n\t\t\treturn fmt.Errorf(\"%s nat PREROUTING DNS DNAT: %w (%s)\", bin, err, strings.TrimSpace(string(out)))\n\t\t}",
+    "new": "\t\tif out, err := exec.Command(bin, args...).CombinedOutput(); err != nil {\n\t\t\tlogrus.WithError(err).Warn(strings.TrimSpace(string(out)))\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupExitDNSRedirect_InstallFailureAbortsStartup"
+  },
+  {
+    "desc": "exit_dns_redirect 的非法值不再 fail-safe,而是原样透传",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\tlogrus.WithField(\"exit_dns_redirect\", setting).Error(\n\t\t\t\"iptables: exit_dns_redirect 不是合法 IPv4(应已被启动期校验拦截);按 fail-safe 不接管 DNS\")\n\t\treturn \"\"",
+    "new": "\t\treturn strings.TrimSpace(setting)",
+    "test": "./cmd/nanotund/",
+    "run": "TestResolveExitDNSRedirect_FailSafeOnGarbage"
+  },
+  {
+    "desc": "exit-guard FORWARD 方向装失败被咽下去 —— VPN 用户可借道访问云元数据",
+    "file": "cmd/nanotund/exit_guard_linux.go",
+    "old": "\t\t\t\treturn nil, fmt.Errorf(\"%s exit-guard FORWARD -d %s: %w\", bin, p, err)",
+    "new": "\t\t\t\tlogrus.WithError(err).Warn(\"exit-guard FORWARD 装失败\")",
+    "test": "./cmd/nanotund/",
+    "run": "TestExitDenyPrivate_InstallFailureAbortsStartup"
+  },
+  {
+    "desc": "exit-guard INPUT 方向装失败被咽下去 —— 服务器自身私网地址对 VPN 用户敞开",
+    "file": "cmd/nanotund/exit_guard_linux.go",
+    "old": "\t\t\treturn nil, fmt.Errorf(\"%s exit-guard INPUT -d %s: %w\", bin, p, err)",
+    "new": "\t\t\tlogrus.WithError(err).Warn(\"exit-guard INPUT 装失败\")",
+    "test": "./cmd/nanotund/",
+    "run": "TestExitDenyPrivate_InstallFailureAbortsStartup"
+  },
+  {
+    "desc": "exit-guard 只装 FORWARD 不装 INPUT —— 漏掉「目的地是服务器本机私网地址」那一半",
+    "file": "cmd/nanotund/exit_guard_linux.go",
+    "old": "\t\tif err := iptablesLikeInsertChain(bin, \"INPUT\",\n\t\t\t[]string{\"-i\", deviceName, \"-d\", p, \"-j\", \"DROP\"}); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"%s exit-guard INPUT -d %s: %w\", bin, p, err)\n\t\t}",
+    "new": "\t\t_ = p",
+    "test": "./cmd/nanotund/",
+    "run": "TestExitDenyPrivate_LinkLocalInstallsBothDirections"
+  },
+  {
+    "desc": "sweep 不再按 comment 过滤 —— 每次重启都会清掉同机 ufw / docker 的规则",
+    "file": "cmd/nanotund/iptables_sweep_linux.go",
+    "old": "\t\t\tif !strings.Contains(line, mainIptComment) {\n\t\t\t\tcontinue\n\t\t\t}",
+    "new": "\t\t\tif !strings.Contains(line, \"-A \") {\n\t\t\t\tcontinue\n\t\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSweepMainIptablesRules_OnlyDeletesOwnRules"
+  },
+  {
+    "desc": "装规则时不再带 mainIptComment —— sweep / teardown 再也回收不了自己装的规则",
+    "file": "cmd/nanotund/iptables_sweep_linux.go",
+    "old": "func withMainComment(args []string) []string {\n\treturn append(args, \"-m\", \"comment\", \"--comment\", mainIptComment)\n}",
+    "new": "func withMainComment(args []string) []string {\n\treturn args\n}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables_SucceedsWhenEveryCommandSucceeds"
+  }
+]

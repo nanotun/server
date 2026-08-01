@@ -1,0 +1,68 @@
+[
+  {
+    "desc": "SetupIptables 吞掉出站端口黑名单的失败 —— BT/SMTP 拦截静默不生效",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\tif err := insertTUNForwardPortDrops(\"iptables\", deviceName, blockBT, blockTracker6969, blockSMTP25); err != nil {\n\t\t\treturn err\n\t\t}",
+    "new": "\t\tif err := insertTUNForwardPortDrops(\"iptables\", deviceName, blockBT, blockTracker6969, blockSMTP25); err != nil {\n\t\t\tlogrus.WithError(err).Warn(\"端口黑名单装失败\")\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables"
+  },
+  {
+    "desc": "SetupIptables 吞掉出口 DNS 接管的失败 —— 墙内部署里域名解析静默失败",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\tif err := setupExitDNSRedirect(\"iptables\", deviceName, resolveExitDNSRedirect(exitDNSRedirect)); err != nil {\n\t\t\treturn err\n\t\t}",
+    "new": "\t\tif err := setupExitDNSRedirect(\"iptables\", deviceName, resolveExitDNSRedirect(exitDNSRedirect)); err != nil {\n\t\t\tlogrus.WithError(err).Warn(\"DNS 接管装失败\")\n\t\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables"
+  },
+  {
+    "desc": "SetupIptables 吞掉 MagicDNS 例外的失败 —— MagicDNS 显示已启用但查不通",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\tif err := setupMagicDNSException(\"iptables\", deviceName, magicDNSGwV4, magicDNSPort); err != nil {\n\t\treturn err\n\t}",
+    "new": "\tif err := setupMagicDNSException(\"iptables\", deviceName, magicDNSGwV4, magicDNSPort); err != nil {\n\t\tlogrus.WithError(err).Warn(\"MagicDNS 例外装失败\")\n\t}",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables"
+  },
+  {
+    "desc": "设备名为空时不再退到 tun0 —— 规则带空 -i 装上去,语义变成「所有入接口」",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, blockBT, blockTracker6969, blockSMTP25 bool, exitMode, exitDNSRedirect, exitDenyPrivate string, magicDNSGwV4 string, magicDNSPort int) error {\n\tif deviceName == \"\" {\n\t\tdeviceName = \"tun0\"\n\t}",
+    "new": "func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, blockBT, blockTracker6969, blockSMTP25 bool, exitMode, exitDNSRedirect, exitDenyPrivate string, magicDNSGwV4 string, magicDNSPort int) error {",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables"
+  },
+  {
+    "desc": "历史残留规则删完后不再装新规则 —— 切 mesh 时只摘旧 DROP 不加 ACCEPT,互访仍不通",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\tif err := iptablesInsertForward([]string{\"-i\", deviceName, \"-o\", deviceName, \"-j\", \"ACCEPT\"}); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif removed {",
+    "new": "\t\tif removed {",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables"
+  },
+  {
+    "desc": "off 模式不再摘掉历史出网 ACCEPT —— 从 mesh 改 off 静默无效(ACCEPT 排在 DROP 前面)",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\tfor exec.Command(\"iptables\", append([]string{\"-C\", \"FORWARD\"}, acceptToWAN...)...).Run() == nil {\n\t\t\tif err := exec.Command(\"iptables\", append([]string{\"-D\", \"FORWARD\"}, acceptToWAN...)...).Run(); err != nil {\n\t\t\t\tlogrus.WithError(err).Warn(\"iptables(off): 清理历史 device->wan ACCEPT 失败\")\n\t\t\t\tbreak\n\t\t\t}\n\t\t}",
+    "new": "\t\t_ = acceptToWAN",
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIptables"
+  },
+  {
+    "desc": "v6 off 模式的 device→WAN DROP 装失败被咽下去(nth=0:第 639 行那处)",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\t\tif err := exec.Command(\"ip6tables\", args...).Run(); err != nil {",
+    "new": "\t\t\tif err := exec.Command(\"ip6tables\", args...).Run(); err != nil && false {",
+    "nth": 0,
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIp6tables"
+  },
+  {
+    "desc": "v6 NAT MASQUERADE 装失败被咽下去(nth=1:第 668 行那处)",
+    "file": "cmd/nanotund/network_setup_linux.go",
+    "old": "\t\t\tif err := exec.Command(\"ip6tables\", args...).Run(); err != nil {",
+    "new": "\t\t\tif err := exec.Command(\"ip6tables\", args...).Run(); err != nil && false {",
+    "nth": 1,
+    "test": "./cmd/nanotund/",
+    "run": "TestSetupIp6tables"
+  }
+]
