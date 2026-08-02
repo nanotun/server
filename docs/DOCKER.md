@@ -12,13 +12,20 @@ Web 管理面通过 `/run/nanotun/control.sock` 跟守护进程通信，生成�
 ## 快速开始
 
 ```bash
-# 宿主先开转发（host 网络模式下 Docker 不接受 --sysctl net.*，只能在宿主设）
+# 宿主先设内核参数（host 网络模式下 Docker 不接受 --sysctl net.*，只能在宿主设）
 cat >/etc/sysctl.d/99-nanotun.conf <<'EOF'
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.ipv4.ping_group_range = 0 2147483647
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.default.rp_filter = 2
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
 EOF
 sysctl --system
+
+# 防火墙放行（systemd 那条路径由安装脚本自动做，容器这边没人替你做）
+ufw allow 8443/tcp && ufw allow 443/udp && ufw allow 7443/tcp
 
 cd docker
 docker compose up -d
@@ -57,6 +64,43 @@ entrypoint 会在启动前逐条检查这三项，缺哪项就直接拒绝启动
 `permission denied`，哪怕值早就是 1。`nanotund` 遇到写失败会回读一次实际值，
 已经是 1 就按已开启处理；只有回读确认不是 1 才判为致命。这条是 2026-08-02 做容器化时
 实撞出来的 —— 在此之前它会以 exit 60 退出，唯一的出路是 `--privileged`。
+
+---
+
+## 另外两个 sysctl：容器设不进去，但不致命
+
+`/proc/sys` 只读影响的不止 `ip_forward`。`nanotund` 启动时还会设两项，容器里同样写不进去。
+它们失败只是 warning，容器照常起来 —— 但功能是缺的，而且**缺得很安静**，所以要在宿主预置。
+上面快速开始那段 sysctl 已经包含了，这里说明为什么：
+
+**`rp_filter`（反向路径过滤）。** `nanotund` 会把 `conf.tun0.rp_filter` 设成 2（loose）。
+发行版默认是 strict（1）时，出口节点的**回程包会被内核直接丢掉** —— 客户端表现为「连上了但什么都打不开」，
+且 iptables 计数器上看不到任何丢弃。生效值取 `max(all, 接口)`，所以光设接口没用，
+`all` 也得 ≤ 2；而 `tun0` 是启动时才创建的，只能靠 `default` 让它在创建那一刻继承。
+
+**`send_redirects`。** mesh peer 互访时网关会向客户端发 ICMP Redirect，客户端路由缓存变脏、
+`ping` 记成 error。生效值是 `all || 接口`，所以 `all` 和 `default` 两个都得设 0，少一个都不起作用。
+
+判断有没有踩到，看启动日志里有没有 `sysctl ... 失败` 的 warning；预置对了这两行就不会出现。
+
+---
+
+## 防火墙：容器不会替你开端口
+
+`scripts/install-self-hosted.sh` 检测到 ufw active 时会自动放行 8443/tcp、443/udp、7443/tcp。
+容器这条路径**没有对应动作** —— 容器不该去改宿主的防火墙，而 host 模式下端口就绑在宿主网卡上，
+ufw 的 INPUT 策略照样拦。现象是容器 healthy、日志干净、本机 `curl 127.0.0.1:7443` 也正常，
+唯独从外面连不上。
+
+```bash
+ufw allow 8443/tcp   # REALITY
+ufw allow 443/udp    # Hysteria2（用了端口跳跃的话，把整段范围一起放行）
+ufw allow 7443/tcp   # Web 管理面（只想内网访问就别开，改用 SSH 端口转发）
+```
+
+bridge 模式反过来要小心：Docker 的 DNAT 规则在 `ufw-*` 链之前，**发布出去的端口会绕过 ufw**。
+你以为 ufw 拦着，实际全世界都能连。那边要靠 `ports` 只绑在需要的地址上
+（比如 `127.0.0.1:7443:7443`）来收口。
 
 ---
 

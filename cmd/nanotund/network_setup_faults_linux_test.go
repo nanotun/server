@@ -610,6 +610,54 @@ func TestEnableIPForward_AcceptsPresetValueWhenSysctlIsReadOnly(t *testing.T) {
 	}
 }
 
+// TestSysctlSet_DistinguishesPresetFromRealFailure 回读判定的三态必须分得开。
+//
+// sysctlSet 是 ip_forward(致命)与 rp_filter / send_redirects(best-effort)共用的那段
+// 逻辑,三种结局各自对应完全不同的处理:写成功 = 本进程设的;写失败但值已达标 = 容器里
+// /proc/sys 只读、值由外部预置,按已设置处理;写失败且值不对 = 真故障。
+//
+// 中间那一态是这里的重点。少了它,容器部署每次启动都会刷一串 sysctl 失败告警,把运维
+// 引向一个并不存在的故障 —— 而真出问题时日志长得一模一样,反倒分辨不出来。
+//
+// 反向也钉住:preset 只在**值真的相等**时成立。谁把它简化成「读得到就算数」,
+// 后面几组就会红 —— 那等于把 rp_filter 仍是 strict(出口回程被内核静默丢弃)也当成功。
+func TestSysctlSet_DistinguishesPresetFromRealFailure(t *testing.T) {
+	for _, tc := range []struct {
+		desc       string
+		entry      string
+		failRe     string
+		read       string
+		wantPreset bool
+		wantErr    bool
+	}{
+		{"写成功 → 不算预置", "net.ipv4.conf.tun0.rp_filter=2", "", "", false, false},
+		{"写被拒但值已达标 → 预置", "net.ipv4.conf.tun0.rp_filter=2", "rp_filter=2", "2", true, false},
+		{"写被拒且值不达标 → 报错", "net.ipv4.conf.tun0.rp_filter=2", "rp_filter=2", "1", false, true},
+		{"写被拒且读不出值 → 报错", "net.ipv4.conf.tun0.rp_filter=2", "rp_filter=2", "", false, true},
+		{"回读带空白也应认得", "net.ipv4.conf.all.send_redirects=0", "send_redirects=0", "0\n", true, false},
+		{"目标值 0 不能被非空回读蒙混", "net.ipv4.conf.all.send_redirects=0", "send_redirects=0", "1", false, true},
+		// 防御:entry 少了 '=' 时无从回读,只能照原样报错,不能悄悄当成功。
+		{"entry 没有等号 → 报错", "net.ipv4.conf.tun0.rp_filter", "rp_filter", "2", false, true},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			f := newFakeNetTools(t)
+			f.failOn(t, tc.failRe)
+			f.sysctlReads(t, tc.read)
+
+			preset, err := sysctlSet(tc.entry)
+			if tc.wantErr && err == nil {
+				t.Fatalf("回读为 %q 却当成已设置 —— 真故障会被这条判定吞掉", tc.read)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("不该报错却报了:%v", err)
+			}
+			if preset != tc.wantPreset {
+				t.Fatalf("preset = %v, want %v", preset, tc.wantPreset)
+			}
+		})
+	}
+}
+
 // TestSetupIptables_CleansStaleRulesThenInstallsFresh 历史残留被成功删掉的完整路径。
 //
 // 前面那条用例压的是「删失败」,这条压「删成功」:切换 isolate → mesh 时,上次留下的

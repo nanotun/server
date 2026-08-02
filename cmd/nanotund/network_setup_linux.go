@@ -207,16 +207,53 @@ func DeleteExistingTUN(name string) {
 	logrus.Infof("已清理虚拟网卡 %s（若存在）", name)
 }
 
+// sysctlSet 写一个 `键=值` 形式的 sysctl 项。写失败时**回读一次实际值**,
+// 已经是目标值则返回 preset=true、err=nil。
+//
+// 为什么要回读(2026-08-02 容器化实测):容器里 /proc/sys 是只读挂载,值由 Docker 在
+// 创建容器那一刻按 --sysctl 预置。于是 `sysctl -w` 必然 permission denied,而目标状态
+// **早就达成了**。不回读的话两类调用方都会误判:
+//   - 致命项(ip_forward):转发明明开着,却以 exit 60 退出、容器无限重启,唯一出路是
+//     --privileged —— 为一个已经生效的内核参数把整个 /proc/sys 敞开给容器。
+//   - best-effort 项(rp_filter / send_redirects):每次启动刷一串 warning,把运维引向
+//     一个不存在的故障。更糟的是真出问题时也分辨不出来 —— 两种情况的日志一模一样。
+//
+// 回读用 `sysctl -n` 而不是直接读 /proc/sys/<path>:后者绕过 PATH,会把这条路径从
+// 故障注入测试里摘出去,而这里恰恰是「判错方向就整机不通」的地方,不能失去覆盖。
+//
+// 语义没有放宽:回读拿不到值、或值对不上,照样返回错误。
+func sysctlSet(entry string) (preset bool, err error) {
+	out, werr := exec.Command("sysctl", "-w", entry).CombinedOutput()
+	if werr == nil {
+		return false, nil
+	}
+	writeErr := fmt.Errorf("%w (%s)", werr, strings.TrimSpace(string(out)))
+	key, want, ok := strings.Cut(entry, "=")
+	if !ok {
+		return false, writeErr
+	}
+	cur, rerr := exec.Command("sysctl", "-n", key).Output()
+	if rerr != nil || strings.TrimSpace(string(cur)) != strings.TrimSpace(want) {
+		return false, writeErr
+	}
+	return true, nil
+}
+
 // ensureLooseRPFilter 把 TUN 设备的 rp_filter 设为 loose(2),原因见 SetupIptables 第 0 步。
 // best-effort:失败只 Warn 不阻断(容器等场景 sysctl 可能只读;Ubuntu 默认 all=2 时无影响)。
 func ensureLooseRPFilter(deviceName string) {
-	key := fmt.Sprintf("net.ipv4.conf.%s.rp_filter=2", deviceName)
-	if out, err := exec.Command("sysctl", "-w", key).CombinedOutput(); err != nil {
-		logrus.WithError(err).WithField("out", strings.TrimSpace(string(out))).
-			Warnf("sysctl %s 失败;若发行版 rp_filter 默认 strict,出口回程会被内核丢弃", key)
-		return
+	entry := fmt.Sprintf("net.ipv4.conf.%s.rp_filter=2", deviceName)
+	preset, err := sysctlSet(entry)
+	switch {
+	case err != nil:
+		logrus.WithError(err).
+			Warnf("sysctl %s 失败;若发行版 rp_filter 默认 strict,出口回程会被内核丢弃", entry)
+	case preset:
+		logrus.WithField("sysctl", entry).Info(
+			"sysctl 写入被拒但该项已经是目标值(容器里 /proc/sys 常为只读,值由外部预置),按已设置处理")
+	default:
+		logrus.Infof("已设置 %s(出口回程 hairpin 需要 loose 反向路由校验)", entry)
 	}
-	logrus.Infof("已设置 %s(出口回程 hairpin 需要 loose 反向路由校验)", key)
 }
 
 // redirectSysctlKeys 返回抑制 ICMP Redirect 需要写的 sysctl 键值对。
@@ -241,13 +278,18 @@ func redirectSysctlKeys(deviceName string) []string {
 //
 // best-effort：失败只 Warn 不阻断（容器内 sysctl 可能只读）。
 func suppressICMPRedirects(deviceName string) {
-	for _, key := range redirectSysctlKeys(deviceName) {
-		if out, err := exec.Command("sysctl", "-w", key).CombinedOutput(); err != nil {
-			logrus.WithError(err).WithField("out", strings.TrimSpace(string(out))).
-				Warnf("sysctl %s 失败;mesh peer 互访时网关会向客户端发 ICMP Redirect(功能不受影响,但客户端路由缓存变脏、ping 记为 error)", key)
-			continue
+	for _, entry := range redirectSysctlKeys(deviceName) {
+		preset, err := sysctlSet(entry)
+		switch {
+		case err != nil:
+			logrus.WithError(err).
+				Warnf("sysctl %s 失败;mesh peer 互访时网关会向客户端发 ICMP Redirect(功能不受影响,但客户端路由缓存变脏、ping 记为 error)", entry)
+		case preset:
+			logrus.WithField("sysctl", entry).Info(
+				"sysctl 写入被拒但该项已经是目标值(容器里 /proc/sys 常为只读,值由外部预置),按已设置处理")
+		default:
+			logrus.Infof("已设置 %s(mesh hairpin 转发不再向客户端发 ICMP Redirect)", entry)
 		}
-		logrus.Infof("已设置 %s(mesh hairpin 转发不再向客户端发 ICMP Redirect)", key)
 	}
 }
 
@@ -312,32 +354,23 @@ func installConnlimitRules(bin, deviceName, wanIface string, subnets []string, t
 	return nil
 }
 
-// enableForwardSysctl 把某个转发开关置 1。写失败时**回读一次实际值**,已经是 1 就当成功。
+// enableForwardSysctl 把某个转发开关置 1。与 rp_filter 那些 best-effort 项不同,
+// 这一项失败是**致命**的:ip_forward=0 意味着一个包都转不出去,出口功能整体不存在。
 //
-// 为什么要回读(2026-08-02,容器化实测):Docker 在创建容器时按 `--sysctl` 把
-// net.ipv4.ip_forward 设成 1,随后把 /proc/sys 挂成只读。于是 `sysctl -w` 必然
-// 「permission denied」,而值其实**早就是对的**。此前无条件把写失败判为致命,结果是
-// 转发明明开着,nanotund 却以 exit 60 退出、容器无限重启 —— 唯一的出路是 --privileged,
-// 为了一个已经生效的内核参数把整个 /proc/sys 敞开给容器,代价完全不成比例。
-//
-// 回读用 `sysctl -n` 而不是直接读 /proc/sys/...:后者绕过 PATH,把这条路径从故障注入
-// 测试里摘了出去,而这里恰恰是「判错方向就整机不通」的地方,不能失去覆盖。
-//
-// 语义没有放宽:值不是 1 时照样返回错误。放行的只有「目标状态已达成」这一种情况。
+// 写不进去但回读已经是 1 时按已开启处理(容器场景,原因见 sysctlSet)。
+// 语义没有放宽:回读不是 1 照样返回错误。
 func enableForwardSysctl(key, label string) error {
-	out, err := exec.Command("sysctl", "-w", key+"=1").CombinedOutput()
-	if err == nil {
-		logrus.Infof("已开启 %s=1", key)
-		return nil
+	preset, err := sysctlSet(key + "=1")
+	if err != nil {
+		return fmt.Errorf("%s: %w", label, err)
 	}
-	writeErr := fmt.Errorf("%s: %w (%s)", label, err, strings.TrimSpace(string(out)))
-	cur, readErr := exec.Command("sysctl", "-n", key).Output()
-	if readErr == nil && strings.TrimSpace(string(cur)) == "1" {
+	if preset {
 		logrus.WithField("sysctl", key).Info(
 			"sysctl 写入被拒但该项已经是 1(容器里 /proc/sys 常为只读,值由外部预置),按已开启处理")
 		return nil
 	}
-	return writeErr
+	logrus.Infof("已开启 %s=1", key)
+	return nil
 }
 
 // EnableIPForward 开启 IPv4 转发

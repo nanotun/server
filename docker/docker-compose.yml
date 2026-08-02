@@ -15,10 +15,23 @@
 # 只想跑 mesh 互联、不做出口和端口跳跃的话,用 docker-compose.bridge.yml。
 #
 # 前置(host 模式下 Docker 不接受 --sysctl net.*,只能在宿主设):
-#   echo 'net.ipv4.ip_forward = 1'            >  /etc/sysctl.d/99-nanotun.conf
-#   echo 'net.ipv6.conf.all.forwarding = 1'   >> /etc/sysctl.d/99-nanotun.conf
-#   echo 'net.ipv4.ping_group_range = 0 2147483647' >> /etc/sysctl.d/99-nanotun.conf
+#   cat >/etc/sysctl.d/99-nanotun.conf <<'EOF'
+#   net.ipv4.ip_forward = 1
+#   net.ipv6.conf.all.forwarding = 1
+#   net.ipv4.ping_group_range = 0 2147483647
+#   net.ipv4.conf.all.rp_filter = 2          # 生效值取 max(all, 接口);strict 会丢掉出口回程包
+#   net.ipv4.conf.default.rp_filter = 2      # tun0 启动时才建,只能靠 default 继承
+#   net.ipv4.conf.all.send_redirects = 0     # 生效值是 all || 接口,两个都要设
+#   net.ipv4.conf.default.send_redirects = 0
+#   EOF
 #   sysctl --system
+#
+# 后两组是 nanotund 自己会设、但容器里 /proc/sys 只读写不进去的。失败只是 warning,
+# 容器照常起来,功能却是缺的 —— rp_filter 为 strict 时出口回程被内核静默丢弃,
+# 现象是「连上了但什么都打不开」,且 iptables 计数器上看不到任何丢弃。详见 docs/DOCKER.md。
+#
+# 还要放行防火墙 —— 容器不该改宿主 ufw,而 host 模式端口就绑在宿主网卡上:
+#   ufw allow 8443/tcp && ufw allow 443/udp && ufw allow 7443/tcp
 
 services:
   nanotun:

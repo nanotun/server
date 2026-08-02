@@ -22,6 +22,10 @@
 # 4. 客户端看到的来源 IP 是 Docker 网关地址,不是真实公网 IP。按 IP 的登录限流、
 #    审计里的 ip 字段都会失真。
 #
+# 5. 下面 ports 里发布的端口会**绕过 ufw**:Docker 的 DNAT 规则排在 ufw-* 链之前。
+#    你以为 ufw 拦着,实际全世界都能连 —— 管理面尤其危险。要收口就绑地址,
+#    比如把 7443 写成 "127.0.0.1:7443:7443",再用 SSH 端口转发访问。
+#
 # 换来的是:容器有自己的网络命名空间,写的 iptables 规则不落在宿主上,ip_forward 也只
 # 改容器自己的 —— 下面 sysctls 那几行在 host 模式下是被 Docker 直接拒绝的。
 
@@ -44,11 +48,22 @@ services:
     init: true
 
     # bridge 模式的好处正在这里:容器有独立 netns,这些内核参数只影响容器自己。
+    #
+    # 注意这些值是 Docker 在**建容器那一刻**写进去的,之后 /proc/sys 就只读了。所以
+    # nanotund 自己再跑 sysctl -w 一律 permission denied —— 凡是它启动时要设的项,
+    # 都得在这里预置一份,否则只会留下一行 warning 然后功能静默地缺一块。
     sysctls:
       net.ipv4.ip_forward: "1"
       net.ipv6.conf.all.forwarding: "1"
       # nanotun-web 保存 server_dial_host 时要做 unprivileged ICMP 探测。
       net.ipv4.ping_group_range: "0 2147483647"
+      # rp_filter 生效值取 max(all, 接口);strict 会让出口回程包被内核静默丢弃。
+      # tun0 是启动时才创建的,只能靠 default 让它在创建那一刻继承。
+      net.ipv4.conf.all.rp_filter: "2"
+      net.ipv4.conf.default.rp_filter: "2"
+      # send_redirects 生效值是 all || 接口,两个都设 0 才不会向 mesh 客户端发 ICMP Redirect。
+      net.ipv4.conf.all.send_redirects: "0"
+      net.ipv4.conf.default.send_redirects: "0"
 
     ports:
       - "443:443/udp"     # hysteria2 QUIC(单端口,不做跳跃)
