@@ -312,24 +312,42 @@ func installConnlimitRules(bin, deviceName, wanIface string, subnets []string, t
 	return nil
 }
 
+// enableForwardSysctl 把某个转发开关置 1。写失败时**回读一次实际值**,已经是 1 就当成功。
+//
+// 为什么要回读(2026-08-02,容器化实测):Docker 在创建容器时按 `--sysctl` 把
+// net.ipv4.ip_forward 设成 1,随后把 /proc/sys 挂成只读。于是 `sysctl -w` 必然
+// 「permission denied」,而值其实**早就是对的**。此前无条件把写失败判为致命,结果是
+// 转发明明开着,nanotund 却以 exit 60 退出、容器无限重启 —— 唯一的出路是 --privileged,
+// 为了一个已经生效的内核参数把整个 /proc/sys 敞开给容器,代价完全不成比例。
+//
+// 回读用 `sysctl -n` 而不是直接读 /proc/sys/...:后者绕过 PATH,把这条路径从故障注入
+// 测试里摘了出去,而这里恰恰是「判错方向就整机不通」的地方,不能失去覆盖。
+//
+// 语义没有放宽:值不是 1 时照样返回错误。放行的只有「目标状态已达成」这一种情况。
+func enableForwardSysctl(key, label string) error {
+	out, err := exec.Command("sysctl", "-w", key+"=1").CombinedOutput()
+	if err == nil {
+		logrus.Infof("已开启 %s=1", key)
+		return nil
+	}
+	writeErr := fmt.Errorf("%s: %w (%s)", label, err, strings.TrimSpace(string(out)))
+	cur, readErr := exec.Command("sysctl", "-n", key).Output()
+	if readErr == nil && strings.TrimSpace(string(cur)) == "1" {
+		logrus.WithField("sysctl", key).Info(
+			"sysctl 写入被拒但该项已经是 1(容器里 /proc/sys 常为只读,值由外部预置),按已开启处理")
+		return nil
+	}
+	return writeErr
+}
+
 // EnableIPForward 开启 IPv4 转发
 func EnableIPForward() error {
-	out, err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("sysctl ip_forward: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-	logrus.Info("已开启 net.ipv4.ip_forward=1")
-	return nil
+	return enableForwardSysctl("net.ipv4.ip_forward", "sysctl ip_forward")
 }
 
 // EnableIPv6Forward 开启 IPv6 转发
 func EnableIPv6Forward() error {
-	out, err := exec.Command("sysctl", "-w", "net.ipv6.conf.all.forwarding=1").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("sysctl ipv6 forwarding: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-	logrus.Info("已开启 net.ipv6.conf.all.forwarding=1")
-	return nil
+	return enableForwardSysctl("net.ipv6.conf.all.forwarding", "sysctl ipv6 forwarding")
 }
 
 // GetWAN 返回默认出站接口名和出口 IPv4（用于 NAT）

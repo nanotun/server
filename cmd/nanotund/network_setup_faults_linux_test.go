@@ -66,6 +66,13 @@ if [ -n "$FAKE_FAIL_RE" ] && printf '%s' "$args" | grep -qE -- "$FAKE_FAIL_RE"; 
   exit 1
 fi
 
+# sysctl -n <key>:回读当前值,输出 $FAKE_SYSCTL_READ。放在 FAIL_RE 之后,
+# 这样「写失败 + 读也失败」的组合同样能造出来。
+if [ "$tool" = sysctl ] && printf '%s' "$args" | grep -qE -- '(^| )-n( |$)'; then
+  if [ -n "$FAKE_SYSCTL_READ" ]; then printf '%s\n' "$FAKE_SYSCTL_READ"; fi
+  exit 0
+fi
+
 if printf '%s' "$args" | grep -qE -- '(^| )-C( |$)'; then
   if [ -n "$FAKE_EXISTS_ONCE_RE" ] && printf '%s' "$args" | grep -qE -- "$FAKE_EXISTS_ONCE_RE"; then
     key=$(printf '%s' "$args" | md5sum | cut -d' ' -f1)
@@ -110,10 +117,17 @@ func newFakeNetTools(t *testing.T) *fakeNetTools {
 	t.Setenv("FAKE_EXISTS_RE", "")
 	t.Setenv("FAKE_EXISTS_ONCE_RE", "")
 	t.Setenv("FAKE_SAVE_OUT", "")
+	t.Setenv("FAKE_SYSCTL_READ", "")
 	return f
 }
 
 func (f *fakeNetTools) failOn(t *testing.T, re string) { t.Helper(); t.Setenv("FAKE_FAIL_RE", re) }
+
+// sysctlReads 指定 `sysctl -n <key>` 的回读结果。
+func (f *fakeNetTools) sysctlReads(t *testing.T, v string) {
+	t.Helper()
+	t.Setenv("FAKE_SYSCTL_READ", v)
+}
 func (f *fakeNetTools) ruleExists(t *testing.T, re string) {
 	t.Helper()
 	t.Setenv("FAKE_EXISTS_RE", re)
@@ -550,6 +564,49 @@ func TestEnableIPForward_ReportsSysctlFailure(t *testing.T) {
 	f6.failOn(t, "forwarding=1")
 	if err := EnableIPv6Forward(); err == nil {
 		t.Fatal("sysctl ipv6 forwarding 失败却返回 nil")
+	}
+}
+
+// TestEnableIPForward_AcceptsPresetValueWhenSysctlIsReadOnly 写不进去但值已经是 1 时必须放行。
+//
+// 这是 2026-08-02 容器化时实撞的:Docker 按 --sysctl 在建容器那一刻把 ip_forward 设成 1,
+// 之后 /proc/sys 是只读的,于是 `sysctl -w` 恒失败。把它判为致命的话,转发明明开着,
+// nanotund 却以 exit 60 退出、容器无限重启,唯一出路是 --privileged —— 为一个已经生效的
+// 内核参数敞开整个 /proc/sys。
+//
+// 一并钉住反向:回读**不是** 1 时照旧报错。放行的只有「目标状态已达成」这一种情况,
+// 谁把回读判定写成「读得到就算数」,下面第二组就会红。
+func TestEnableIPForward_AcceptsPresetValueWhenSysctlIsReadOnly(t *testing.T) {
+	for _, tc := range []struct {
+		desc    string
+		failRe  string
+		read    string
+		wantErr bool
+	}{
+		{"v4 · 写被拒但值已是 1 → 放行", "ip_forward=1", "1", false},
+		{"v4 · 写被拒且值仍是 0 → 报错", "ip_forward=1", "0", true},
+		{"v4 · 写被拒且读不出值 → 报错", "ip_forward=1", "", true},
+		{"v6 · 写被拒但值已是 1 → 放行", "forwarding=1", "1", false},
+		{"v6 · 写被拒且值仍是 0 → 报错", "forwarding=1", "0", true},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			f := newFakeNetTools(t)
+			f.failOn(t, tc.failRe)
+			f.sysctlReads(t, tc.read)
+
+			var err error
+			if strings.HasPrefix(tc.desc, "v6") {
+				err = EnableIPv6Forward()
+			} else {
+				err = EnableIPForward()
+			}
+			if tc.wantErr && err == nil {
+				t.Fatalf("回读为 %q 却当成已开启 —— 转发没开,出口整体不通而启动继续", tc.read)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("值已经是 1 仍报错(%v)—— 容器里 /proc/sys 只读时会无限重启", err)
+			}
+		})
 	}
 }
 
