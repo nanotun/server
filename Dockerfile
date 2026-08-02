@@ -38,11 +38,21 @@ COPY . .
 # NANOTUN_VERSION 只影响 nanotun-web 页脚展示的版本号,与 build-release.sh 的
 # -X main.webVersion 同一个变量。不传则用构建时间戳。
 ARG NANOTUN_VERSION=""
-ARG TARGETARCH=amd64
+
+# TARGETARCH 必须**不带默认值**地声明。它是 buildkit 的内置全局 ARG,在 stage 里
+# "redeclare without value" 才会被自动填成当前构建平台的架构;一旦写成
+# `ARG TARGETARCH=amd64`,这个默认值会盖掉自动填充,于是 GOARCH 被钉死在 amd64 ——
+# 而运行阶段的 debian-slim 仍按本机平台拉取。
+#
+# 后果是 arm64 机器上 `docker build` 出来的镜像:arm64 的基底 + amd64 的二进制,
+# 而且镜像自称 arm64。Mac 上察觉不到,Docker Desktop 有 Rosetta/binfmt 在背后模拟;
+# 换成真正的 arm64 Linux 主机就是 exec format error。x86 上因为两边凑巧都是 amd64,
+# 一直没暴露。2026-08-02 实测撞出来的。
+ARG TARGETARCH
 
 RUN set -eux; \
     ver="${NANOTUN_VERSION:-$(date +%Y%m%d-%H%M%S)}"; \
-    export CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}"; \
+    export CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH:-$(go env GOARCH)}"; \
     go build -trimpath -ldflags "-s -w" -o /out/nanotund       ./cmd/nanotund; \
     go build -trimpath -ldflags "-s -w" -o /out/nanotun-admin  ./cmd/nanotun-admin; \
     go build -trimpath -ldflags "-s -w -X main.webVersion=${ver}" -o /out/nanotun-web ./cmd/nanotun-web
@@ -70,6 +80,28 @@ RUN set -eux; \
 COPY --from=builder /out/nanotund      /usr/local/bin/nanotund
 COPY --from=builder /out/nanotun-admin /usr/local/bin/nanotun-admin
 COPY --from=builder /out/nanotun-web   /usr/local/bin/nanotun-web
+
+# 断言二进制架构与基底一致。这道检查存在的理由就是上面 TARGETARCH 那段说的事故:
+# 两边不一致时镜像能构建成功、能推、还自称是基底的架构,只在真机启动那一刻才炸,
+# 而在带 binfmt 模拟的开发机上连炸都不炸 —— 典型的「安静地坏掉」。
+# 读 ELF 的 e_machine 而不是执行一下试试:执行会被模拟层接住,验不出东西。
+# 认不出的架构放行,别为了 armv7/s390x 这种没在用的目标把构建拦下来。
+RUN set -eux; \
+    want="$(dpkg --print-architecture)"; \
+    case "$want" in \
+        amd64) want_machine="3e00" ;; \
+        arm64) want_machine="b700" ;; \
+        *)     echo "[archcheck] 基底架构 $want 未在检查表内,跳过"; exit 0 ;; \
+    esac; \
+    for b in nanotund nanotun-admin nanotun-web; do \
+        got="$(od -An -tx1 -j18 -N2 "/usr/local/bin/$b" | tr -d ' \n')"; \
+        [ "$got" = "$want_machine" ] || { \
+            echo "[archcheck] $b 的架构与基底不符:ELF e_machine=$got,基底=$want($want_machine)。" >&2; \
+            echo "[archcheck] 多半是 TARGETARCH 被写死了 —— 它必须不带默认值声明。" >&2; \
+            exit 1; \
+        }; \
+    done; \
+    echo "[archcheck] 三个二进制均为 $want,与基底一致"
 
 # 配置模板与自签脚本放到 /usr/share/nanotun:entrypoint 在 /etc/nanotun 为空时
 # 用它做首次初始化。**不**直接写进 /etc/nanotun —— 那是数据卷挂载点,镜像里放东西

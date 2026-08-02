@@ -128,6 +128,43 @@ bridge 下入站先过 Docker 自己的 DNAT 链，两套 NAT 顺序冲突，跳
 
 ---
 
+## 在 Mac / Windows 上：能起来，但 host 的不是你那台机器
+
+宿主不是 Linux 时，Docker 并不在你的系统上跑容器 —— Docker Desktop 底下开了一台 Linux
+虚拟机，容器全在那台 VM 里。所以 `network_mode: host` 里的 host **永远是一台 Linux 主机**，
+只是换成了那台 VM：它没有 WAN 网卡，它在宿主系统的 NAT 后面，宿主又在路由器的 NAT 后面。
+
+于是上一节列的三件事全部落空，而且**不报错**：容器照样把 `ip_forward` 打开、照样把 iptables
+规则写进去、`ip route get 1.1.1.1` 照样返回一个出口网卡 —— 全在 VM 里，一样都不作数。
+这是这里最需要提防的地方，坏得完全没有声音。
+
+还有个机械层面的坑：`network_mode: host` 在 Docker Desktop 上长期直接被忽略，4.34 之后才
+作为一个要手动打开的功能存在（Settings → Resources → Network）。没开那个开关它就是不生效，
+同样不会有任何提示。
+
+仍然正常的部分比想象中多：`/dev/net/tun` 在 VM 里是有的，`NET_ADMIN` 也给得了，所以
+`nanotund` 能起、Web 能开、`nanotun-admin` 和 SQLite 都正常。看看这套东西长什么样、点点后台、
+改改配置，完全够用。跑不了的是真实客户端从公网连进来、端口跳跃、真实出口与 NAT ——
+也就是 e2e 覆盖的那一整片，所以 **e2e 必须打 Linux 机器**，Mac 上跑不出结论。
+
+因此非 Linux 宿主上的建议反过来：**用 bridge 加发布端口，别用 host**。发布出来的端口
+Docker Desktop 会转到宿主的 localhost，浏览器直接能开 Web UI；host 在这里没有任何对应的
+好处，还多一个开关要记。
+
+最后一条与网络无关但同样会咬人：Apple Silicon 上 `docker build` 出来的是 **arm64** 镜像。
+它**不能**直接搬到 x86 服务器，要在 Mac 上构建给服务器用的话加 `--platform linux/amd64`：
+
+```bash
+docker build --platform linux/amd64 -t nanotun:latest .
+```
+
+架构这件事镜像里有一道构建期断言兜着：二进制的 ELF `e_machine` 与基底 `dpkg` 架构不一致
+就直接构建失败。它防的是一种很难自己发现的错配 —— 基底按本机平台拉、二进制却编成了另一个
+架构，镜像能构建成功、能推、还自称是基底的架构，只在真机启动那一刻才 `exec format error`；
+而在开发机上因为有 binfmt / Rosetta 兜底，连那一下都不会炸。
+
+---
+
 ## iptables 后端：一个会安静坏掉的坑
 
 镜像基底用的是 `debian:bookworm-slim` 而不是 alpine，多 60MB 左右，换的是**后端与宿主一致**。
