@@ -46,6 +46,15 @@ e2e_load_env() {
   : "${E2E_TARGET_PORT:=8088}"        # 靶站端口,须在 C 的 ufw 放行名单里
   : "${E2E_MAGIC_SUFFIX:=lan}"
 
+  # 服务端部署形态:systemd(裸机,默认)或 docker(镜像)。docker 模式下服务端的
+  # systemctl 调用经 remote/systemctl-docker-shim.sh 翻译到容器,见该文件的语义对照。
+  : "${E2E_SRV_MODE:=systemd}"
+  : "${E2E_SRV_CONTAINER:=nanotun}"
+  case "$E2E_SRV_MODE" in
+    systemd|docker) ;;
+    *) echo "E2E_SRV_MODE 只能是 systemd 或 docker,当前:$E2E_SRV_MODE" >&2; return 1 ;;
+  esac
+
   return 0
 }
 
@@ -127,10 +136,44 @@ e2e_ssh_warmup() {
   (( ok == 3 ))
 }
 
+# docker 模式下 systemctl 兼容层在服务端的落点。首次用到时推一次,之后复用。
+E2E_SRV_SHIM=/tmp/nte2e-systemctl-shim.sh
+_E2E_SHIM_READY=0
+
+_e2e_srv_shim_ensure() {
+  [[ "$_E2E_SHIM_READY" == 1 ]] && return 0
+  # 这里不能用 s():它自己就在等这个文件,会绕回来。
+  push_file s "$E2E_ROOT/remote/systemctl-docker-shim.sh" "$E2E_SRV_SHIM" || return 1
+  _E2E_SHIM_READY=1
+}
+
 # 三台机器的执行入口。s=服务端,a=普通客户端,c=出口/宣告方客户端。
-s() { _e2e_run "$E2E_SRV_HOST" "${E2E_SRV_PASS:-}" "$@"; }
+s() {
+  if [[ "${E2E_SRV_MODE:-systemd}" == "docker" ]]; then
+    _e2e_srv_shim_ensure || return 1
+    # source 不读 stdin,所以 `s "cat > f" < g` 这类带重定向的用法不受影响。
+    _e2e_run "$E2E_SRV_HOST" "${E2E_SRV_PASS:-}" \
+      "NTE2E_CT='$E2E_SRV_CONTAINER'; . $E2E_SRV_SHIM; $*"
+    return $?
+  fi
+  _e2e_run "$E2E_SRV_HOST" "${E2E_SRV_PASS:-}" "$@"
+}
 a() { _e2e_run "$E2E_A_HOST"   "${E2E_A_PASS:-}"   "$@"; }
 c() { _e2e_run "$E2E_C_HOST"   "${E2E_C_PASS:-}"   "$@"; }
+
+# srv_in_svc <命令> 在 **nanotund 所在的那个文件系统** 里跑命令:systemd 模式下就是
+# 宿主,docker 模式下是容器内部。
+#
+# 探测「服务端有没有装某个工具」这类前置条件必须走它,不能直接用 s():镜像自带的
+# ipset / iptables 宿主上未必有,反之亦然。2026-08-02 实测,跳板机防火墙那组就是因为
+# 在宿主上探到「没装 ipset」而在容器里其实装了,断言期望与实际条件对不上。
+srv_in_svc() {
+  if [[ "${E2E_SRV_MODE:-systemd}" == "docker" ]]; then
+    s "docker exec $E2E_SRV_CONTAINER sh -c \"$*\""
+    return $?
+  fi
+  s "$*"
+}
 
 # push_file <s|a|c> <本地路径> <远端路径> 把文件推到指定机器。
 #
