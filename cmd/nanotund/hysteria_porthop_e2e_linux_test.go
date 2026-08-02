@@ -76,6 +76,14 @@ func TestHy2PortHop_IptablesRulesInstalled(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("需要 root")
 	}
+	// 和上面那个用例一样要判 iptables 在不在 —— 这里原先漏了。
+	// 「是 root 但没装 iptables」不是假想:精简镜像里就是这样(golang:1.25 不带 iptables,
+	// 2026-08-02 在容器里跑 Linux 单测就撞上了)。少这道门禁,失败信息是
+	// 「setup redirect: exec: "iptables": executable file not found」——
+	// 一句读起来像产品起不来的红,实际只是跑测试的机器没装依赖。
+	if _, err := exec.LookPath("iptables"); err != nil {
+		t.Skip("iptables 不在 PATH")
+	}
 	primary := pickFreeUDPPort(t)
 	secondary := pickFreeUDPPort(t)
 	cleanup, err := setupHy2UDPPortHopRedirect(uint16(primary), fmt.Sprintf("%d,%d", primary, secondary), "")
