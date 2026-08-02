@@ -1,0 +1,25 @@
+# 构建上下文瘦身。注意这里**不能**排 scripts/ 与 cmd/:Dockerfile 要拷
+# cmd/nanotund/config.toml 与 scripts/ensure-server-assets.sh。
+
+.git
+.github
+.cursor
+
+# 仓库根目录下三个本地编译产物(各 20MB 上下),镜像里是重新编的,传上去纯浪费。
+/nanotund
+/nanotun-admin
+/nanotun-web
+
+dist/
+.release/
+coverage.out
+*.tar.gz
+
+# e2e 的机器清单里有明文口令,绝不能进镜像上下文。
+scripts/e2e/e2e.env
+
+docs/
+*.md
+!README.md
+
+.DS_Store

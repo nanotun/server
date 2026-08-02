@@ -1,0 +1,49 @@
+# nanotun —— 开发 / 试用快速起一套。数据可丢,重来只需删目录。
+#
+#   cd docker && docker compose -f docker-compose.dev.yml up --build
+#
+# 与生产那份的区别只有三点,都是为了「方便看、方便改、方便推倒重来」:
+#
+#   1. 用 bind mount 挂到 ./data/ 而不是 named volume —— 配置和 SQLite 库就在
+#      你眼皮底下,想 `sqlite3 data/lib/nanotun.db` 或直接改 config.toml 都不用进容器。
+#      不要拿这个跑生产:这些目录里有 REALITY 私钥、hy2 口令和全部用户数据,
+#      而 bind mount 的权限完全跟着宿主目录走。
+#   2. 前台跑、日志不限量、debug 级别。
+#   3. 不 restart —— 崩了就让它崩着,现场留在那儿给你看。
+#
+# 想连真客户端试的话,建议仍用 host 模式(下面默认就是),否则端口跳跃和出口都不是真实行为。
+# 首次启动的 PSK 会打在日志里,也会落到 ./data/lib/init.out.json。
+
+services:
+  nanotun:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        NANOTUN_VERSION: dev
+    image: nanotun:dev
+    container_name: nanotun-dev
+
+    network_mode: host
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    init: true
+
+    volumes:
+      - ./data/etc:/etc/nanotun
+      - ./data/lib:/var/lib/nanotun
+
+    tmpfs:
+      - /run/nanotun:mode=0750
+
+    environment:
+      NANOTUN_WEB_ENABLED: "1"
+      NANOTUN_WEB_LISTEN: "0.0.0.0:7443"
+
+    stop_grace_period: 15s

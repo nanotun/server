@@ -1,0 +1,83 @@
+# nanotun 生产部署 —— host 网络模式(推荐)。
+#
+#   cd docker && docker compose up -d && docker compose logs -f
+#
+# 为什么默认 host:这是个 VPN 网关,它要在**宿主的网络栈里**做三件 bridge 模式下做不成的事:
+#   1. hy2 端口跳跃靠 iptables NAT REDIRECT 把一段 UDP 端口重定向到主端口。bridge 下
+#      入站先过 Docker 自己的 DNAT,两套 NAT 打架,跳跃基本失效。
+#   2. 出口节点对客户端流量做 MASQUERADE。bridge 下会变成双重 NAT,能通但多一跳、
+#      而且出口 IP 是容器地址,排查时对不上号。
+#   3. GetWAN() 用 `ip route get 1.1.1.1` 推断出口网卡与出口 IP。bridge 下拿到的是
+#      容器的 eth0 与 172.17.x.x,NAT 规则会挂到错误的接口上。
+#
+# 代价说清楚:host 模式下容器与宿主共用网络栈,容器写的 iptables 规则就是**宿主的**规则,
+# ip_forward 也是宿主的。这正是这个应用需要的,但它意味着容器隔离在网络这一层基本没有了。
+# 只想跑 mesh 互联、不做出口和端口跳跃的话,用 docker-compose.bridge.yml。
+#
+# 前置(host 模式下 Docker 不接受 --sysctl net.*,只能在宿主设):
+#   echo 'net.ipv4.ip_forward = 1'            >  /etc/sysctl.d/99-nanotun.conf
+#   echo 'net.ipv6.conf.all.forwarding = 1'   >> /etc/sysctl.d/99-nanotun.conf
+#   echo 'net.ipv4.ping_group_range = 0 2147483647' >> /etc/sysctl.d/99-nanotun.conf
+#   sysctl --system
+
+services:
+  nanotun:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: nanotun:latest
+    container_name: nanotun
+    restart: unless-stopped
+
+    network_mode: host
+
+    # NET_ADMIN:创建 TUN、写 iptables、清 conntrack。
+    # NET_RAW:iptables 的部分匹配模块与 ICMP 探测需要。
+    # 只要这两个就够,不需要 privileged —— 后者会把 /proc/sys 整个变成可写,
+    # 容器里一条命令就能改宿主的任意内核参数,没必要为了 ip_forward 敞这么大的口。
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    # PID 1 用 tini 收养僵尸进程。nanotund 会 fork iptables / ip / sysctl 这些短命子进程,
+    # 自己会 wait;但 nanotun-web 生成二维码时 fork 的 nanotun-admin 若赶上异常路径,
+    # 留下的僵尸需要 PID 1 兜底回收。
+    init: true
+
+    volumes:
+      # 配置、证书、masquerade 页。密钥在这里,备份的时候别漏。
+      - nanotun-etc:/etc/nanotun
+      # SQLite 库(用户 / 设备 / ACL / 租约)—— 丢了等于所有客户端要重新接入。
+      - nanotun-lib:/var/lib/nanotun
+
+    # 控制面 socket 放 tmpfs:它是纯运行时产物,不该留在镜像层里,
+    # 也不该在容器重建后还残留一个连不上的旧 socket 文件。
+    tmpfs:
+      - /run/nanotun:mode=0750
+
+    environment:
+      NANOTUN_WEB_ENABLED: "1"
+      NANOTUN_WEB_LISTEN: "0.0.0.0:7443"
+      # 用域名访问管理面时填上,自签证书会带这个 SAN,浏览器少一层告警。
+      # NANOTUN_WEB_EXTRA_SANS: "vpn.example.com"
+      # 管理面放在 nginx 后面时必须填,否则按 IP 的登录限流看到的全是反代地址。
+      # NANOTUN_WEB_TRUSTED_PROXIES: "127.0.0.1,10.0.0.0/8"
+
+    # 日志走 stdout。默认 json-file 不限大小,长跑会把磁盘吃满 —— 这是容器部署最常见的
+    # 事后翻车点,给它上限。
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    # nanotund 的退出路径要撤 iptables 规则、关 TUN、做 WAL checkpoint。默认 10 秒偶尔不够,
+    # 被 SIGKILL 打断会把规则留在宿主内核里(下次启动的 sweep 会清,但中间那段时间是脏的)。
+    stop_grace_period: 30s
+
+volumes:
+  nanotun-etc:
+  nanotun-lib:

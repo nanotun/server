@@ -217,6 +217,10 @@ go test -bench="BenchmarkLoginFlow" -benchtime=10s -count=1 ./cmd/nanotund/
 生产部署一般用 `scripts/install-self-hosted.sh`,会自动安装 systemd 单元 /
 开启 IP 转发 / 写 UFW 规则,详见脚本头部注释与 `docs/UPGRADE_M0.md`。
 
+也可以用 Docker 跑(`Dockerfile` + `docker/docker-compose.yml`)。它是个 VPN 网关,
+对 `/dev/net/tun`、`CAP_NET_ADMIN`、`ip_forward` 和网络模式都有硬性要求,
+默认给的是 host 网络 —— 取舍与逐条踩坑说明见 [`docs/DOCKER.md`](docs/DOCKER.md)。
+
 历史版本曾经依赖 一个集中式认证后端(`legacy_backend` 模式),
 当前代码库已经彻底移除该路径,所有部署一律走自托管 PSK。如需查阅历史归因,
 见 `docs/POSTMORTEM-20260521-db-path-migration.md`。

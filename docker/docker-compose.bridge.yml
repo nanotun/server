@@ -1,0 +1,84 @@
+# nanotun —— bridge 网络模式(隔离优先,功能有取舍)。
+#
+#   cd docker && docker compose -f docker-compose.bridge.yml up -d
+#
+# 什么时候用这个:只做 mesh 互联和子网路由、**不**依赖端口跳跃、也不把这台机器当出口节点。
+# 典型场景是一台内网跳板,客户端连上来互访,不经它出公网。
+#
+# ── 先看清楚有哪些不能用 ────────────────────────────────────────────────────
+#
+# 1. hy2 端口跳跃(listen_addr = ":443,5000-5100" 这种写法)基本失效。
+#    跳跃靠 iptables NAT PREROUTING REDIRECT 把次端口转到主端口,而 bridge 下入站
+#    先过 Docker 自己的 DNAT 链,两套 NAT 顺序冲突。想保留跳跃就用 host 模式。
+#    这里的配置只映射单个 443/udp,请把 config.toml 的 [hysteria].listen_addr 保持成 ":443"。
+#
+# 2. 出口节点(exit_mode 里放行公网出网)会变成双重 NAT:容器内 MASQUERADE 一次,
+#    Docker bridge 再 NAT 一次。能通,但出口 IP 是容器地址,排障时和宿主对不上;
+#    MTU 也多一层封装,容易踩到分片问题。
+#
+# 3. GetWAN() 用 `ip route get 1.1.1.1` 推断出口网卡,bridge 下拿到的是 eth0 / 172.x,
+#    NAT 规则挂在容器的接口上。这在纯 mesh 场景无害,做出口时就是上一条的成因。
+#
+# 4. 客户端看到的来源 IP 是 Docker 网关地址,不是真实公网 IP。按 IP 的登录限流、
+#    审计里的 ip 字段都会失真。
+#
+# 换来的是:容器有自己的网络命名空间,写的 iptables 规则不落在宿主上,ip_forward 也只
+# 改容器自己的 —— 下面 sysctls 那几行在 host 模式下是被 Docker 直接拒绝的。
+
+services:
+  nanotun:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: nanotun:latest
+    container_name: nanotun
+    restart: unless-stopped
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    init: true
+
+    # bridge 模式的好处正在这里:容器有独立 netns,这些内核参数只影响容器自己。
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv6.conf.all.forwarding: "1"
+      # nanotun-web 保存 server_dial_host 时要做 unprivileged ICMP 探测。
+      net.ipv4.ping_group_range: "0 2147483647"
+
+    ports:
+      - "443:443/udp"     # hysteria2 QUIC(单端口,不做跳跃)
+      - "8443:8443/tcp"   # REALITY
+      - "7443:7443/tcp"   # Web 管理面 HTTPS
+      # 端口转发功能在 Web 里配的公网端口,需要在这里逐个映射出来 —— 容器内
+      # 开的监听端口不会自动出现在宿主上。这是 bridge 模式下最容易忘的一步。
+      # - "19001:19001/tcp"
+
+    volumes:
+      - nanotun-etc:/etc/nanotun
+      - nanotun-lib:/var/lib/nanotun
+
+    tmpfs:
+      - /run/nanotun:mode=0750
+
+    environment:
+      NANOTUN_WEB_ENABLED: "1"
+      NANOTUN_WEB_LISTEN: "0.0.0.0:7443"
+      # bridge 下直连对端永远是 Docker 网关,不填这个的话按 IP 限流形同虚设。
+      NANOTUN_WEB_TRUSTED_PROXIES: "172.16.0.0/12"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    stop_grace_period: 30s
+
+volumes:
+  nanotun-etc:
+  nanotun-lib:
