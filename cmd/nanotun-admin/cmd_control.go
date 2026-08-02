@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nanotun/server/store"
 )
 
 func ageFromUnix(ts int64) string {
@@ -159,7 +162,7 @@ func cmdConnection(opts *globalOpts, args []string) int {
 	}
 	switch sub {
 	case "list", "ls":
-		if perr := printConnectionList(opts, out); perr != nil {
+		if perr := printConnectionList(opts, out, resolveSessionUsernames(opts)); perr != nil {
 			fmt.Fprintln(opts.stderr, opts.errText(perr))
 			return 1
 		}
@@ -245,7 +248,48 @@ func buildStatusPath(limit, offset int) string {
 	return fmt.Sprintf("/status?offset=%d", offset)
 }
 
-func printConnectionList(opts *globalOpts, body []byte) error {
+// resolveSessionUsernames 建「u<id> → 用户名」映射,给 connection list 的 USER 列用。
+//
+// 控制面 /status 只回 userID(内部标识,形如 "u3"),它是**主键派生**而不是用户名。
+// 直接打出来会和别人的用户名撞车:2026-08-02 三机实测,库里 username="u4" 的账号
+// 主键是 3,于是它的会话在这列显示 "u3" —— 运维照着这列挑 conn_id 去 kick,踢的是
+// 另一个人。web 会话页一直是查库显示真实用户名(取不到才退回裸 id),CLI 这里对齐。
+//
+// best-effort:这条命令的卖点就是「只要控制 socket 通就能用」(比直读 SQLite 准,
+// 能看到 active session 而不只是 lease),不能因为库不可读就整个失败。拿不到映射时
+// 返回 nil,调用方原样打 userID。
+//
+// 必须先 Stat:store.Open 对不存在的路径会**建一个空库**,不判存在的话
+// `connection list` 会在 cwd 悄悄拉出一个 data/nanotun.db(main.go runWithStoreOpts
+// 里记着的同一个坑)。
+func resolveSessionUsernames(opts *globalOpts) map[string]string {
+	if _, err := os.Stat(opts.dbPath); err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	st, err := store.Open(ctx, opts.dbPath, store.Options{ReadOnly: true})
+	if err != nil {
+		return nil
+	}
+	defer st.Close()
+	// ListUsersAll 而非 ListUsers:被禁用的账号在被踢下线之前仍可能挂着会话,
+	// 那种会话恰恰是运维最想认准的,不能因为过滤掉 disabled 就退回裸 id。
+	users, err := st.ListUsersAll(ctx)
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]string, len(users))
+	for _, u := range users {
+		if u == nil || u.Username == "" {
+			continue
+		}
+		m["u"+strconv.FormatInt(u.ID, 10)] = u.Username
+	}
+	return m
+}
+
+func printConnectionList(opts *globalOpts, body []byte, usernames map[string]string) error {
 	var resp struct {
 		OK            bool   `json:"ok"`
 		ConnCount     int    `json:"conn_count"`
@@ -281,7 +325,9 @@ func printConnectionList(opts *globalOpts, body []byte) error {
 	fmt.Fprintln(opts.stdout, opts.T("status.serverLine", resp.ServerVersion, resp.Uptime))
 	fmt.Fprintln(opts.stdout, opts.T("status.countersLine",
 		resp.ConnCount, resp.ACLDropTotal, resp.ACLExitDrops, resp.UserKickTotal, resp.LeaseGCTotal))
-	t := newTable(opts.stdout, "CONN_ID", "USER", "VIPS", "EXIT", "UP_BPS", "DOWN_BPS", "AGE")
+	// USER_ID 单独占一列而不是只留用户名:audit_logs.target 存的就是这个 "u<id>"
+	// (`audit list` 的 TARGET 列原样打),没有它运维看到 target=u3 无从对到人。
+	t := newTable(opts.stdout, "CONN_ID", "USER", "USER_ID", "VIPS", "EXIT", "UP_BPS", "DOWN_BPS", "AGE")
 	for _, s := range resp.Sessions {
 		exit := "yes"
 		if !s.ExitAllowed {
@@ -297,8 +343,15 @@ func printConnectionList(opts *globalOpts, body []byte) error {
 			// limiter 尚未建立(登录路径亚毫秒窗口),LinkRate* 的 0 无意义 —— 别报成「不限速」。
 			upCell, downCell = "?", "?"
 		}
+		// 解析不出就留 "-":把 "u3" 同时打进 USER 和 USER_ID 只会让人再次把 id 当用户名读,
+		// 而 id 本身在右边那列一个不少。
+		user := "-"
+		if name, ok := usernames[s.UserID]; ok {
+			user = name
+		}
 		t.row(
 			s.ConnID,
+			user,
 			s.UserID,
 			joinStrings(s.VIPs, ","),
 			exit,
