@@ -5,6 +5,21 @@
 # 在共用环境上跑真还原风险太高。真正的「停服→还原→启动→校验」演练请用
 # --with-restore-drill 显式开启,并且只在可以随便重置的环境上跑。
 
+# 停过服务端之后等数据面自己回来。不记断言 —— 它只是让后面那些「默认隧道是通的」
+# 断言跑在稳定状态上。等不回来就直接返回,由后面的断言指名道姓地报。
+#
+# 这道等待原本没有:systemd 下停起够快,后续几条断言的耗时正好把重连窗口盖过去了;
+# 容器下停起慢一截(整个容器 teardown + entrypoint 自检 + 等控制面 socket 才拉 web),
+# 于是「坏配置期间数据面不中断」那条立即探测就扑空 —— 红在它身上,病根在这里。
+_wait_egress_back() {
+  local i
+  for i in $(seq 1 45); do
+    probe_egress_is "$E2E_C_HOST" && return 0
+    sleep 2
+  done
+  return 1
+}
+
 # _check_restore_names_the_other_db_holder 验还原守卫的**第二道**闸:按 /proc 扫真实持有者。
 #
 # 为什么非得停掉 nanotund 才算测到:restore 前有两道闸,第一道探 control socket(只代表
@@ -43,11 +58,23 @@ _check_restore_names_the_other_db_holder() {
     sleep 1
   done
 
+  # 停完数据面再确认一次 web 还在。单容器部署里两个进程由同一个 entrypoint 守护,
+  # 停数据面会把 web 一并带走 —— 于是没有任何持有者,这道闸无从触发,断言会红在
+  # 「源校验先响了」上,看着像顺序被挪过,其实是构造不出前提。那种形态下本组本来就
+  # 不适用:它防的「stop nanotun 之后 web 仍抱着旧 inode 写孤儿文件」结构上不会发生。
+  if [[ "$(s 'systemctl is-active nanotun-web' | tr -d '[:space:]')" != "active" ]]; then
+    s "systemctl start nanotun" >/dev/null
+    _wait_egress_back
+    skip "还原守卫第二道 · /proc 扫持有者（停掉数据面时 web 被一并停掉，构造不出持有者）"
+    return
+  fi
+
   local out
   out="$(adm_y "restore $junk" 2>&1)"
 
   # 先把服务拉回来,再做断言 —— 断言失败会 return,不能让服务停在那儿。
   s "systemctl start nanotun" >/dev/null
+  _wait_egress_back
 
   check_contains "还原被第二道守卫拦下（/proc 扫到别的持有者）" "other processes still have this DB open" "$out"
   check_contains "并点名 nanotun-web 这个持有者" "nanotun-web" "$out"
@@ -399,7 +426,7 @@ _keepalive_warned_for_a() {
 # 最难发现的一种:日志看起来一切正常,僵尸连接却一直挂着占着 vIP 和配额。
 _keepalive_reaped_a() {
   _keepalive_warned_for_a "$1" || return 1
-  ! adm "connection list" | awk -v v="$E2E_A_VIP4" '$3 ~ v {found=1} END {exit !found}'
+  ! adm "connection list" | awk -v v="$E2E_A_VIP4" '$4 ~ v {found=1} END {exit !found}'
 }
 
 # _dur_secs <时长串> 把 1h2m3s / 1m34s / 43s 这类 Go 风格时长折成秒。取不到就 0。
@@ -932,7 +959,8 @@ _restore_udp_relay_off() {
 # ValidateJumpHostFirewall 拦下(「留空等于全网开放」),Fatal 照样发生、断言照样绿,但测到的
 # 是另一道闸 —— 第 51 轮刚在还原守卫上踩过同一个坑(一道闸被更早的同族闸永久遮住)。
 _check_jump_host_firewall_fails_closed_without_ipset() {
-  if s "command -v ipset >/dev/null 2>&1 || ls /sbin/ipset /usr/sbin/ipset >/dev/null 2>&1" >/dev/null 2>&1; then
+  # 探测要落在 nanotund 自己看得到的文件系统里 —— 容器部署时宿主装没装 ipset 不作数。
+  if srv_in_svc "command -v ipset >/dev/null 2>&1 || ls /sbin/ipset /usr/sbin/ipset >/dev/null 2>&1" >/dev/null 2>&1; then
     skip "跳板机防火墙 · 缺 ipset 时 fail-closed（本机装了 ipset，这条测不到：它要的正是「ipset 不可用」这个条件）"
     return 0
   fi
@@ -1018,8 +1046,9 @@ _has_fresh_login() { [[ -n "$(_login_success_actor_since "$1" "$2")" ]]; }
 # 单测覆盖不到:归一化函数本身可以单测,但「QUIC 地址 → 归一 → PROXY v2 → 服务端解析 →
 # 落进审计」跨了两条真实承载和一次真实登录,只有三机能走通。
 _check_login_attribution_uses_real_client_ip() {
-  # 按 vIP 认连接,不按用户名:审计的 target 是 userID(u2/u4),而 E2E_*_USER 有的是用户名,
-  # 两者对不上。vIP 在 env 里是确定的,且和 connection list 同一行还能取到 userID。
+  # 按 vIP 认连接,不按用户名:审计的 target 是 userID("u<主键>"),跟用户名是两个命名空间,
+  # 直接拿 E2E_*_USER 去查审计对不上。vIP 在 env 里是确定的,且 connection list 同一行的
+  # USER_ID 列就是审计要的那个 userID。
   _attribution_case "$E2E_C_VIP4" "$E2E_C_HOST" "hy2"
   _attribution_case "$E2E_A_VIP4" "$E2E_A_HOST" "REALITY"
 }
@@ -1028,7 +1057,7 @@ _attribution_case() {
   local vip="$1" host="$2" label="$3"
   local row cid user since actor ip
 
-  row="$(adm "connection list" | awk -v v="$vip" '$3 ~ v {print $1, $2; exit}')"
+  row="$(adm "connection list" | awk -v v="$vip" '$4 ~ v {print $1, $3; exit}')"
   if [[ -z "$row" ]]; then
     skip "$label 登录归因（未找到 $vip 的在线会话）"
     return 0

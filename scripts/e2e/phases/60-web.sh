@@ -27,6 +27,15 @@ wv() { s "$WEBC --jar ${E2E_REMOTE_DIR:-/tmp/nte2e}/jar_viewer.txt $*"; }
 # 未登录(每次用一个空 jar)
 wn() { s "rm -f ${E2E_REMOTE_DIR:-/tmp/nte2e}/jar_anon.txt; $WEBC --jar ${E2E_REMOTE_DIR:-/tmp/nte2e}/jar_anon.txt $*"; }
 
+# 按用户名删掉 web 管理员账号,不存在就静默返回。
+# 只认纯数字 id:sqlite3 缺失 / 查询报错时返回的是报错文本,拿它去拼 URL 会删不掉又不报错。
+viewer_purge() {
+  local vid
+  vid="$(s "sqlite3 '$E2E_DB_PATH' \"select id from web_admins where username='$1';\"" | tr -d '[:space:]')"
+  [[ "$vid" =~ ^[0-9]+$ ]] || return 0
+  wa "post /admins/$vid/delete" >/dev/null
+}
+
 pf_count() { s "sqlite3 '$E2E_DB_PATH' 'select count(*) from port_forwards;'" | tr -d '[:space:]'; }
 pf_id_of() { s "sqlite3 '$E2E_DB_PATH' \"select id from port_forwards where public_port=$1;\"" | tr -d '[:space:]'; }
 
@@ -105,6 +114,10 @@ phase_60_web() {
 
   # ── RBAC ──────────────────────────────────────────────────────────────────
   local vuser="${E2E_VIEWER_USER:-nte2e_viewer}" vpass="${E2E_VIEWER_PASS:-Nt-E2E-Viewer-2026!x}"
+  # 先清掉上一轮漏下的同名账号:重名会让创建退回 200(带错误的表单),整组 RBAC 直接 skip。
+  # 而收尾的删除但凡失败过一次(2026-08-02:服务端没装 sqlite3,查 id 拿到的是报错文本),
+  # 这组断言就从此**永久静默** —— 之后每轮都 skip,还都是绿的。所以创建前无条件清一次。
+  viewer_purge "$vuser"
   st="$(wa "post /admins/new username=$vuser role=viewer password='$vpass' password_confirm='$vpass'" | tail -1)"
   if [[ "$st" != "303" ]]; then
     skip "RBAC（创建 viewer 账号失败,返回 ${st}）"
@@ -124,9 +137,7 @@ phase_60_web() {
       "$(wv "post /admins/new username=x role=admin password='$vpass' password_confirm='$vpass' --csrf-from /sessions" | tail -1)"
     check "viewer 的写尝试没有产生任何副作用" "$before" "$(pf_count)"
 
-    local vid
-    vid="$(s "sqlite3 '$E2E_DB_PATH' \"select id from web_admins where username='$vuser';\"" | tr -d '[:space:]')"
-    [[ -n "$vid" ]] && wa "post /admins/$vid/delete" >/dev/null
+    viewer_purge "$vuser"
   fi
 
   # ── 收尾:删掉两条端口转发 ────────────────────────────────────────────────

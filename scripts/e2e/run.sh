@@ -58,6 +58,26 @@ done
 
 e2e_load_env || exit 2
 
+# 单实例锁。两轮 e2e 并发跑会**互相踩**:各自重启服务端、改同一份 config.toml、
+# 把对方的靶站停掉、抢同一个公网端口 —— 症状是一大片看不出原因的红,而两边的日志
+# 各自都「说得通」。2026-08-02 连着栽了两次(一次是同一条命令被执行了两遍),第二次
+# 两轮还写进了同一个日志文件,PASS 和失败清单自相矛盾,查了很久才认出是并发。
+#
+# 用 mkdir 而不是 flock:mkdir 本身是原子的,而 macOS 上没有 flock(1)。
+E2E_LOCK="${TMPDIR:-/tmp}/nanotun-e2e.lock"
+if ! mkdir "$E2E_LOCK" 2>/dev/null; then
+  _holder="$(cat "$E2E_LOCK/pid" 2>/dev/null || true)"
+  if [[ "$_holder" =~ ^[0-9]+$ ]] && kill -0 "$_holder" 2>/dev/null; then
+    echo "已有一轮 e2e 在跑(pid $_holder),两轮并发会互相踩,拒绝启动。" >&2
+    echo "确认那轮确实已经死了再:rm -rf $E2E_LOCK" >&2
+    exit 2
+  fi
+  echo "清掉上一轮留下的陈旧锁(pid ${_holder:-?} 已不在)" >&2
+  rm -rf "$E2E_LOCK"
+  mkdir "$E2E_LOCK" 2>/dev/null || { echo "抢锁失败:$E2E_LOCK" >&2; exit 2; }
+fi
+echo $$ > "$E2E_LOCK/pid"
+
 for bin in sshpass python3 curl; do
   command -v "$bin" >/dev/null || { echo "缺少依赖: $bin" >&2; exit 2; }
 done
@@ -68,6 +88,7 @@ cleanup() {
   (( KEEP_TARGET )) || target_stop
   e2e_ssh_cleanup
   rm -f "$E2E_ENVLOG"
+  rm -rf "$E2E_LOCK"
   exit $rc
 }
 trap cleanup EXIT INT TERM
