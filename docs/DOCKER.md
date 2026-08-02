@@ -255,6 +255,16 @@ docker compose exec nanotun diff /etc/nanotun/config.toml /etc/nanotun/config.to
 前三个对应 systemd unit 里的 `RestartPreventExitStatus=10 11 20`。Docker 的 restart 策略
 没有「某些退出码不重启」这种表达，只能在 entrypoint 里判。
 
+**容器的退出码就是 `nanotund` 的退出码**，上表这几个原样透出来：
+
+```bash
+docker inspect -f '{{.State.ExitCode}}' nanotun   # 11 = 配置语义错
+```
+
+别只看日志判死因 —— 编排系统、告警规则、运维脚本读的都是退出码。唯一被改写的是
+`nanotund` 在没人要求关停的情况下以 `0` 退出：那不是正常收工，容器会以 `1` 退出，
+免得 `docker ps` 显示成 `Exited (0)` 骗过巡检。
+
 ---
 
 ## 已知不适用的场景

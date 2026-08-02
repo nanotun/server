@@ -30,6 +30,24 @@ ok()   { printf '\033[1;32m[entrypoint]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[entrypoint]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[entrypoint] FATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 
+# die_with_code <码> <说明>:把 nanotund 的退出码原样当成**容器的**退出码。
+#
+# nanotund 用语义化 code 区分死因(10 配置解析 / 11 配置语义 / 20 TLS 证书 / 60 网络配置),
+# systemd 那边靠它做 RestartPreventExitStatus。早先这里一律 exit 1,于是
+# `docker inspect -f '{{.State.ExitCode}}'` 永远是 1 ——「配置写错了」和「崩了」在
+# **机器可读的那个通道**上无从区分,只剩日志里一行字。运维脚本、编排系统、告警规则
+# 看的都是退出码。
+#
+# rc=0 是另一回事:没人要求关停,它却干净退了,这不是成功。给它 1,别让
+# `docker ps` 显示成 "Exited (0)" —— 那看着像一次正常收工。
+die_with_code() {
+  local rc="$1"; shift
+  (( rc == 0 )) && { printf '\033[1;31m[entrypoint] FATAL: %s\033[0m\n' \
+    "nanotund 未被要求停止却以 exit 0 退出,容器一并退出" >&2; exit 1; }
+  printf '\033[1;31m[entrypoint] FATAL: %s(容器退出码沿用它)\033[0m\n' "$*" >&2
+  exit "$rc"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. 起飞前自检
 #
@@ -262,13 +280,13 @@ supervise() {
           # 与 nanotun.service 的 RestartPreventExitStatus=10 11 20 同一组:配置解析 /
           # 配置语义 / TLS 证书错误,重启一万次也是同样结果。Docker 的 restart 策略没有
           # "某些退出码不重启"这种表达,只能在这里把话说明白。
-          die "nanotund 以 exit $rc 退出(10=配置解析 11=配置语义 20=TLS 证书)——
+          warn "nanotund 以 exit $rc 退出(10=配置解析 11=配置语义 20=TLS 证书)——
      这类错误重启不会好转,请改 $CFG 后再启动容器。"
           ;;
         60) warn "nanotund 以 exit 60 退出(网络配置失败:TUN / ip_forward / iptables)" ;;
       esac
       [[ -n "$WEB_PID" ]] && kill -TERM "$WEB_PID" 2>/dev/null || true
-      die "nanotund 退出(code=$rc),容器一并退出"
+      die_with_code "$rc" "nanotund 退出(code=$rc),容器一并退出"
     fi
 
     if [[ -n "$WEB_PID" ]] && ! kill -0 "$WEB_PID" 2>/dev/null; then
