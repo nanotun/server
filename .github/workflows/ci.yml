@@ -145,6 +145,38 @@ jobs:
             **/testdata/fuzz/**
           if-no-files-found: ignore
 
+  docker-image:
+    name: docker 镜像构建 amd64+arm64 (blocking)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 这道门禁是补上来的,理由是「至今为止 Docker 的问题全靠手工撞」:third_party 没进
+    # 构建上下文、entrypoint.sh 缺可执行位、sysctl 只读被误判致命、TARGETARCH 架构错配、
+    # builder 没钉 BUILDPLATFORM —— 五个,五次手工发现,CI 一个都不拦。
+    #
+    # 必须两个架构都构建:上面那个架构错配 bug 在 amd64 上完全看不出来(两边凑巧都是
+    # amd64),只有 arm64 那条路径才暴露。单构 amd64 等于把唯一能抓住它的入口关掉。
+    #
+    # 不推镜像,只构建。Dockerfile 里的 archcheck 会在运行阶段核对二进制架构与基底,
+    # 那才是真正的断言;这个 job 的作用是让它在每个 PR 上都跑一遍。
+    steps:
+      - uses: actions/checkout@v4
+      # arm64 的运行阶段(apt-get、archcheck)要在 amd64 runner 上模拟才能执行。
+      # 构建阶段不需要它:Dockerfile 里 builder 钉了 BUILDPLATFORM,Go 工具链始终跑本机。
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v4
+      - name: 构建 amd64 + arm64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          # GHA 缓存:apt-get 那层每次重下会把这个 job 拖到十几分钟,尤其是模拟下的 arm64。
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   staticcheck:
     name: staticcheck (informational)
     if: github.event_name != 'schedule'

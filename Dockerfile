@@ -15,8 +15,23 @@
 # 2) 编译产物全静态(CGO_ENABLED=0),与 scripts/build-release.sh 同款参数。SQLite 用的是
 #    modernc 纯 Go 实现,所以 runtime 层不需要 gcc / libsqlite3,只需要那几个网络工具。
 
-ARG GO_IMAGE=golang:1.26-bookworm
-ARG RUNTIME_IMAGE=debian:bookworm-slim
+# 基础镜像钉到 digest。浮动 tag 下同一份 Dockerfile 隔几天构建出来的东西就不一样了 ——
+# 出问题时"我这儿好好的"和"线上炸了"可能真的是两个镜像,而 git 上看不出任何差异。
+#
+# 钉的是**多架构 index** 的 digest(OCI image index),不是某个平台的 manifest,
+# 所以 amd64 / arm64 都还能正常解析。用单平台 digest 会把多架构构建钉死在一个架构上。
+# tag 保留在前面只为可读,真正生效的是 @sha256。
+#
+# 更新方式(基础镜像发安全更新时要做,不然就等于永远用着旧的 libc/openssl):
+#   docker buildx imagetools inspect golang:1.26-bookworm   # 取 Digest 行
+#   docker buildx imagetools inspect debian:bookworm-slim
+# 换完跑一次 `docker build` 让 archcheck 过一遍,CI 的 docker-image job 也会两个架构都构建。
+#
+# GO_IMAGE 里的 Go 版本要跟得上 go.mod 的 toolchain 行(当前两边都是 go1.26.5),
+# 否则 go 会在构建时按 GOTOOLCHAIN 现下一个 —— 能成,但凭空多一次网络依赖,
+# 而且镜像里到底用哪个版本编的就看不出来了。ci.yml 的 setup-go 是同一个约束。
+ARG GO_IMAGE=golang:1.26-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
+ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 构建阶段
