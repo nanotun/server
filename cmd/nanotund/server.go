@@ -441,6 +441,17 @@ func init() {
 	)
 }
 
+// formatVersion: `nanotund --version` 的输出。
+//
+// 第一行钉死 "nanotund <版本>",与 nanotun-admin / nanotun-web 同格式 —— 脚本里
+// `nanotund --version | head -1` 拿到的就该是这一行(scripts/uninstall.sh 就这么用)。
+// git SHA 与构建时间另起两行:排查「这台机器上跑的到底是哪次构建」时它们才是关键,
+// 但不该挤进第一行去搅乱解析。
+func formatVersion() string {
+	return fmt.Sprintf("nanotund %s\n  git    %s\n  built  %s",
+		serverVersion, serverGitSHA, serverBuildTime)
+}
+
 // mergeFallbackVersion: ldflags 注入值优先(显式 > 隐式),只在仍是默认 "unknown" 时
 // 才用 buildInfo 回填。vcs.modified=true 时给 dev-<sha> 拼 "-dirty" 后缀。
 //
@@ -837,6 +848,21 @@ func probeLoopbackVPNReachable(listenAddr string, port int) {
 }
 
 func main() {
+	// 参数解析放在**所有副作用之前**。下面紧接着就要建 globalContext、拉起 demux
+	// goroutine、打启动横幅,而 `nanotund --version` 应该只往 stdout 吐版本然后走人 ——
+	// 横幅是 logrus 打到 stderr 的一行带时间戳的 INFO,混在前面会让
+	// `nanotund --version | head -1` 这类用法拿到垃圾。flag.Parse 本身无副作用,
+	// 提前跑还顺带让「参数敲错」在启动任何东西之前就以 exit 2 收场。
+	configPath := flag.String("config", "config.toml", "配置文件路径")
+	addrOverride := flag.String("addr", "", "监听地址（覆盖配置文件中的 listen_addr）")
+	showVersion := flag.Bool("version", false, "打印版本并退出")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(formatVersion())
+		return
+	}
+
 	globalContext, globalContextCancel = context.WithCancel(context.Background())
 	defer globalContextCancel()
 
@@ -929,10 +955,6 @@ func main() {
 		"build_time": serverBuildTime,
 		"git_sha":    serverGitSHA,
 	}).Info("nanotund 启动")
-
-	configPath := flag.String("config", "config.toml", "配置文件路径")
-	addrOverride := flag.String("addr", "", "监听地址（覆盖配置文件中的 listen_addr）")
-	flag.Parse()
 
 	cfg, err := loadConfig(*configPath)
 	if err != nil {

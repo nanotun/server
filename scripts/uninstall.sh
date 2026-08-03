@@ -84,7 +84,8 @@ if [ "$CLIENT_PRESENT" = 1 ]; then
 fi
 
 if [ -x /usr/local/bin/nanotund ] || [ -f /etc/systemd/system/nanotun.service ]; then
-  ok "找到已安装的服务端$([ -x /usr/local/bin/nanotund ] && printf '(nanotund %s)' "$(/usr/local/bin/nanotund --version 2>/dev/null | head -1)")"
+  # --version 第一行已经是 "nanotund <版本>",别再自己拼一遍程序名(会变成 nanotund nanotund vX)。
+  ok "找到已安装的服务端$([ -x /usr/local/bin/nanotund ] && printf '(%s)' "$(/usr/local/bin/nanotund --version 2>/dev/null | head -1)")"
 else
   warn "没找到已安装的服务端(nanotund 与 nanotun.service 都不在)。"
   warn "继续跑也无妨 —— 下面每一步都是幂等的,不在就跳过。"

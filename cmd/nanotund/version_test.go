@@ -76,6 +76,29 @@ func TestMergeFallbackVersion(t *testing.T) {
 	}
 }
 
+// TestFormatVersion: `nanotund --version` 的第一行必须是 "nanotund <版本>"。
+//
+// 钉住第一行是因为它是被解析的那一行:scripts/uninstall.sh 用 `| head -1` 取它来显示
+// 「找到已安装的服务端」。往第一行加东西(git SHA、构建时间之类)不会有任何测试变红,
+// 但会让那些取法拿到一串多余内容 —— 与 nanotun-admin / nanotun-web 的输出格式也就散了。
+func TestFormatVersion(t *testing.T) {
+	origV, origSHA, origTS := serverVersion, serverGitSHA, serverBuildTime
+	t.Cleanup(func() { serverVersion, serverGitSHA, serverBuildTime = origV, origSHA, origTS })
+	serverVersion, serverGitSHA, serverBuildTime = "v9.9.9", "abc1234", "2026-08-04T00:00:00Z"
+
+	lines := strings.Split(formatVersion(), "\n")
+	if lines[0] != "nanotund v9.9.9" {
+		t.Errorf("第一行期望 %q, 实际 %q", "nanotund v9.9.9", lines[0])
+	}
+	// 另外两行是排查「跑的是哪次构建」时唯一的线索,掉了不该悄无声息。
+	rest := strings.Join(lines[1:], "\n")
+	for _, want := range []string{"abc1234", "2026-08-04T00:00:00Z"} {
+		if !strings.Contains(rest, want) {
+			t.Errorf("输出缺 %q:\n%s", want, formatVersion())
+		}
+	}
+}
+
 // TestBuildInfoShortSHA: vcs.revision 长 hash 必须被截到 7 字符,避免 dashboard 太长。
 // 真实 buildInfo() 在 `go test` 下一般取不到 vcs.revision(test binary 不嵌 vcs);
 // 若取到了,验证它满足 ≤7 字符即可,取不到就跳过。
