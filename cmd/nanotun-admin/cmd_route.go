@@ -57,16 +57,32 @@ func cmdRouteList(ctx context.Context, st *store.Store, opts *globalOpts, args [
 
 	var rows []store.SubnetRoute
 	var err error
+	wantStatus := strings.TrimSpace(*status)
 	switch {
 	case *deviceID > 0:
 		rows, err = st.ListRoutesByDevice(ctx, *deviceID)
-	case strings.TrimSpace(*status) != "":
-		rows, err = st.ListRoutesByStatus(ctx, *status)
+	case wantStatus != "":
+		rows, err = st.ListRoutesByStatus(ctx, wantStatus)
+		wantStatus = "" // 已在库里筛过,不必再筛一遍
 	default:
 		rows, err = st.ListAllRoutes(ctx)
 	}
 	if err != nil {
 		return err
+	}
+
+	// --status 必须能和 --device / --user 叠加。此前它只是取数分支之一:同时给了
+	// --device 就被静默丢弃,`route list --device N --status pending` 把已批准的一并列出。
+	// 而这条命令的用途恰恰是「还有什么等着我批」—— 混进已批准的行会让人以为批完了,
+	// 于是真正 pending 的子网一直没人管,客户端那边表现为「宣告了但一直不通」。
+	if wantStatus != "" {
+		filtered := rows[:0]
+		for _, r := range rows {
+			if r.Status == wantStatus {
+				filtered = append(filtered, r)
+			}
+		}
+		rows = filtered
 	}
 
 	if *username != "" {
