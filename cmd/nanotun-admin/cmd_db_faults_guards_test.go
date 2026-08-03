@@ -116,7 +116,7 @@ func TestFindFixedVIPConflict_ErrorsAreWrapped(t *testing.T) {
 	t.Run("candidate 不是合法 IP", func(t *testing.T) {
 		st := openStoreForTest(t, db)
 		defer st.Close()
-		if _, err := findFixedVIPConflict(t.Context(), st, opts, "10.0.0.999", 0); err == nil {
+		if _, _, err := findFixedVIPConflict(t.Context(), st, opts, "10.0.0.999", 0); err == nil {
 			t.Fatal("非法 IP 应报错 —— 否则会被当成「没冲突」而写进库")
 		}
 	})
@@ -125,9 +125,9 @@ func TestFindFixedVIPConflict_ErrorsAreWrapped(t *testing.T) {
 		// 清除 fixed-vip 用的就是空串,不该被冲突检查拦下。
 		st := openStoreForTest(t, db)
 		defer st.Close()
-		got, err := findFixedVIPConflict(t.Context(), st, opts, "", 1)
-		if err != nil || got != "" {
-			t.Fatalf("got=(%q,%v),期望空串 + nil", got, err)
+		got, hard, err := findFixedVIPConflict(t.Context(), st, opts, "", 1)
+		if err != nil || got != "" || hard {
+			t.Fatalf("got=(%q,%v,%v),期望空串 + false + nil", got, hard, err)
 		}
 	})
 
@@ -138,7 +138,7 @@ func TestFindFixedVIPConflict_ErrorsAreWrapped(t *testing.T) {
 		dropTable(t, bad, "devices")
 		st := openStoreForTest(t, bad)
 		defer st.Close()
-		if _, err := findFixedVIPConflict(t.Context(), st, opts, "10.80.0.9", 0); err == nil {
+		if _, _, err := findFixedVIPConflict(t.Context(), st, opts, "10.80.0.9", 0); err == nil {
 			t.Fatal("列设备失败却报「无冲突」")
 		}
 	})
@@ -150,7 +150,7 @@ func TestFindFixedVIPConflict_ErrorsAreWrapped(t *testing.T) {
 		dropTable(t, bad, "leases")
 		st := openStoreForTest(t, bad)
 		defer st.Close()
-		if _, err := findFixedVIPConflict(t.Context(), st, opts, "10.80.0.9", 0); err == nil {
+		if _, _, err := findFixedVIPConflict(t.Context(), st, opts, "10.80.0.9", 0); err == nil {
 			t.Fatal("读租约失败却报「无冲突」")
 		}
 	})
@@ -179,9 +179,17 @@ func TestCmdDeviceSetFixedVIP_ForceOverridesConflicts(t *testing.T) {
 		}
 	}
 
-	// --force 只越过**预检**,不越过 store 层 devices.fixed_vip_* 的 UNIQUE 索引:
-	// 两台设备钉同一个地址是绝对不该落库的(下次登录双分配 → 黑洞),所以这条最终
-	// 仍然失败。但告警必须先打出来 —— 运维得知道自己撞的是谁。
+	// --force 越不过 devices.fixed_vip_* 上的 UNIQUE 索引:两台设备钉同一个地址绝不该落库
+	// (下次登录双分配 → 黑洞)。既然强推注定被数据库拒掉,就别放它去撞 —— 2026-08-03 起改成
+	// 预检阶段直接判死,不再「先 WARN 再让 UPDATE 去撞 unique constraint violation」。
+	//
+	// 换掉的理由来自同一天 exit designate 上的事故:那条命令是**先批准出口路由、再钉 vIP**,
+	// --force 跳过预检后第 1 步已经落库、第 2 步才撞 UNIQUE,留下「路由已批准、vIP 没钉上」
+	// 的半完成态,而命令整体返回 1 —— 退出码说失败、库里看出口是好的。两个入口现在统一在
+	// 写任何东西之前判死。
+	//
+	// 断言的落点仍是原来那两条:必须失败,且必须说清撞的是谁 —— 只是「谁」现在出现在
+	// 错误里而不是一条 WARN 里。
 	for _, tc := range []struct{ flag, val string }{
 		{"--v4", "10.201.0.5"},
 		{"--v6", "fd00:201::5"},
@@ -190,8 +198,18 @@ func TestCmdDeviceSetFixedVIP_ForceOverridesConflicts(t *testing.T) {
 		if c == 0 {
 			t.Fatalf("--force %s 把两台设备钉到了同一个 vIP —— UNIQUE 兜底没了", tc.flag)
 		}
-		if !strings.Contains(e, "WARN") || !strings.Contains(e, tc.val) {
-			t.Errorf("--force %s 撞库前没先告警撞的是谁: %q", tc.flag, e)
+		if !strings.Contains(e, tc.val) {
+			t.Errorf("--force %s 的报错没回显撞的地址: %q", tc.flag, e)
+		}
+		// 光说「冲突了」不够:运维要能直接看出去找谁腾地方。
+		if !strings.Contains(e, fmt.Sprintf("id=%d", d1)) {
+			t.Errorf("--force %s 的报错没指出占用者是设备 %d: %q", tc.flag, d1, e)
+		}
+		// 必须是预检拦下的,不能是 UPDATE 撞库回来的。判据用 store 层错误特有的 "store: " 前缀
+		// ——「unique constraint violation」这串字在预检的提示文案里也有(它正是在解释为什么
+		// --force 没用),拿它当判据会把自己的提示误判成库报的错。
+		if strings.Contains(e, "store: ") {
+			t.Errorf("--force %s 还是让 UPDATE 去撞了库,预检没拦住: %q", tc.flag, e)
 		}
 	}
 

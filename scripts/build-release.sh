@@ -80,8 +80,10 @@ for GOARCH in $ARCHES; do
   # 之间那段的唯一引导,install-self-hosted.sh 的结尾会指向它。
   # preflight.sh 是环境判据的唯一真源,install-self-hosted.sh 直接调它;不随包走的话
   # 从 tar 装的人就只能退回到那套简化的兜底检查。
+  # uninstall.sh 必须跟安装脚本同包:它删的是一份**写死的文件清单**(共用目录里还有客户端的
+  # device_id 等文件,不能按目录删),这份清单只有和它同版本的 install-self-hosted.sh 对得上。
   cp scripts/ensure-server-assets.sh scripts/install-self-hosted.sh \
-     scripts/setup.sh scripts/preflight.sh "${STAGING}/scripts/"
+     scripts/setup.sh scripts/preflight.sh scripts/uninstall.sh "${STAGING}/scripts/"
   chmod +x "${STAGING}/scripts/"*.sh
 
   echo "3. 打包 ${DIR_NAME}.tar.gz ..."

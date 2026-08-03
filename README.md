@@ -293,6 +293,22 @@ tag,workflow 只认这种 tag —— 手工 `git tag` 推上去发不出版本�
 **备份**:`nanotun-admin backup`(热一致,走 `VACUUM INTO`)拿 SQLite 库,
 再连 `/etc/nanotun` 一起存 —— REALITY 私钥和 hy2 口令都在那儿,丢了客户端要重新接入。
 
+**卸载**:[`scripts/uninstall.sh`](scripts/uninstall.sh)(随发布包走)。
+
+```bash
+sudo ./scripts/uninstall.sh              # 停服务、删程序,保留配置与数据库
+sudo ./scripts/uninstall.sh --purge      # 连配置、证书、数据库一起删
+sudo ./scripts/uninstall.sh --dry-run    # 先看看会动哪些文件
+```
+
+默认保留 `/etc/nanotun` 与数据库,重装一遍就能接着用;`--purge` 会要求你手输 `purge` 再确认,
+因为用户、设备、PSK 和审批过的子网路由是一起没的,已发出去的客户端配置随之作废。
+
+别手动 `rm -rf /etc/nanotun /var/lib/nanotun`:这两个目录**和客户端共用**,
+客户端的设备身份 `/etc/nanotun/device_id` 就在里面。删掉它客户端会以新 UUID 重新注册,
+而 UUID 是审批和出口选择的稳定键 —— 旧设备行还占着固定 vIP,新设备钉不上,
+已经选了这个出口的客户端那边它直接消失。卸载脚本按文件清单删,不碰这些。
+
 数据库 schema 在启动时自动迁移,没有单独的 migrate 命令。
 
 历史版本曾经依赖 一个集中式认证后端(`legacy_backend` 模式),

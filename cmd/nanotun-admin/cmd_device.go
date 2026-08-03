@@ -391,22 +391,34 @@ func cmdDeviceSetFixedVIP(ctx context.Context, st *store.Store, opts *globalOpts
 	}
 	// 仅在「真的变了」时才查冲突,避免 noop 触发全表扫描。
 	if changedV4 && newV4 != d.FixedVIPv4 {
-		if conflict, err := findFixedVIPConflict(ctx, st, opts, newV4, d.ID); err != nil {
+		conflict, hard, err := findFixedVIPConflict(ctx, st, opts, newV4, d.ID)
+		if err != nil {
 			return err
-		} else if conflict != "" {
-			if !*force {
-				return errors.New(opts.T("device.fixedConflictV4", newV4, conflict))
-			}
+		}
+		switch {
+		case conflict == "":
+		// 撞的是别人钉死的 fixed_vip:UNIQUE 索引兜底,--force 也推不过去(见 findFixedVIPConflict)。
+		// 与其跳过预检去撞一个不带上下文的 unique constraint violation,不如就在这儿说清是谁占着、怎么腾。
+		case hard:
+			return errors.New(opts.T("vip.pinnedByOtherDevice", "v4", newV4, conflict))
+		case !*force:
+			return errors.New(opts.T("device.fixedConflictV4", newV4, conflict))
+		default:
 			fmt.Fprintln(opts.stderr, opts.T("device.forceOverrideV4", conflict))
 		}
 	}
 	if changedV6 && newV6 != d.FixedVIPv6 {
-		if conflict, err := findFixedVIPConflict(ctx, st, opts, newV6, d.ID); err != nil {
+		conflict, hard, err := findFixedVIPConflict(ctx, st, opts, newV6, d.ID)
+		if err != nil {
 			return err
-		} else if conflict != "" {
-			if !*force {
-				return errors.New(opts.T("device.fixedConflictV6", newV6, conflict))
-			}
+		}
+		switch {
+		case conflict == "":
+		case hard:
+			return errors.New(opts.T("vip.pinnedByOtherDevice", "v6", newV6, conflict))
+		case !*force:
+			return errors.New(opts.T("device.fixedConflictV6", newV6, conflict))
+		default:
 			fmt.Fprintln(opts.stderr, opts.T("device.forceOverrideV6", conflict))
 		}
 	}
@@ -658,48 +670,62 @@ func ipv4DirectedBroadcastPrefix(prefix netip.Prefix) (netip.Addr, bool) {
 // 是 admin 常见操作(钉死现有 IP)。
 //
 // 返回值:
-//   - candidate == "" 永远返回 "",nil(清除 fixed-vip 不需要检查)
+//   - candidate == "" 永远返回 "",false,nil(清除 fixed-vip 不需要检查)
 //   - candidate 非合法 IP → 返回 error
 //   - 撞了 → 返回人类可读描述(admin 看着决定是否 --force)
-//   - 没撞 → 返回 "",nil
+//   - 没撞 → 返回 "",false,nil
+//
+// 第二个返回值 hard 区分**两类冲突**,因为 --force 只兜得住其中一类:
+//
+//	hard=false  撞的是别的设备**动态分配**到的 lease。SetDeviceFixedVIP(force=true) 会在
+//	            同一事务里把那条 lease 的 vip 置 NULL 腾地方,--force 确实能推过去。
+//	hard=true   撞的是别的设备**钉死**的 fixed_vip。这条由 devices 表上的 UNIQUE 索引兜底,
+//	            谁也越不过 —— 带 --force 只是跳过了这里的预检,UPDATE 照样撞 UNIQUE 报
+//	            `store: unique constraint violation`。
+//
+// 分这一刀是因为不分的代价很实在:2026-08-03 一台设备重装后以新 UUID 注册,旧设备行还钉着
+// 那两个 vIP,`exit designate --force` 于是跳过预检、直撞 UNIQUE。而 designate 是**先批准
+// 出口路由、再钉 vIP**的,于是留下「0.0.0.0/0 已 approved 但 vIP 没钉上」的半完成态,命令
+// 却整体返回 1 —— 退出码说失败、库里看出口是好的,两边对不上,而真凶(那台旧设备)从头到尾
+// 没在任何输出里出现过。带 --force 反倒比不带更难查:不带的话这里会指名道姓报出是谁占着。
 //
 // ownerDeviceID == 0 表示「新设备/无所属」,等价于「全部都算外部」,适合插入新行前
 // (虽然 0008 后已经没有"创建用户时钉 vIP"路径,这里留这个语义只是为了完备性 / 未来
 // 可能新增的 device pre-create 入口)。
-func findFixedVIPConflict(ctx context.Context, st *store.Store, opts *globalOpts, candidate string, ownerDeviceID int64) (string, error) {
+func findFixedVIPConflict(ctx context.Context, st *store.Store, opts *globalOpts, candidate string, ownerDeviceID int64) (desc string, hard bool, err error) {
 	if candidate == "" {
-		return "", nil
+		return "", false, nil
 	}
 	if _, err := netip.ParseAddr(candidate); err != nil {
-		return "", fmt.Errorf("%s: %w", opts.T("device.badIP", candidate), err)
+		return "", false, fmt.Errorf("%s: %w", opts.T("device.badIP", candidate), err)
 	}
 	devs, err := st.ListAllDevices(ctx)
 	if err != nil {
-		return "", fmt.Errorf("list all devices: %w", err)
+		return "", false, fmt.Errorf("list all devices: %w", err)
 	}
 	for _, d := range devs {
 		if d.ID == ownerDeviceID {
 			continue
 		}
 		if d.FixedVIPv4 == candidate {
-			return opts.T("device.conflict.fixedV4", d.ID, d.UserID, d.DeviceName, candidate), nil
+			return opts.T("device.conflict.fixedV4", d.ID, d.UserID, d.DeviceName, candidate), true, nil
 		}
 		if d.FixedVIPv6 == candidate {
-			return opts.T("device.conflict.fixedV6", d.ID, d.UserID, d.DeviceName, candidate), nil
+			return opts.T("device.conflict.fixedV6", d.ID, d.UserID, d.DeviceName, candidate), true, nil
 		}
 		lease, err := st.GetLeaseByDevice(ctx, d.ID)
 		if errors.Is(err, store.ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return "", fmt.Errorf("get lease for device %d: %w", d.ID, err)
+			return "", false, fmt.Errorf("get lease for device %d: %w", d.ID, err)
 		}
 		if lease.VIPv4 == candidate {
-			return opts.T("device.conflict.leaseV4", d.ID, d.UserID, d.DeviceUUID, candidate), nil
+			return opts.T("device.conflict.leaseV4", d.ID, d.UserID, d.DeviceUUID, candidate), false, nil
 		}
 		if lease.VIPv6 == candidate {
-			return opts.T("device.conflict.leaseV6", d.ID, d.UserID, d.DeviceUUID, candidate), nil
+			return opts.T("device.conflict.leaseV6", d.ID, d.UserID, d.DeviceUUID, candidate), false, nil
 		}
 	}
-	return "", nil
+	return "", false, nil
 }

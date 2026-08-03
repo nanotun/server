@@ -241,11 +241,59 @@ func TestCmdExitDesignate_VIPConflictFailsBeforeApprovingRoutes(t *testing.T) {
 	}
 
 	// --force 越过冲突检查:此时才允许留下批准 + 钉上 vIP。
+	// 注意这里用的是 .32,**不撞** holder 的 .31 —— 真撞上时 --force 也不该放行,见下一个用例。
 	if c, _, e := runCLI(t, db, "", "exit", "designate", candStr, "--v4", "100.64.0.32", "--force"); c != 0 {
 		t.Fatalf("--force designate: %s", e)
 	}
 	if s := routeStatus(t, db, cand, util.ExitDefaultRouteV4); s != util.RouteStatusApproved {
 		t.Fatalf("--force 之后应已批准, 状态=%q", s)
+	}
+}
+
+// --force 越不过「地址被另一台设备**钉死**」这一类冲突,而且必须在批准路由之前就判死。
+//
+// 上面那个用例的 --force 分支用的是一个不冲突的地址,所以这条路径一直没人走过,
+// 2026-08-03 就从这个缺口漏了出去:一台设备重装后以新 UUID 注册,旧设备行还钉着那两个
+// vIP,`exit designate --force` 跳过预检 → 第 1 步批准出口路由落库 → 第 2 步 UPDATE 撞
+// devices 上的 UNIQUE。结果是命令 exit 1、库里出口却是 approved 的半完成态,而占着地址的
+// 那台旧设备从头到尾没在任何输出里出现过 —— 带 --force 反而比不带更难查。
+//
+// devices↔devices 归 UNIQUE 索引管,--force 本就推不过去(能推过去的只有 devices↔leases,
+// 那类由 SetDeviceFixedVIP(force=true) 在同一事务里腾地方)。既然注定被拒,就不该放它去撞。
+func TestCmdExitDesignate_ForceCannotStealAVIPPinnedByAnotherDevice(t *testing.T) {
+	db := newInitializedDB(t, t.TempDir(), "exit-force-pin.db")
+	holder := seedExitDevice(t, db, "pinholder", "aaaa1111-7777-4777-8777-777777777777")
+	cand := seedExitDevice(t, db, "pincand", "bbbb2222-8888-4888-8888-888888888888")
+	if c, _, e := runCLI(t, db, "", "device", "set-fixed-vip", fmt.Sprint(holder),
+		"--v4", "100.64.0.51", "--v6", "fd00:200::51"); c != 0 {
+		t.Fatalf("给 holder 钉 vIP: %s", e)
+	}
+	candStr := fmt.Sprint(cand)
+
+	for _, tc := range []struct{ flag, val, cidr string }{
+		{"--v4", "100.64.0.51", util.ExitDefaultRouteV4},
+		{"--v6", "fd00:200::51", util.ExitDefaultRouteV6},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			code, _, stderr := runCLI(t, db, "", "exit", "designate", candStr, tc.flag, tc.val, "--force")
+			if code == 0 {
+				t.Fatal("--force 把另一台设备钉死的 vIP 抢过来了 —— 两台机器同址")
+			}
+			// 半完成态是这条用例真正要堵的东西:失败就得干干净净地失败。
+			if s := routeStatus(t, db, cand, tc.cidr); s != "" {
+				t.Fatalf("失败了却已经批准了出口路由(半完成态): 状态=%q", s)
+			}
+			if got := getDevice(t, db, cand).FixedVIPv4; got != "" {
+				t.Errorf("失败了却钉上了 v4: %q", got)
+			}
+			// 必须指名道姓,否则运维只能拿着 unique constraint violation 去猜是谁占着。
+			if !strings.Contains(stderr, fmt.Sprintf("id=%d", holder)) {
+				t.Errorf("报错没指出占用者是设备 %d: %q", holder, stderr)
+			}
+			if strings.Contains(stderr, "store: ") {
+				t.Errorf("是撞库撞回来的,预检没拦住: %q", stderr)
+			}
+		})
 	}
 }
 

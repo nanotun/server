@@ -170,18 +170,30 @@ func cmdExitDesignate(ctx context.Context, st *store.Store, opts *globalOpts, ar
 			}
 			newV6 = nv
 		}
-		// 冲突检查（仅对真的变了的值；--force 跳过）。
+		// 冲突检查。--force 只跳得过「撞别人动态 lease」那一类 —— 撞别人钉死的 fixed_vip
+		// 是 UNIQUE 索引兜的,谁也越不过,跳过预检只会在下面第 2 步撞库,而那时第 1 步的出口
+		// 路由**已经批准了**,正是第九轮深扫堵掉的那种半完成态。所以 hard 冲突照拦不误。
 		if newV4 != d.FixedVIPv4 {
-			if c, cerr := findFixedVIPConflict(ctx, st, opts, newV4, id); cerr != nil {
+			c, hard, cerr := findFixedVIPConflict(ctx, st, opts, newV4, id)
+			switch {
+			case cerr != nil:
 				return cerr
-			} else if c != "" && !*force {
+			case c == "":
+			case hard:
+				return errors.New(opts.T("vip.pinnedByOtherDevice", "v4", newV4, c))
+			case !*force:
 				return errors.New(opts.T("exit.conflictV4", newV4, c))
 			}
 		}
 		if newV6 != d.FixedVIPv6 {
-			if c, cerr := findFixedVIPConflict(ctx, st, opts, newV6, id); cerr != nil {
+			c, hard, cerr := findFixedVIPConflict(ctx, st, opts, newV6, id)
+			switch {
+			case cerr != nil:
 				return cerr
-			} else if c != "" && !*force {
+			case c == "":
+			case hard:
+				return errors.New(opts.T("vip.pinnedByOtherDevice", "v6", newV6, c))
+			case !*force:
 				return errors.New(opts.T("exit.conflictV6", newV6, c))
 			}
 		}

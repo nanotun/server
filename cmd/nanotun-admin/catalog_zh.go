@@ -150,6 +150,7 @@ var catZH = map[string]string{
 	"device.fixedConflictV6":     "fixed_vip_v6=%s 与现有 lease / fixed-vip 冲突: %s (加 --force 覆盖)",
 	"device.forceOverrideV4":     "WARN: 强制覆盖 fixed_vip_v4 冲突: %s —— store 层 UNIQUE 只约束 devices↔devices,此处越过预检可能让两个持有者落到同一 vIP(下次登录双分配/黑洞)。仅当你会去修另一个持有者时才继续。",
 	"device.forceOverrideV6":     "WARN: 强制覆盖 fixed_vip_v6 冲突: %s —— store 层 UNIQUE 只约束 devices↔devices,此处越过预检可能让两个持有者落到同一 vIP(下次登录双分配/黑洞)。仅当你会去修另一个持有者时才继续。",
+	"vip.pinnedByOtherDevice":    "fixed_vip_%[1]s=%[2]s 已被另一台设备钉死: %[3]s\n  --force 越不过这一条:devices 表上的 UNIQUE 索引只认 device↔device,强推也会被数据库以\n  `unique constraint violation` 拒掉,而 exit designate 是先批准出口路由再钉 vIP,\n  于是留下「路由已批准、vIP 没钉上」的半完成态。\n  先把地址腾出来:nanotun-admin device set-fixed-vip <上面那台设备的 id> --%[1]s ''\n  那台设备已经废弃(比如重装后换了 UUID)就直接删:nanotun-admin device delete <id>",
 	"vip.reservedAddr":           "WARN: %s=%s 是网段 %[4]s 的**%[3]s 地址**,不能分给客户端 —— 登录路径(preferredVIPUsable)会把它判为不可用、**静默改走自动分配**,设备拿到一个别的 vIP,而这里显示的是你钉的值。请换一个该网段内的主机地址。",
 	"device.fixedOutOfMesh":      "WARN: %s=%s 不在当前 mesh 网段内(%s)—— 该设备下次登录会被**静默改为自动分配**、拿到一个别的 vIP,而 `device list` 仍显示这个钉住的值(server 日志里有 [tun-subnet] 告警)。要真正钉住请改到网段内;若你是在为计划中的换网段预置,可忽略本提示。",
 	"device.fixedUpdated":        "已更新:device id=%d uuid=%s fixed_vip_v4=%s fixed_vip_v6=%s",
