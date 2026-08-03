@@ -8,9 +8,22 @@
 # ── 先看清楚有哪些不能用 ────────────────────────────────────────────────────
 #
 # 1. hy2 端口跳跃(listen_addr = ":443,5000-5100" 这种写法)基本失效。
-#    跳跃靠 iptables NAT PREROUTING REDIRECT 把次端口转到主端口,而 bridge 下入站
-#    先过 Docker 自己的 DNAT 链,两套 NAT 顺序冲突。想保留跳跃就用 host 模式。
-#    这里的配置只映射单个 443/udp,请把 config.toml 的 [hysteria].listen_addr 保持成 ":443"。
+#
+#    原因不是"两套 NAT 打架",是**规则装在了错误的网络命名空间**。跳跃靠 nanotund
+#    启动时自己往 nat PREROUTING 写 REDIRECT(次端口 → 主端口),bridge 下这条链在
+#    容器自己的 netns 里;而公网来的包先落在**宿主**的 netns,只有宿主 ports 发布过
+#    的端口才会被 DNAT 转进容器。没发布的端口压根到不了容器那条链 —— 规则装得好好的,
+#    一个包也匹配不到,还不报任何错。
+#
+#    "那把整段端口都发布出来"这条路走不通:Docker 对每个发布端口要建一条 DNAT 规则
+#    外加两个 docker-proxy 进程(v4/v6 各一)。本机实测发布 100 个 UDP 端口 = 100 条
+#    规则 + 200 个进程;发布 500 个时直接 fork 失败(resource temporarily unavailable)
+#    而容器起不来。具体崩在哪个数量取决于机器的进程上限,但端口跳跃真正有意义的量级
+#    是几千个端口,那早已不在可行范围内。而且范围一旦写死在 compose 里,就和
+#    config.toml 变成两处要手工同步的配置,改一次得重建容器。
+#
+#    想保留跳跃就用 host 模式。这里的配置只映射单个 443/udp,请把 config.toml 的
+#    [hysteria].listen_addr 保持成 ":443"。
 #
 # 2. 出口节点(exit_mode 里放行公网出网)会变成双重 NAT:容器内 MASQUERADE 一次,
 #    Docker bridge 再 NAT 一次。能通,但出口 IP 是容器地址,排障时和宿主对不上;

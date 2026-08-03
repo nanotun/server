@@ -109,8 +109,14 @@ bridge 模式反过来要小心：Docker 的 DNAT 规则在 `ufw-*` 链之前，
 默认给的是 host（`docker-compose.yml`），因为这是个 VPN 网关，它要在宿主的网络栈里做三件
 bridge 模式下做不成的事：
 
-**端口跳跃。** hy2 的端口跳跃靠 iptables NAT REDIRECT 把一段 UDP 端口重定向到主端口。
-bridge 下入站先过 Docker 自己的 DNAT 链，两套 NAT 顺序冲突，跳跃基本失效。
+**端口跳跃。** hy2 的端口跳跃靠 `nanotund` 启动时自己往 `nat PREROUTING` 写 REDIRECT，
+把一段 UDP 端口重定向到主端口。bridge 下这条链在**容器自己的网络命名空间**里，而公网来的包
+先落在宿主的命名空间，只有宿主 `ports` 发布过的端口才会被转进容器 —— 没发布的端口根本到不了
+那条链，规则装得好好的却一个包也匹配不到，且不报错。
+
+把整段端口发布出来也不成立：Docker 每个发布端口要一条 DNAT 规则加两个 `docker-proxy` 进程
+（v4/v6 各一）。实测发布 100 个 UDP 端口是 100 条规则 + 200 个进程，发布 500 个时直接
+fork 失败、容器起不来；而端口跳跃有意义的量级是几千个端口。
 
 **出口 NAT。** 出口节点要对客户端流量做 MASQUERADE。bridge 下变成双重 NAT，能通，
 但出口 IP 是容器地址，排查时和宿主对不上号。
