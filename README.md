@@ -8,62 +8,127 @@
 
 ## 快速启动
 
-### 1. 构建并初始化数据库
+服务端只跑 **Linux**(要 TUN + iptables + systemd),支持 amd64 与 arm64,不需要装 Go 或编译。
+
+### 一条命令
 
 ```bash
-cd cmd/nanotund
-go build -o nanotund .
-
-# 首次启动会自动跑 schema migration,也可显式执行(本地非 root 试跑用 no_tun 样例):
-./nanotund -config config_no_tun.toml &  # 启动后立即 Ctrl-C 也行,只为建库
+curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh | sudo bash
 ```
 
-首次启动会自动建库并迁移到最新 schema。注意 `config.toml`(完整 reference 样板)
-里 `[store].db_path` 钉的是生产绝对路径 `/var/lib/nanotun/nanotun.db`,非 root
-本地试跑请改成相对路径,或直接用 `config_no_tun.toml`(其 `db_path` 为
-`data/nanotun.db`,且无需 root/TUN):
+[`install.sh`](scripts/install.sh) 按顺序做四件事,任何一步没过都会停下来告诉你原因:
+
+1. **检查环境** —— 这台机器能不能跑(见下);不过就不下载、不安装,不留半个装了一半的系统
+2. **下载** —— 自动挑架构,校验 SHA256,解压到 `/opt/nanotun/`
+3. **安装**([`install-self-hosted.sh`](scripts/install-self-hosted.sh))—— systemd 单元、
+   IP 转发、REALITY / hy2 密钥与自签证书、放行 ufw、第一个 VPN 管理员
+4. **开服向导**([`setup.sh`](scripts/setup.sh))—— 见下
+
+生产建议钉版本:`curl -fsSL .../install.sh | sudo NANOTUN_VERSION=v0.1.0 bash`。
+想自己控制每一步就手动下 [Releases](https://github.com/nanotun/server/releases) 里对应架构的
+tar,解压后跑 `sudo ./scripts/install-self-hosted.sh` —— 那是上面第 3 步,随发布包走,
+不需要联网。`install.sh` 只是把「弄到这台机器上」这段也一并办了。
+
+### 先看看这台机器行不行
+
+买完 VPS 想先摸底、或者装完出问题要排查,单独跑环境检查。它是**只读**的,不装、不改任何东西:
 
 ```bash
-./nanotund -config config_no_tun.toml
+curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/preflight.sh | bash
 ```
 
-### 2. 用 admin CLI 创建用户和设备
+一次把问题全列出来,最后给一条能直接粘的修复命令(按你的发行版给对包名),不用装一样重跑一次。
+装过之后本地也有一份:`nanotun-preflight`。
 
-详细命令见 [`cmd/nanotun-admin/README.md`](cmd/nanotun-admin/README.md);最常用的工作流(0013
+查的是 systemd 有没有在跑、`/dev/net/tun` 在不在、`iptables`/`ip6tables`/`ip`/`openssl` 齐不齐、
+`ip_forward` 能不能置 1,以及 8443/tcp、443/udp、7443/tcp 有没有被占。**最常见的两个坑**是
+便宜 VPS 用 OpenVZ / LXC 虚拟化拿不到 TUN 设备(得换 KVM),和 Alpine 这类不用 systemd 的
+发行版(得改走 Docker)。
+
+### 开服向导
+
+**装完不等于客户端能连上** —— 还差三件只有你知道答案的事:客户端该往哪个地址拨、
+Web 后台管理员密码、给用户的二维码。上面那条命令的最后一步就是它;单独跑:
+
+```bash
+sudo nanotun-setup
+```
+
+它会探测并写入拨号地址(`server_dial_host`)、给出 Web 后台的 `/setup` 链接、创建第一个
+VPN 用户,并直接在终端打出两个二维码:
+
+- **profile QR** —— 服务器地址与传输配置,不含密钥,可以公开传
+- **credentials QR** —— 用户名 + PSK,机密,只能一对一给本人
+
+重复跑是安全的(不重置 PSK、不动配置),之后加用户、重出二维码都用它。
+自动化部署可以 `sudo nanotun-setup --dial-host vpn.example.com --user alice --yes`。
+
+客户端扫完两个码就能连。剩下的用户管理走 Web 后台或下面的命令行。
+
+### 用 Docker 跑
+
+已经熟悉容器的话也可以走这条:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/nanotun/server/main/docker/docker-compose.yml
+docker compose up -d && docker compose logs -f     # 首次启动的 PSK 会打在日志里
+```
+
+镜像是 `ghcr.io/nanotun/server`(amd64 + arm64 多架构)。它是个 VPN 网关,对
+`/dev/net/tun`、`CAP_NET_ADMIN`、宿主 `sysctl` 和防火墙有硬性要求,宿主那几个内核参数
+容器改不了得你自己设 —— **上面两行跑完不等于客户端就能连上**,逐条踩坑说明见
+[`docs/DOCKER.md`](docs/DOCKER.md)。容器里没有 `nanotun-setup`,拨号地址和用户在
+Web 后台里设,或 `docker compose exec nanotun nanotun-admin ...`。
+
+### 从源码构建(开发用)
+
+```bash
+git clone https://github.com/nanotun/server.git && cd server
+go build ./...
+
+# 本地非 root 试跑:config.toml 里 [store].db_path 钉的是生产绝对路径
+# /var/lib/nanotun/nanotun.db,用 config_no_tun.toml 那份(db_path 为
+# data/nanotun.db,且不需要 root / TUN)。
+cd cmd/nanotund && go build -o nanotund . && ./nanotund -config config_no_tun.toml
+
+# 容器里验证自己改的代码:
+cd docker && docker compose -f docker-compose.dev.yml up --build
+```
+
+## 用 admin CLI 创建用户和设备
+
+`nanotun-setup` 做的就是下面这几步,想手工控制或写脚本时直接用 CLI。详细命令见
+[`cmd/nanotun-admin/README.md`](cmd/nanotun-admin/README.md);最常用的工作流(0013
 credentials 解耦后**双 QR**:profile 不含 PSK + credentials 独立下发):
 
 ```bash
-cd cmd/nanotun-admin
-go build -o nanotun-admin .
+# 注意 --db-path:它的默认值是**相对当前目录**的 data/nanotun.db。忘了传不会报错,
+# 而是在 cwd 建一个空库,现象是「刚建的用户查不到」。设 NANOTUN_DB 环境变量也行。
+export NANOTUN_DB=/var/lib/nanotun/nanotun.db
 
 # 1) 创建用户:PSK 仅在这一次以明文回显,同时分配 credential_id (UUID v4)。
-./nanotun-admin user create alice --admin --exit-allowed=true
+nanotun-admin user create alice --admin --exit-allowed=true
 
 # 2) 客户端 profile QR(只含服务器节点 / 路由,不含 PSK,可公开传阅)。
-./nanotun-admin profile show alice --host vpn.example.com --output alice-profile.json
+#    --dial-host 必须显式给,CLI 不会去读库里的 server_dial_host 设置。
+nanotun-admin profile show alice --dial-host vpn.example.com --format qr
 
 # 3) 客户端 credentials QR(用 PSK 明文 + UUID 生成,**仅这一次能拿到明文**)。
 #    用户用 nanotun-cred://v1?d=... 二维码扫入 Apple 客户端 Keychain,Profile 列表
 #    再走「绑定凭证」选这把 UUID。后续 reset-psk 重新出新 QR,客户端按 UUID 自动覆盖。
-./nanotun-admin credentials show alice --psk '<刚才创建时回显的明文>' \
+nanotun-admin credentials show alice --psk '<刚才创建时回显的明文>' \
     --format qr-png --output alice-cred.png
+
+# PSK 丢了不是死局,但轮换会把该用户在线的会话踢下去:
+nanotun-admin --yes credentials show alice --rotate-psk --format qr
 ```
 
-### 3. 启动服务端
+Docker 部署统一加前缀 `docker compose exec nanotun`(镜像里 `NANOTUN_DB` 已经钉好了)。
 
-**完整模式(含 TUN):**
+## 服务端进程与端口
 
-```bash
-cd cmd/nanotund
-sudo ./nanotund -config config.toml
-```
-
-**无 TUN 模式(测试 / 本地联调):**
-
-```bash
-cd cmd/nanotund
-./nanotund -config config_no_tun.toml
-```
+装完后服务由 systemd 管(`systemctl status nanotun` / `nanotun-web`);Docker 部署则
+是容器自身。想手工前台跑(排障):`sudo nanotund -config /etc/nanotun/config.toml`。
 
 VPN 数据面监听 `[server].listen_addr`(默认 `127.0.0.1:8080`,仅回环),走 WebSocket
 Binary + 自定义链路帧(见 `util/link_frame.go`)。生产客户端(iOS/Android)经 Hysteria 2
@@ -204,22 +269,31 @@ go test -bench="BenchmarkLoginFlow" -benchtime=10s -count=1 ./cmd/nanotund/
 ```
 
 三机行为回归与**发版门禁**见 [`docs/RELEASE.md`](docs/RELEASE.md)。
-合并绿只过 CI；打发布包必须走:
+合并绿只过 CI;发版必须走:
 
 ```bash
 ./scripts/e2e/run.sh 00 10 20 30 40 50 60 70
 ./scripts/release/stamp-e2e.sh
-./scripts/release/cut.sh
+./scripts/release/cut.sh v0.1.0
+git push origin v0.1.0     # 触发 CI 构建 Release tar + GHCR 镜像
 ```
 
-## 升级 / 部署脚本
+三机 e2e 跑不进 GitHub Actions,所以门禁留在本地:`cut.sh` 把 e2e 戳写进 annotated
+tag,workflow 只认这种 tag —— 手工 `git tag` 推上去发不出版本。
 
-生产部署一般用 `scripts/install-self-hosted.sh`,会自动安装 systemd 单元 /
-开启 IP 转发 / 写 UFW 规则,详见脚本头部注释与 `docs/UPGRADE_M0.md`。
+## 升级 / 部署
 
-也可以用 Docker 跑(`Dockerfile` + `docker/docker-compose.yml`)。它是个 VPN 网关,
-对 `/dev/net/tun`、`CAP_NET_ADMIN`、`ip_forward` 和网络模式都有硬性要求,
-默认给的是 host 网络 —— 取舍与逐条踩坑说明见 [`docs/DOCKER.md`](docs/DOCKER.md)。
+**Docker**:`docker compose pull && docker compose up -d`。配置不会被覆盖,
+模板变更另存 `config.toml.dist` 供 diff。
+
+**裸机**:重跑一遍 `install.sh`(或下新版本 tar 后跑 `install-self-hosted.sh`)。
+脚本幂等,**不会动**已生效的 `config.toml` 和密钥 —— 重签密钥等于踢掉全部现有客户端。
+详见脚本头部注释与 [`docs/UPGRADE_M0.md`](docs/UPGRADE_M0.md)。
+
+**备份**:`nanotun-admin backup`(热一致,走 `VACUUM INTO`)拿 SQLite 库,
+再连 `/etc/nanotun` 一起存 —— REALITY 私钥和 hy2 口令都在那儿,丢了客户端要重新接入。
+
+数据库 schema 在启动时自动迁移,没有单独的 migrate 命令。
 
 历史版本曾经依赖 一个集中式认证后端(`legacy_backend` 模式),
 当前代码库已经彻底移除该路径,所有部署一律走自托管 PSK。如需查阅历史归因,

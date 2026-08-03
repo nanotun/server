@@ -1,16 +1,29 @@
 #!/usr/bin/env bash
-# nanotun 自托管（PSK 模式）服务器端一键安装脚本（本地交叉编译版）
+# nanotun 自托管（PSK 模式）服务器端一键安装脚本
 #
-# 由本机 deploy 上传至 /root/nanotun_deploy/install.sh 后 ssh 执行。
+# 用法：从 GitHub Releases 下载对应架构的发布包，解压后跑里面的这个脚本：
 #
-# 前置：本地已 GOOS=linux GOARCH=amd64 编好 nanotund + nanotun-admin，
-# 与本脚本一并放在 /root/nanotun_deploy/ 下。
+#   tar -xzf nanotun-vX.Y.Z-linux-<arch>.tar.gz
+#   cd nanotun-vX.Y.Z-linux-<arch>
+#   sudo ./scripts/install-self-hosted.sh
+#
+# 更省事的是 scripts/install.sh（网络入口：自动挑架构、验校验和、解压、调用本脚本，
+# 装完还接着跑开服向导）。本脚本是那条链路里真正动系统的一环，也可以单独跑。
+#
+# 脚本按**自身位置**推导发布包根目录（scripts/ 的上一级），所以解压到哪都能跑。
+# 历史部署（固定 /root/nanotun_deploy）仍可用 NANOTUN_DEPLOY_DIR 显式指定。
+#
+# 架构：发布包分 linux-amd64 / linux-arm64 两份，下面会核对二进制与本机是否匹配 ——
+# 装错架构的表现是 systemd 反复 "Exec format error"，不先拦一道很难一眼看出来。
 #
 # $EXTRAS_DIR/nanotun.service 的权威模板是 repo 内 cmd/nanotund/nanotun.service —
 # 包含 G_exit_code 的 RestartPreventExitStatus 等关键字段;打部署包时请直接 cp
 # 该文件,不要手改 / 漂版本。
 #
 # 行为（不再装 Go、不在服务器编译）：
+#   0. 环境自检：委托给 scripts/preflight.sh（判据的唯一真源，install.sh 也调它）。
+#      root、systemd 在跑、/dev/net/tun、iptables/ip6tables、iproute2、openssl、
+#      ip_forward 可写。全在动任何文件之前。
 #   1. 安装文件到位：
 #      /usr/local/bin/{nanotund, nanotun-admin, nanotun-tun-setup.sh, ...}
 #      /etc/nanotun/{config.toml, certs/, masquerade/}（证书由 ensure-server-assets.sh 按需自签）
@@ -37,7 +50,10 @@
 
 set -euo pipefail
 
-DEPLOY_DIR=/root/nanotun_deploy
+# 发布包根目录 = 本脚本所在 scripts/ 的上一级。写死路径的老行为靠环境变量保留:
+# 2026-08 之前这里钉的是 /root/nanotun_deploy,那是维护者自己的 scp 落点,
+# 对下载发布包的人没有任何意义 —— 解压到 ~/nanotun 就装不了,而报错只会说「缺文件」。
+DEPLOY_DIR="${NANOTUN_DEPLOY_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 EXTRAS_DIR="$DEPLOY_DIR/extras"
 SCRIPTS_DIR="$DEPLOY_DIR/scripts"
 ETC_DIR=/etc/nanotun
@@ -101,6 +117,41 @@ fill_config_secrets() {
   fi
 }
 
+# 环境自检:先验这台机器能不能跑,再验发布包对不对。
+#
+# 每一条都对应一种真实的坏结局,而它们的共同点是**报错的地方离原因很远**:
+#   - 没 systemd:脚本会先把二进制、config、证书全写完,走到 systemctl daemon-reload
+#     才炸,留下一个装了一半的系统和一句 "command not found";
+#   - 没 /dev/net/tun:安装全程「成功」,然后 nanotund 起来就 exit 60 反复重启。
+#     便宜的 OpenVZ / 部分 LXC VPS 就是这样,而这类机器恰恰是自托管用户最常买的;
+#   - 没 iptables:同上,装完才死,得翻 journalctl 才知道缺的是个命令。
+#
+# docker/entrypoint.sh 里一直有一份同职责的 preflight(TUN / CAP_NET_ADMIN /
+# ip_forward),裸机这条路反而只验了架构。2026-08-03 补齐,判据尽量与那份对齐。
+#
+# 时机是关键:必须在 step 1 动 /usr/local/bin 和 /etc/nanotun 之前跑完。
+# 判据不写在这里,一律走 scripts/preflight.sh —— 它同时被 install.sh 和本脚本
+# 调用。同一套「这台机器行不行」的规则要是各写一份,迟早对不上,而对不上的那天
+# 表现是「引导脚本说能装,安装脚本说不能」。
+#
+# --offline:发布包已经在本地了,不需要 curl / tar。
+# NANOTUN_PREFLIGHT_DONE=1:install.sh 在下载之前已经验过一遍,不必重复。
+if [ "${NANOTUN_PREFLIGHT_DONE:-0}" = "1" ]; then
+  ok "环境自检已由引导脚本完成,跳过"
+elif [ -f "$SCRIPTS_DIR/preflight.sh" ]; then
+  bash "$SCRIPTS_DIR/preflight.sh" --offline || die "环境检查没过(见上面的修复清单),已中止安装。"
+else
+  # 老发布包里没有 preflight.sh。不能因此放行 —— 缺 systemd / TUN 装下去必炸,
+  # 所以退回到最小一组硬检查,报错简短但至少能拦住。
+  warn "发布包里没有 preflight.sh,退回最小检查"
+  [ "$(id -u)" = 0 ]        || die "需要 root,请用 sudo 跑"
+  [ -d /run/systemd/system ] || die "没有正在运行的 systemd,裸机安装用不了,请改走 Docker"
+  [ -c /dev/net/tun ]        || die "/dev/net/tun 不存在,先 modprobe tun"
+  for c in iptables ip6tables ip openssl sysctl; do
+    command -v "$c" >/dev/null 2>&1 || die "缺少命令 $c"
+  done
+fi
+
 # 必要文件存在性自检。nanotun-web 是 M2 引入的 Web 后台:可选,缺了不会 fatal,
 # 但会跳过其安装步骤并 warn。这样老 deploy 包不会因为多一个二进制就失败。
 #
@@ -121,6 +172,50 @@ if [ -f "$DEPLOY_DIR/nanotun-web" ] && [ -f "$EXTRAS_DIR/nanotun-web.service" ];
   WEB_AVAILABLE=1
 fi
 
+# 架构自检:发布包分 amd64 / arm64 两份,下错了要在装之前说清楚。
+#
+# 不装完再靠 systemd 报错 —— 那时看到的是 "Exec format error" 加一个 crash-loop 的
+# 单元,而这行日志跟「你下载的包架构不对」之间的距离,足够让人查半小时。
+# arm64 机器尤其容易踩:Oracle / AWS 免费层默认给的就是 aarch64,而下载页面上
+# amd64 那个链接在最前面。
+#
+# 读 ELF header 的 e_machine(偏移 18,小端 2 字节)而不是执行一下试试:
+# 装了 qemu-user-static / binfmt 的机器上,错架构的二进制照样能跑起来,
+# 执行法验不出东西。与 Dockerfile 里 archcheck 同一套判据。
+check_arch() {
+  local host_machine want got bin desc
+  case "$(uname -m)" in
+    x86_64|amd64)  host_machine="3e00"; desc="amd64" ;;
+    aarch64|arm64) host_machine="b700"; desc="arm64" ;;
+    *)
+      warn "本机架构 $(uname -m) 不在检查表内,跳过架构自检"
+      return 0 ;;
+  esac
+
+  command -v od >/dev/null 2>&1 || { warn "缺 od,跳过架构自检"; return 0; }
+
+  for bin in nanotund nanotun-admin nanotun-web; do
+    [ -f "$DEPLOY_DIR/$bin" ] || continue
+    got="$(od -An -tx1 -j18 -N2 "$DEPLOY_DIR/$bin" | tr -d ' \n')"
+    if [ "$got" != "$host_machine" ]; then
+      case "$got" in
+        3e00) want="amd64" ;;
+        b700) want="arm64" ;;
+        *)    want="未知(e_machine=$got)" ;;
+      esac
+      printf '\033[1;31mFATAL: 发布包架构不匹配\033[0m\n' >&2
+      printf '  本机: %s (%s)\n' "$(uname -m)" "$desc" >&2
+      printf '  包里的 %s: %s\n' "$bin" "$want" >&2
+      printf '\n请下载 linux-%s 那一份:\n' "$desc" >&2
+      printf '  https://github.com/nanotun/server/releases/latest\n' >&2
+      printf '  nanotun-vX.Y.Z-linux-%s.tar.gz\n' "$desc" >&2
+      exit 1
+    fi
+  done
+  ok "架构自检通过:发布包与本机同为 $desc"
+}
+check_arch
+
 step "1. 安装二进制 / 脚本 / 证书 / 配置 / systemd 单元"
 install -m 0755 "$DEPLOY_DIR/nanotund"  /usr/local/bin/nanotund
 install -m 0755 "$DEPLOY_DIR/nanotun-admin"    /usr/local/bin/nanotun-admin
@@ -129,6 +224,19 @@ install -m 0755 "$SCRIPTS_DIR/tun-isolate.sh"   /usr/local/bin/nanotun-tun-isola
 # teardown 与 UPGRADE_M0.md 里「关掉历史隔离」的卸载指引配套,必须一起装上。
 install -m 0755 "$SCRIPTS_DIR/tun-isolate-teardown.sh" /usr/local/bin/nanotun-tun-isolate-teardown.sh
 install -m 0755 "$SCRIPTS_DIR/tun-teardown.sh"  /usr/local/bin/nanotun-tun-teardown.sh
+# 开服向导装成 nanotun-setup:它是要反复用的(加用户、重出二维码、改拨号地址),
+# 而解压出来的发布包目录用完多半就删了,只留在包里等于用一次就丢。
+# 老发布包没有这个文件,缺了不 fatal。
+if [ -f "$SCRIPTS_DIR/setup.sh" ]; then
+  install -m 0755 "$SCRIPTS_DIR/setup.sh" /usr/local/bin/nanotun-setup
+  SETUP_AVAILABLE=1
+else
+  SETUP_AVAILABLE=0
+fi
+# 环境检查也装成命令:排查「服务起不来」时第一件该做的事就是重跑它,
+# 而那时候解压出来的发布包目录通常已经不在了。
+[ -f "$SCRIPTS_DIR/preflight.sh" ] && \
+  install -m 0755 "$SCRIPTS_DIR/preflight.sh" /usr/local/bin/nanotun-preflight
 
 mkdir -p "$ETC_DIR/certs" "$ETC_DIR/masquerade" "$LIB_DIR"
 chmod 0750 "$LIB_DIR"
@@ -330,7 +438,20 @@ echo "[journalctl -u nanotun --no-pager -n 40]"
 journalctl -u nanotun.service --no-pager -n 40 || true
 
 echo
-ok "部署完成。常用运维："
+# 装完不等于能用:还差 server_dial_host、Web 管理员、用户的两个二维码,
+# 而这三件事安装脚本都替不了人做决定。setup.sh 把它们串成一条交互流程,
+# 所以这里把它顶在最显眼的位置 —— 底下那堆运维命令是给之后用的。
+if [ "${SETUP_AVAILABLE:-0}" -eq 1 ]; then
+  ok "安装完成。**还差最后一步**,客户端才连得上:"
+  echo
+  printf '        \033[1;36msudo nanotun-setup\033[0m\n'
+  echo
+  echo "    它会带你设置客户端拨号地址、创建 Web 管理员、建第一个用户并出二维码。"
+  echo
+else
+  ok "安装完成。"
+fi
+ok "常用运维："
 echo "    journalctl -u nanotun -f                                       # 实时日志"
 echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db user list"
 echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db device list"
