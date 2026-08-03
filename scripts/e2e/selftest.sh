@@ -96,22 +96,27 @@ expect "退出码" 2 "$rc"
 # 静态检查。bash 会把紧跟在 $var 后面的多字节标点首字节并进变量名,set -u 下
 # 当场报 unbound variable(见 e389798)。这个坑踩过两次 —— 第二次就是在写崩溃
 # 恢复阶段时又写了一个 —— 靠人记不住,挡在这里。
+#
+# 2026-08-03 踩到第三次,而且正好在这个守卫**够不着的地方**:cut.sh 最后一行把
+# 全角句号直接跟在了 VERSION 的裸引用后面。当时它只扫 scripts/e2e/ 下那三个 glob,
+# 发版脚本不在范围内 —— 于是 cut.sh 在 tag 已经打完之后才崩,一个成功的发版以非零
+# 退出码收尾,看起来像发版失败了。扩到整个 scripts/ 树之后,当场又翻出
+# set-magic-suffix.sh 里四处同类写法,其中一处在自动回滚分支上:echo 先崩,
+# 下一行的 cp 还原压根跑不到,改 suffix 失败时配置会被留在坏状态。
+#
+# 守卫的价值取决于它扫到哪里。注释里也别写反例 —— 这个检查不区分注释与代码,
+# 那是故意的:能分辨注释就得会分辨引号,不如让它保持这么笨。
 echo "── 静态检查:\$var 后面不能紧跟非 ASCII 字符 ──"
-offenders="$(python3 - "$HERE" <<'PY'
+offenders="$(python3 - "$HERE/.." <<'PY'
 import re, sys, pathlib
-root = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[1]).resolve()
 pat = re.compile(rb'\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]')
 out = []
-seen = set()
-for pattern in ('*.sh', 'lib/*.sh', 'phases/*.sh'):
-    for p in sorted(root.glob(pattern)):
-        if p in seen:
-            continue
-        seen.add(p)
-        for i, line in enumerate(p.read_bytes().split(b'\n'), 1):
-            if pat.search(line):
-                out.append('%s:%d: %s' % (p.relative_to(root), i,
-                                          line.decode('utf-8', 'replace').strip()))
+for p in sorted(root.rglob('*.sh')):
+    for i, line in enumerate(p.read_bytes().split(b'\n'), 1):
+        if pat.search(line):
+            out.append('%s:%d: %s' % (p.relative_to(root), i,
+                                      line.decode('utf-8', 'replace').strip()))
 print('\n'.join(out))
 PY
 )"

@@ -53,7 +53,7 @@ set -euo pipefail
 : "${SUFFIX:?}"; : "${CONFIG:?}"; : "${SERVICE:?}"
 
 if [ "$(id -u)" != 0 ]; then
-  echo "FATAL: 需要 root（systemctl / 写 $CONFIG）。请用 sudo，或以 root SSH。" >&2
+  echo "FATAL: 需要 root（systemctl / 写 ${CONFIG}）。请用 sudo，或以 root SSH。" >&2
   exit 1
 fi
 [ -f "$CONFIG" ] || { echo "FATAL: 找不到配置文件 $CONFIG" >&2; exit 1; }
@@ -97,7 +97,7 @@ echo "--- 改动 diff ---"
 diff -u "$BACKUP" "${CONFIG}.new" || true
 mv "${CONFIG}.new" "$CONFIG"
 
-echo "重启 $SERVICE（SIGTERM graceful drain → 客户端重连）..."
+echo "重启 ${SERVICE}（SIGTERM graceful drain → 客户端重连）..."
 systemctl restart "$SERVICE"
 
 ok=0; st=""
@@ -109,7 +109,7 @@ for _ in $(seq 1 15); do
 done
 
 if [ "$ok" != 1 ]; then
-  echo "!! 服务未能回到 active（状态=$st），自动回滚到备份 $BACKUP ..." >&2
+  echo "!! 服务未能回到 active（状态=${st}），自动回滚到备份 $BACKUP ..." >&2
   cp -a "$BACKUP" "$CONFIG"
   systemctl restart "$SERVICE" || true
   echo "--- journalctl -u $SERVICE 最近 40 行 ---" >&2
@@ -119,7 +119,7 @@ if [ "$ok" != 1 ]; then
 fi
 
 echo "✓ $SERVICE 已 active。"
-echo "--- MagicDNS 启动确认（应出现 suffix=$SUFFIX）---"
+echo "--- MagicDNS 启动确认（应出现 suffix=${SUFFIX}）---"
 journalctl -u "$SERVICE" --no-pager -n 300 2>/dev/null | grep -F 'magic-dns' | tail -3 \
   || echo "（最近日志未见 magic-dns 行；可手动: journalctl -u $SERVICE | grep magic-dns）"
 echo "完成：domain_suffix 已改为 '$SUFFIX'。各客户端重连一次即自动使用新后缀。"

@@ -109,4 +109,4 @@ echo
 echo "推送 tag 触发发布(GitHub Release + GHCR 镜像):"
 echo "    git push origin $VERSION"
 echo
-echo "推之前对照 docs/RELEASE.md 的人工检查单;要反悔就 git tag -d $VERSION。"
+echo "推之前对照 docs/RELEASE.md 的人工检查单;要反悔就 git tag -d ${VERSION}。"
