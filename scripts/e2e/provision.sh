@@ -182,12 +182,14 @@ a "ip rule list | grep -q 'from $E2E_A_HOST lookup 100'" >/dev/null 2>&1 \
 # 原先是手工 ip 命令建的 dummy 网卡,没做持久化 —— 重启一次就没,而丢了之后
 # 阶段 3 的红看起来像子网功能坏了。这里做成 systemd unit 一并解决。
 step "2. C:假 LAN($E2E_C_LAN4 / $E2E_C_LAN6)"
-if c "systemctl is-enabled nanotun-e2e-lan.service" >/dev/null 2>&1; then
-  ok "nanotun-e2e-lan.service 已启用(重启后自动恢复)"
-else
-  if would "在 C 上安装 nanotun-e2e-lan.service,把 lan0 做成持久配置"; then
-    lan4_len="${E2E_C_LAN4##*/}"; lan6_len="${E2E_C_LAN6##*/}"
-    cat > "$TMP/e2e-lan.service" <<EOF
+# 这里刻意不写成「已 enable 就跳过」。enabled 只说明开机会拉,不说明**此刻**在跑:
+# 2026-08-03 在 C 上做全新安装验证前手动 stop 了它,重建时这段看见 enabled 就报了句
+# 「已启用」什么也没做,底下的地址检查发现 lan0 不在却只 warn 一声就过 —— 于是实验室
+# 带着缺失的 lan0 被判为「重建完成」。而这个 unit 存在的理由,正是上面注释说的
+# 「丢了之后阶段 3 的红看起来像子网功能坏了」。收敛型脚本不能只报告不动手。
+if would "在 C 上安装并拉起 nanotun-e2e-lan.service(lan0 持久化)"; then
+  lan4_len="${E2E_C_LAN4##*/}"; lan6_len="${E2E_C_LAN6##*/}"
+  cat > "$TMP/e2e-lan.service" <<EOF
 [Unit]
 Description=nanotun e2e: dummy LAN behind C (subnet-route + port-forward fixtures)
 After=network-online.target
@@ -205,18 +207,24 @@ ExecStop=/bin/sh -c "ip link del lan0 2>/dev/null || true"
 [Install]
 WantedBy=multi-user.target
 EOF
-    push_file c "$TMP/e2e-lan.service" /etc/systemd/system/nanotun-e2e-lan.service \
-      || die "推送 e2e-lan unit 失败"
-    c "systemctl daemon-reload && systemctl enable --now nanotun-e2e-lan.service" >/dev/null \
-      || die "启用 e2e-lan 失败"
-    ok "已安装并启用"
-  fi
+  push_file c "$TMP/e2e-lan.service" /etc/systemd/system/nanotun-e2e-lan.service \
+    || die "推送 e2e-lan unit 失败"
+  # restart 而不是 start:unit 是 RemainAfterExit=yes 的 oneshot,已经 active 时
+  # start 是空操作,改了 unit 文件也不会重新执行那几条 ip 命令。
+  c "systemctl daemon-reload && systemctl enable nanotun-e2e-lan.service && systemctl restart nanotun-e2e-lan.service" >/dev/null \
+    || die "拉起 e2e-lan 失败"
+  ok "nanotun-e2e-lan.service 已就位并拉起"
 fi
 if [ "$DRY" = 0 ]; then
+  # 这两条要 die 不要 warn。lan0 缺了不是「小瑕疵」:阶段 3 的子网路由与阶段 6 的
+  # LAN 端口转发全建在它上面,少了它那些断言会红成「子网功能坏了」的样子。
+  # 重建脚本报了「完成」就该意味着可以直接开跑,而不是让人自己去核对告警。
   c "ip -4 addr show lan0 | grep -q '$E2E_C_LAN4_HOST'" >/dev/null 2>&1 \
-    && ok "$E2E_C_LAN4_HOST 在 lan0 上" || warn "lan0 上没有 $E2E_C_LAN4_HOST"
+    && ok "$E2E_C_LAN4_HOST 在 lan0 上" \
+    || die "lan0 上没有 $E2E_C_LAN4_HOST —— 阶段 3/6 会全红,先查 nanotun-e2e-lan.service。"
   c "ip -6 addr show lan0 | grep -qi '$E2E_C_LAN6_HOST'" >/dev/null 2>&1 \
-    && ok "$E2E_C_LAN6_HOST 在 lan0 上" || warn "lan0 上没有 $E2E_C_LAN6_HOST"
+    && ok "$E2E_C_LAN6_HOST 在 lan0 上" \
+    || die "lan0 上没有 $E2E_C_LAN6_HOST —— 同上。"
 fi
 
 # C 要替 LAN 转发,转发开关必须开。
@@ -379,9 +387,26 @@ if [ "$DRY" = 0 ]; then
   adm "device set-fixed-vip $A_DEV --v4 $E2E_A_VIP4 --force" >/dev/null 2>&1 \
     && ok "A 的 vIP 钉为 $E2E_A_VIP4" || warn "钉 A 的 vIP 失败"
 
+  # 先清掉占着这两个 vIP 的**旧** C 设备。客户端状态目录一没(重装、清盘、或者像
+  # 2026-08-03 那样把服务端和客户端共用的 /var/lib/nanotun 一起删了),C 会以新 UUID
+  # 重新注册,而老设备行还攥着 fixed_vip 不放,新设备去钉就撞唯一约束。
+  #
+  # 那次的报错是 `store: unique constraint violation`,没说是谁占着 —— 而且 exit designate
+  # 不是原子的:出口标记已经写进去了(默认路由都成 approved 了),只有钉 vIP 那步失败,
+  # 命令却整体返回 1。于是从退出码看是「指定出口失败」,从库里看出口明明是好的,
+  # 两边对不上,真因(有个同名旧设备)完全没露面。
+  stale="$(adm "device list" | awk -v keep="$C_DEV" -v v4="$E2E_C_VIP4" -v v6="$E2E_C_VIP6" \
+    '$1 ~ /^[0-9]+$/ && $1 != keep && ($7 == v4 || $8 == v6) {print $1}')"
+  for d in $stale; do
+    adm_y "device delete $d" >/dev/null 2>&1 \
+      && ok "清掉占着固定 vIP 的旧设备 #$d" || warn "旧设备 #$d 删不掉,下一步钉 vIP 大概率会失败"
+  done
+
   # exit designate 一并把 C 的 0/0 + ::/0 建成 approved 并钉住 vIP。
-  adm "exit designate $C_DEV --v4 $E2E_C_VIP4 --v6 $E2E_C_VIP6 --force" >/dev/null 2>&1 \
-    && ok "C 已指定为出口,vIP 钉为 $E2E_C_VIP4 / $E2E_C_VIP6" || warn "指定 C 为出口失败"
+  out="$(adm "exit designate $C_DEV --v4 $E2E_C_VIP4 --v6 $E2E_C_VIP6 --force" 2>&1)" \
+    && ok "C 已指定为出口,vIP 钉为 $E2E_C_VIP4 / $E2E_C_VIP6" \
+    || die "指定 C 为出口失败,后面所有出口类断言都会红:
+$out"
 
   # 客户端要重连才会拿到钉住的 vIP。
   client_a_start; client_c_start
