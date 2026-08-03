@@ -16,8 +16,8 @@
 # ——但这句只在**宿主是 Linux** 时成立。Mac / Windows 上容器跑在 Docker Desktop 的 Linux
 # 虚拟机里,host 指的是那台 VM 而不是你的机器:它没有 WAN 网卡,又躲在两层 NAT 后面。
 # 那三样"真实行为"一个都拿不到,偏偏还全都不报错(照样开 ip_forward、照样写 iptables,
-# 全写进 VM)。非 Linux 宿主请改用 bridge + 发布端口,详见 docs/DOCKER.md 里
-# 「在 Mac / Windows 上」那节。
+# 全写进 VM)。所以非 Linux 宿主只适合把这套东西起起来看看,不是能对外服务的部署方式,
+# 详见 docs/DOCKER.md 里「在 Mac / Windows 上」那节。
 # 首次启动的 PSK 会打在日志里,也会落到 ./data/lib/init.out.json。
 
 services:

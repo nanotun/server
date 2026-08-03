@@ -51,7 +51,7 @@ docker compose -f docker-compose.dev.yml up --build
 |---|---|---|
 | `/dev/net/tun` | `devices: ["/dev/net/tun:/dev/net/tun"]` | 建不出 TUN，`nanotund` 以 exit 60 退出 |
 | `CAP_NET_ADMIN` | `cap_add: [NET_ADMIN]` | 同上；iptables 和 conntrack 也全部失败 |
-| `net.ipv4.ip_forward=1` | host 模式在宿主设；bridge 模式用 compose 的 `sysctls` | 同上，exit 60 |
+| `net.ipv4.ip_forward=1` | 在宿主设（host 模式下容器共用宿主的内核参数） | 同上，exit 60 |
 
 不需要 `--privileged`。它会把 `/proc/sys` 整个变成可写，容器里一条命令就能改宿主任意内核参数，
 为了一个 `ip_forward` 敞这么大的口不划算。
@@ -98,16 +98,16 @@ ufw allow 443/udp    # Hysteria2（用了端口跳跃的话，把整段范围一
 ufw allow 7443/tcp   # Web 管理面（只想内网访问就别开，改用 SSH 端口转发）
 ```
 
-bridge 模式反过来要小心：Docker 的 DNAT 规则在 `ufw-*` 链之前，**发布出去的端口会绕过 ufw**。
-你以为 ufw 拦着，实际全世界都能连。那边要靠 `ports` 只绑在需要的地址上
-（比如 `127.0.0.1:7443:7443`）来收口。
+自己改用 bridge 的话要反过来小心：Docker 的 DNAT 规则排在 `ufw-*` 链之前，**发布出去的端口
+会绕过 ufw**。你以为 ufw 拦着，实际全世界都能连，管理面尤其危险。那边只能靠 `ports` 绑到
+具体地址上收口（比如 `127.0.0.1:7443:7443`），ufw 帮不上忙。
 
 ---
 
-## host 还是 bridge
+## 为什么只有 host 模式
 
-默认给的是 host（`docker-compose.yml`），因为这是个 VPN 网关，它要在宿主的网络栈里做三件
-bridge 模式下做不成的事：
+这里只提供 host 网络模式（`docker-compose.yml`）。不是省事，是这个 VPN 网关要在宿主的网络栈里
+做三件 bridge 模式下做不成的事 —— 而这三件恰好就是它存在的理由：
 
 **端口跳跃。** hy2 的端口跳跃靠 `nanotund` 启动时自己往 `nat PREROUTING` 写 REDIRECT，
 把一段 UDP 端口重定向到主端口。bridge 下这条链在**容器自己的网络命名空间**里，而公网来的包
@@ -126,11 +126,13 @@ fork 失败、容器起不来；而端口跳跃有意义的量级是几千个端
 
 代价要说清楚：host 模式下容器和宿主共用网络栈，容器写的 iptables 规则**就是宿主的规则**，
 `ip_forward` 也是宿主的。网络这一层的容器隔离基本不存在了。这正是这个应用需要的，
-但你要知道自己在换什么。
+但你要知道自己在换什么 —— 拿容器换来的是交付和依赖的一致，不是网络隔离。
 
-只做 mesh 互联、不依赖端口跳跃、也不当出口节点的话，用 `docker-compose.bridge.yml`，
-里面把限制和注意事项逐条写在注释里了。最容易忘的一条：**Web 里配的端口转发，
-需要在 compose 的 `ports` 里逐个映射出来**，容器内开的监听不会自动出现在宿主上。
+如果你的场景真的只有 mesh 互联、不做出口节点也不用端口跳跃，bridge 是能跑的，自己写一份
+compose 即可（要点：`sysctls` 里预置 `ip_forward` / `rp_filter` / `send_redirects`，因为容器
+建好之后 `/proc/sys` 就只读了；`ports` 里逐个映射端口，容器内开的监听不会自动出现在宿主上，
+Web 里配的端口转发尤其容易忘）。仓库不再附带这份配置：它只适用于上面那个很窄的场景，
+放在这儿更容易被人当成通用选项拿去跑真网关，然后撞上一整排安静失效的功能。
 
 ---
 
@@ -153,9 +155,10 @@ fork 失败、容器起不来；而端口跳跃有意义的量级是几千个端
 改改配置，完全够用。跑不了的是真实客户端从公网连进来、端口跳跃、真实出口与 NAT ——
 也就是 e2e 覆盖的那一整片，所以 **e2e 必须打 Linux 机器**，Mac 上跑不出结论。
 
-因此非 Linux 宿主上的建议反过来：**用 bridge 加发布端口，别用 host**。发布出来的端口
-Docker Desktop 会转到宿主的 localhost，浏览器直接能开 Web UI；host 在这里没有任何对应的
-好处，还多一个开关要记。
+**所以 Mac / Windows 不是受支持的部署环境**，只适合把这套东西起起来看看。真要跑服务就得是
+Linux 机器。想在 Mac 上开管理界面看一眼的话，host 那个开关不好用时改成 bridge 加
+`ports: ["7443:7443"]` 更省事 —— 发布出来的端口 Docker Desktop 会转到你机器的 localhost。
+仓库不附带这份配置，理由见上一节。
 
 最后一条与网络无关但同样会咬人：Apple Silicon 上 `docker build` 出来的是 **arm64** 镜像。
 它**不能**直接搬到 x86 服务器，要在 Mac 上构建给服务器用的话加 `--platform linux/amd64`：

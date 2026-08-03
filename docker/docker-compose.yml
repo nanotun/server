@@ -2,17 +2,24 @@
 #
 #   cd docker && docker compose up -d && docker compose logs -f
 #
-# 为什么默认 host:这是个 VPN 网关,它要在**宿主的网络栈里**做三件 bridge 模式下做不成的事:
-#   1. hy2 端口跳跃靠 iptables NAT REDIRECT 把一段 UDP 端口重定向到主端口。bridge 下
-#      入站先过 Docker 自己的 DNAT,两套 NAT 打架,跳跃基本失效。
+# 为什么只有 host:这是个 VPN 网关,它要在**宿主的网络栈里**做三件 bridge 模式下做不成的事:
+#   1. hy2 端口跳跃靠 nanotund 自己往 nat PREROUTING 写 REDIRECT。bridge 下这条链在容器的
+#      netns 里,而公网包先落在宿主的 netns —— 只有宿主发布过的端口才转得进来,没发布的
+#      到不了那条链,规则装得好好的一个包也匹配不到,还不报错。把整段端口都发布出来也不行:
+#      每个发布端口一条 DNAT 加两个 docker-proxy 进程,实测 500 个就 fork 失败起不来,
+#      而跳跃有意义的量级是几千个。
 #   2. 出口节点对客户端流量做 MASQUERADE。bridge 下会变成双重 NAT,能通但多一跳、
 #      而且出口 IP 是容器地址,排查时对不上号。
 #   3. GetWAN() 用 `ip route get 1.1.1.1` 推断出口网卡与出口 IP。bridge 下拿到的是
 #      容器的 eth0 与 172.17.x.x,NAT 规则会挂到错误的接口上。
 #
 # 代价说清楚:host 模式下容器与宿主共用网络栈,容器写的 iptables 规则就是**宿主的**规则,
-# ip_forward 也是宿主的。这正是这个应用需要的,但它意味着容器隔离在网络这一层基本没有了。
-# 只想跑 mesh 互联、不做出口和端口跳跃的话,用 docker-compose.bridge.yml。
+# ip_forward 也是宿主的。这正是这个应用需要的,但它意味着容器隔离在网络这一层基本没有了 ——
+# 拿容器换来的是交付和依赖的一致,不是网络隔离。
+#
+# 仓库不再附带 bridge 那份 compose:它只在"纯 mesh 互联、不做出口也不用跳跃"这个很窄的场景下
+# 成立,摆在这儿更容易被当成通用选项拿去跑真网关,然后撞上一整排安静失效的功能。
+# 确实需要的话见 docs/DOCKER.md,那里写了自己写一份要注意什么。
 #
 # 前置(host 模式下 Docker 不接受 --sysctl net.*,只能在宿主设):
 #   cat >/etc/sysctl.d/99-nanotun.conf <<'EOF'
