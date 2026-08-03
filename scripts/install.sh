@@ -131,6 +131,13 @@ if [ -z "$VERSION" ]; then
   VERSION="${latest_url##*/}"
   case "$VERSION" in
     v[0-9]*) ;;
+    # 走到这儿有两种可能,而它们的下一步动作完全不同,所以别只说「还没发过 Release」:
+    # /releases/latest **不含预发布**,只发过 rc 时它会退回 /releases 这个列表页,
+    # 于是这里拿到的是字面的 "releases"。仓库明明有能装的版本,却被告知「还没发过」——
+    # 用户只会以为没得装,而不是去挑一个 rc。这正是 v0.1.0-rc1 发出去当天的实况。
+    releases) die "$REPO 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
+   到 https://github.com/${REPO}/releases 挑一个,再显式指定,例如:
+     curl -fsSL .../install.sh | sudo NANOTUN_VERSION=v0.1.0-rc1 bash" ;;
     *) die "没能从 $latest_url 解析出版本号。可能该仓库还没发过 Release;
    用 NANOTUN_VERSION=vX.Y.Z 显式指定。" ;;
   esac
