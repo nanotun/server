@@ -36,6 +36,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 必须自己把 tag 对象取回来,fetch-depth: 0 挡不住这个。
+      #
+      # tag 触发时 actions/checkout 拿到的是 github.sha(tag 指向的 commit),它据此
+      # 建出的 refs/tags/<TAG> 直接指向 commit —— annotated tag 对象连同 message
+      # 一起丢了。于是下面那三条校验读到的是一个「lightweight tag」,
+      # v0.1.0-rc1 就是这么被自己的门禁拒之门外的:远端存的明明是 type=tag、
+      # e2e 戳俱全,CI 里 git cat-file -t 却报 commit。
+      #
+      # 按原样这道门会拒绝**每一次**发版 —— 它是随发布流水线一起加的,
+      # 在此之前没有任何 tag 推上来过,所以从没被执行过。
+      - name: 取回真正的 tag 对象（checkout 会把 annotated tag 压成 lightweight）
+        env:
+          TAG: ${{ github.ref_name }}
+        run: git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+
       - name: tag 必须是 annotated 且带 e2e 戳
         id: verify
         env:
