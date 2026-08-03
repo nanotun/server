@@ -1,7 +1,7 @@
 # 发布流程（硬门禁）
 
-这份文档是**唯一**允许的发版路径。合并到 `main` 不等于可以发版；打出
-`dist/nanotun-*.tar.gz` 之前必须过完下面的门。
+这份文档是**唯一**允许的发版路径。合并到 `main` 不等于可以发版；对外发出任何东西
+之前必须过完下面的门。
 
 三机 e2e 跑不进 GitHub Actions（要 root、要真机、要测试服口令），所以 CI 绿只覆盖
 **合并**门槛；**发版**门槛由本仓库脚本强制，不能靠记性。
@@ -11,10 +11,25 @@
 | 门 | 拦住什么 | 怎么过 |
 |---|---|---|
 | **合并门**（CI） | 编译坏了、格式漂了、单测红了 | `go build` / `vet` / `gofmt` / `go test ./...` / e2e selftest |
-| **发版门**（本机 + 三机） | 「CI 绿但真机行为没验」就打包 | `scripts/release/cut.sh`：单测 + **与 HEAD 对齐的 e2e 戳** + 打包 |
+| **发版门**（本机 + 三机） | 「CI 绿但真机行为没验」就发版 | `scripts/release/cut.sh vX.Y.Z`：单测 + **与 HEAD 对齐的 e2e 戳** + 打包 + 打 tag |
 
 直接跑 `scripts/build-release.sh` **会被拒绝**，除非设了
 `NANOTUN_RELEASE_I_KNOW=1`（调试用；发出版本包不要用）。
+
+## 门禁怎么传到 CI
+
+三机 e2e 在本地跑，产物却由 GitHub Actions 构建 —— 中间靠 **annotated tag** 把
+「已过门」这件事带过去：
+
+1. `cut.sh` 校验 e2e 戳与 HEAD 一致后，打一个 annotated tag，
+   message 里写 `e2e-stamp=<40 位 SHA>`；
+2. 推送 tag 触发 `.github/workflows/release.yml`；
+3. workflow 的 `verify-tag` job 做三条**机器校验**，任一不过就拒绝发布：
+   - tag 必须是 annotated（lightweight tag 直接判死——那是绕过门禁最容易的路子）
+   - tag message 里的 `e2e-stamp` 必须等于 tag 指向的 commit
+   - 该 commit 必须在 `origin/main` 上
+
+所以**手工 `git tag` 推上去是发不出版本的**，只能走 `cut.sh`。
 
 ## 发版步骤（照抄）
 
@@ -31,24 +46,52 @@ set -a && . scripts/e2e/e2e.env && set +a
 # 2) 盖戳:把「刚跑过 e2e 的 commit」写进本地文件(不进 git)
 ./scripts/release/stamp-e2e.sh
 
-# 3) 唯一发版入口:再跑一遍单测,核对戳与 HEAD 一致,再打包
-./scripts/release/cut.sh
-# 产出: dist/nanotun-YYYYMMDD-HHMMSS-linux-amd64.tar.gz
+# 3) 唯一发版入口:再跑一遍单测,核对戳与 HEAD 一致,打包,打 tag
+./scripts/release/cut.sh v0.1.0
+# 本地产出: dist/nanotun-v0.1.0-linux-{amd64,arm64}.tar.gz + SHA256SUMS
+# 同时建好 tag v0.1.0(**不会自动推送**)
+
+# 4) 对照下面的检查单,确认后推 tag —— 这一步才真正对外发布
+git push origin v0.1.0
 ```
+
+推完 tag 后 GitHub Actions 会构建并发布：
+
+- **GitHub Release**：`nanotun-vX.Y.Z-linux-{amd64,arm64}.tar.gz` + `SHA256SUMS`
+- **GHCR 镜像**：`ghcr.io/nanotun/server:{X.Y.Z, X.Y, latest}`（多架构 + 构建溯源）
+
+`dist/` 里本地打的那份从此只是**自检产物**，不要手工上传 —— 对外分发的一律以 CI
+构建的为准（本地产物依赖维护者那台机器的环境，别人复现不了）。
+
+版本号格式钉死 `vX.Y.Z` 或 `vX.Y.Z-rcN`。rc 版只推精确的镜像 tag，**不动 `latest`
+和 `X.Y`** —— 否则所有 `docker pull ...:latest` 的用户会被悄悄升到预发布版上。
 
 戳文件是 `.release/e2e-stamp`（已 gitignore）。内容必须是**当前 HEAD 的完整 SHA**；
 盖戳后又改了代码 / 又 commit 了，必须重跑 e2e 再盖。
 
-## 发版检查单（人工勾）
+反悔：tag 推出去之前 `git tag -d vX.Y.Z` 即可。**推出去之后别删** —— 已经有人可能
+拉过那个镜像了；发一个 `vX.Y.Z+1` 覆盖它。
+
+## 发版检查单（推 tag 之前人工勾）
 
 脚本过了还不够时，发版说明里应能回答：
 
-- [ ] `main` CI 对该 commit 为绿（build-vet + go test）
+- [ ] `main` CI 对该 commit 为绿（build-vet + go test + docker 镜像双架构构建）
 - [ ] 三机 e2e `00 10 20 30 40 50 60 70` 全绿，戳与 HEAD 一致
 - [ ] 若改了 `config.toml` 样例 / systemd unit / install 脚本：在一台干净机上跑过
       `install-self-hosted.sh` 或至少 `nanotun-admin config lint`
 - [ ] 发版说明写清：**需要重启才能生效**的配置变更（见下表）
 - [ ] 没有引导用户去改**死配置键**（见下表）
+- [ ] 版本号符合 semver 语义：破坏性变更进 major / minor，别塞进 patch
+
+推完 tag 后还要人工确认一次：
+
+- [ ] Actions 里 `Release` workflow 三个 job 全绿
+- [ ] Release 页面上 amd64 / arm64 两个 tar 和 `SHA256SUMS` 都在
+- [ ] `docker pull ghcr.io/nanotun/server:X.Y.Z` 在一台干净机上能拉能起
+
+**首次发版专有**：GHCR 上新建的包默认是 private，要去仓库 Packages 页手动改成
+public，否则用户 `docker pull` 会被要求登录。这一步 workflow 做不到。
 
 ## 运维契约（发版说明里必须说清楚的）
 
@@ -103,5 +146,8 @@ set -a && . scripts/e2e/e2e.env && set +a
 
 - 禁止用「我本地随便 go test 过了」代替 `cut.sh`
 - 禁止在戳对应的 commit 之外打发布包
+- 禁止手工 `git tag` 后直接推（CI 的 `verify-tag` 会拒，但别去试探它）
+- 禁止把 `dist/` 里本地打的 tar 手工传到 Release 页 —— 对外产物一律由 CI 出
+- 禁止删除已推送的 tag / 已发布的镜像 tag（用户可能已经拉过了，发新版本覆盖）
 - 禁止把测试服口令 / `e2e.env` / `.release/` 打进 git 或发布 tar
 - 禁止在发版说明里写「改 PSK 要重启」（用户 PSK 不需要；hy2 `password` 才需要）

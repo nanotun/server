@@ -5,12 +5,19 @@ alwaysApply: true
 
 # 发版纪律
 
-打 `dist/nanotun-*.tar.gz` 或宣称「可以发版」时:
+打发布包或宣称「可以发版」时:
 
-1. **唯一入口**是 `./scripts/release/cut.sh`(见 `docs/RELEASE.md`)。
+1. **唯一入口**是 `./scripts/release/cut.sh vX.Y.Z`(见 `docs/RELEASE.md`)。版本号必须
+   是 semver:`vX.Y.Z` 或 `vX.Y.Z-rcN`。
 2. 禁止建议用户直接跑 `scripts/build-release.sh` 作为发版步骤;该脚本无门禁时会拒绝。
 3. 发版前三机 e2e 必须含阶段 **70**,命令是阶段号列表:
    `./scripts/e2e/run.sh 00 10 20 30 40 50 60 70`
    (`00 60` 只跑两个阶段,不是范围)。
-4. e2e 全绿后 `./scripts/release/stamp-e2e.sh`,再 `cut.sh`。
-5. 不要把「改用户 PSK 需要重启」写进发版说明 —— 用户 PSK 热失效;要重启的是 hy2 `password` 等 deferred 字段。
+4. e2e 全绿后 `./scripts/release/stamp-e2e.sh`,再 `cut.sh vX.Y.Z`。
+5. 禁止建议手工 `git tag` —— tag 只能由 `cut.sh` 打(它会把 e2e 戳写进 tag message,
+   `.github/workflows/release.yml` 的 `verify-tag` 就认这个)。手工打的 tag 会被 CI 拒。
+6. `cut.sh` **不会**自动推 tag。发布的最后一步是人工 `git push origin vX.Y.Z`,
+   先对照 `docs/RELEASE.md` 的检查单。
+7. 对外产物由 GitHub Actions 构建(Release tar + GHCR 镜像)。`dist/` 里本地打的那份
+   只是自检产物,禁止建议手工上传到 Release 页。
+8. 不要把「改用户 PSK 需要重启」写进发版说明 —— 用户 PSK 热失效;要重启的是 hy2 `password` 等 deferred 字段。

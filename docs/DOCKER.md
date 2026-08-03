@@ -27,9 +27,23 @@ sysctl --system
 # 防火墙放行（systemd 那条路径由安装脚本自动做，容器这边没人替你做）
 ufw allow 8443/tcp && ufw allow 443/udp && ufw allow 7443/tcp
 
-cd docker
+# 拿 compose 文件（不需要 clone 仓库，镜像从 GHCR 拉）
+curl -fsSLO https://raw.githubusercontent.com/nanotun/server/main/docker/docker-compose.yml
 docker compose up -d
 docker compose logs -f
+```
+
+镜像是 `ghcr.io/nanotun/server`，amd64 / arm64 多架构，由发版流水线在过了三机 e2e
+门禁的 tag 上构建（见 `docs/RELEASE.md`）。生产建议钉版本，别跟着 `latest` 漂：
+
+```bash
+NANOTUN_IMAGE_TAG=0.1.0 docker compose up -d
+```
+
+想验证镜像确实来自本仓库的构建流水线：
+
+```bash
+gh attestation verify oci://ghcr.io/nanotun/server:0.1.0 --repo nanotun/server
 ```
 
 首次启动会自动生成 REALITY 私钥、hy2 口令、自签证书，并初始化数据库。
@@ -37,9 +51,11 @@ docker compose logs -f
 
 管理面在 `https://<服务器IP>:7443`，首次访问走 `/setup` 创建 Web 管理员。
 
-开发试用用另一份，数据落在 `docker/data/` 下，随时可删：
+开发试用用另一份，它从本地源码构建（需要 clone 仓库），数据落在 `docker/data/` 下，
+随时可删：
 
 ```bash
+git clone https://github.com/nanotun/server.git && cd server/docker
 docker compose -f docker-compose.dev.yml up --build
 ```
 
@@ -167,6 +183,9 @@ Linux 机器。想在 Mac 上开管理界面看一眼的话，host 那个开关�
 docker build --platform linux/amd64 -t nanotun:latest .
 ```
 
+（用 GHCR 上的发布镜像就没这个问题：那是多架构 manifest，`docker pull` 会自动挑
+宿主对应的架构。这一段只适用于自己从源码构建的情况。）
+
 架构这件事镜像里有一道构建期断言兜着：二进制的 ELF `e_machine` 与基底 `dpkg` 架构不一致
 就直接构建失败。它防的是一种很难自己发现的错配 —— 基底按本机平台拉、二进制却编成了另一个
 架构，镜像能构建成功、能推、还自称是基底的架构，只在真机启动那一刻才 `exec format error`；
@@ -246,13 +265,15 @@ docker compose restart nanotun
 
 ## 升级
 
-镜像重建后滚一次就行，数据在卷里：
+拉新镜像滚一次就行，数据在卷里：
 
 ```bash
-cd docker
-docker compose build --pull
+docker compose pull
 docker compose up -d
 ```
+
+钉了 `NANOTUN_IMAGE_TAG` 的话，改成新版本号再 `up -d`。从本地源码构建的
+（`docker-compose.dev.yml`）才需要 `docker compose build --pull`。
 
 `entrypoint.sh` **不会**覆盖已有的 `config.toml`，只会把新模板刷到
 `/etc/nanotun/config.toml.dist`。升级后想看新增了哪些字段：

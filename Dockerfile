@@ -59,9 +59,18 @@ RUN go mod download
 
 COPY . .
 
-# NANOTUN_VERSION 只影响 nanotun-web 页脚展示的版本号,与 build-release.sh 的
-# -X main.webVersion 同一个变量。不传则用构建时间戳。
+# NANOTUN_VERSION 是三个二进制共用的版本号,release.yml 会把 tag(如 v0.1.0)传进来,
+# 与 build-release.sh 注入的是同一批变量。不传则用构建时间戳。
+#
+# 三个二进制的注入点不同名(serverVersion / version / webVersion),历史原因。
+# 漏掉任何一个,镜像跑起来对应的组件就报 "unknown" / "dev" —— 用户报障时说不清
+# 自己跑的是哪个版本,而这正是版本号存在的唯一理由。
 ARG NANOTUN_VERSION=""
+
+# git SHA 必须由外部传入:.dockerignore 排掉了 .git,所以镜像里既 `git rev-parse` 不了,
+# 也没有 debug/buildinfo 的 vcs.revision 可回填(那玩意也依赖 .git 在上下文里)。
+# 不传就是 "unknown",本地 `docker build` 属于这种情况,可以接受;release.yml 会传。
+ARG NANOTUN_GIT_SHA=""
 
 # TARGETARCH 必须**不带默认值**地声明。它是 buildkit 的内置全局 ARG,在 stage 里
 # "redeclare without value" 才会被自动填成当前构建平台的架构;一旦写成
@@ -76,15 +85,32 @@ ARG TARGETARCH
 
 RUN set -eux; \
     ver="${NANOTUN_VERSION:-$(date +%Y%m%d-%H%M%S)}"; \
+    sha="${NANOTUN_GIT_SHA:-unknown}"; \
+    built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
     export CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH:-$(go env GOARCH)}"; \
-    go build -trimpath -ldflags "-s -w" -o /out/nanotund       ./cmd/nanotund; \
-    go build -trimpath -ldflags "-s -w" -o /out/nanotun-admin  ./cmd/nanotun-admin; \
-    go build -trimpath -ldflags "-s -w -X main.webVersion=${ver}" -o /out/nanotun-web ./cmd/nanotun-web
+    go build -trimpath -ldflags "-s -w -X main.serverVersion=${ver} -X main.serverGitSHA=${sha} -X main.serverBuildTime=${built}" -o /out/nanotund ./cmd/nanotund; \
+    go build -trimpath -ldflags "-s -w -X main.version=${ver}"    -o /out/nanotun-admin ./cmd/nanotun-admin; \
+    go build -trimpath -ldflags "-s -w -X main.webVersion=${ver}" -o /out/nanotun-web   ./cmd/nanotun-web
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 运行阶段
 # ─────────────────────────────────────────────────────────────────────────────
 FROM ${RUNTIME_IMAGE}
+
+# 运行阶段是新的 stage,builder 里声明的 ARG 到这儿失效,要重新声明一次才能用。
+ARG NANOTUN_VERSION=""
+ARG NANOTUN_GIT_SHA=""
+
+# OCI 标准标签。source 那条不是装饰:GHCR 靠它把镜像包关联到仓库,没有的话
+# 包页面既不显示 README 也没有指回源码的链接,对一个要人信任的 VPN 网关镜像来说
+# 是硬伤。其余几条让 `docker inspect` 能答出「这是什么、什么许可、哪个版本」。
+LABEL org.opencontainers.image.title="nanotun" \
+      org.opencontainers.image.description="自托管组网网关(nanotund + nanotun-web + nanotun-admin)" \
+      org.opencontainers.image.source="https://github.com/nanotun/server" \
+      org.opencontainers.image.documentation="https://github.com/nanotun/server/blob/main/docs/DOCKER.md" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${NANOTUN_VERSION}" \
+      org.opencontainers.image.revision="${NANOTUN_GIT_SHA}"
 
 # 这些不是"顺手装上"的:每一个都有生产路径在调。
 #   iproute2   —— ip addr / ip link / ip route,TUN 起不来就全盘不可用

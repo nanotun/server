@@ -1,0 +1,204 @@
+name: Release
+
+# 发布流水线。**门禁不在这里** —— 三机 e2e 要 root、要真机、要测试服口令,跑不进
+# GitHub Actions,所以发版门留在本地 scripts/release/cut.sh。
+#
+# 这条 workflow 的职责是两件事:
+#   1. 校验「这个 tag 确实是过了门禁的 cut.sh 打出来的」(verify-tag);
+#   2. 统一构建对外分发的产物 —— 双架构 tarball + 多架构镜像。
+#
+# 为什么产物要由 CI 出而不是本地 upload:本地 tar 依赖维护者那台机器的 Go 版本、
+# 环境变量、有没有装对交叉编译工具。CI 的环境是仓库里写死的,别人能复现。
+# 本地 cut.sh 打的 tar 从此只当自检产物。
+#
+# 见 docs/RELEASE.md。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-tag:
+    name: 校验发版门 tag (blocking)
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      image_tags: ${{ steps.meta.outputs.image_tags }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      # fetch-depth: 0 是必需的:下面要 merge-base 到 main,浅克隆拿不到共同祖先。
+      # 首个 tag(仓库此前无 tag)尤其容易在这里踩空。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: tag 必须是 annotated 且带 e2e 戳
+        id: verify
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # lightweight tag 直接指向 commit,没有 message 可读 —— 也就意味着它不是
+          # cut.sh 打的(cut.sh 用 -a)。这是绕过发版门最容易的路子,必须堵死。
+          objtype="$(git cat-file -t "refs/tags/$TAG")"
+          if [[ "$objtype" != "tag" ]]; then
+            echo "::error::$TAG 是 lightweight tag(对象类型 $objtype),不是 cut.sh 打的。" >&2
+            echo "发版必须走 ./scripts/release/cut.sh $TAG,见 docs/RELEASE.md。" >&2
+            exit 1
+          fi
+
+          msg="$(git for-each-ref "refs/tags/$TAG" --format='%(contents)')"
+          stamp="$(printf '%s\n' "$msg" | sed -n 's/^e2e-stamp=\([0-9a-f]\{40\}\)$/\1/p' | head -1)"
+          if [[ -z "$stamp" ]]; then
+            echo "::error::$TAG 的 tag message 里没有 e2e-stamp=<40位SHA> 行。" >&2
+            echo "说明它不是过了三机 e2e 门禁的 cut.sh 产出。" >&2
+            printf 'tag message 实际内容:\n%s\n' "$msg" >&2
+            exit 1
+          fi
+
+          target="$(git rev-list -n1 "refs/tags/$TAG")"
+          if [[ "$stamp" != "$target" ]]; then
+            echo "::error::e2e 戳与 tag 指向的 commit 不一致 —— 盖戳后代码又变过。" >&2
+            echo "  戳:            $stamp" >&2
+            echo "  tag 指向 commit: $target" >&2
+            exit 1
+          fi
+
+          # 已合并才能发。避免从临时分支打 tag 发出去一个 main 上不存在的版本。
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$target" refs/remotes/origin/main; then
+            echo "::error::$target 不在 origin/main 上,拒绝发版。" >&2
+            exit 1
+          fi
+
+          echo "门禁 tag 校验通过: $TAG @ $target (e2e 戳一致,已在 main 上)"
+
+      - name: 计算版本与镜像 tag
+        id: meta
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]; then
+            echo "::error::tag 格式不对: $TAG(要求 vX.Y.Z 或 vX.Y.Z-rcN)" >&2
+            exit 1
+          fi
+
+          # 镜像仓库名必须全小写,否则 GHCR 拒收。github.repository 通常已经是小写,
+          # 但组织名大小写不受我们控制,统一转一次。
+          image="ghcr.io/$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
+          bare="${TAG#v}"
+
+          # rc 版只打精确 tag:让 latest / X.Y 指向一个预发布版本,等于把所有
+          # `docker pull ...:latest` 的用户悄悄升到 rc 上。
+          if [[ "$TAG" == *-rc* ]]; then
+            tags="${image}:${bare}"
+            prerelease=true
+          else
+            major_minor="${bare%.*}"
+            tags="${image}:${bare},${image}:${major_minor},${image}:latest"
+            prerelease=false
+          fi
+
+          {
+            echo "version=$TAG"
+            echo "image_tags=$tags"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "版本 $TAG / 预发布=$prerelease"
+          echo "镜像 tag: $tags"
+
+  binaries:
+    name: 二进制 tarball (amd64 + arm64)
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write   # 建 Release、传附件
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          # 与 ci.yml 和 go.mod 的 toolchain 行保持一致,三处要一起升。
+          go-version: '1.26.5'
+          cache: true
+
+      # NANOTUN_RELEASE_GATED=1:门禁已由 verify-tag 校验过(戳 → tag → 这个 job),
+      # 不是绕过。build-release.sh 自己不认识 tag,只认这个环境变量。
+      - name: 打包
+        env:
+          NANOTUN_RELEASE_GATED: '1'
+          NANOTUN_VERSION: ${{ needs.verify-tag.outputs.version }}
+        run: ./scripts/build-release.sh
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ needs.verify-tag.outputs.version }}
+          prerelease: ${{ needs.verify-tag.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/nanotun-*-linux-*.tar.gz
+            dist/SHA256SUMS
+
+  image:
+    name: GHCR 多架构镜像
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      packages: write     # 推 GHCR
+      id-token: write     # 构建溯源签名
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # arm64 的运行阶段(apt-get、archcheck)要在 amd64 runner 上模拟才能执行。
+      # 构建阶段不需要:Dockerfile 里 builder 钉了 BUILDPLATFORM。同 ci.yml。
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ needs.verify-tag.outputs.image_tags }}
+          build-args: |
+            NANOTUN_VERSION=${{ needs.verify-tag.outputs.version }}
+            NANOTUN_GIT_SHA=${{ github.sha }}
+          # 与 ci.yml 的 docker-image job 共用 GHA 缓存:PR 上已经构建过同一份
+          # apt 层,发版时不必重下。
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 供应链溯源:让使用者能验证「这个镜像确实是这个仓库的这条 workflow 构建的」。
+      #   gh attestation verify oci://ghcr.io/<repo>:<tag> --repo <repo>
+      - name: 构建溯源
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

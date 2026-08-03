@@ -34,4 +34,4 @@ mkdir -p .release
 } > .release/e2e-stamp
 
 echo "已盖戳: HEAD ${short} (${sha})"
-echo "下一步: ./scripts/release/cut.sh"
+echo "下一步: ./scripts/release/cut.sh vX.Y.Z"

@@ -7,10 +7,22 @@
 # 控制面命令连 /run/nanotun/control.sock。命名卷躺在 /var/lib/docker/volumes 里,
 # 宿主侧这些工具够不着,于是容器与断言看的是两份不同的文件。
 #
-# 这一层只动存储位置,镜像 / entrypoint / cap_add / devices / network_mode 全部沿用
-# 生产那份 —— 被测的是同一个容器,不是一个为测试特制的容器。
+# 这一层只动存储位置和「镜像从哪来」,entrypoint / cap_add / devices / network_mode
+# 全部沿用生产那份 —— 被测的是同一个容器,不是一个为测试特制的容器。
 services:
   nanotun:
+    # 必须从本地源码构建,不能用生产那份的 ghcr.io 镜像。
+    #
+    # 生产 compose 改成拉预构建镜像之后,如果这里不覆盖回来,`up -d --build` 会
+    # 悄悄跑起**上一个已发布版本**,而 e2e 全绿之后 stamp-e2e.sh 盖的是当前 HEAD 的戳 ——
+    # 等于用旧版本的测试结果给新代码放行。发版门禁最不能接受的失败形态就是这种。
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        NANOTUN_VERSION: e2e
+    image: nanotun:e2e
+
     volumes: !override
       - /etc/nanotun:/etc/nanotun
       - /var/lib/nanotun:/var/lib/nanotun

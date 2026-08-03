@@ -2,6 +2,9 @@
 #
 #   cd docker && docker compose -f docker-compose.dev.yml up --build
 #
+# 这也是**唯一**从本地源码构建镜像的 compose:生产那份改成直接拉 GHCR 的预构建镜像了,
+# 想验证自己改的代码就用这份。
+#
 # 与生产那份的区别只有三点,都是为了「方便看、方便改、方便推倒重来」:
 #
 #   1. 用 bind mount 挂到 ./data/ 而不是 named volume —— 配置和 SQLite 库就在
