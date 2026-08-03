@@ -14,6 +14,7 @@
 
 用法:
   webclient.py --base URL --jar PATH login --user U --password P [--totp-secret S]
+  webclient.py --base URL --jar PATH setup --user U --password P
   webclient.py --base URL --jar PATH get  <path>  [--out FILE]
   webclient.py --base URL --jar PATH post <path>  [k=v ...]
 
@@ -185,6 +186,48 @@ def do_login(opener, base, args):
     return 0 if status in (302, 303) else 1
 
 
+def do_setup(opener, base, args):
+    """建首个 web 管理员(POST /setup)。
+
+    provision.sh 用它把实验室的 wadmin 建出来。不能用 `post /setup` 那条通路:
+    `post` 是从**已登录**页面取 CSRF 的,而 /setup 恰恰是全新部署里唯一无需登录的
+    写库端点,它自己带 CSRF + 验证码 + 自适应 PoW 三道闸,取法与 /login 相同。
+
+    已经有管理员时服务端直接 302 /login。那不是失败 —— 幂等重跑就该走到这里,
+    所以单独回报 "exists" 让调用方能区分。
+    """
+    status, body = request(opener, base + "/setup")
+    if status in (302, 303):
+        print("exists")
+        return 0
+    if status != 200:
+        print("setup page status=%d" % status)
+        return 1
+
+    form = {
+        "username": args.user,
+        "password": args.password,
+        "password_confirm": args.password,
+        "csrf_token": field(body, "csrf_token"),
+    }
+    captcha = solve_captcha(body)
+    if captcha:
+        form["captcha"] = captcha
+    form.update(solve_pow(body))
+
+    status, body = request(opener, base + "/setup",
+                           urllib.parse.urlencode(form).encode())
+    if status in (302, 303):
+        print("200")
+        return 0
+    print(str(status))
+    # setupRetry 会把原因渲染回页面(口令太弱、验证码不对、两次不一致)。
+    # 不把它捞出来的话,调用方只看见一个 200,会以为是「建成了」。
+    for hint in re.findall(r"(错误|失败|不一致|太弱|invalid|weak|mismatch)[^<]{0,40}", body):
+        print("  hint: %s" % (hint if isinstance(hint, str) else "".join(hint)))
+    return 1
+
+
 def csrf_from(opener, base, path="/port-forwards"):
     """从任意一个已登录页面取 CSRF token。
 
@@ -206,6 +249,10 @@ def main():
     lp.add_argument("--password", required=True)
     lp.add_argument("--totp-secret", default="")
 
+    sp = sub.add_parser("setup")
+    sp.add_argument("--user", required=True)
+    sp.add_argument("--password", required=True)
+
     gp = sub.add_parser("get")
     gp.add_argument("path")
     gp.add_argument("--out", default="")
@@ -225,6 +272,9 @@ def main():
     try:
         if args.cmd == "login":
             return do_login(opener, base, args)
+
+        if args.cmd == "setup":
+            return do_setup(opener, base, args)
 
         if args.cmd == "get":
             status, body = request(opener, base + args.path)

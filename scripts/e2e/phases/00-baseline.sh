@@ -21,10 +21,11 @@
 #     查不出来。断言失败会停在基线并把 route list 原样打出来,那是能往下查的形状。
 _check_c_subnet_routes_are_approved() {
   local missing=""
-  local cidr
+  local cidr st
   for cidr in "$E2E_C_LAN4" "$E2E_C_LAN6"; do
     [[ -n "$cidr" ]] || continue
-    adm "route list --device $E2E_C_DEVICE_ID --status approved" | grep -q "$cidr" || missing+="$cidr "
+    st="$(route_status_of "$E2E_C_DEVICE_ID" "$cidr")"
+    [[ "$st" == approved ]] || missing+="$cidr(${st:-无此行}) "
   done
   if [[ -z "$missing" ]]; then
     _pass "基线 · C 的子网宣告均为 approved"
@@ -48,9 +49,7 @@ _check_c_subnet_routes_are_approved() {
 # 同样只断言不自动 designate:自动补会让「这行为什么会没了」永远查不出来。已知的正常路径
 # (客户端重连、服务端重启)实测都不会删它,所以真出现就是值得查的。
 _check_c_is_an_approved_exit() {
-  local approved
-  approved="$(adm "route list --device $E2E_C_DEVICE_ID --status approved")"
-  if echo "$approved" | grep -q '0\.0\.0\.0/0'; then
+  if [[ "$(route_status_of "$E2E_C_DEVICE_ID" "0.0.0.0/0")" == approved ]]; then
     _pass "基线 · C 的默认路由已批准（后续出口类断言的前提）"
     return 0
   fi

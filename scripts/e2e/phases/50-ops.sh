@@ -899,9 +899,6 @@ _ensure_hy2_probe() {
     note "已把 hy2udpprobe 编译并推到客户端 A"
   fi
 
-  if [[ "$(a "test -f /tmp/probe-cert.pem && echo yes" | tr -d '[:space:]')" == "yes" ]]; then
-    return 0
-  fi
   # 现签一张:CA 证书路径取自真配置,私钥按同名 -key 兄弟找(install 脚本就是这么摆的)。
   local ca
   ca="$(s "grep -oE '^tls_client_ca_file = \"[^\"]+\"' /etc/nanotun/config.toml | cut -d'\"' -f2" | tr -d '[:space:]')"
@@ -912,6 +909,20 @@ _ensure_hy2_probe() {
   # 配置里这一项通常是相对路径(相对 /etc/nanotun),而远端命令的 cwd 是登录目录 ——
   # 直接拿去 test -f 会永远说「找不到」,于是这组静默退化成 ENV。先补成绝对路径。
   [[ "$ca" == /* ]] || ca="/etc/nanotun/$ca"
+
+  # 每轮都重签,**不缓存**。省下的那两秒不值得换来这个故障模式:
+  #
+  # 原先是「/tmp/probe-cert.pem 在就复用」。2026-08-03 服务端重装换掉了客户端 CA,
+  # A 上那张上一轮签的证书还在,于是被继续拿去握手,服务端以
+  # `tls: unknown certificate authority` 拒掉 —— 报出来是「hy2 探针握不上手」,
+  # 读起来像 UDP 中转坏了或者被防火墙拦了。
+  #
+  # 试过用「比对 CA 主体 hash 与证书签发者 hash」来判新旧,那是错的:
+  # subject_hash 只对**名字**取哈希,与密钥无关。新旧 CA 的主体都是
+  # `CN=nanotun-client-ca, O=nanotun-deploy`,两边算出来都是 becfdd85,
+  # 换了密钥的 CA 照样判成「同一个」。要真判准就得验签,那还不如直接重签。
+  a "rm -f /tmp/probe-cert.pem /tmp/probe-key.pem" >/dev/null
+
   local cadir cabase cakey
   cadir="$(dirname "$ca")"
   cabase="$(basename "$ca" .pem)"

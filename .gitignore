@@ -22,8 +22,12 @@ cmd/nanotund/certs/
 # 依赖
 vendor/
 
-# e2e 的环境描述:含被测机器的地址与口令,只提交 e2e.env.example
+# e2e 的环境描述:含被测机器的地址与口令,只提交 e2e.env.example。
+# 用通配是因为 provision.sh 回填前会存一份 e2e.env.bak.<时间戳> —— 那份同样带口令,
+# 只写死 e2e.env 的话备份会以 untracked 的身份躺在 git status 里等着被 `git add .` 收走。
 scripts/e2e/e2e.env
+scripts/e2e/e2e.env.*
+!scripts/e2e/e2e.env.example
 
 # 发版门的本地 e2e 戳(scripts/release/stamp-e2e.sh);不得进仓库
 .release/

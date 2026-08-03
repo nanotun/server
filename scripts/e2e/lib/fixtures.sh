@@ -91,6 +91,21 @@ client_c_stop()  { client_stop c "$E2E_C_UNIT"; }
 # 客户端最近的日志,用来核对服务端下发的 close code(902 瞬态 / 905 终态)。
 client_log() { "$1" "journalctl -u $2 --since '-${3:-60}s' --no-pager 2>/dev/null"; }
 
+# route_status_of <device_id> <cidr> → approved|pending|rejected;该行不存在则空串。
+#
+# 必须自己解析 STATUS 列。`route list --device N --status approved | grep <cidr>` 看着更省事,
+# 但 0.1.0 的 nanotun-admin 里 --status 与 --device 同时出现时会被静默忽略(取数写成了 switch,
+# --device 命中就不再看 --status;已在 cmd_route.go 修掉,这里仍自行解析,以便对着尚未升级的
+# 服务端也判得准)。用那种写法时 grep 会匹配到 **pending** 的行,把「没批」读成「已批」。
+#
+# 2026-08-03 的代价:基线里那两条 approved 守卫正是用它写的,于是在 C 的两条 LAN 路由
+# 都是 pending 时照常放行 —— 而它们恰恰是为拦这个而加的。结果阶段 1 里四条「子网恢复」
+# 断言全红,同时所有「子网被掐断」的断言全绿(没通过的东西当然掐得掉),
+# 从红绿分布上完全看不出真因是一条没批的路由。
+route_status_of() {
+  adm "route list --device $1" | awk -v d="$1" -v c="$2" '$2==d && $3==c {print $4; exit}'
+}
+
 # 在线会话数。很多阶段的前置条件就是「两台都在线」。
 conn_count() { srv_field conn_count 2>/dev/null || echo 0; }
 
