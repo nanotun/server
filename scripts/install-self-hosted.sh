@@ -327,6 +327,12 @@ systemctl daemon-reload
 ok "二进制 / 配置 / 证书 / systemd 单元已就位"
 
 step "2. 开启 IP forwarding + unprivileged ICMP ping"
+# /etc/sysctl.d 不是哪里都有:Rocky 9 的 minimal 镜像(以及最小化安装的 RHEL 系)
+# 只带 /usr/lib/sysctl.d,/etc/sysctl.d 要管理员自己建。少这一句的后果是安装在第 2 步
+# 当场炸在一行裸的 `No such file or directory` 上 —— 前一步刚把二进制和 systemd 单元
+# 都写下去了,机器停在装了一半的状态,而屏幕上没有任何能照着做的话。
+# 两边 sysctl --system 都读,建出来就行。
+mkdir -p /etc/sysctl.d
 cat > /etc/sysctl.d/99-nanotun.conf <<'SYSCTL'
 # nanotun 自托管 VPN 网关：转发数据包给客户端访问公网 / 互访
 net.ipv4.ip_forward = 1
@@ -601,14 +607,34 @@ fi
 # 装完不等于能用:还差 server_dial_host、Web 管理员、用户的两个二维码,
 # 而这三件事安装脚本都替不了人做决定。setup.sh 把它们串成一条交互流程。
 #
-# 但向导有没有人接着跑,只有调用方知道:install.sh 会在本脚本结束后立刻 exec 它
-# (前提是有终端可问话),而单独跑本脚本的人得自己去敲。两种情形说同一句话必然坑一头 ——
-# 之前就是无条件催「还差最后一步:sudo nanotun-setup」,然后向导当场自己启动了,
-# 照着做的人会在向导跑完之后又原样敲一遍。NANOTUN_WIZARD_FOLLOWS 由 install.sh 置位。
+# 但收尾该说哪句话,取决于两件本脚本自己不知道的事:
+#
+#   一、向导有没有人接着跑。install.sh 会在本脚本结束后立刻 exec 它(前提是有终端
+#       可问话),而单独跑本脚本的人得自己去敲。之前不分情形一律催「还差最后一步:
+#       sudo nanotun-setup」,然后向导当场自己启动了 —— 照着做的人会在向导跑完之后
+#       又原样敲一遍。这个由 install.sh 置 NANOTUN_WIZARD_FOLLOWS 告知。
+#
+#   二、这是首次部署还是重装 / 升级。「还差最后一步,客户端才连得上」只对首次成立;
+#       在一台早就配好、正常服务着的机器上重跑(升级二进制就是这么做的),这句话等于
+#       通知人「你的部署没配完」,而它明明好好的。判据取 server_dial_host —— 它正是
+#       向导第一步要解决的东西,也是客户端连得上的硬前提,比「库里有没有用户」更贴近
+#       这句话想表达的意思。没设过时 stdout 为空(报错走 stderr),所以这么取是准的。
+DIAL_SET="$(/usr/local/bin/nanotun-admin --db-path "$LIB_DIR/nanotun.db" \
+  setting get server_dial_host 2>/dev/null | tail -1 | tr -d '[:space:]')" || DIAL_SET=""
+
 if [ "${NANOTUN_WIZARD_FOLLOWS:-0}" = 1 ]; then
   # 向导接着就来,而且它结束时会把这些运维命令再列一遍。这里少说几句,
   # 好让上面第 5 步那段 admin PSK 尽量留在屏幕上。
-  ok "安装完成,开服向导马上开始 —— 设置拨号地址、建第一个用户、出二维码。"
+  if [ -n "$DIAL_SET" ]; then
+    ok "安装完成,开服向导马上开始 —— 已配好的值会显示出来,回车即保留。"
+  else
+    ok "安装完成,开服向导马上开始 —— 设置拨号地址、建第一个用户、出二维码。"
+  fi
+elif [ -n "$DIAL_SET" ]; then
+  ok "安装完成。这台机器此前已配置过(拨号地址 $DIAL_SET),现有用户与密钥都没动。"
+  echo
+  echo "    要加用户 / 重出二维码 / 改拨号地址:sudo nanotun-setup"
+  echo
 elif [ "${SETUP_AVAILABLE:-0}" -eq 1 ]; then
   ok "安装完成。**还差最后一步**,客户端才连得上:"
   echo

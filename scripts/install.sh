@@ -133,6 +133,12 @@ run_preflight() {
 
   if [ "$CHECK_ONLY" = 1 ]; then
     args+=(--dry-run)          # 只是看看,连 sysctl 都别写
+  elif [ "${NANOTUN_NO_INSTALL:-0}" = "1" ]; then
+    # 只下载解压,同样不动系统。本脚本头部和 --help 都明写它「不需要 root」,
+    # 上面那道 root 硬检查也确实为它放了行 —— 漏的是这里:环境检查照样收到
+    # --for-install,于是非 root 被判死在「不是 root」上,一个字节都没下就退了。
+    # 文档说不用 root、代码却拦下,这种自相矛盾比单纯的限制更难自查。
+    args+=(--dry-run)
   else
     # 跑完就要装,所以非 root 在这条路上是硬伤,得当场判死。
     # --check-only 那条路相反:它明确不需要 root,preflight 只会提醒一句。

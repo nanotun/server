@@ -152,18 +152,32 @@ run "systemctl daemon-reload" systemctl daemon-reload
 step "4. 撤销 sysctl 与 ufw 放行"
 if [ -f /etc/sysctl.d/99-nanotun.conf ]; then
   # 这个 drop-in 名义上是服务端装的,但 ip_forward 并不只有服务端在用:客户端做
-  # **子网路由 / 出口节点**时同样靠它转发。所以机器上还有客户端时一律留着。
-  #
-  # 不留的代价是立刻见效的,不是下次重启才出事:删完跑 sysctl --system,ip_forward 当场
-  # 回落到别处配置的值(全新 Debian/Ubuntu 上就是 0),正在经这台机器出网的客户端瞬间断流。
-  # 反过来,在一台已经没有服务端的机器上多留一个开着转发的 drop-in,只是洁癖问题,
-  # 而且下面会把话说清楚 —— 两害相权,留着。
+  # **子网路由 / 出口节点**时同样靠它转发。所以机器上还有客户端时一律留着 ——
+  # 多留一个开着转发的 drop-in 只是洁癖问题,删错了却会让正在经这台机器出网的客户端断流。
   if [ "$CLIENT_PRESENT" = 1 ]; then
     warn "保留 /etc/sysctl.d/99-nanotun.conf —— 客户端做子网路由 / 出口节点时也需要 ip_forward=1。"
     warn "确认这台机器不再需要转发,再自行删除该文件并 sysctl --system。"
   else
     run "删 /etc/sysctl.d/99-nanotun.conf" rm -f /etc/sysctl.d/99-nanotun.conf
-    run "sysctl --system(转发设置回到系统默认)" sysctl --system
+    run "sysctl --system(重新载入其余 sysctl 配置)" sysctl --system
+    # sysctl 只写「配置文件里出现过的」键。drop-in 一删,就没有任何文件再提 ip_forward,
+    # 于是它**不会**被改回去:运行值原样留在 1,要到下次重启才回到内核默认 0。
+    # 这行原来印的是「转发设置回到系统默认」—— 实测 --purge 跑完 sysctl -n
+    # net.ipv4.ip_forward 仍是 1。一句让人以为已经关了、其实还开着的话,比不说更糟,
+    # 尤其这台机器可能就是因为不想再转发才卸的。
+    #
+    # 也不替人关:docker、别的 VPN、k8s 节点都可能正靠着它,这里一 sysctl -w 就断在别处。
+    # 只把事实和那一条命令给出来。
+    fwd_on=""; fwd_cmd=""
+    for k in net.ipv4.ip_forward net.ipv6.conf.all.forwarding; do
+      if [ "$(sysctl -n "$k" 2>/dev/null)" = 1 ]; then
+        fwd_on="$fwd_on $k"; fwd_cmd="$fwd_cmd; sysctl -w $k=0"
+      fi
+    done
+    if [ -n "$fwd_on" ]; then
+      warn "转发仍开着:${fwd_on# } —— sysctl 只回滚配置文件,不改已生效的运行值,重启后才回到内核默认 0。"
+      warn "想立刻关掉(先确认没有 docker / 其它 VPN 靠着它):${fwd_cmd#; }"
+    fi
   fi
 fi
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
