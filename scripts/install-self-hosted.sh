@@ -59,6 +59,14 @@ SCRIPTS_DIR="$DEPLOY_DIR/scripts"
 ETC_DIR=/etc/nanotun
 LIB_DIR=/var/lib/nanotun
 
+# nanotun-admin 默认输出英文,而本脚本从头到尾是中文。第 5 步 init 那两句问话
+# (admin username / admin PSK)会直接夹在中文安装过程里,还紧挨着最重要的凭据输出。
+# 自己显式设过 NANOTUN_LANG 的按你的来。
+#
+# 对本脚本的解析没有影响:init 走 --json(键名与语言无关),count_real_users 读的
+# user list 表格两种语言下逐字一致 —— K1 守卫靠 $3=="no" 数人,已实测两边相同。
+export NANOTUN_LANG="${NANOTUN_LANG:-zh}"
+
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 ok()   { printf '    \033[1;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '    \033[1;33m!\033[0m %s\n' "$*"; }

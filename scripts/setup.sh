@@ -126,6 +126,15 @@ json_field() { # json_field <字段名>,JSON 从 stdin 读
   fi
 }
 
+# nanotun-admin 默认输出英文(main.go 的 langDefault),而这个向导从头到尾是中文。
+# 不对齐的话,最需要看懂的那一刻反而蹦出英文 —— 比如把 127.0.0.1 填进拨号地址时:
+#   ✗ syntax validation failed: loopback "127.0.0.1" ... clients cannot dial this address externally
+# 夹在中文提示中间。自己显式设过 NANOTUN_LANG 的按你的来。
+#
+# 切语言不会影响脚本对输出的解析:这里读的要么是 --json(键名与语言无关),要么是
+# setting get 的原始值;user list 那张表两种语言下逐字一致(表格不本地化)。
+export NANOTUN_LANG="${NANOTUN_LANG:-zh}"
+
 # nanotun-admin 包装:--db-path 一定要显式传。
 # 它的默认值是**相对 cwd** 的 data/nanotun.db —— 忘了传不会报错,而是在当前目录
 # 建一个空库然后在里面查不到任何用户,现象是「刚建的用户不见了」。
@@ -262,8 +271,8 @@ while :; do
 
   # 非交互模式下不能退回去重问(没人回答,只会死循环)。既然地址是命令行显式给的,
   # 就当操作者已经确认过:探测失败降级为告警,直接尝试写入。
-  # 真正非法的值(带端口 / 协议头)会被 setting set 自己的校验拦下并致命退出,
-  # 所以这里不会把垃圾值悄悄写进库 —— DNS/ICMP 放过,语法不放过。
+  # 真正非法的值会被 setting set 自己的校验拦下并致命退出,所以这里不会把垃圾值
+  # 悄悄写进库 —— DNS/ICMP 放过,语法不放过。
   if [ "$ASSUME_YES" = 1 ]; then
     warn "--yes:按命令行给定的值继续。"
     if admin setting set server_dial_host "$dial_host" >/dev/null; then
@@ -271,7 +280,7 @@ while :; do
       current_dial="$dial_host"
       break
     fi
-    die "写入失败 —— 地址不合法(不能带端口 / 协议头)。"
+    die "写入失败 —— 原因见上面那行校验报错。"
   fi
 
   if confirm "仍然使用 $dial_host ?" n; then
@@ -280,7 +289,11 @@ while :; do
       current_dial="$dial_host"
       break
     fi
-    die "写入失败 —— 语法层面就不合法(不能带端口 / 协议头),换一个再试。"
+    # 别在这里替校验下结论。setting set 拒绝的理由不止一种(回环 / 私网地址、
+    # 带端口、带 http:// 前缀、域名本身不合法……),而它已经把真实原因打在上一行了。
+    # 原来这句写死「不能带端口 / 协议头」,填 127.0.0.1 时屏幕上就是自相矛盾的两行:
+    # 上一行说是回环地址,紧接着的红字说是端口/协议头 —— 而红字最后出现、最显眼。
+    die "写入失败 —— 原因见上面那行校验报错,换一个再试。"
   fi
   dial_host=""
   OPT_DIAL_HOST=""
