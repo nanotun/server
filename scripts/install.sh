@@ -3,6 +3,12 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh | sudo bash
 #
+# 跑完就能用:向导会问拨号地址、建第一个 VPN 用户、出两个二维码。管道占着 stdin
+# 也没关系,向导会从 /dev/tty 问话。
+#
+# 无人值守(CI / cloud-init):自己不认得的参数一律转交向导,所以一条命令做到底 ——
+#   curl -fsSL .../install.sh | sudo bash -s -- --dial-host vpn.example.com --user alice --yes
+#
 # 只想先看看这台机器行不行(不下载、不安装、不改任何东西):
 #   curl -fsSL .../install.sh | bash -s -- --check-only
 #   环境检查也可以单独跑:curl -fsSL .../preflight.sh | bash
@@ -21,6 +27,7 @@
 #   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
 #   --skip-check   跳过环境检查直接装(不建议;装到一半失败比现在就知道难收拾)
 #   --no-setup     装完不自动进开服向导
+#   其余参数        原样转交开服向导,例如 --dial-host / --user / --yes
 #
 # 环境变量:
 #   NANOTUN_VERSION     要装的版本,默认取最新 Release
@@ -38,7 +45,7 @@ BRANCH="${NANOTUN_BRANCH:-main}"
 INSTALL_DIR="${NANOTUN_INSTALL_DIR:-/opt/nanotun}"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts"
 
-CHECK_ONLY=0; SKIP_CHECK=0; NO_SETUP=0
+CHECK_ONLY=0; SKIP_CHECK=0; NO_SETUP=0; SETUP_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --check-only) CHECK_ONLY=1; shift ;;
@@ -68,9 +75,28 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
 完整说明: https://github.com/${REPO}
 EOF
       exit 0 ;;
-    *) printf 'install.sh: 未知参数 %s(--help 看用法)\n' "$1" >&2; exit 2 ;;
+    # 自己不认得的一律转交开服向导。这条是「一条命令装完就能用」的关键:
+    #
+    #   curl -fsSL .../install.sh | sudo bash -s -- --dial-host vpn.example.com --user alice --yes
+    #
+    # 没有它,无人值守就只能拆成两条命令(装完再 sudo nanotun-setup ...),而中间那步
+    # 恰恰是最容易被忘掉的 —— 忘了它,服务是起着的,客户端却因为没有 server_dial_host
+    # 而连不上,现象离原因很远。
+    #
+    # 不认得的参数不在这里判死,是因为判据在向导那边(它才知道自己收哪些 flag),
+    # 在这里再抄一份必然跟它分头演化。写错的 flag 仍然会被向导当场拒掉并点名。
+    *) SETUP_ARGS+=("$1"); shift ;;
   esac
 done
+
+# 但如果向导压根不会跑,这些参数就没人接了 —— 而且此刻大概率是把 install.sh 的
+# flag 敲错了(比如 --skip-chek)。这种要在动系统之前就拦下,不能装完一整套再说。
+if [ ${#SETUP_ARGS[@]} -gt 0 ] && { [ "$CHECK_ONLY" = 1 ] || [ "$NO_SETUP" = 1 ]; }; then
+  if [ "$CHECK_ONLY" = 1 ]; then why="--check-only 只检查不安装"; else why="--no-setup 明说了不跑向导"; fi
+  printf 'install.sh: 这些参数本该转交开服向导,但这次向导不会跑(%s):%s\n' "$why" "${SETUP_ARGS[*]}" >&2
+  printf '   install.sh 自己只认 --check-only / --skip-check / --no-setup,其余一律转交向导(--help 看用法)。\n' >&2
+  exit 2
+fi
 
 info() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 ok()   { printf '    \033[1;32m✓\033[0m %s\n' "$*"; }
@@ -186,9 +212,11 @@ if [ -z "$VERSION" ]; then
       newest="$(curl -fsSL --retry 2 "https://github.com/${REPO}/releases.atom" 2>/dev/null \
         | sed -n 's#.*<link[^>]*releases/tag/\([^"]*\)".*#\1#p' | head -1)"
       case "$newest" in
+        # URL 要写全。这条命令是给人**原样粘走**的 —— 原来这里是 `.../install.sh`,
+        # 省略号粘过去就是一个不存在的地址,等于还得自己回去翻文档拼一遍。
         v[0-9]*) die "${REPO} 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
-   最新的是 ${newest},显式指定它:
-     curl -fsSL .../install.sh | sudo NANOTUN_VERSION=${newest} bash" ;;
+   最新的是 ${newest},照抄这条:
+     curl -fsSL ${RAW_BASE}/install.sh | sudo NANOTUN_VERSION=${newest} bash" ;;
         *) die "${REPO} 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
    到 https://github.com/${REPO}/releases 挑一个,再用 NANOTUN_VERSION=vX.Y.Z 指定。" ;;
       esac ;;
@@ -280,14 +308,33 @@ if [ ! -x /usr/local/bin/nanotun-setup ]; then
   exit 0
 fi
 
-# 非交互环境(CI、curl | bash 且 stdin 不是终端)下向导问不了话,别让它报错收场。
-if [ ! -t 0 ]; then
+# 向导要问话,所以先弄清楚这次到底有没有人能回答。
+#
+# 关键在于:被 `curl … | sudo bash` 跑时,stdin 是 curl 那根管道(而且已经读到底了),
+# 所以 `-t 0` 永远为假 —— 哪怕人就坐在终端前面。照 -t 0 判断的话,官网首页那条一行
+# 命令**必然**走不进向导,总是以「请再手动跑一次 sudo nanotun-setup」收场。
+#
+# 但管道占的只是 stdin,控制终端还在,/dev/tty 就是它。这也是 rustup 之流的老做法:
+# 交棒时把 stdin 重新指到 /dev/tty,向导照样能问话,于是那条一行命令真的一次装完。
+#
+# 判据是「能不能真的打开 /dev/tty」,不是「文件在不在」:CI、cron、systemd 里
+# /dev/tty 这个节点通常也在,但进程没有控制终端,一 open 就 ENXIO。所以这里真去开一次。
+SETUP_STDIN=""
+if [ -t 0 ]; then
+  SETUP_STDIN=/dev/stdin
+elif { : </dev/tty; } 2>/dev/null; then
+  SETUP_STDIN=/dev/tty
+fi
+
+# 给了参数就未必需要人回答了 —— 带 --yes 的那套本来就是无人值守用的,
+# 这种情况下没有终端也照跑,不然 CI / cloud-init 里永远进不了向导。
+if [ -z "$SETUP_STDIN" ] && [ ${#SETUP_ARGS[@]} -eq 0 ]; then
   echo
-  info "安装完成。stdin 不是终端,开服向导需要交互,请手动跑:"
+  info "安装完成。这次既没有终端可问话、也没给向导参数,开服向导跳过。手动跑:"
   echo "    sudo nanotun-setup"
   echo
-  echo "  想全自动的话给它参数:"
-  echo "    sudo nanotun-setup --dial-host <你的域名或IP> --user <用户名> --yes"
+  echo "  无人值守(CI / cloud-init)可以一条命令做完:"
+  echo "    curl -fsSL ${RAW_BASE}/install.sh | sudo bash -s -- --dial-host <域名或IP> --user <用户名> --yes"
   exit 0
 fi
 
@@ -298,4 +345,8 @@ echo
 # tar 就此长住 /tmp。交棒前自己收干净,并撤掉 trap 免得留个悬空的处理器。
 cleanup
 trap - EXIT
-exec /usr/local/bin/nanotun-setup
+if [ "$SETUP_STDIN" = /dev/tty ]; then
+  exec /usr/local/bin/nanotun-setup ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"} </dev/tty
+else
+  exec /usr/local/bin/nanotun-setup ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}
+fi

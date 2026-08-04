@@ -82,7 +82,10 @@ while [ $# -gt 0 ]; do
     --no-user)   OPT_NO_USER=1; shift ;;
     -y|--yes)    ASSUME_YES=1; shift ;;
     -h|--help)   usage; exit 0 ;;
-    *) printf 'FATAL: 未知参数: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
+    # 点名是谁在说话:install.sh 会把自己不认得的参数原样转交本向导,所以这行
+    # 也可能是在一条 `curl … | sudo bash -s -- …` 里冒出来的。只说「未知参数」的话,
+    # 读的人不知道该去查 install.sh 的 flag 还是向导的。
+    *) printf 'FATAL: %s: 未知参数: %s\n\n' "$(basename -- "${0:-nanotun-setup}")" "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
