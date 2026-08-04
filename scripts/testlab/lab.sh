@@ -264,7 +264,9 @@ cmd_status() {
     printf "  发行版   %s\n" "$(. /etc/os-release; echo "$PRETTY_NAME")"
     printf "  架构     %s\n" "$(uname -m)"
     if [ -x /usr/local/bin/nanotund ]; then
-      printf "  nanotund %s\n" "$(/usr/local/bin/nanotund --version 2>/dev/null | head -1)"
+      v="$(/usr/local/bin/nanotund --version 2>/dev/null | head -1)"
+      # rc2 及更早的 nanotund 没有 --version,取空 —— 装的是真实发布包时会碰到。
+      printf "  nanotund %s\n" "${v:-已装(这个版本不认 --version)}"
       printf "  服务     %s\n" "$(systemctl is-active nanotun nanotun-web 2>/dev/null | tr "\n" " ")"
     else
       printf "  nanotund 未安装\n"

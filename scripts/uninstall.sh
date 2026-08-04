@@ -92,7 +92,13 @@ fi
 
 if [ -x /usr/local/bin/nanotund ] || [ -f /etc/systemd/system/nanotun.service ]; then
   # --version 第一行已经是 "nanotund <版本>",别再自己拼一遍程序名(会变成 nanotund nanotund vX)。
-  ok "找到已安装的服务端$([ -x /usr/local/bin/nanotund ] && printf '(%s)' "$(/usr/local/bin/nanotund --version 2>/dev/null | head -1)")"
+  #
+  # 取空是正常情况,不是故障:--version 是后加的,v0.1.0-rc2 及更早的 nanotund 不认这个
+  # flag(它会打 "flag provided but not defined" 到 stderr,stdout 一个字没有)。而卸载
+  # 恰恰最常发生在老版本上。取空时整个括号一起省掉,别留一对空括号让人以为读版本失败了。
+  NANOTUND_VER=""
+  [ -x /usr/local/bin/nanotund ] && NANOTUND_VER="$(/usr/local/bin/nanotund --version 2>/dev/null | head -1)"
+  ok "找到已安装的服务端${NANOTUND_VER:+($NANOTUND_VER)}"
 else
   warn "没找到已安装的服务端(nanotund 与 nanotun.service 都不在)。"
   warn "继续跑也无妨 —— 下面每一步都是幂等的,不在就跳过。"
