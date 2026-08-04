@@ -49,6 +49,7 @@ usage() { sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 DISTRO=ubuntu
 LOCAL=0
 VERSION=""
+NO_TUN=0
 CMD=""
 PASS=()
 while (( $# )); do
@@ -56,6 +57,9 @@ while (( $# )); do
     --distro)  DISTRO="${2:?--distro 后面要跟发行版}"; shift 2 ;;
     --local)   LOCAL=1; shift ;;
     --version) VERSION="${2:?--version 后面要跟版本号}"; shift 2 ;;
+    # 便宜的 OpenVZ / 部分 LXC VPS 就是没有 /dev/net/tun,而这类机器恰恰是自托管
+    # 用户最常买的。用它验 preflight 能不能在装之前就把话说清楚。
+    --no-tun)  NO_TUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     -*)        PASS+=("$1"); shift ;;
     *)         if [ -z "$CMD" ]; then CMD="$1"; else PASS+=("$1"); fi; shift ;;
@@ -81,6 +85,12 @@ case "$DISTRO" in
   rocky)  DEF_PORT=7445 ;; alpine) DEF_PORT=7446 ;;
 esac
 WEB_PORT="${LAB_WEB_PORT:-$DEF_PORT}"
+# 缺 TUN 的那台是独立一台,不能跟正常那台共用容器名/端口 —— 否则 up 会直接复用
+# 已存在的那个(带着 /dev/net/tun),测出来的是假绿。
+if [ "$NO_TUN" = 1 ]; then
+  NAME="${NAME}-notun"
+  [ -n "${LAB_WEB_PORT:-}" ] || WEB_PORT=$((DEF_PORT + 10))
+fi
 
 command -v docker >/dev/null 2>&1 || die "没有 docker"
 docker info >/dev/null 2>&1 || die "docker 没在跑(macOS 上先打开 Docker Desktop)"
@@ -120,8 +130,14 @@ up() {
     --privileged --cgroupns=host
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw
     --tmpfs /run --tmpfs /run/lock
-    --device /dev/net/tun
     -p "127.0.0.1:${WEB_PORT}:7443")
+  # 光是不加 --device 不够:--privileged 会把宿主整个 /dev 暴露进来,/dev/net/tun
+  # 照样在。拿一层空 tmpfs 盖住 /dev/net,才是「这台机器没有 TUN」的样子。
+  if [ "$NO_TUN" = 1 ]; then
+    run+=(--tmpfs /dev/net)
+  else
+    run+=(--device /dev/net/tun)
+  fi
 
   # Alpine 没有 systemd,/sbin/init 是 busybox 的,拿它当 PID 1 会立刻退出。
   # 这台只用来跑 preflight —— 看它是否老老实实报「没有 systemd」。
@@ -142,6 +158,13 @@ up() {
   rm -f /tmp/lab.run.err
   ok "${NAME} 已创建"
   wait_boot
+  if [ "$NO_TUN" = 1 ]; then
+    # 只能等开机之后再拿掉。systemd 启动时会照 kmod 的 static-nodes 规则重建
+    # /dev/net/tun(见 /usr/lib/tmpfiles.d/static-nodes-permissions.conf),
+    # 所以 --tmpfs /dev/net 盖不住它,--privileged 又把宿主 /dev 整个带了进来。
+    docker exec "$NAME" rm -f /dev/net/tun
+    ok "已移除 /dev/net/tun —— 这台假装是没有 TUN 的 OpenVZ/LXC VPS"
+  fi
 }
 
 wait_boot() {
@@ -226,8 +249,11 @@ cmd_preflight() {
 cmd_uninstall() {
   need_up
   step "卸载"
-  dex "$NAME" bash -c 'ls /opt/nanotun/*/scripts/uninstall.sh >/dev/null 2>&1 || { echo "容器里没有解压好的发布包,找不到 uninstall.sh" >&2; exit 1; }
-    bash "$(ls /opt/nanotun/*/scripts/uninstall.sh | head -1)"' ${PASS[@]+"${PASS[@]}"}
+  # bash -c '脚本' 之后的第一个参数是内层的 $0,不是 $1 —— 少垫一个占位的话,
+  # --purge 会被当成 $0 吞掉,卸载看着跑了,数据却一点没删。
+  dex "$NAME" bash -c 'u="$(ls /opt/nanotun/*/scripts/uninstall.sh 2>/dev/null | head -1)"
+    [ -n "$u" ] || { echo "容器里没有解压好的发布包,找不到 uninstall.sh" >&2; exit 1; }
+    bash "$u" "$@"' _ ${PASS[@]+"${PASS[@]}"}
 }
 
 cmd_status() {
@@ -243,7 +269,18 @@ cmd_status() {
     else
       printf "  nanotund 未安装\n"
     fi' || true
-  echo "  Web      https://127.0.0.1:${WEB_PORT}/"
+  # 别只是把网址印出来完事 —— 宿主能不能真的连上取决于 Docker Desktop 的端口转发,
+  # 而它在 macOS 上并不总是好使(见过 TCP 连得上、流量却根本没进容器的情况:容器里
+  # ss 看不到任何连接,服务端日志也是空的)。印一个打不开的链接,会让人以为是
+  # nanotun-web 挂了,转头去查一个根本不存在的问题。所以这里当场探一下再说。
+  local code
+  code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 "https://127.0.0.1:${WEB_PORT}/" 2>/dev/null || true)"
+  if [ -n "$code" ] && [ "$code" != 000 ]; then
+    printf '  Web      https://127.0.0.1:%s/  (HTTP %s)\n' "$WEB_PORT" "$code"
+  else
+    printf '  Web      https://127.0.0.1:%s/  宿主连不上 —— Docker Desktop 端口转发的毛病,不是服务端\n' "$WEB_PORT"
+    printf '           容器里验:docker exec %s curl -sk -o /dev/null -w "%%{http_code}\\n" https://127.0.0.1:7443/\n' "$NAME"
+  fi
 }
 
 case "$CMD" in

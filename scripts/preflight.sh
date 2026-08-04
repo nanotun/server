@@ -14,10 +14,12 @@
 # 缺三样东西的机器不用来回装三趟。
 #
 # 用法:
-#   preflight.sh [--offline] [--dry-run] [--quiet]
-#     --offline   不检查 curl/tar(已经有发布包、不需要联网下载时)
-#     --dry-run   不尝试写 ip_forward,只读当前值
-#     --quiet     只输出结论,不逐项列
+#   preflight.sh [--offline] [--dry-run] [--quiet] [--for-install]
+#     --offline      不检查 curl/tar(已经有发布包、不需要联网下载时)
+#     --dry-run      不尝试写 ip_forward,只读当前值
+#     --quiet        只输出结论,不逐项列
+#     --for-install  这次跑完**紧接着就要装**:不是 root 直接判死。
+#                    由 install.sh / install-self-hosted.sh 传,人手跑不用带。
 #
 # 退出码:0 = 可以装;1 = 有必须修复的项;2 = 用法错误。
 # 「提醒」不影响退出码 —— 它们不阻塞安装,只是装完可能有惊喜。
@@ -26,13 +28,14 @@
 # 都调它,不各写一份。两处判据分头演化最后必然对不上。
 set -uo pipefail    # 刻意不要 -e:要跑完全部检查再汇总,不能第一个失败就退
 
-OFFLINE=0; DRY_RUN=0; QUIET=0
+OFFLINE=0; DRY_RUN=0; QUIET=0; FOR_INSTALL=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --offline) OFFLINE=1; shift ;;
-    --dry-run) DRY_RUN=1; shift ;;
-    --quiet)   QUIET=1; shift ;;
-    -h|--help) sed -n '2,28p' "$0" 2>/dev/null || echo "用法: preflight.sh [--offline] [--dry-run] [--quiet]"; exit 0 ;;
+    --offline)     OFFLINE=1; shift ;;
+    --dry-run)     DRY_RUN=1; shift ;;
+    --quiet)       QUIET=1; shift ;;
+    --for-install) FOR_INSTALL=1; shift ;;
+    -h|--help) sed -n '2,30p' "$0" 2>/dev/null || echo "用法: preflight.sh [--offline] [--dry-run] [--quiet] [--for-install]"; exit 0 ;;
     *) printf 'preflight: 未知参数 %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -143,10 +146,23 @@ case "$(uname -m)" in
           "官方只出 linux-amd64 / linux-arm64。这台机器只能自己 go build,见 README 源码构建一节" ;;
 esac
 
+# root 不是**这台机器**的属性,是这次怎么跑的属性。而本脚本回答的问题是
+# 「这台机器能不能跑 nanotun」—— 所以只在「跑完紧接着就要装」时才判死。
+#
+# 单独跑(curl | bash)和 install.sh --check-only 都是明确不需要 root 的路子,
+# 文档里也是这么写的。在那两条路上把非 root 记成「必须修复」,结论就成了
+# 「✗ 这台机器有 1 项必须先修复」并退 1 —— 只想问问机器行不行的人,会以为
+# 自己的机器不合格,而要改的其实是命令前面加个 sudo。
+#
+# 端口那节已经按同一口径处理过(非 root 看不到 socket 属主就直说看不见),
+# 这里不能还是另一套。
 if [ "$(id -u)" = 0 ]; then
   pass "root"
-else
+elif [ "$FOR_INSTALL" = 1 ]; then
   fail "不是 root(当前 $(id -un))" "安装要写 /usr/local/bin、/etc/systemd/system 并改 sysctl。用 sudo 重跑"
+else
+  soft "不是 root(当前 $(id -un))—— 只是检查的话没关系" \
+       "这次是以 $(id -un) 身份检查的:机器本身没问题,但真要安装得用 sudo。非 root 也看不到端口被谁占着。"
 fi
 
 # ── init ─────────────────────────────────────────────────────────────────────

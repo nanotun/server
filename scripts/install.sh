@@ -95,7 +95,13 @@ fi
 run_preflight() {
   local self local_pf pf args=()
 
-  [ "$CHECK_ONLY" = 1 ] && args+=(--dry-run)   # 只是看看,连 sysctl 都别写
+  if [ "$CHECK_ONLY" = 1 ]; then
+    args+=(--dry-run)          # 只是看看,连 sysctl 都别写
+  else
+    # 跑完就要装,所以非 root 在这条路上是硬伤,得当场判死。
+    # --check-only 那条路相反:它明确不需要 root,preflight 只会提醒一句。
+    args+=(--for-install)
+  fi
 
   # 只有在「本脚本确实是磁盘上的一个文件」时才找隔壁的 preflight.sh。
   # 这个 -f 判断不能省:被 curl | sudo bash 时 BASH_SOURCE[0] 是字符串 "bash",

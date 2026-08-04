@@ -60,9 +60,16 @@ BINS=(nanotund nanotun-admin nanotun-web nanotun-setup nanotun-preflight
       nanotun-tun-isolate.sh nanotun-tun-isolate-teardown.sh)
 
 # --purge 才删。全部是服务端独有的,客户端不碰。
-PURGE_FILES=("$ETC_DIR/config.toml" "$ETC_DIR/config.toml.dist"
-             "$LIB_DIR/nanotun.db" "$LIB_DIR/nanotun.db-wal" "$LIB_DIR/nanotun.db-shm")
-PURGE_GLOBS=("$ETC_DIR/config.toml.bak.*" "$LIB_DIR/nanotun.db.preimport.*")
+PURGE_FILES=("$ETC_DIR/config.toml" "$ETC_DIR/config.toml.dist")
+# 数据库连同它的一族随从一起走:-wal / -shm(SQLite)、.migrate.lock(store.Migrate
+# 建的)、.preimport.*(旧库导入前的备份,里面是整个用户表)。
+#
+# 这里用通配而不是逐个点名,是因为漏掉一个的代价不对称:下面收尾用 rmdir,目录里
+# 只要还剩一个文件就整个留着,而留下的理由会被打印成「还有别人的文件」——
+# nanotun.db.migrate.lock 就这样被报成别人的,人看了会以为那是客户端的东西不敢动。
+# --purge 说了「数据库一起没」,就不该留个目录在那儿。
+# /var/lib/nanotun 里客户端只有 tun_name,不会撞上 nanotun.db* 这个前缀。
+PURGE_GLOBS=("$ETC_DIR/config.toml.bak.*" "$LIB_DIR/nanotun.db*")
 PURGE_DIRS=("$ETC_DIR/certs" "$ETC_DIR/masquerade" "$LIB_DIR/qr" /opt/nanotun)
 
 run() { # run <描述> <命令...>

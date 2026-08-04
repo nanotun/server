@@ -72,6 +72,22 @@ ok()   { printf '    \033[1;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '    \033[1;33m!\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 
+# systemctl restart 返回 0 只代表「systemd 接受了这次启动」,不代表服务真的活着。
+#
+# nanotun-web.service 是 Type=simple:进程 exec 出来那一刻就算启动成功。它下一秒
+# 因为 7443 被占而退出,restart 照样返回 0 —— 于是屏幕上写着「✓ nanotun-web 已启动」,
+# 而它正以 RestartSec=5s 的节奏反复重启。这种「绿着的谎」比直接报错难查得多:
+# 用户会拿着一句「已启动」去浏览器上撞 404,而不会想到去看 journalctl。
+#
+# (nanotun.service 是 Type=notify,restart 本身就能判失败。这里对两者用同一把尺子。)
+#
+# 判据是「过几秒之后还 active」。崩溃重启的单元在 RestartSec 等待期里是
+# activating (auto-restart),3 秒足以把它跟真正起来的区分开。
+settled_active() {
+  sleep 3
+  [ "$(systemctl is-active "$1" 2>/dev/null)" = active ]
+}
+
 # 32 字节 X25519 私钥,编成 RawURL Base64(无 padding)—— [reality].private_key 要的格式。
 # PKCS8 DER 恒为 48 字节,尾部 32 字节即裸私钥。刻意不用 basenc(coreutils ≥8.31 才有),
 # 走 openssl + tr 让老发行版也能跑。
@@ -147,7 +163,11 @@ fill_config_secrets() {
 if [ "${NANOTUN_PREFLIGHT_DONE:-0}" = "1" ]; then
   ok "环境自检已由引导脚本完成,跳过"
 elif [ -f "$SCRIPTS_DIR/preflight.sh" ]; then
-  bash "$SCRIPTS_DIR/preflight.sh" --offline || die "环境检查没过(见上面的修复清单),已中止安装。"
+  # --for-install:本脚本下一步就动 /usr/local/bin,非 root 必须当场拦下。
+  # (不传的话 preflight 只会把非 root 记成一条提醒 —— 那是给「单独跑来问问
+  # 机器行不行」准备的口径,不适用于这里。)
+  bash "$SCRIPTS_DIR/preflight.sh" --offline --for-install \
+    || die "环境检查没过(见上面的修复清单),已中止安装。"
 else
   # 老发布包里没有 preflight.sh。不能因此放行 —— 缺 systemd / TUN 装下去必炸,
   # 所以退回到最小一组硬检查,报错简短但至少能拦住。
@@ -460,11 +480,13 @@ systemctl enable --now nanotun-tun-setup.service || START_FAILED=1
 sleep 1
 # enable + restart：保证开机自启 + 应用最新配置
 systemctl enable nanotun.service >/dev/null 2>&1 || true
-systemctl restart nanotun.service || START_FAILED=1
-sleep 2
-# 成功也说一声。失败那条路现在很详细,这里再什么都不打,第 6 步在屏幕上就只剩一个
-# 空标题 —— 而它恰恰是全脚本最慢的一步,看着像卡住了。
-[ "$START_FAILED" = 0 ] && ok "nanotun.service 已启动并设为开机自启"
+if systemctl restart nanotun.service && settled_active nanotun.service; then
+  # 成功也说一声。失败那条路现在很详细,这里再什么都不打,第 6 步在屏幕上就只剩一个
+  # 空标题 —— 而它恰恰是全脚本最慢的一步,看着像卡住了。
+  [ "$START_FAILED" = 0 ] && ok "nanotun.service 已启动并设为开机自启"
+else
+  START_FAILED=1
+fi
 
 if [ "$WEB_AVAILABLE" -eq 1 ]; then
   step "6b. 安装 nanotun-web(Web 管理后台,M2)"
@@ -474,8 +496,8 @@ if [ "$WEB_AVAILABLE" -eq 1 ]; then
   systemctl daemon-reload
   systemctl enable nanotun-web.service >/dev/null 2>&1 || true
   # 同上:先记账,别让它把第 7 步的诊断挤掉。
-  if systemctl restart nanotun-web.service; then
-    sleep 2
+  # settled_active 不能省 —— 这个单元是 Type=simple,restart 的返回值判不出死活。
+  if systemctl restart nanotun-web.service && settled_active nanotun-web.service; then
     ok "nanotun-web 已启动,首次访问请打开 https://<server>:7443/setup 创建管理员"
   else
     START_FAILED=1
@@ -514,7 +536,10 @@ if [ "$START_FAILED" = 1 ]; then
   printf '\033[1;31mFATAL: 文件已装好,但服务没能启动(诊断见上面第 7 步)。\033[0m\n' >&2
   printf '\n常见原因:\n' >&2
   printf '  · 配置有问题        nanotun-admin config lint %s/config.toml\n' "$ETC_DIR" >&2
-  printf '  · 端口被占          ss -lntp | grep -E ":(443|7443|8443)"\n' >&2
+  # 必须带 u:hysteria2 听的是 **UDP** 443,而端口冲突里它恰恰是最常撞的一个
+  # (systemd-resolved、别的代理都爱占 UDP)。给一条 -lntp 的命令,人照着敲,
+  # 屏幕上空空如也,于是把「端口被占」这条正确的线索排除掉了。
+  printf '  · 端口被占          ss -lntup | grep -E ":(443|7443|8443)"\n' >&2
   printf '  · 环境不满足        nanotun-preflight\n' >&2
   printf '\n改完重跑本脚本即可(幂等,不会动已生效的配置和密钥)。\n' >&2
   exit 1

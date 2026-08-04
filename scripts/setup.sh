@@ -254,8 +254,29 @@ while :; do
 
   # probe 只做语法 + DNS + ICMP,不写库。ICMP 不通很常见(云厂商默认封 ping),
   # 所以失败不当致命,让人自己判断。
+  #
+  # 三类失败的退出码是同一个,靠**判词前缀**区分 —— 这是 cmd_setting.go 明写的约定
+  # (「不细分自定义 exit code,避免与全局 main 退出码语义打架」):
+  #     ✗ = 硬错(语法 / DNS / 探测异常)   ⚠ = ICMP 软失败,且只有这一种
+  # 两个语言目录里前缀一致,所以这里认符号不认中文。
+  #
+  # stdout 与 stderr 分开收:判词走 stdout,而 main 会把同一个 error 再往 stderr 打
+  # 一遍,合在一起就是同一句话说两遍 —— 偏偏是在最需要看清楚的时刻。
   printf '\n'
-  if admin setting probe-dial-host "$dial_host" --timeout 10s; then
+  probe_rc=0
+  probe_err_file="$(mktemp)" \
+    || die "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 空间不足)。"
+  probe_out="$(admin setting probe-dial-host "$dial_host" --timeout 10s 2>"$probe_err_file")" \
+    || probe_rc=$?
+  probe_err="$(cat "$probe_err_file")"; rm -f "$probe_err_file"
+  if [ -n "$probe_out" ]; then
+    printf '%s\n' "$probe_out"
+  elif [ -n "$probe_err" ]; then
+    # 判词一个字都没打出来(用法错、二进制炸了之类),这时 stderr 是唯一线索,不能吞。
+    printf '%s\n' "$probe_err"
+  fi
+
+  if [ "$probe_rc" = 0 ]; then
     printf '\n'
     if admin setting set server_dial_host "$dial_host" >/dev/null; then
       ok "已写入 server_dial_host = $dial_host"
@@ -266,8 +287,18 @@ while :; do
   fi
 
   printf '\n'
-  warn "探测没全过。语法错必须改;DNS 不通说明域名还没解析到这台机器;"
-  warn "ICMP 不通通常没关系 —— 云厂商默认就封 ping,不代表 VPN 端口不通。"
+  # 默认值必须跟建议一致。原来不分失败类型一律默认 N:向导前脚说「ICMP 不通通常
+  # 没关系」,后脚问「仍然使用? [y/N]」—— 在云上填了**正确**公网 IP 的人顺手回车,
+  # 就被打回去重填,再填还是同一个结果。而 ICMP 被安全组封恰恰是最常见的情况。
+  if printf '%s' "$probe_out" | grep -q '⚠'; then
+    use_default=y
+    warn "只有 ICMP 没通 —— 云厂商默认封 ping(Vultr / AWS / 阿里云安全组都这样),"
+    warn "这不代表 VPN 端口不通。地址没填错的话直接继续即可。"
+  else
+    use_default=n
+    warn "探测没过,而且不是 ICMP 那种软失败:语法错必须改;"
+    warn "DNS 不通说明域名还没解析到这台机器。"
+  fi
 
   # 非交互模式下不能退回去重问(没人回答,只会死循环)。既然地址是命令行显式给的,
   # 就当操作者已经确认过:探测失败降级为告警,直接尝试写入。
@@ -283,7 +314,7 @@ while :; do
     die "写入失败 —— 原因见上面那行校验报错。"
   fi
 
-  if confirm "仍然使用 $dial_host ?" n; then
+  if confirm "仍然使用 $dial_host ?" "$use_default"; then
     if admin setting set server_dial_host "$dial_host" >/dev/null; then
       ok "已写入 server_dial_host = $dial_host"
       current_dial="$dial_host"
