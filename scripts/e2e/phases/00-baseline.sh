@@ -75,6 +75,36 @@ $(s "stat -c 'inode=%i mtime=%y size=%s' $E2E_DB_PATH; ls -l ${E2E_DB_PATH}-wal 
   return 1
 }
 
+# _check_srv_toggles_at_default 断言 config.toml 里那两个「阶段 5 会来回扳」的开关
+# 开跑时停在默认档上。
+#
+# 起因是 2026-08-04 这一轮:上一次 e2e 被人为中断,恰好停在出口守卫那组「已经扳到 off、
+# 还没还原 auto」的缝里,把 exit_deny_private="off" 留在了配置里。下一轮跑到阶段 5,
+# 该组开头四条「默认档(auto) 应拦 169.254.0.0/16 / fe80::/10」连同三条日志断言一起红了
+# 七条 —— 而同组末尾「还原 auto」之后的四条又全绿。看上去像出口守卫时灵时不灵,实际是
+# 开跑状态就不是默认档,那七条从一开始就在拿 off 的机器验 auto 的行为。
+#
+# 同样只断言不自动改:自动还原会让「谁把它留成 off 的」永远查不出来,而这次的答案
+# (中断的上一轮)恰恰是需要知道的。
+_check_srv_toggles_at_default() {
+  local bad="" k want got
+  # exit_mode 同理:阶段 1 会把它扳到 isolate / off 再还原。
+  for k in "exit_deny_private=auto" "exit_mode=mesh"; do
+    want="${k#*=}"; k="${k%%=*}"
+    got="$(s "awk -F= '/^[[:space:]]*${k}[[:space:]]*=/{gsub(/[\"[:space:]]/,\"\",\$2); print \$2; exit}' /etc/nanotun/config.toml" | tr -d '[:space:]')"
+    [[ "$got" == "$want" ]] || bad+="${k}=${got:-未设置}(应为 ${want}) "
+  done
+  if [[ -z "$bad" ]]; then
+    _pass "基线 · 服务端开关停在默认档（exit_mode=mesh, exit_deny_private=auto）"
+    return 0
+  fi
+  _fail "基线 · 服务端开关不在默认档:${bad}" \
+    "$(s "grep -nE '^[[:space:]]*(exit_mode|exit_deny_private)[[:space:]]*=' /etc/nanotun/config.toml")
+提示:多半是上一轮 e2e 在阶段 1 / 阶段 5 的「扳开关 → 还原」之间被中断。
+改回默认档并 systemctl restart nanotun 即可重跑;顺手记一下是哪一轮断的。"
+  return 1
+}
+
 phase_00_baseline() {
   phase_begin "阶段 0 · 基线"
 
@@ -112,6 +142,7 @@ phase_00_baseline() {
   # 四条断言全都与审批状态无关(见函数注释里那次跑偏的排查)。
   _check_c_subnet_routes_are_approved || return 1
   _check_c_is_an_approved_exit || return 1
+  _check_srv_toggles_at_default || return 1
 
   # 基线四条路径。任意一条不通,后面的「阻断/恢复」类断言都无法解读。
   wait_until "基线 · A 可达公网（经出口 C）" 30 probe_egress_is "$E2E_C_HOST"
