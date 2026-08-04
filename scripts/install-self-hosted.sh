@@ -40,7 +40,9 @@
 #      默认拒绝继续(2026-05-21 事故场景);设置 NANOTUN_IMPORT_LEGACY_DB=1 显式导入。
 #   5. 跑 nanotun-admin --json --yes init 创建 admin（PSK 自动生成）
 #   6. enable + start systemd units（重启系统会自动拉起）
-#   7. 打印 init 输出 + 端口监听 + journalctl tail，方便人工核对
+#   7. 状态自检：逐个单元报 enabled/active + 监听端口。一切正常只给这几行结论；
+#      任何一项不对才把 systemctl status / ss / journalctl 的原始输出整个倒出来。
+#      想在正常情况下也看全套：NANOTUN_VERBOSE=1。
 #
 # 幂等：重复跑不会破坏数据，**也不会动已生效的 config.toml / 密钥**（重签密钥等于
 #       踢掉全部现有客户端）；init 自带「同名管理员只重置 PSK」逻辑；ufw allow /
@@ -303,7 +305,18 @@ fill_config_secrets
 # ensure-server-assets.sh 读 [server] / [hysteria] 的 tls_* 与 masquerade_dir,
 # 只在文件缺失时生成,幂等;WorkingDirectory 传 $ETC_DIR,相对路径落到 $ETC_DIR/certs 等。
 install -m 0755 "$SCRIPTS_DIR/ensure-server-assets.sh" /usr/local/bin/nanotun-ensure-assets.sh
-bash "$SCRIPTS_DIR/ensure-server-assets.sh" "$ETC_DIR"
+# 它会逐条播报自己生成了什么(自签证书 / 开发 CA / 占位页),四行裸日志夹在本脚本的 ✓
+# 中间,前缀和标点都是另一套。正常装完这一步的结论由下面那句 ✓ 概括就够了 —— 首次
+# 安装本来就该生成这些。出错时才把它说过的话原样倒出来,那时每一行都是线索。
+ASSETS_LOG="$(mktemp)" \
+  || die "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 空间不足)。可以 TMPDIR=/var/tmp 重跑。"
+if bash "$SCRIPTS_DIR/ensure-server-assets.sh" "$ETC_DIR" >"$ASSETS_LOG" 2>&1; then
+  [ "${NANOTUN_VERBOSE:-0}" = 1 ] && sed 's/^/    /' "$ASSETS_LOG"
+else
+  cat "$ASSETS_LOG" >&2; rm -f "$ASSETS_LOG"
+  die "生成证书 / masquerade 资产失败(上面是它的原始输出)"
+fi
+rm -f "$ASSETS_LOG"
 
 # systemd 单元。tun-isolate 是「恢复历史客户端隔离」的逃生阀:装上但**不** enable,
 # 需要时 `systemctl enable --now nanotun-tun-isolate.service`(单元本身无 [Install] 段)。
@@ -476,7 +489,9 @@ step "6. 启动并设为开机自启"
 #
 # 所以这里把失败记下来继续走,让诊断打完,最后再以非零退出。
 START_FAILED=0
-systemctl enable --now nanotun-tun-setup.service || START_FAILED=1
+# --quiet 只是压掉 "Created symlink ..." 那行 —— 它是 systemd 的实现细节,
+# 对着装机的人说不出任何有用的东西,却混在本脚本的 ✓ 里显得像出了什么事。
+systemctl enable --quiet --now nanotun-tun-setup.service || START_FAILED=1
 sleep 1
 # enable + restart：保证开机自启 + 应用最新配置
 systemctl enable nanotun.service >/dev/null 2>&1 || true
@@ -506,26 +521,64 @@ if [ "$WEB_AVAILABLE" -eq 1 ]; then
 fi
 
 step "7. 状态自检"
-echo "[systemctl is-enabled]"
+
+# 这一步以前无条件把三份 systemctl status、ss 表和 journalctl -n 40 全倒出来 ——
+# 九十来行原始日志,占掉整个安装输出的三分之一。代价不是「话多」这么简单:第 5 步
+# 刚打印的 admin PSK 会被顶出屏幕,而那是它明文出现的**唯一**一次,还写着「现在就抄走」。
+# 日志里又混着 IPv6 的 level=warning 和一句 TLS handshake error(都无害),第一次装的人
+# 只会以为哪里出了事。
+#
+# 所以正常路径只给结论;任何一项不对(单元没起、没设自启、端口没听)才把原始诊断整个
+# 倒出来 —— 那时候它每一行都是线索。想主动看:NANOTUN_VERBOSE=1 重跑。
 CHECK_UNITS=(nanotun-tun-setup nanotun)
 [ "$WEB_AVAILABLE" -eq 1 ] && CHECK_UNITS+=(nanotun-web)
+STATUS_BAD=0
 for unit in "${CHECK_UNITS[@]}"; do
-  printf '    %-22s %s\n' "$unit" "$(systemctl is-enabled "$unit.service" 2>/dev/null || echo unknown)"
+  # 不能写成 `$(systemctl is-active … || echo inactive)`:这两个子命令在「有话要说」的
+  # 时候恰恰是非零退出 —— activating 打印 activating 并返回 3、disabled 打印 disabled
+  # 并返回 1,于是 || 分支也跟着跑,变量里就成了两行("activating\ninactive"),
+  # 屏幕上多出一行凭空的 inactive,而那正是出事时最需要看清状态的时刻。
+  # 所以:只在真的**什么都没输出**(单元不存在)时才兜底。
+  en="$(systemctl is-enabled "$unit.service" 2>/dev/null | head -1)" || true
+  ac="$(systemctl is-active  "$unit.service" 2>/dev/null | head -1)" || true
+  en="${en:-unknown}"; ac="${ac:-inactive}"
+  line="$(printf '%-18s %s · %s' "$unit" "$en" "$ac")"
+  # tun-setup 是 oneshot + RemainAfterExit,跑完仍报 active,和另外两个同口径。
+  if [ "$ac" = active ] && [ "$en" = enabled ]; then ok "$line"; else warn "$line"; STATUS_BAD=1; fi
 done
-echo "---"
-echo "[systemctl status nanotun-tun-setup]"
-systemctl --no-pager status nanotun-tun-setup.service | head -12 || true
-echo "---"
-echo "[systemctl status nanotun]"
-systemctl --no-pager status nanotun.service | head -22 || true
-echo "---"
-echo "[ports listening on 443/8080/8443 (TCP)]"
-ss -lntp 2>&1 | grep -E ":(443|8080|8443)" || warn "无 TCP 监听（请检查 journalctl）"
-echo "[hy2 UDP :443]"
-ss -lunp 2>&1 | grep -E ":443" || warn "hy2 UDP :443 未起"
-echo "---"
-echo "[journalctl -u nanotun --no-pager -n 40]"
-journalctl -u nanotun.service --no-pager -n 40 || true
+
+# 端口是「客户端到底连不连得上」最直接的证据,比服务 active 更贴近现象,所以即使
+# 在安静模式下也要有一行。hy2 听的是 **UDP** 443,漏掉 -u 就会把它误报成没起来。
+LISTEN_TCP="$(ss -lnt 2>/dev/null | awk 'NR>1{print $4}')"
+LISTEN_UDP="$(ss -lnu 2>/dev/null | awk 'NR>1{print $4}')"
+PORTS_UP=(); PORTS_DOWN=()
+check_port() { # <tcp|udp> <端口> <标签>
+  local pool; [ "$1" = tcp ] && pool="$LISTEN_TCP" || pool="$LISTEN_UDP"
+  if printf '%s\n' "$pool" | grep -qE ":$2\$"; then PORTS_UP+=("$3"); else PORTS_DOWN+=("$3"); STATUS_BAD=1; fi
+}
+check_port tcp 8443 "8443/tcp(REALITY)"
+check_port udp 443  "443/udp(hy2)"
+[ "$WEB_AVAILABLE" -eq 1 ] && check_port tcp 7443 "7443/tcp(Web)"
+[ ${#PORTS_UP[@]}   -gt 0 ] && ok   "监听中:${PORTS_UP[*]}"
+[ ${#PORTS_DOWN[@]} -gt 0 ] && warn "没听上:${PORTS_DOWN[*]}"
+
+if [ "$STATUS_BAD" = 1 ] || [ "$START_FAILED" = 1 ] || [ "${NANOTUN_VERBOSE:-0}" = 1 ]; then
+  echo
+  echo "--- systemctl status nanotun-tun-setup ---"
+  systemctl --no-pager status nanotun-tun-setup.service | head -12 || true
+  echo "--- systemctl status nanotun ---"
+  systemctl --no-pager status nanotun.service | head -22 || true
+  if [ "$WEB_AVAILABLE" -eq 1 ]; then
+    echo "--- systemctl status nanotun-web ---"
+    systemctl --no-pager status nanotun-web.service | head -18 || true
+  fi
+  echo "--- 监听端口 ---"
+  ss -lntup 2>&1 | grep -E ":(443|7443|8080|8443)" || echo "(443/7443/8080/8443 上没有任何监听)"
+  echo "--- journalctl -u nanotun -n 40 ---"
+  journalctl -u nanotun.service --no-pager -n 40 || true
+else
+  printf '    \033[2m· 详细状态与日志:NANOTUN_VERBOSE=1 重跑,或 journalctl -u nanotun -n 50\033[0m\n'
+fi
 
 echo
 # 文件都装好了,但服务没起来 —— 这时候印「安装完成」是骗人的:用户会照着往下走去跑
@@ -546,9 +599,17 @@ if [ "$START_FAILED" = 1 ]; then
 fi
 
 # 装完不等于能用:还差 server_dial_host、Web 管理员、用户的两个二维码,
-# 而这三件事安装脚本都替不了人做决定。setup.sh 把它们串成一条交互流程,
-# 所以这里把它顶在最显眼的位置 —— 底下那堆运维命令是给之后用的。
-if [ "${SETUP_AVAILABLE:-0}" -eq 1 ]; then
+# 而这三件事安装脚本都替不了人做决定。setup.sh 把它们串成一条交互流程。
+#
+# 但向导有没有人接着跑,只有调用方知道:install.sh 会在本脚本结束后立刻 exec 它
+# (前提是有终端可问话),而单独跑本脚本的人得自己去敲。两种情形说同一句话必然坑一头 ——
+# 之前就是无条件催「还差最后一步:sudo nanotun-setup」,然后向导当场自己启动了,
+# 照着做的人会在向导跑完之后又原样敲一遍。NANOTUN_WIZARD_FOLLOWS 由 install.sh 置位。
+if [ "${NANOTUN_WIZARD_FOLLOWS:-0}" = 1 ]; then
+  # 向导接着就来,而且它结束时会把这些运维命令再列一遍。这里少说几句,
+  # 好让上面第 5 步那段 admin PSK 尽量留在屏幕上。
+  ok "安装完成,开服向导马上开始 —— 设置拨号地址、建第一个用户、出二维码。"
+elif [ "${SETUP_AVAILABLE:-0}" -eq 1 ]; then
   ok "安装完成。**还差最后一步**,客户端才连得上:"
   echo
   printf '        \033[1;36msudo nanotun-setup\033[0m\n'
@@ -558,16 +619,19 @@ if [ "${SETUP_AVAILABLE:-0}" -eq 1 ]; then
 else
   ok "安装完成。"
 fi
-ok "常用运维："
-echo "    journalctl -u nanotun -f                                       # 实时日志"
-echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db user list"
-echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db device list"
-echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db lease list"
-echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db setting list"
-if [ "$WEB_AVAILABLE" -eq 1 ]; then
-  echo
-  echo "  Web 管理后台(M2):"
-  echo "    journalctl -u nanotun-web -f"
-  echo "    浏览器访问 https://<server>:7443/setup 创建第一位 Web 管理员"
-  echo "    证书: $ETC_DIR/certs/{cert.pem,key.pem}(可作为 root CA 装入信任库)"
+
+if [ "${NANOTUN_WIZARD_FOLLOWS:-0}" != 1 ]; then
+  ok "常用运维："
+  echo "    journalctl -u nanotun -f                                       # 实时日志"
+  echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db user list"
+  echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db device list"
+  echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db lease list"
+  echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db setting list"
+  if [ "$WEB_AVAILABLE" -eq 1 ]; then
+    echo
+    echo "  Web 管理后台(M2):"
+    echo "    journalctl -u nanotun-web -f"
+    echo "    浏览器访问 https://<server>:7443/setup 创建第一位 Web 管理员"
+    echo "    证书: $ETC_DIR/certs/{cert.pem,key.pem}(可作为 root CA 装入信任库)"
+  fi
 fi

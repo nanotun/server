@@ -39,6 +39,7 @@
 #   NANOTUN_NO_INSTALL  =1 时只下载解压,不执行 install-self-hosted.sh
 #   NANOTUN_REPO        换仓库(fork 自用)
 #   NANOTUN_BRANCH      从哪个分支取 preflight.sh,默认 main
+#   NANOTUN_VERBOSE     =1 时安装过程连 systemd 状态和日志一起打出来(默认只给结论)
 #
 # 安装要 root(写 /usr/local/bin、/etc/systemd/system、sysctl)。
 # --check-only 和 NANOTUN_NO_INSTALL=1 不需要 root。
@@ -79,6 +80,7 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
   NANOTUN_INSTALL_DIR 解压落点,默认 /opt/nanotun
   NANOTUN_NO_INSTALL  =1 时只下载解压,不安装(不需要 root)
   NANOTUN_REPO        换仓库(fork 自用)
+  NANOTUN_VERBOSE     =1 时连 systemd 状态和日志一起打出来(默认只给结论)
 
 完整说明: https://github.com/${REPO}
 EOF
@@ -291,31 +293,6 @@ if [ "${NANOTUN_NO_INSTALL:-0}" = "1" ]; then
   exit 0
 fi
 
-# ── 5. 安装 ──────────────────────────────────────────────────────────────────
-info "执行安装脚本 ..."
-echo
-# 安装脚本按自身位置推导发布包根目录,不必再传 DEPLOY_DIR。
-# 环境已经在第 1 步验过了,不必再验一遍。
-NANOTUN_PREFLIGHT_DONE=1 "$DEST/scripts/install-self-hosted.sh"
-
-# ── 6. 开服向导 ──────────────────────────────────────────────────────────────
-#
-# 装完不等于能用:还差拨号地址、Web 管理员、用户的二维码。以前这里就结束了,
-# 把这三件事留给用户自己从输出里读出来 —— 既然是「一条命令开服」,就一路走到底。
-if [ "$NO_SETUP" = 1 ]; then
-  echo
-  info "--no-setup:跳过开服向导。想连上客户端还差最后一步:"
-  echo "    sudo nanotun-setup"
-  exit 0
-fi
-
-if [ ! -x /usr/local/bin/nanotun-setup ]; then
-  echo
-  info "这个版本的发布包里没有开服向导,手动完成剩下的配置:"
-  echo "    见 https://github.com/${REPO}#快速启动"
-  exit 0
-fi
-
 # /proc/<pid>/stat 取字段。comm 那一项裹在括号里、且允许含空格甚至右括号,所以从
 # **最后**一个 ") " 之后才开始数。编号以 state 为第 1 项:2=ppid,5=tty_nr。
 proc_stat_field() { # <pid> <字段号>
@@ -325,7 +302,7 @@ proc_stat_field() { # <pid> <字段号>
   printf '%s\n' "$s" | awk -v n="$2" '{print $n}'
 }
 
-# 认出「sudo 另开了 pty」这个组合 —— `curl … | sudo bash` 会在这里把向导挂死,
+# 认出「sudo 另开了 pty」这个组合 —— `curl … | sudo bash` 会在交棒给向导时挂死,
 # 而原因不在 nanotun:
 #
 # Ubuntu / Debian 的 /etc/sudoers 默认带 `Defaults use_pty`,sudo 会另建一个 pty
@@ -338,15 +315,15 @@ proc_stat_field() { # <pid> <字段号>
 # (`sudo bash -c "$(curl …)"`)则 71 秒装完 —— 那种形态下 bash 的 stdin 本身就是终端,
 # 压根不用绕 /dev/tty。
 #
-# 所以这里认出来就不碰 /dev/tty:装照样装完,向导留给人手动跑,并把能一次到底的命令
-# 原样打出来。宁可多敲一条,也不能挂在那儿让人以为装崩了。
+# 所以认出来就不碰 /dev/tty:装照样装完,向导留给人手动跑,并把能一次到底的命令原样
+# 打出来。宁可多敲一条,也不能挂在那儿让人以为装崩了。
 #
 # 判据是「祖先里存在一个 sudo,它的控制终端跟本进程不是同一个」—— 那就说明中间隔着
 # 一层 sudo 新造的 pty,我们的 /dev/tty 不是用户正在敲字的那个终端。
 #
 # 必须把整条链走完,不能撞见第一个 sudo 就下结论:开了 pty 时链上会**同时有两个 sudo**,
 # 内层那个(监督进程)跟命令一起待在新 pty 里、tty 与我们相同,只有外层那个还留在用户的
-# 真终端上。只看最近的那个,永远得出「没开 pty」的结论 —— 这一版就是这么漏掉的。
+# 真终端上。只看最近的那个,永远得出「没开 pty」的结论 —— 第一版就是这么漏掉的。
 #
 # 没开 pty 的发行版上,链上唯一的 sudo 与我们同 tty,判定为假,照走原来的 /dev/tty 路径。
 under_sudo_pty() {
@@ -364,7 +341,8 @@ under_sudo_pty() {
   return 1
 }
 
-# 向导要问话,所以先弄清楚这次到底有没有人能回答。
+# 向导要问话,所以先弄清楚这次到底有没有人能回答。置 SETUP_STDIN(空 = 没人能答)
+# 与 SKIP_WHY(跳过的原因,给收尾提示用)。
 #
 # 被 `curl … | bash` 跑时 stdin 是 curl 那根管道(而且已经读到底了),`-t 0` 永远为假 ——
 # 哪怕人就坐在终端前面。但管道占的只是 stdin,控制终端还在,/dev/tty 就是它,把向导的
@@ -373,10 +351,51 @@ under_sudo_pty() {
 # 判据是「能不能真的打开 /dev/tty」,不是「文件在不在」:CI、cron、systemd 里
 # /dev/tty 这个节点通常也在,但进程没有控制终端,一 open 就 ENXIO。所以这里真去开一次。
 SETUP_STDIN=""; SKIP_WHY=""
-if [ -t 0 ]; then
-  SETUP_STDIN=/dev/stdin
-elif { : </dev/tty; } 2>/dev/null; then
-  if under_sudo_pty; then SKIP_WHY=sudo_pty; else SETUP_STDIN=/dev/tty; fi
+setup_stdin_probe() {
+  if [ -t 0 ]; then
+    SETUP_STDIN=/dev/stdin
+  elif { : </dev/tty; } 2>/dev/null; then
+    if under_sudo_pty; then SKIP_WHY=sudo_pty; else SETUP_STDIN=/dev/tty; fi
+  fi
+}
+
+# ── 5. 安装 ──────────────────────────────────────────────────────────────────
+#
+# 「等下会不会自动进向导」这件事必须**在安装之前**就定下来,虽然向导要装完才跑。
+# 因为 install-self-hosted.sh 的收尾语要照它分岔:向导紧接着就来的话,它只说一句
+# 「马上开始」;没人接的话才该郑重催「还差最后一步:sudo nanotun-setup」。之前不分
+# 情形一律催,于是催完向导自己启动了 —— 照着做的人会在向导跑完后又原样敲一遍。
+#
+# 判据只跟终端和参数有关,跟装没装成无关,所以提前算没有副作用。
+setup_stdin_probe
+WIZARD_FOLLOWS=0
+if [ "$NO_SETUP" = 0 ] && { [ -n "$SETUP_STDIN" ] || [ ${#SETUP_ARGS[@]} -gt 0 ]; }; then
+  WIZARD_FOLLOWS=1
+fi
+
+info "执行安装脚本 ..."
+echo
+# 安装脚本按自身位置推导发布包根目录,不必再传 DEPLOY_DIR。
+# 环境已经在第 1 步验过了,不必再验一遍。
+NANOTUN_PREFLIGHT_DONE=1 NANOTUN_WIZARD_FOLLOWS="$WIZARD_FOLLOWS" \
+  "$DEST/scripts/install-self-hosted.sh"
+
+# ── 6. 开服向导 ──────────────────────────────────────────────────────────────
+#
+# 装完不等于能用:还差拨号地址、Web 管理员、用户的二维码。以前这里就结束了,
+# 把这三件事留给用户自己从输出里读出来 —— 既然是「一条命令开服」,就一路走到底。
+if [ "$NO_SETUP" = 1 ]; then
+  echo
+  info "--no-setup:跳过开服向导。想连上客户端还差最后一步:"
+  echo "    sudo nanotun-setup"
+  exit 0
+fi
+
+if [ ! -x /usr/local/bin/nanotun-setup ]; then
+  echo
+  info "这个版本的发布包里没有开服向导,手动完成剩下的配置:"
+  echo "    见 https://github.com/${REPO}#快速启动"
+  exit 0
 fi
 
 # 给了参数就未必需要人回答了 —— 带 --yes 的那套本来就是无人值守用的,
