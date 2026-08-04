@@ -386,15 +386,39 @@ fi
 step "5. 初始化 admin 用户（首次部署生成 PSK；重复部署 noop 保留现有 PSK）"
 # init 默认幂等：setup_completed=1 时再跑只输出 admin 元信息（{"noop":true}），不改 PSK。
 # 想强制重置请手动 `nanotun-admin --json init --reset-psk`，不要让脚本自动做。
-INIT_OUT=$(printf '\n\n' | /usr/local/bin/nanotun-admin --db-path "$LIB_DIR/nanotun.db" --json init 2>&1 || true)
-if echo "$INIT_OUT" | grep -q '"noop"[[:space:]]*:[[:space:]]*true'; then
+# 输出要洗两遍,不能 2>&1 一把抓:
+#   · nanotun-admin 的启动日志走 stderr。混进来之后 init.out.txt 既不是干净文本、
+#     也不是能解析的 JSON —— 而它是这个管理员 PSK 的唯一留档。
+#   · init 会问用户名和 PSK 两个问题(两个空行 = 都取默认值),提示语走 stdout,
+#     会贴在 JSON 前面变成「admin username [admin]: {」,所以从第一个 { 起截断。
+INIT_ERR="$(mktemp)"; INIT_RC=0
+INIT_OUT="$(printf '\n\n' | /usr/local/bin/nanotun-admin --db-path "$LIB_DIR/nanotun.db" --json init 2>"$INIT_ERR")" || INIT_RC=$?
+INIT_JSON="$(printf '%s\n' "$INIT_OUT" | awk 'f {print; next} /{/ {sub(/^[^{]*/, ""); print; f=1}')"
+
+# 原来这里是 `|| true`:init 挂掉也照样报「首次 init,生成新 PSK」,还把错误信息
+# 当作凭据写进 init.out.txt。结果是一个没有管理员、根本管不了的库,而屏幕全绿。
+if [ "$INIT_RC" != 0 ] || [ -z "$INIT_JSON" ]; then
+  printf '%s\n' "$INIT_OUT" >&2
+  cat "$INIT_ERR" >&2
+  rm -f "$INIT_ERR"
+  die "nanotun-admin init 失败(退出码 ${INIT_RC})—— 库里没有管理员,装完也管不了。"
+fi
+rm -f "$INIT_ERR"
+
+if printf '%s' "$INIT_JSON" | grep -q '"noop"[[:space:]]*:[[:space:]]*true'; then
   ok "已 setup，init 跳过（不重置 PSK）"
-  echo "$INIT_OUT"
 else
-  ok "首次 init，生成新 PSK（写入 $DEPLOY_DIR/init.out.txt 仅 600）"
-  echo "$INIT_OUT" > "$DEPLOY_DIR/init.out.txt"
-  chmod 600 "$DEPLOY_DIR/init.out.txt"
-  echo "$INIT_OUT"
+  INIT_FILE="$DEPLOY_DIR/init.out.txt"
+  printf '%s\n' "$INIT_JSON" > "$INIT_FILE"
+  chmod 600 "$INIT_FILE"
+  ok "首次 init,已创建管理员账号"
+  # 摆出来,别让人从 JSON 里自己捞。这是整个安装过程产出的最重要的一样东西。
+  echo
+  printf '        用户名  %s\n' "$(printf '%s' "$INIT_JSON" | sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  printf '        PSK     %s\n' "$(printf '%s' "$INIT_JSON" | sed -n 's/.*"psk"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  echo
+  warn "这是 admin 这个 VPN 账号的凭据(跟 Web 后台管理员是两回事),现在就抄走。"
+  warn "另存了一份在 ${INIT_FILE}(0600)—— 那是发布包解压目录,别顺手删了。"
 fi
 
 step "6. 启动并设为开机自启"

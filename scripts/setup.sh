@@ -49,8 +49,15 @@ note() { printf '    %s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
 die()  { printf '%sFATAL: %s%s\n' "$C_ERR" "$*" "$C_OFF" >&2; exit 1; }
 
 usage() {
-  cat <<'EOF'
-用法: sudo ./scripts/setup.sh [选项]
+  # 按实际被调用的名字来写。安装脚本会把本文件装成 /usr/local/bin/nanotun-setup,
+  # 而把它装成命令的理由恰恰是「解压出来的发布包目录用完就删了」—— 那时候再让
+  # 帮助里写 ./scripts/setup.sh,等于指着一个已经不存在的路径。
+  local me; me="$(basename "$0")"
+  case "$me" in
+    setup.sh) me="./scripts/setup.sh" ;;
+  esac
+  cat <<EOF
+用法: sudo ${me} [选项]
 
 nanotun 开服向导:设置客户端拨号地址、引导创建 Web 管理员、创建首个用户并出二维码。
 在 install-self-hosted.sh 之后跑。重复跑是安全的。
@@ -63,8 +70,8 @@ nanotun 开服向导:设置客户端拨号地址、引导创建 Web 管理员、
   -h, --help         显示本帮助
 
 例:
-  sudo ./scripts/setup.sh
-  sudo ./scripts/setup.sh --dial-host vpn.example.com --user alice --yes
+  sudo ${me}
+  sudo ${me} --dial-host vpn.example.com --user alice --yes
 EOF
 }
 

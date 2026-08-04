@@ -47,8 +47,26 @@ while [ $# -gt 0 ]; do
     # 打开头那段注释。不写死行号 —— 改文档时忘了同步行号,--help 就会截半句话。
     # 被 curl | bash 时 $0 不是文件,读不到就退回一个链接。
     -h|--help)
-      awk 'NR>1 && /^#/ {sub(/^#[[:space:]]?/,""); print; next} NR>1 {exit}' "$0" 2>/dev/null \
-        || echo "见 https://github.com/${REPO}"
+      # 退回的那份必须自己够用。--help 最常见的用法恰恰是 curl | bash -s -- --help,
+      # 而那时 $0 是 "bash"、读不到文件 —— 只回一个链接等于让人再去开一次浏览器。
+      awk 'NR>1 && /^#/ {sub(/^#[[:space:]]?/,""); print; next} NR>1 {exit}' "$0" 2>/dev/null || cat <<EOF
+nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 → 开服向导。
+
+  curl -fsSL .../install.sh | sudo bash
+
+选项:
+  --check-only   只做环境检查,一次列全问题后退出(不需要 root)
+  --skip-check   跳过环境检查直接装(不建议)
+  --no-setup     装完不自动进开服向导
+
+环境变量:
+  NANOTUN_VERSION     要装的版本,默认取最新 Release(不含预发布)
+  NANOTUN_INSTALL_DIR 解压落点,默认 /opt/nanotun
+  NANOTUN_NO_INSTALL  =1 时只下载解压,不安装(不需要 root)
+  NANOTUN_REPO        换仓库(fork 自用)
+
+完整说明: https://github.com/${REPO}
+EOF
       exit 0 ;;
     *) printf 'install.sh: 未知参数 %s(--help 看用法)\n' "$1" >&2; exit 2 ;;
   esac
