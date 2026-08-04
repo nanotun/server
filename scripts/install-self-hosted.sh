@@ -357,14 +357,28 @@ if [ -f "$LEGACY_DB" ]; then
 fi
 if [ "$NEW_USERS" -eq 0 ] && [ "$LEGACY_USERS" -gt 0 ]; then
   if [ "${NANOTUN_IMPORT_LEGACY_DB:-0}" = "1" ]; then
-    BAK="$LIB_DIR/nanotun.db.preimport.$(date +%Y%m%d-%H%M%S)"
-    [ -f "$LIB_DIR/nanotun.db" ] && cp -a "$LIB_DIR/nanotun.db"     "$BAK"     || true
-    [ -f "$LIB_DIR/nanotun.db-wal" ] && cp -a "$LIB_DIR/nanotun.db-wal" "$BAK-wal" || true
-    [ -f "$LIB_DIR/nanotun.db-shm" ] && cp -a "$LIB_DIR/nanotun.db-shm" "$BAK-shm" || true
+    # 备份是**有条件**的:新路径本来就没有库时,没有东西可备份。而从老布局升级
+    # 恰恰就是这种情况 —— 建新库的 init 在第 5 步,比这里晚。原来这句 ok 无条件
+    # 报「备份原文件 → ${BAK}」,于是在这条最主要的升级路径上点名了一个根本不存在的
+    # 文件:照着去 ls 会扑空,而扑空的时机正是「刚覆盖完新路径」,最容易被读成
+    # 「导入只做了一半」。有备份才说备份;没有就说清楚回滚从哪来。
+    BAK=""
+    if [ -f "$LIB_DIR/nanotun.db" ]; then
+      BAK="$LIB_DIR/nanotun.db.preimport.$(date +%Y%m%d-%H%M%S)"
+      cp -a "$LIB_DIR/nanotun.db" "$BAK"
+      [ -f "$LIB_DIR/nanotun.db-wal" ] && cp -a "$LIB_DIR/nanotun.db-wal" "$BAK-wal" || true
+      [ -f "$LIB_DIR/nanotun.db-shm" ] && cp -a "$LIB_DIR/nanotun.db-shm" "$BAK-shm" || true
+    fi
     install -m 0600 "$LEGACY_DB" "$LIB_DIR/nanotun.db"
     [ -f "$LEGACY_DB-wal" ] && install -m 0600 "$LEGACY_DB-wal" "$LIB_DIR/nanotun.db-wal" || rm -f "$LIB_DIR/nanotun.db-wal"
     [ -f "$LEGACY_DB-shm" ] && install -m 0600 "$LEGACY_DB-shm" "$LIB_DIR/nanotun.db-shm" || rm -f "$LIB_DIR/nanotun.db-shm"
-    ok "已从旧路径导入 DB:$LEGACY_DB → $LIB_DIR/nanotun.db (备份原文件 → $BAK)"
+    if [ -n "$BAK" ]; then
+      ok "已从旧路径导入 DB:${LEGACY_DB} → ${LIB_DIR}/nanotun.db(新路径原有的库已备份 → ${BAK})"
+    else
+      ok "已从旧路径导入 DB:${LEGACY_DB} → ${LIB_DIR}/nanotun.db(新路径原本没有库,无需备份)"
+    fi
+    # 导入是 copy 不是 move。这句不是客套:上面那条没有备份的路径里,旧库就是唯一的回滚点。
+    ok "旧库原样留在 ${LEGACY_DB}(未删除);确认新库无误后再手动归档"
     ok "Batch J 二进制启动时会自动跑 store.Migrate 应用新 migration"
   else
     SELF_PATH="$(realpath "$0" 2>/dev/null || echo "$0")"
