@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 → 开服向导。
 #
-#   curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh | sudo bash
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh)"
 #
-# 跑完就能用:向导会问拨号地址、建第一个 VPN 用户、出两个二维码。管道占着 stdin
-# 也没关系,向导会从 /dev/tty 问话。
+# 跑完就能用:向导会问拨号地址、建第一个 VPN 用户、出两个二维码。
 #
-# 无人值守(CI / cloud-init):自己不认得的参数一律转交向导,所以一条命令做到底 ——
+# 为什么不是更眼熟的 `curl … | sudo bash`:Ubuntu / Debian 的 sudo 默认 use_pty,会
+# 另开一个 pty 跑命令,叠加管道占着 sudo 的 stdin,向导一问话就被挂起(全新 Ubuntu
+# 26.04 上实测两次两挂)。把脚本当参数传给 bash 则 bash 的 stdin 就是终端,
+# 不存在这个问题。管道形态仍然能装,只是本脚本会认出这个组合、装完跳过向导让人手动跑。
+#
+# 无人值守(CI / cloud-init)不需要问话,管道形态最省事,不认得的参数一律转交向导 ——
 #   curl -fsSL .../install.sh | sudo bash -s -- --dial-host vpn.example.com --user alice --yes
 #
 # 只想先看看这台机器行不行(不下载、不安装、不改任何东西):
@@ -14,7 +18,7 @@
 #   环境检查也可以单独跑:curl -fsSL .../preflight.sh | bash
 #
 # 装指定版本(生产建议钉版本,别跟着 latest 漂):
-#   curl -fsSL .../install.sh | sudo NANOTUN_VERSION=v0.1.0 bash
+#   sudo NANOTUN_VERSION=v0.1.0 bash -c "$(curl -fsSL .../install.sh)"
 #
 # 只下载不安装(想先看看包里是什么):
 #   curl -fsSL .../install.sh | NANOTUN_NO_INSTALL=1 bash
@@ -59,7 +63,11 @@ while [ $# -gt 0 ]; do
       awk 'NR>1 && /^#/ {sub(/^#[[:space:]]?/,""); print; next} NR>1 {exit}' "$0" 2>/dev/null || cat <<EOF
 nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 → 开服向导。
 
-  curl -fsSL .../install.sh | sudo bash
+  sudo bash -c "\$(curl -fsSL ${RAW_BASE}/install.sh)"
+
+  别用 curl … | sudo bash:Ubuntu/Debian 的 sudo 默认 use_pty,向导会被挂死。
+  无人值守(不需要问话)用管道没问题:
+  curl -fsSL ${RAW_BASE}/install.sh | sudo bash -s -- --dial-host <域名> --user <名> --yes
 
 选项:
   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
@@ -216,7 +224,7 @@ if [ -z "$VERSION" ]; then
         # 省略号粘过去就是一个不存在的地址,等于还得自己回去翻文档拼一遍。
         v[0-9]*) die "${REPO} 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
    最新的是 ${newest},照抄这条:
-     curl -fsSL ${RAW_BASE}/install.sh | sudo NANOTUN_VERSION=${newest} bash" ;;
+     sudo NANOTUN_VERSION=${newest} bash -c \"\$(curl -fsSL ${RAW_BASE}/install.sh)\"" ;;
         *) die "${REPO} 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
    到 https://github.com/${REPO}/releases 挑一个,再用 NANOTUN_VERSION=vX.Y.Z 指定。" ;;
       esac ;;
@@ -308,30 +316,85 @@ if [ ! -x /usr/local/bin/nanotun-setup ]; then
   exit 0
 fi
 
+# /proc/<pid>/stat 取字段。comm 那一项裹在括号里、且允许含空格甚至右括号,所以从
+# **最后**一个 ") " 之后才开始数。编号以 state 为第 1 项:2=ppid,5=tty_nr。
+proc_stat_field() { # <pid> <字段号>
+  local s
+  s="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+  s="${s##*) }"
+  printf '%s\n' "$s" | awk -v n="$2" '{print $n}'
+}
+
+# 认出「sudo 另开了 pty」这个组合 —— `curl … | sudo bash` 会在这里把向导挂死,
+# 而原因不在 nanotun:
+#
+# Ubuntu / Debian 的 /etc/sudoers 默认带 `Defaults use_pty`,sudo 会另建一个 pty
+# 会话把命令跑在里面,而不是直接用你正在敲字的那个终端。于是进程眼里的 /dev/tty 是
+# sudo 造出来的内层 pty;再叠加 sudo 的 stdin 是 curl 那根管道(而且已读到底),
+# 向导一去读它就被作业控制的停止信号挂起(ps 里是 T 状态、wchan=do_signal_stop),
+# 父进程正等着它的输出 —— 死锁。用户看到的是提示符出来了、回车毫无反应。
+#
+# 实测(Ubuntu 26.04 全新 VPS):`curl … | sudo bash` 两次两挂;换成把脚本当参数传
+# (`sudo bash -c "$(curl …)"`)则 71 秒装完 —— 那种形态下 bash 的 stdin 本身就是终端,
+# 压根不用绕 /dev/tty。
+#
+# 所以这里认出来就不碰 /dev/tty:装照样装完,向导留给人手动跑,并把能一次到底的命令
+# 原样打出来。宁可多敲一条,也不能挂在那儿让人以为装崩了。
+#
+# 判据是「祖先里存在一个 sudo,它的控制终端跟本进程不是同一个」—— 那就说明中间隔着
+# 一层 sudo 新造的 pty,我们的 /dev/tty 不是用户正在敲字的那个终端。
+#
+# 必须把整条链走完,不能撞见第一个 sudo 就下结论:开了 pty 时链上会**同时有两个 sudo**,
+# 内层那个(监督进程)跟命令一起待在新 pty 里、tty 与我们相同,只有外层那个还留在用户的
+# 真终端上。只看最近的那个,永远得出「没开 pty」的结论 —— 这一版就是这么漏掉的。
+#
+# 没开 pty 的发行版上,链上唯一的 sudo 与我们同 tty,判定为假,照走原来的 /dev/tty 路径。
+under_sudo_pty() {
+  [ -r /proc/self/stat ] || return 1   # 没有 /proc 就不猜,交给原路径
+  local mytty pid ttynr
+  mytty="$(proc_stat_field $$ 5)"; [ -n "$mytty" ] || return 1
+  pid="$(proc_stat_field $$ 2)"
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
+    if [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = sudo ]; then
+      ttynr="$(proc_stat_field "$pid" 5)"
+      if [ -n "$ttynr" ] && [ "$ttynr" != "$mytty" ]; then return 0; fi
+    fi
+    pid="$(proc_stat_field "$pid" 2)"
+  done
+  return 1
+}
+
 # 向导要问话,所以先弄清楚这次到底有没有人能回答。
 #
-# 关键在于:被 `curl … | sudo bash` 跑时,stdin 是 curl 那根管道(而且已经读到底了),
-# 所以 `-t 0` 永远为假 —— 哪怕人就坐在终端前面。照 -t 0 判断的话,官网首页那条一行
-# 命令**必然**走不进向导,总是以「请再手动跑一次 sudo nanotun-setup」收场。
-#
-# 但管道占的只是 stdin,控制终端还在,/dev/tty 就是它。这也是 rustup 之流的老做法:
-# 交棒时把 stdin 重新指到 /dev/tty,向导照样能问话,于是那条一行命令真的一次装完。
+# 被 `curl … | bash` 跑时 stdin 是 curl 那根管道(而且已经读到底了),`-t 0` 永远为假 ——
+# 哪怕人就坐在终端前面。但管道占的只是 stdin,控制终端还在,/dev/tty 就是它,把向导的
+# stdin 重新指过去就能照常问话(rustup 之流的老做法)。
 #
 # 判据是「能不能真的打开 /dev/tty」,不是「文件在不在」:CI、cron、systemd 里
 # /dev/tty 这个节点通常也在,但进程没有控制终端,一 open 就 ENXIO。所以这里真去开一次。
-SETUP_STDIN=""
+SETUP_STDIN=""; SKIP_WHY=""
 if [ -t 0 ]; then
   SETUP_STDIN=/dev/stdin
 elif { : </dev/tty; } 2>/dev/null; then
-  SETUP_STDIN=/dev/tty
+  if under_sudo_pty; then SKIP_WHY=sudo_pty; else SETUP_STDIN=/dev/tty; fi
 fi
 
 # 给了参数就未必需要人回答了 —— 带 --yes 的那套本来就是无人值守用的,
 # 这种情况下没有终端也照跑,不然 CI / cloud-init 里永远进不了向导。
 if [ -z "$SETUP_STDIN" ] && [ ${#SETUP_ARGS[@]} -eq 0 ]; then
   echo
-  info "安装完成。这次既没有终端可问话、也没给向导参数,开服向导跳过。手动跑:"
-  echo "    sudo nanotun-setup"
+  if [ "$SKIP_WHY" = sudo_pty ]; then
+    info "安装完成。开服向导这次不自动进 —— sudo 另开了一个 pty(Ubuntu/Debian 的"
+    echo "  Defaults use_pty),向导在里面问话会被挂死,所以主动跳过。接着跑:"
+    echo
+    echo "    sudo nanotun-setup"
+    echo
+    echo "  下次换成这条就能一次装完,不用再补这一步:"
+    echo "    sudo bash -c \"\$(curl -fsSL ${RAW_BASE}/install.sh)\""
+  else
+    info "安装完成。这次既没有终端可问话、也没给向导参数,开服向导跳过。手动跑:"
+    echo "    sudo nanotun-setup"
+  fi
   echo
   echo "  无人值守(CI / cloud-init)可以一条命令做完:"
   echo "    curl -fsSL ${RAW_BASE}/install.sh | sudo bash -s -- --dial-host <域名或IP> --user <用户名> --yes"

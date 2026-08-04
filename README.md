@@ -13,7 +13,7 @@
 ### 一条命令
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh | sudo bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh)"
 ```
 
 [`install.sh`](scripts/install.sh) 按顺序做四件事,任何一步没过都会停下来告诉你原因:
@@ -24,10 +24,16 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install
    IP 转发、REALITY / hy2 密钥与自签证书、放行 ufw、第一个 VPN 管理员
 4. **开服向导**([`setup.sh`](scripts/setup.sh))—— 见下
 
-跑完就能用:向导会问客户端拨号地址、建第一个 VPN 用户、出两个二维码。管道占着 stdin
-不影响它问话(会从 `/dev/tty` 读)。
+跑完就能用:向导会问客户端拨号地址、建第一个 VPN 用户、出两个二维码。
 
-**无人值守**(CI / cloud-init):把向导要问的直接给它,一条命令做到底 ——
+> **别写成 `curl … | sudo bash`。** Ubuntu / Debian 的 sudo 默认开着 `use_pty`,会另开一个
+> pty 跑命令;再叠加管道占着 sudo 的 stdin,向导一问话就被作业控制挂起 —— 提示符出来了、
+> 回车却毫无反应(在全新 Ubuntu 26.04 上实测两次两挂)。写成 `bash -c "$(curl …)"`,
+> bash 的 stdin 就是终端本身,不存在这个问题。真用了管道形态也不会挂:`install.sh`
+> 认得出这个组合,会把系统装完、跳过向导,并提示你补一句 `sudo nanotun-setup`。
+
+**无人值守**(CI / cloud-init):把向导要问的直接给它,一条命令做到底。这种场景不需要
+问话,用管道形态最省事 ——
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh \
@@ -37,7 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install
 `install.sh` 自己不认得的参数一律原样转交向导,所以 [`setup.sh`](scripts/setup.sh)
 的选项都能这么带。
 
-生产建议钉版本:`curl -fsSL .../install.sh | sudo NANOTUN_VERSION=v0.1.0 bash`。
+生产建议钉版本:`sudo NANOTUN_VERSION=v0.1.0 bash -c "$(curl -fsSL .../install.sh)"`。
 想自己控制每一步就手动下 [Releases](https://github.com/nanotun/server/releases) 里对应架构的
 tar,解压后跑 `sudo ./scripts/install-self-hosted.sh` —— 那是上面第 3 步,随发布包走,
 不需要联网。`install.sh` 只是把「弄到这台机器上」这段也一并办了。
