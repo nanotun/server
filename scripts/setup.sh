@@ -505,5 +505,18 @@ note "  nanotun-admin --db-path $DB user list"
 note "  nanotun-admin --db-path $DB connection list"
 note "  journalctl -u nanotun -f"
 printf '\n'
+
+# 守护进程的状态在开头(第 0 步)查过一次,但那是 70 多行之前的事了 —— 而人照着做的
+# 是这最后一屏:抄二维码、把 profile 发给用户。服务没在跑的话,发出去的二维码连不上
+# 任何东西,而下面那两句偏偏把人指向防火墙和安全组,那时候真正的原因就在手边却没人说。
+# 所以在这里重新查一次(期间它可能崩了,也可能被人修好了),没起来就先说这个。
+if command -v systemctl >/dev/null 2>&1 && ! systemctl is-active --quiet nanotun.service 2>/dev/null \
+   && [ ! -S "$CONTROL_SOCK" ]; then
+  warn "注意:nanotund 现在没在跑 —— 上面这些配置都写进库了,但客户端**连不上**。"
+  note "  systemctl start nanotun    # 起来看看"
+  note "  journalctl -u nanotun -n 50 --no-pager    # 起不来的话看这里"
+  printf '\n'
+fi
+
 note "客户端连不上时先确认防火墙:REALITY 8443/tcp、hysteria2 443/udp 要能从公网进来。"
 note "云服务器还要在厂商的安全组里放行 —— ufw 放了不等于安全组放了。"

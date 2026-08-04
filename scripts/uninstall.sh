@@ -7,7 +7,8 @@
 #
 # 选项:
 #   --purge     连 config.toml / 证书 / 数据库 / QR / 发布包解压目录一起删
-#   --yes       不问,直接执行(配合 --purge 时尤其小心:用户和 PSK 一起没)
+#   --yes       跳过 --purge 那道确认(只有 --purge 会问 —— 它删的东西没有撤销;
+#               不带 --purge 的卸载留着配置与数据库,重装即可恢复,所以不拦)
 #   --dry-run   只打印计划
 #
 # 为什么删的是**一份文件清单**而不是 `rm -rf /etc/nanotun /var/lib/nanotun`:
@@ -98,8 +99,10 @@ if [ -x /usr/local/bin/nanotund ] || [ -f /etc/systemd/system/nanotun.service ];
   # 恰恰最常发生在老版本上。取空时整个括号一起省掉,别留一对空括号让人以为读版本失败了。
   NANOTUND_VER=""
   [ -x /usr/local/bin/nanotund ] && NANOTUND_VER="$(/usr/local/bin/nanotund --version 2>/dev/null | head -1)"
+  FOUND_SERVER=1
   ok "找到已安装的服务端${NANOTUND_VER:+($NANOTUND_VER)}"
 else
+  FOUND_SERVER=0
   warn "没找到已安装的服务端(nanotund 与 nanotun.service 都不在)。"
   warn "继续跑也无妨 —— 下面每一步都是幂等的,不在就跳过。"
 fi
@@ -229,8 +232,14 @@ else
 fi
 
 step "完成"
+# 第 0 步已经如实说过「没找到已安装的服务端」,但那是十几行之前;人照着做的是这一句。
+# 原来它无条件宣布「服务端已卸载」—— 在一台本来就没装过的机器上跑(手滑、或者已经卸过
+# 一遍了),屏幕上就是一句凭空的战果。--purge 那句更容易吓人:说「配置与数据也已删除」,
+# 而其实什么都没有,人会当真去找自己的库哪去了。
 if [ "$DRY" = 1 ]; then
   printf '    这是 dry-run,什么都没动。\n'
+elif [ "$FOUND_SERVER" = 0 ]; then
+  printf '    这台机器上本来就没有服务端。该清的残留(如果有)已经清了。\n'
 elif [ "$PURGE" = 1 ]; then
   printf '    服务端已卸载,配置与数据也已删除。\n'
 else
