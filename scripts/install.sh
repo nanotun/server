@@ -58,6 +58,15 @@ info() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 ok()   { printf '    \033[1;32m✓\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 
+# 这两个一起给是矛盾的,而按原来的写法后果是**静默装上**:--skip-check 会让下面那段
+# `if [ "$SKIP_CHECK" = 0 ]` 整个跳过,而「只检查就退出」正好写在那段里面 ——
+# 于是一条本意是「只看看」的命令,以 root 把整个服务端装了。宁可让它报错。
+if [ "$CHECK_ONLY" = 1 ] && [ "$SKIP_CHECK" = 1 ]; then
+  die "--check-only 和 --skip-check 是矛盾的:一个是只检查不安装,另一个是不检查直接装。
+   只想看看这台机器行不行:--check-only
+   明知有问题也要硬装:--skip-check"
+fi
+
 # ── 1. 环境自检 ──────────────────────────────────────────────────────────────
 #
 # 判据全在 preflight.sh 里,这里只负责把它弄到手再跑。不在本文件里重写一份 ——
@@ -238,4 +247,8 @@ fi
 echo
 info "进入开服向导 ..."
 echo
+# exec 会拿新进程映像顶掉自己,EXIT trap **不会**执行 —— $TMP 里那个十几 MB 的
+# tar 就此长住 /tmp。交棒前自己收干净,并撤掉 trap 免得留个悬空的处理器。
+cleanup
+trap - EXIT
 exec /usr/local/bin/nanotun-setup

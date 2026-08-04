@@ -378,6 +378,8 @@ else
   if [ "$LEGACY_USERS" -gt 0 ] && [ "$NEW_USERS" -gt 0 ]; then
     warn "旧 DB $LEGACY_DB 仍有 $LEGACY_USERS 个终端用户,但新 DB 已有 $NEW_USERS 个 — 不会自动覆盖。"
     warn "确认无用后请手动 mv 归档:mv $LEGACY_DB $LEGACY_DB.archived.\$(date +%Y%m%d-%H%M%S)"
+  else
+    ok "没有需要迁移的历史 DB"
   fi
 fi
 
@@ -396,12 +398,25 @@ else
 fi
 
 step "6. 启动并设为开机自启"
-systemctl enable --now nanotun-tun-setup.service
+# 起不来**不能**在这一步就终止脚本。
+#
+# nanotun.service 是 Type=notify:服务没发出 READY 时 systemctl restart 返回非零,
+# 配上本脚本的 set -e 就是当场退出 —— 而第 7 步的 systemctl status 与 journalctl -n 40
+# 恰恰是唯一能说明「为什么没起来」的输出。于是最常见的那种失败(配置有问题、
+# 端口被占、缺 TUN),给出的信息反而最少:屏幕停在「6. 启动并设为开机自启」,
+# 一个字的原因都没有,用户只能自己去想到该翻 journalctl。
+#
+# 所以这里把失败记下来继续走,让诊断打完,最后再以非零退出。
+START_FAILED=0
+systemctl enable --now nanotun-tun-setup.service || START_FAILED=1
 sleep 1
 # enable + restart：保证开机自启 + 应用最新配置
 systemctl enable nanotun.service >/dev/null 2>&1 || true
-systemctl restart nanotun.service
+systemctl restart nanotun.service || START_FAILED=1
 sleep 2
+# 成功也说一声。失败那条路现在很详细,这里再什么都不打,第 6 步在屏幕上就只剩一个
+# 空标题 —— 而它恰恰是全脚本最慢的一步,看着像卡住了。
+[ "$START_FAILED" = 0 ] && ok "nanotun.service 已启动并设为开机自启"
 
 if [ "$WEB_AVAILABLE" -eq 1 ]; then
   step "6b. 安装 nanotun-web(Web 管理后台,M2)"
@@ -410,9 +425,14 @@ if [ "$WEB_AVAILABLE" -eq 1 ]; then
   mkdir -p "$ETC_DIR/certs"  # web TLS 自签证书会落到这里
   systemctl daemon-reload
   systemctl enable nanotun-web.service >/dev/null 2>&1 || true
-  systemctl restart nanotun-web.service
-  sleep 2
-  ok "nanotun-web 已启动,首次访问请打开 https://<server>:7443/setup 创建管理员"
+  # 同上:先记账,别让它把第 7 步的诊断挤掉。
+  if systemctl restart nanotun-web.service; then
+    sleep 2
+    ok "nanotun-web 已启动,首次访问请打开 https://<server>:7443/setup 创建管理员"
+  else
+    START_FAILED=1
+    warn "nanotun-web 没能启动(原因见下面第 7 步的诊断)"
+  fi
 fi
 
 step "7. 状态自检"
@@ -438,6 +458,20 @@ echo "[journalctl -u nanotun --no-pager -n 40]"
 journalctl -u nanotun.service --no-pager -n 40 || true
 
 echo
+# 文件都装好了,但服务没起来 —— 这时候印「安装完成」是骗人的:用户会照着往下走去跑
+# nanotun-setup,而向导第一步就要连控制面,只会得到一个更晚、更难懂的错误。
+# 上面第 7 步已经把 status 和 journalctl 打出来了,这里只负责把结论说清楚。
+if [ "$START_FAILED" = 1 ]; then
+  echo
+  printf '\033[1;31mFATAL: 文件已装好,但服务没能启动(诊断见上面第 7 步)。\033[0m\n' >&2
+  printf '\n常见原因:\n' >&2
+  printf '  · 配置有问题        nanotun-admin config lint %s/config.toml\n' "$ETC_DIR" >&2
+  printf '  · 端口被占          ss -lntp | grep -E ":(443|7443|8443)"\n' >&2
+  printf '  · 环境不满足        nanotun-preflight\n' >&2
+  printf '\n改完重跑本脚本即可(幂等,不会动已生效的配置和密钥)。\n' >&2
+  exit 1
+fi
+
 # 装完不等于能用:还差 server_dial_host、Web 管理员、用户的两个二维码,
 # 而这三件事安装脚本都替不了人做决定。setup.sh 把它们串成一条交互流程,
 # 所以这里把它顶在最显眼的位置 —— 底下那堆运维命令是给之后用的。
