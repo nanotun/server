@@ -253,9 +253,27 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
 info "下载 $TARBALL ..."
-curl -fsSL --retry 3 -o "$TMP/$TARBALL" "$BASE/$TARBALL" \
-  || die "下载失败: $BASE/$TARBALL
-   确认该版本存在且有 linux-$ARCH 产物:https://github.com/${REPO}/releases"
+# curl 的退出码要分开看。原来无论怎么失败都归结成「确认该版本存在且有 linux-xxx 产物」,
+# 于是磁盘写满时(curl 23,它自己已经打了 "Failure writing output to destination")
+# 屏幕上让人去 GitHub Releases 查有没有这个产物 —— 方向完全错了,而真正要做的是腾地方
+# 或换 TMPDIR。实测在一个只剩 1M 的 TMPDIR 上就是这个下场。
+CURL_RC=0
+curl -fsSL --retry 3 -o "$TMP/$TARBALL" "$BASE/$TARBALL" || CURL_RC=$?
+if [ "$CURL_RC" != 0 ]; then
+  case "$CURL_RC" in
+    23) die "下载失败:写不进 ${TMPDIR:-/tmp}(curl 23:写目标文件失败)。
+   多半是空间不足或只读。腾出空间,或换个位置重试:TMPDIR=/var/tmp <刚才那条命令>
+   当前可用:$(df -h "$TMP" 2>/dev/null | awk 'NR==2{print $4}')" ;;
+    6|7)  die "下载失败:连不上 github.com(curl $CURL_RC:DNS 解析不了 / 连接被拒)。
+   检查网络、DNS、出站防火墙或代理。" ;;
+    28)   die "下载失败:超时(curl 28)。
+   网络太慢或被中断,重跑一次即可;也可以自己下好包再 NANOTUN_NO_INSTALL 的方式手动装。" ;;
+    22)   die "下载失败:服务器返回 404 之类的错(curl 22): $BASE/$TARBALL
+   确认该版本存在且有 linux-$ARCH 产物:https://github.com/${REPO}/releases" ;;
+    *)    die "下载失败(curl $CURL_RC): $BASE/$TARBALL
+   确认该版本存在且有 linux-$ARCH 产物:https://github.com/${REPO}/releases" ;;
+  esac
+fi
 
 info "校验 SHA256 ..."
 if curl -fsSL --retry 3 -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS" 2>/dev/null; then
