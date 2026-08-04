@@ -347,7 +347,7 @@ SYSCTL
 sysctl --system >/dev/null
 ok "ip_forward = $(sysctl -n net.ipv4.ip_forward), v6.forwarding = $(sysctl -n net.ipv6.conf.all.forwarding), ping_group_range = '$(sysctl -n net.ipv4.ping_group_range 2>/dev/null || echo 'n/a')'"
 
-step "3. 防火墙：放行 nanotun 监听端口（仅 ufw active 时）"
+step "3. 防火墙：放行 nanotun 监听端口（ufw / firewalld active 时）"
 # ufw 默认 INPUT DROP（Ubuntu 全新系统常见配置），不放行端口客户端会全部被静默丢包，
 # 表现为「TCP 三次握手超时」「QUIC 重传无响应」。这里检测 ufw 状态后幂等放行。
 # 如果你用的是 firewalld / iptables / 云厂商安全组，请按各自方式自行放行：
@@ -371,8 +371,31 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: 
   else
     ok "ufw 放行：8443/tcp 443/udp"
   fi
+elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null)" = running ]; then
+  # RHEL 系(Rocky / Alma / CentOS / Fedora)默认跑的是 firewalld,而它的默认 zone 同样
+  # 拒绝入站。原来这里只认 ufw,其余一律 warn 一句「请手动放行」—— 于是 Rocky 用户装完
+  # 满屏绿灯,客户端却连不上,而症状(TCP 握手超时 / QUIC 无响应)跟防火墙看不出关系,
+  # 那句 warn 早被后面几十行刷走了。既然对 ufw 是自动放行的,没有理由只对它。
+  FW_PORTS=(8443/tcp 443/udp)
+  [ "$WEB_AVAILABLE" -eq 1 ] && FW_PORTS+=(7443/tcp)
+  FW_BAD=0
+  for rule in "${FW_PORTS[@]}"; do
+    firewall-cmd --permanent --add-port="$rule" >/dev/null 2>&1 || FW_BAD=1
+  done
+  # 与 ufw 分支同口径:回收历史上放行过、现在不再需要的端口。
+  firewall-cmd --permanent --remove-port=8444/tcp >/dev/null 2>&1 || true
+  firewall-cmd --permanent --remove-port=8080/tcp >/dev/null 2>&1 || true
+  firewall-cmd --reload >/dev/null 2>&1 || FW_BAD=1
+  if [ "$FW_BAD" -eq 0 ]; then
+    ok "firewalld 放行：${FW_PORTS[*]}"
+  else
+    # 放行失败不该 die:服务本身能跑,只是外面进不来,而这在云上还可能被安全组兜着。
+    # 但必须把那条命令原样给出来,不能只说「请自行放行」。
+    warn "firewalld 在跑,但自动放行没成功。请手动执行:"
+    warn "  firewall-cmd --permanent$(printf -- ' --add-port=%s' "${FW_PORTS[@]}") && firewall-cmd --reload"
+  fi
 else
-  warn "未检测到 ufw active；如使用其他防火墙，请手动放行 8443/tcp 与 443/udp（装了 web 再加 7443/tcp）"
+  warn "未检测到 ufw / firewalld active；如使用其他防火墙，请手动放行 8443/tcp 与 443/udp（装了 web 再加 7443/tcp）"
 fi
 
 step "4. 旧 DB 路径迁移自检（K1：2026-05-21 事故防再发）"

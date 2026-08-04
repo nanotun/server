@@ -149,7 +149,7 @@ run "systemctl daemon-reload" systemctl daemon-reload
 [ -S "$RUN_DIR/control.sock" ] && run "删 $RUN_DIR/control.sock" rm -f "$RUN_DIR/control.sock"
 
 # ── 4. sysctl 与防火墙 ───────────────────────────────────────────────────────
-step "4. 撤销 sysctl 与 ufw 放行"
+step "4. 撤销 sysctl 与防火墙放行"
 if [ -f /etc/sysctl.d/99-nanotun.conf ]; then
   # 这个 drop-in 名义上是服务端装的,但 ip_forward 并不只有服务端在用:客户端做
   # **子网路由 / 出口节点**时同样靠它转发。所以机器上还有客户端时一律留着 ——
@@ -184,6 +184,15 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: 
   for rule in 8443/tcp 443/udp 7443/tcp; do
     run "ufw 收回 $rule" ufw delete allow "$rule"
   done
+fi
+# 安装那边对 firewalld 也自动放行(RHEL 系默认防火墙),这里就得对称收回 ——
+# 否则卸干净之后机器上还留着三个对公网敞着的端口,而已经没有东西在听了。
+if command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null)" = running ]; then
+  for rule in 8443/tcp 443/udp 7443/tcp; do
+    firewall-cmd --permanent --remove-port="$rule" >/dev/null 2>&1 \
+      && ok "firewalld 收回 $rule" || true
+  done
+  firewall-cmd --reload >/dev/null 2>&1 || true
 fi
 
 # ── 5. 配置与数据 ────────────────────────────────────────────────────────────

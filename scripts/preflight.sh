@@ -278,7 +278,19 @@ if have ss || have netstat; then
           # 在它上面给出错误结论,比不给结论更糟。看不见就说看不见。
           if [ "$(id -u)" != 0 ] && [ -x /usr/local/bin/nanotund ]; then
             info "$2/$1 已被占用($3)—— 非 root 看不到是哪个进程;这台机器上已装了 nanotun,多半是它自己"
+          elif [ "$FOR_INSTALL" = 1 ]; then
+            # 跑完紧接着就要装,而这一项装下去是**必败**的:nanotund bind 同一个端口
+            # 拿到 EADDRINUSE,服务 crash-loop。原来这里只给 soft,于是检查放行 →
+            # 安装把二进制、systemd 单元、证书、数据库全写下去 → 第 6 步启动失败。
+            # 实测在一台 443/udp 被别人占着的机器上就是这个下场:装了一半的系统,
+            # 加几十行 journal,还得自己去 ss 里翻是谁占的 —— 而这些信息此刻就在手上。
+            # 检查这一步的意义正是在动系统之前把必败的情形挡下来。
+            fail "$2/$1 被别的进程占着($3)" \
+                 "$(printf '%s' "$hit" | tr -s ' ' | cut -c1-100)
+       停掉占用它的进程,或在 /etc/nanotun/config.toml 里给 nanotun 换个端口,再重跑安装"
           else
+            # 只是检查、不马上装:说清楚就够了,不替人下「这台机器不行」的结论 ——
+            # 占用者可能一会儿就停了,或者这次本来就只是问问。
             soft "$2/$1 已被占用($3)" "$2/$1 被别的进程占着,nanotun 起不来:$(printf '%s' "$hit" | tr -s ' ' | cut -c1-100)"
           fi ;;
       esac
@@ -296,10 +308,14 @@ section "可选项"
 
 if have ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
   info "ufw 处于 active —— 安装时会自动放行 8443/tcp、443/udp、7443/tcp"
+elif have firewall-cmd && [ "$(firewall-cmd --state 2>/dev/null)" = running ]; then
+  # RHEL 系默认是 firewalld 而不是 ufw。这句原来一律说成「没装 ufw,记得自己放行」,
+  # 在 Rocky/Alma/CentOS 上既没说中用的是哪个防火墙,也没提安装脚本其实会替它放行。
+  info "firewalld 正在运行 —— 安装时会自动放行 8443/tcp、443/udp、7443/tcp"
 elif have ufw; then
   info "装了 ufw 但未启用 —— 放行规则由你自己管"
 else
-  info "没装 ufw —— 用别的防火墙 / 云安全组的话,记得放行 8443/tcp 与 443/udp"
+  info "没装 ufw / firewalld —— 用别的防火墙 / 云安全组的话,记得放行 8443/tcp 与 443/udp"
 fi
 
 have ipset || info "没装 ipset —— 只有开启 jump_host_firewall 才需要"
