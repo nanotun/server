@@ -441,6 +441,47 @@ func init() {
 	)
 }
 
+// clientTUNStatePath: nanotun **客户端**记录自己 TUN 网卡名的地方。
+//
+// 写死、不跟 [store].db_path 走 —— 这个文件是客户端建的,它不读服务端的配置,永远落在
+// /var/lib/nanotun 下。而那个目录服务端也在用(SQLite 库就在隔壁):两边共用 /etc/nanotun、
+// /var/lib/nanotun、/run/nanotun 是既成事实,客户端的身份 device_id 也在里头。
+const clientTUNStatePath = "/var/lib/nanotun/tun_name"
+
+// clientOwnsTUN: deviceName 这块网卡是不是本机 nanotun 客户端正在用的那块。
+//
+// 服务端启动会 `ip link delete <[tun].device_name>` 再重建同名网卡(见 DeleteExistingTUN)。
+// device_name 要是恰好配成了客户端那块,每次启动都会掐掉客户端的数据面 —— 而客户端那头
+// 只表现为「一到服务端重启就断线」,根本看不出是谁干的。默认的 tun0 与客户端的 nanotun0
+// 不撞,所以这是配置脚枪而非默认行为,但踩中了极难自查。
+//
+// 两条同时成立才算数:客户端**声称**在用这个名字,且这块网卡此刻**确实存在**。
+// 只看文件会误伤「客户端早卸了、文件是残留」的机器 —— 那时这个名字其实是空的,
+// 拦下来只会让一台本可以正常起的服务端起不来。
+//
+// 读文件与查网卡都由参数注入,好让测试不依赖真实的 /var/lib 和真实网卡。
+func clientOwnsTUN(deviceName string, readState func() (string, error), ifaceExists func(string) bool) bool {
+	deviceName = strings.TrimSpace(deviceName)
+	if deviceName == "" {
+		return false
+	}
+	s, err := readState()
+	if err != nil || strings.TrimSpace(s) != deviceName {
+		return false
+	}
+	return ifaceExists(deviceName)
+}
+
+func readClientTUNState() (string, error) {
+	b, err := os.ReadFile(clientTUNStatePath)
+	return string(b), err
+}
+
+func networkIfaceExists(name string) bool {
+	_, err := net.InterfaceByName(name)
+	return err == nil
+}
+
 // formatVersion: `nanotund --version` 的输出。
 //
 // 第一行钉死 "nanotund <版本>",与 nanotun-admin / nanotun-web 同格式 —— 脚本里
@@ -1154,6 +1195,17 @@ func main() {
 			logrus.WithError(err).Warn(msg)
 		}
 
+		// 删之前先确认这块网卡不是同机客户端的。拦在这里而不是让它继续:照原样走下去,
+		// 客户端的网卡会被删掉、服务端拿同一个名字把自己的建起来,于是服务端一切正常、
+		// 客户端每次都在服务端重启时断线 —— 最坏的那种失败,因为它不报错。
+		if clientOwnsTUN(deviceName, readClientTUNState, networkIfaceExists) {
+			util.FatalExit(util.ExitConfigSemantic, logrus.Fields{
+				"device_name": deviceName,
+				"state_file":  clientTUNStatePath,
+			}, "[tun].device_name = %q 正是本机 nanotun 客户端正在使用的网卡。"+
+				"服务端启动会先删掉同名网卡再重建,等于每次启动都掐断客户端的数据面。"+
+				"请把 [tun].device_name 换成别的名字(默认 tun0 与客户端不冲突)。", deviceName)
+		}
 		DeleteExistingTUN(deviceName)
 		ifce, errOpen := openTUN(deviceName, gatewayCIDR, gatewayCIDRv6)
 		if errOpen != nil {

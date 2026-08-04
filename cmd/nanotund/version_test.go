@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -96,6 +97,43 @@ func TestFormatVersion(t *testing.T) {
 		if !strings.Contains(rest, want) {
 			t.Errorf("输出缺 %q:\n%s", want, formatVersion())
 		}
+	}
+}
+
+// TestClientOwnsTUN: 只有「客户端声称在用 + 网卡确实存在」两条都成立才算撞上。
+//
+// 两个方向都要钉住:
+//   - 漏判(该拦没拦)= 服务端启动时删掉客户端的网卡,客户端从此每逢服务端重启就断线,
+//     且那头看不出是谁干的;
+//   - 误判(不该拦却拦了)= 客户端早就卸干净、只剩个残留的 tun_name 文件,却让一台
+//     本可以正常起的服务端起不来。后者正是这里要查网卡是否真实存在的原因。
+func TestClientOwnsTUN(t *testing.T) {
+	const clientTUN = "nanotun0"
+	stateOK := func() (string, error) { return clientTUN + "\n", nil } // 客户端写的带换行
+	stateMissing := func() (string, error) { return "", os.ErrNotExist }
+	exists := func(string) bool { return true }
+	absent := func(string) bool { return false }
+
+	cases := []struct {
+		name        string
+		deviceName  string
+		readState   func() (string, error)
+		ifaceExists func(string) bool
+		want        bool
+	}{
+		{"配成客户端那块 + 网卡在 → 拦", clientTUN, stateOK, exists, true},
+		{"默认 tun0,与客户端不撞 → 放行", "tun0", stateOK, exists, false},
+		{"没有客户端(读不到状态文件)→ 放行", clientTUN, stateMissing, exists, false},
+		{"状态文件是残留、网卡其实不在 → 放行", clientTUN, stateOK, absent, false},
+		{"device_name 为空 → 放行(上游会回退到 tun0)", "", stateOK, exists, false},
+		{"两边都带空白也应判等", "  " + clientTUN + "  ", stateOK, exists, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clientOwnsTUN(tc.deviceName, tc.readState, tc.ifaceExists); got != tc.want {
+				t.Errorf("clientOwnsTUN(%q) = %v, 期望 %v", tc.deviceName, got, tc.want)
+			}
+		})
 	}
 }
 

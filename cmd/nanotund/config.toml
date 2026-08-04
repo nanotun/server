@@ -105,6 +105,10 @@ upstream_v6 = ["2001:4860:4860::8888"]
 level = "info"
 
 [tun]
+# 服务端启动时会先 `ip link delete` 掉同名网卡再重建。所以这个名字**不能**是本机
+# nanotun 客户端在用的那块(客户端默认 nanotun0,名字记在 /var/lib/nanotun/tun_name)——
+# 否则服务端每次启动都会掐断客户端的数据面,而客户端那头只表现为「一到服务端重启就断线」。
+# 默认的 tun0 与客户端不冲突;真配撞了服务端会拒绝启动并说明原因,不会闷声删掉。
 device_name = "tun0"
 # 每个虚拟 IP 的并发连接上限(iptables connlimit)。≤0 按 40。
 # 只在**启动时**落 FORWARD 链,SIGHUP 不重建 —— 改完必须 restart 才生效。

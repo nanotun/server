@@ -280,7 +280,30 @@ fi
 have ipset || info "没装 ipset —— 只有开启 jump_host_firewall 才需要"
 
 if [ -x /usr/local/bin/nanotund ]; then
-  info "检测到已安装的 nanotun($(/usr/local/bin/nanotund -version 2>/dev/null | head -1 || echo 版本未知))—— 再装一次是升级,不会动现有配置和密钥"
+  info "检测到已安装的 nanotun($(/usr/local/bin/nanotund --version 2>/dev/null | head -1 || echo 版本未知))—— 再装一次是升级,不会动现有配置和密钥"
+fi
+
+# 这台机器上是不是还跑着 nanotun **客户端**。
+#
+# 两者共用 /etc/nanotun、/var/lib/nanotun、/run/nanotun,而客户端的身份就在里面
+# (/etc/nanotun/device_id)。共存本身是支持的、装下去不会有事,但有两个坑值得先说:
+#
+#   1. 手动 `rm -rf /etc/nanotun` 会连客户端身份一起抹掉 —— 它随即以新 UUID 重新注册,
+#      而 UUID 是审批与出口选择的稳定键:旧设备行还占着固定 vIP,新设备钉不上,已经选了
+#      这个出口的客户端那边它直接消失。2026-08-03 我们自己的测试机上就这么中过一次。
+#      scripts/uninstall.sh 按文件清单删,不会犯这个错。
+#   2. 服务端启动时会 `ip link delete <[tun].device_name>` 再重建。默认 tun0 与客户端的
+#      网卡不撞;但要是把 device_name 配成客户端那个名字,服务端每次启动都会把客户端的
+#      网卡删掉。所以这里把客户端网卡名读出来直接摆在眼前。
+CLI_TUN=""
+[ -r /var/lib/nanotun/tun_name ] && CLI_TUN="$(cat /var/lib/nanotun/tun_name 2>/dev/null | tr -d '[:space:]')"
+if [ -x /usr/local/bin/nanotun ] || [ -e /etc/nanotun/device_id ] || [ -n "$CLI_TUN" ]; then
+  soft "这台机器上还装着 nanotun 客户端,它与服务端共用 /etc/nanotun 与 /var/lib/nanotun" \
+       "客户端与服务端共用 /etc/nanotun、/var/lib/nanotun、/run/nanotun。
+     · 卸载请用 scripts/uninstall.sh;手动 rm -rf 这些目录会抹掉客户端身份
+       /etc/nanotun/device_id,它会以新 UUID 重新注册(旧设备还占着固定 vIP)。${CLI_TUN:+
+     · [tun].device_name 别配成 \"$CLI_TUN\"(客户端正在用的网卡)—— 服务端启动时会先
+       删掉同名网卡再重建,等于每次启动都打断客户端。默认的 tun0 不冲突。}"
 fi
 
 AVAIL_KB="$(df -Pk /usr/local 2>/dev/null | awk 'NR==2{print $4}')"
