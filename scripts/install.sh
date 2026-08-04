@@ -144,9 +144,20 @@ if [ -z "$VERSION" ]; then
     # /releases/latest **不含预发布**,只发过 rc 时它会退回 /releases 这个列表页,
     # 于是这里拿到的是字面的 "releases"。仓库明明有能装的版本,却被告知「还没发过」——
     # 用户只会以为没得装,而不是去挑一个 rc。这正是 v0.1.0-rc1 发出去当天的实况。
-    releases) die "$REPO 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
-   到 https://github.com/${REPO}/releases 挑一个,再显式指定,例如:
-     curl -fsSL .../install.sh | sudo NANOTUN_VERSION=v0.1.0-rc1 bash" ;;
+    releases)
+      # 顺手把最新那个报出来,别让人自己去翻网页。
+      # releases.atom 是公开 RSS:含预发布、按时间倒序、不像 API 有 60 次/小时的限速,
+      # 也不需要 jq。写死一个示例版本号是会烂的 —— 这里原本举的例子是 rc1,
+      # 而 rc2 第二天就把它顶掉了,照着抄只会装到一个过时的版本。
+      newest="$(curl -fsSL --retry 2 "https://github.com/${REPO}/releases.atom" 2>/dev/null \
+        | sed -n 's#.*<link[^>]*releases/tag/\([^"]*\)".*#\1#p' | head -1)"
+      case "$newest" in
+        v[0-9]*) die "${REPO} 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
+   最新的是 ${newest},显式指定它:
+     curl -fsSL .../install.sh | sudo NANOTUN_VERSION=${newest} bash" ;;
+        *) die "${REPO} 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
+   到 https://github.com/${REPO}/releases 挑一个,再用 NANOTUN_VERSION=vX.Y.Z 指定。" ;;
+      esac ;;
     *) die "没能从 $latest_url 解析出版本号。可能该仓库还没发过 Release;
    用 NANOTUN_VERSION=vX.Y.Z 显式指定。" ;;
   esac
