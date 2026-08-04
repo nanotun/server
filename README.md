@@ -24,6 +24,19 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install
    IP 转发、REALITY / hy2 密钥与自签证书、放行 ufw、第一个 VPN 管理员
 4. **开服向导**([`setup.sh`](scripts/setup.sh))—— 见下
 
+跑完就能用:向导会问客户端拨号地址、建第一个 VPN 用户、出两个二维码。管道占着 stdin
+不影响它问话(会从 `/dev/tty` 读)。
+
+**无人值守**(CI / cloud-init):把向导要问的直接给它,一条命令做到底 ——
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh \
+  | sudo bash -s -- --dial-host vpn.example.com --user alice --yes
+```
+
+`install.sh` 自己不认得的参数一律原样转交向导,所以 [`setup.sh`](scripts/setup.sh)
+的选项都能这么带。
+
 生产建议钉版本:`curl -fsSL .../install.sh | sudo NANOTUN_VERSION=v0.1.0 bash`。
 想自己控制每一步就手动下 [Releases](https://github.com/nanotun/server/releases) 里对应架构的
 tar,解压后跑 `sudo ./scripts/install-self-hosted.sh` —— 那是上面第 3 步,随发布包走,
