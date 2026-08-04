@@ -111,7 +111,17 @@ run_preflight() {
   fi
 
   command -v curl >/dev/null 2>&1 || die "缺少 curl,没法取环境检查脚本(apt install curl / yum install curl)"
-  pf="$(mktemp)"
+
+  # mktemp 失败必须当场拦下,不能让一个空变量顺着往下走。
+  #
+  # 本函数是在 `if ! run_preflight` 里调用的,而 bash 在条件上下文中会关掉**整个函数体**
+  # 的 errexit —— 所以 mktemp 挂了脚本不会停,$pf 只是留空,接着 curl -o "" 报
+  # 「blank argument」,最终打出来的是「下载 preflight.sh 失败 / 网络不通的话可以
+  # --skip-check」。真实原因是临时目录写不进去:既指错了方向,又建议跳过环境检查。
+  # 一台 /tmp 是 0700 root 的机器上,非 root 跑 --check-only 就是这个下场。
+  pf="$(mktemp)" || pf=""
+  [ -n "$pf" ] || die "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 配额 / 空间不足)。
+   换个位置重试,例如:TMPDIR=/var/tmp <刚才那条命令>"
   curl -fsSL --retry 3 -o "$pf" "$RAW_BASE/preflight.sh" \
     || { rm -f "$pf"; die "下载 preflight.sh 失败: $RAW_BASE/preflight.sh
    网络不通的话可以 --skip-check 跳过检查直接装(风险自负)。"; }
@@ -186,7 +196,9 @@ TARBALL="nanotun-${VERSION}-linux-${ARCH}.tar.gz"
 BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 
 # ── 3. 下载 + 校验 ───────────────────────────────────────────────────────────
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || TMP=""
+[ -n "$TMP" ] || die "创建临时目录失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 配额 / 空间不足)。
+   换个位置重试,例如:TMPDIR=/var/tmp <刚才那条命令>"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 

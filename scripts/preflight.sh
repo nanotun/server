@@ -255,7 +255,16 @@ if have ss || have netstat; then
       # 已经装过 nanotun 的机器重跑检查时会命中自己,那不是问题
       case "$hit" in
         *nanotun*) info "$2/$1 已被 nanotun 自己占用($3)—— 这是重装 / 升级" ;;
-        *) soft "$2/$1 已被占用($3)" "$2/$1 被别的进程占着,nanotun 起不来:$(printf '%s' "$hit" | tr -s ' ' | cut -c1-100)" ;;
+        *)
+          # 内核只对特权进程暴露 socket 的属主,所以非 root 跑时 ss 那一列是空的,
+          # 上面那个 *nanotun* 分支永远匹配不上 —— 本机 nanotun 自己占的端口会被
+          # 一口咬定成「别的进程占着」。而 --check-only 是明确不需要 root 的那条路,
+          # 在它上面给出错误结论,比不给结论更糟。看不见就说看不见。
+          if [ "$(id -u)" != 0 ] && [ -x /usr/local/bin/nanotund ]; then
+            info "$2/$1 已被占用($3)—— 非 root 看不到是哪个进程;这台机器上已装了 nanotun,多半是它自己"
+          else
+            soft "$2/$1 已被占用($3)" "$2/$1 被别的进程占着,nanotun 起不来:$(printf '%s' "$hit" | tr -s ' ' | cut -c1-100)"
+          fi ;;
       esac
     fi
   }

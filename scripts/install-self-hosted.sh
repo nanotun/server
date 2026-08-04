@@ -391,7 +391,9 @@ step "5. 初始化 admin 用户（首次部署生成 PSK；重复部署 noop 保
 #     也不是能解析的 JSON —— 而它是这个管理员 PSK 的唯一留档。
 #   · init 会问用户名和 PSK 两个问题(两个空行 = 都取默认值),提示语走 stdout,
 #     会贴在 JSON 前面变成「admin username [admin]: {」,所以从第一个 { 起截断。
-INIT_ERR="$(mktemp)"; INIT_RC=0
+INIT_ERR="$(mktemp)" || INIT_ERR=""
+[ -n "$INIT_ERR" ] || die "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 配额 / 空间不足)。"
+INIT_RC=0
 INIT_OUT="$(printf '\n\n' | /usr/local/bin/nanotun-admin --db-path "$LIB_DIR/nanotun.db" --json init 2>"$INIT_ERR")" || INIT_RC=$?
 INIT_JSON="$(printf '%s\n' "$INIT_OUT" | awk 'f {print; next} /{/ {sub(/^[^{]*/, ""); print; f=1}')"
 
