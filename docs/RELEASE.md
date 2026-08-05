@@ -38,7 +38,12 @@
 git status          # 应无未提交改动
 git rev-parse HEAD  # 记下来
 
-# 1) 三机 e2e —— 必须含崩溃恢复(阶段 70)
+# 1) 先把 HEAD 装到 SRV 上 —— 漏了这步,e2e 验的是上一个版本的服务端
+#    脚本顺带把 e2e.env 里的 E2E_EXPECT_VERSION 改成同一个 dev-<sha>,并回读校验。
+#    (阶段 0 那条版本断言就是在兜这个底,但它要跑到 e2e 中途才报,前面全白跑。)
+./scripts/e2e/deploy-srv.sh
+
+# 2) 三机 e2e —— 必须含崩溃恢复(阶段 70)
 #    参数是阶段号列表,不是范围:`00 60` 只跑 0 和 6。
 set -a && . scripts/e2e/e2e.env && set +a
 ./scripts/e2e/run.sh 00 10 20 30 40 50 60 70
@@ -48,15 +53,15 @@ set -a && . scripts/e2e/e2e.env && set +a
 #    否则戳会盖在一个「没跑过 e2e」的 commit 上,而戳里只有一个 SHA,事后查不出来。
 ./scripts/e2e/run-remote.sh 00 10 20 30 40 50 60 70
 
-# 2) 盖戳:把「刚跑过 e2e 的 commit」写进本地文件(不进 git)
+# 3) 盖戳:把「刚跑过 e2e 的 commit」写进本地文件(不进 git)
 ./scripts/release/stamp-e2e.sh
 
-# 3) 唯一发版入口:再跑一遍单测,核对戳与 HEAD 一致,打包,打 tag
+# 4) 唯一发版入口:再跑一遍单测,核对戳与 HEAD 一致,打包,打 tag
 ./scripts/release/cut.sh v0.1.0
 # 本地产出: dist/nanotun-v0.1.0-linux-{amd64,arm64}.tar.gz + SHA256SUMS
 # 同时建好 tag v0.1.0(**不会自动推送**)
 
-# 4) 对照下面的检查单,确认后推 tag —— 这一步才真正对外发布
+# 5) 对照下面的检查单,确认后推 tag —— 这一步才真正对外发布
 git push origin v0.1.0
 ```
 

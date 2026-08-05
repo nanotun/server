@@ -62,6 +62,22 @@ cp e2e.env.example e2e.env   # 填写机器地址、凭据、身份
 
 `e2e.env` 含明文口令,已在 `.gitignore` 里。
 
+### 开跑前:先把 HEAD 装到 SRV
+
+```bash
+./deploy-srv.sh              # 构建 HEAD → 热替 SRV → 回读校验 → 改 E2E_EXPECT_VERSION
+```
+
+阶段 0 会断言 SRV 上的版本等于 `E2E_EXPECT_VERSION`。这条断言不是形式主义:没有它,
+整套 e2e 会在**上一个版本**的服务端上安静地跑一遍全绿,然后那个绿被盖成发版戳 ——
+而戳里只有一个 SHA,事后完全看不出来验的其实是旧代码。
+
+但它要跑到 e2e 中途才报,前面十几分钟白跑(2026-08-05 就这么漏过一次)。`deploy-srv.sh`
+把「装 HEAD」和「改版本钉子」两步合成一步,并在本地当场回读校验,不合就不让你开跑。
+
+它只覆盖 `/usr/local/bin` 下的二进制与脚本,**不碰** `config.toml`、`certs/`、数据库 ——
+那三样一动,机器的身份(REALITY 私钥、PSK、已发出去的 profile)就变了,实验室得重建。
+
 ### 别在自己机器上跑:`run-remote.sh`
 
 `run.sh` 不参与被测,它只是个指挥 —— 每做一次检查就 SSH 到三台机器上执行一条命令、
