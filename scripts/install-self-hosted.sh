@@ -542,7 +542,10 @@ if [ "$WEB_AVAILABLE" -eq 1 ]; then
   # 同上:先记账,别让它把第 7 步的诊断挤掉。
   # settled_active 不能省 —— 这个单元是 Type=simple,restart 的返回值判不出死活。
   if systemctl restart nanotun-web.service && settled_active nanotun-web.service; then
-    ok "nanotun-web 已启动,首次访问请打开 https://<server>:7443/setup 创建管理员"
+      # 别再把人往 /setup 引。那个页面在第一个管理员出现之前对全网公开(谁先打开谁是
+      # 管理员),而紧接着要跑的开服向导会当场把账号建掉 —— 指向它才是短的那条路,
+      # 也不留窗口。手动建也不必开浏览器:nanotun-admin webadmin create。
+      ok "nanotun-web 已启动,后台账号在下一步的开服向导里设(也可 nanotun-admin webadmin create)"
   else
     START_FAILED=1
     warn "nanotun-web 没能启动(原因见下面第 7 步的诊断)"
@@ -680,7 +683,9 @@ if [ "${NANOTUN_WIZARD_FOLLOWS:-0}" != 1 ]; then
     echo
     echo "  Web 管理后台(M2):"
     echo "    journalctl -u nanotun-web -f"
-    echo "    浏览器访问 https://<server>:7443/setup 创建第一位 Web 管理员"
+    echo "    建后台账号: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <名字>"
+    echo "    (开服向导 nanotun-setup 会问这一步;在建好之前 https://<server>:7443/setup"
+    echo "     对全网公开 —— 谁先打开谁就是管理员)"
     echo "    证书: $ETC_DIR/certs/{cert.pem,key.pem}(可作为 root CA 装入信任库)"
   fi
 fi

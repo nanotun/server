@@ -17,6 +17,9 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -112,5 +115,59 @@ func TestWebAdminProvisionedByCLI_WrongPasswordStillRejected(t *testing.T) {
 	}
 	if !errors.Is(res.Err, ErrAuthBadCredentials) {
 		t.Fatalf("拒的理由不对:%v", res.Err)
+	}
+}
+
+// TestWebAdminProvisionedByCLI_GetsASessionFromTheRealLoginHandler 把上面那条推到 HTTP 层。
+//
+// AttemptLogin 只回答「这对用户名密码算不算数」;而人在浏览器里点「登录」之后真正跑的是
+// handleLogin —— 它还要过 CSRF、验证码,再决定发不发会话。装机脚本建的账号如果在这一层
+// 被卡住(比如角色不对导致后续判定分叉、或者 enabled 位没置上),前面几条测试全绿,运维
+// 照样进不去后台。所以这里走一遍完整的 POST /login,断言拿到的是会话而不是别的什么。
+func TestWebAdminProvisionedByCLI_GetsASessionFromTheRealLoginHandler(t *testing.T) {
+	if testing.Short() {
+		t.Skip("要编 nanotun-admin 二进制")
+	}
+	dbPath := filepath.Join(t.TempDir(), "nanotun.db")
+	const (
+		user = "ops"
+		pw   = "Str0ng-Console-Pass"
+	)
+	provisionAdminViaCLI(t, dbPath, user, pw)
+
+	ctx := t.Context()
+	st, err := store.Open(ctx, dbPath, store.Options{})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	tmpl, err := loadTemplates()
+	if err != nil {
+		t.Fatalf("loadTemplates: %v", err)
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	s := &Server{
+		cfg:            defaultConfig(),
+		store:          st,
+		sess:           NewSessionService(st, defaultConfig()),
+		audit:          NewAuditor(st),
+		tmpl:           tmpl,
+		credFlash:      newCredentialsFlashStore(stop),
+		stepUpFailures: NewIPFailureTracker(),
+		startedAt:      time.Now(),
+	}
+
+	w := httptest.NewRecorder()
+	s.handleLogin(w, loginPost(t, s, url.Values{
+		"username": {user}, "password": {pw},
+	}, "10.0.0.9"))
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("code=%d,期望 302(登录成功后跳转);装机脚本建的账号在网页上登不进去", w.Code)
+	}
+	if !hasSessionCookie(w) {
+		t.Fatal("没拿到会话 cookie —— 后台进不去")
 	}
 }

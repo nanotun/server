@@ -433,7 +433,11 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
       fi
     else
       if confirm "现在就把 Web 后台管理员定下来?" y; then
-        [ -n "$web_admin_user" ] || web_admin_user="$(ask "后台用户名" "admin")"
+        # 提示里点明「新账号」:这一步开场白刚说完「VPN 账号和后台是两套东西」,而安装时
+        # 建的那个 VPN 用户恰好也叫 admin —— 默认值一撞名,人很容易以为这是在给同一个
+        # 账号补个密码,刚讲清楚的区分当场又糊掉了。默认值仍留 admin(后台就该叫这个,
+        # 换成 webadmin 之类只是把别扭挪个地方),用一句话把它钉住。
+        [ -n "$web_admin_user" ] || web_admin_user="$(ask "后台用户名(新账号,跟 VPN 那个 admin 无关)" "admin")"
         # 密码不走 ask():它会回显。这里两遍隐藏输入,交给 CLI 自己校验强度
         # (与网页 /setup 同一套判据,12 位起、至少两类字符)。
         while true; do
