@@ -1597,12 +1597,19 @@ _check_connlimit_caps_concurrency_without_hurting_mesh() {
   _cl_assert_no_collateral "$attempts"
 
   # ⑥ 放开上限后同样的并发全成 —— 证明上面那个 3 是被这个开关卡住的,不是别的什么东西坏了。
-  out="$(s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun tcp_connlimit_per_ip $saved" 2>&1)"
+  #
+  # 放开时故意**不**用 $saved:那是这台机器碰巧配着的值,拿它当「宽松」是个赌。
+  # 赌输的样子很难看 —— 2026-08-05 这台 SRV 上 $saved 正好是 3(上一轮中断在恢复
+  # 之前,把测试值留在了配置里),于是「放开上限」放回的还是 3,7 条并发照样只成 3 条,
+  # 断言红成「解除限流不生效」。真因是环境残值,可它长得跟产品 bug 一模一样,查了很久。
+  # 改成显式放到一个明显高于并发数的值,这条断言就只跟开关本身有关,跟机器配着什么无关。
+  local loose=$(( attempts + 10 ))
+  out="$(s "python3 $dir/tomlset.py /etc/nanotun/config.toml tun tcp_connlimit_per_ip $loose" 2>&1)"
   s "systemctl restart nanotun" >/dev/null 2>&1
   if wait_until "connlimit · 放开上限重启后两个客户端重连" 90 both_clients_online; then
     _cl_flush_conntrack "$vip"
     got="$(_cl_concurrent_ok "$attempts")"
-    check "connlimit · 上限放回 ${saved} 后同样的并发全部成功" "$attempts" "$got"
+    check "connlimit · 上限放到 ${loose} 后同样的并发全部成功" "$attempts" "$got"
   fi
 
   _cl_restore "$saved"
