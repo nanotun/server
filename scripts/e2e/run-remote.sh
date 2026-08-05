@@ -146,6 +146,6 @@ case "$RC" in
      printf '\n    要发版就接着盖戳(戳仍然盖在本地,认的就是这个 commit):\n'
      printf '      ./scripts/release/stamp-e2e.sh\n' ;;
   2) warn "退出码 2 = 环境或配置问题,红绿都不可信,别拿这轮去盖戳。" ;;
-  *) warn "有断言失败,详见上面或 $LOG。" ;;
+  *) warn "有断言失败,详见上面或 ${LOG}。" ;;
 esac
 exit "$RC"
