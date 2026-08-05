@@ -31,9 +31,13 @@
 #   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
 #   --skip-check   跳过环境检查直接装(不建议;装到一半失败比现在就知道难收拾)
 #   --no-setup     装完不自动进开服向导
-#   其余参数        原样转交开服向导,例如 --dial-host / --user / --yes
+#   其余参数        原样转交开服向导,例如 --dial-host / --user / --web-admin / --yes
 #
 # 环境变量:
+#   NANOTUN_WEB_ADMIN_PASSWORD  Web 后台管理员密码,配合 --web-admin <名字> 使用。
+#                       走环境变量而不是命令行参数:argv 对同机所有用户可见(ps),
+#                       还会落进 shell history。注意 sudo 默认不传环境变量,得写成
+#                       `sudo NANOTUN_WEB_ADMIN_PASSWORD=... bash -c "$(curl ...)"`。
 #   NANOTUN_VERSION     要装的版本,默认取最新 Release
 #   NANOTUN_INSTALL_DIR 解压落点,默认 /opt/nanotun
 #   NANOTUN_NO_INSTALL  =1 时只下载解压,不执行 install-self-hosted.sh
@@ -69,6 +73,10 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
   别用 curl … | sudo bash:Ubuntu/Debian 的 sudo 默认 use_pty,向导会被挂死。
   无人值守(不需要问话)用管道没问题:
   curl -fsSL ${RAW_BASE}/install.sh | sudo bash -s -- --dial-host <域名> --user <名> --yes
+
+  连 Web 后台账号一起定(不然 /setup 谁先打开谁是管理员):
+  curl -fsSL ${RAW_BASE}/install.sh | sudo NANOTUN_WEB_ADMIN_PASSWORD='<密码>' bash -s -- \\
+    --dial-host <域名> --user <名> --web-admin <后台用户名> --yes
 
 选项:
   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
@@ -438,9 +446,13 @@ if [ -z "$SETUP_STDIN" ] && [ ${#SETUP_ARGS[@]} -eq 0 ]; then
     info "安装完成。这次既没有终端可问话、也没给向导参数,开服向导跳过。手动跑:"
     echo "    sudo nanotun-setup"
   fi
-  echo
-  echo "  无人值守(CI / cloud-init)可以一条命令做完:"
-  echo "    curl -fsSL ${RAW_BASE}/install.sh | sudo bash -s -- --dial-host <域名或IP> --user <用户名> --yes"
+    echo
+    echo "  无人值守(CI / cloud-init)可以一条命令做完:"
+    echo "    curl -fsSL ${RAW_BASE}/install.sh | sudo bash -s -- --dial-host <域名或IP> --user <用户名> --yes"
+    echo
+    echo "  想连 Web 后台账号一起定下来(否则 /setup 谁先打开谁是管理员):"
+    echo "    curl -fsSL ${RAW_BASE}/install.sh | sudo NANOTUN_WEB_ADMIN_PASSWORD='<密码>' bash -s -- \\"
+    echo "      --dial-host <域名或IP> --user <用户名> --web-admin <后台用户名> --yes"
   exit 0
 fi
 

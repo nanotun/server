@@ -449,4 +449,21 @@ var catEN = map[string]string{
 	"rate.burstNegative":     "--burst-kib must not be negative: %v",
 	"rate.burstTooLarge":     "--burst-kib must not exceed %d (16 MiB, safe upper bound)",
 	"rate.burstDefault":      "-(use default 64 KiB)",
+
+	// ===== webadmin (web console administrators) =====
+	"webadmin.flag.role":          "role: admin (full) or viewer (read-only); the first admin is always admin",
+	"webadmin.flag.passwordStdin": "read the password from stdin (for scripts/pipes; never in argv, invisible to ps)",
+	"webadmin.usernameMin3":       "username must be at least 3 characters",
+	"webadmin.created":            "web admin created: id=%d username=%s role=%s",
+	"webadmin.setupClosedNote":    "This is the first admin — /setup now closes itself (it redirects to the login page). No extra switch needed.",
+	"webadmin.duplicate":          "a web admin with that name already exists (case-insensitive): %s",
+	"webadmin.raceLost":           "someone else created the first admin milliseconds before you. Console control of this machine is not yours — run `nanotun-admin webadmin list` right now and see who it is.",
+	"webadmin.needPassword":       "no password given. Three ways: pass --password-stdin and pipe it in, set %s in the environment, or run this on a real terminal (it will prompt twice).",
+	"webadmin.pwPrompt":           "Set the web console password (at least %d characters, not echoed): ",
+	"webadmin.pwAgain":            "Type it again: ",
+	"webadmin.pwMismatch":         "the two entries do not match",
+	"webadmin.pwTooShort":         "password must be at least %d characters, got %d",
+	"webadmin.pwTooLong":          "password must not exceed %d characters",
+	"webadmin.pwBadChars":         "password must not contain newline / TAB / NUL",
+	"webadmin.pwTooFewClasses":    "password must mix at least two character classes (digits, letters, symbols)",
 }

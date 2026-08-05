@@ -24,7 +24,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
    IP 转发、REALITY / hy2 密钥与自签证书、放行 ufw、第一个 VPN 管理员
 4. **开服向导**([`setup.sh`](scripts/setup.sh))—— 见下
 
-跑完就能用:向导会问客户端拨号地址、建第一个 VPN 用户、出两个二维码。
+跑完就能用:向导会问客户端拨号地址、定下 Web 后台的用户名和密码、建第一个 VPN 用户、出两个二维码。
 
 > **别写成 `curl … | sudo bash`。** Ubuntu / Debian 的 sudo 默认开着 `use_pty`,会另开一个
 > pty 跑命令;再叠加管道占着 sudo 的 stdin,向导一问话就被作业控制挂起 —— 提示符出来了、
@@ -37,8 +37,12 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh \
-  | sudo bash -s -- --dial-host vpn.example.com --user alice --yes
+  | sudo NANOTUN_WEB_ADMIN_PASSWORD='换成你的密码' bash -s -- \
+      --dial-host vpn.example.com --user alice --web-admin ops --yes
 ```
+
+这一条装完之后 Web 后台就能用 `ops` 加那个密码直接登录 —— 不带 `--web-admin` 也能装,
+只是后台账号留着没建,而 `/setup` 在建成之前对全网公开(谁先打开谁是管理员)。
 
 `install.sh` 自己不认得的参数一律原样转交向导,所以 [`setup.sh`](scripts/setup.sh)
 的选项都能这么带。
@@ -73,14 +77,33 @@ Web 后台管理员密码、给用户的二维码。上面那条命令的最后�
 sudo nanotun-setup
 ```
 
-它会探测并写入拨号地址(`server_dial_host`)、给出 Web 后台的 `/setup` 链接、创建第一个
-VPN 用户,并直接在终端打出两个二维码:
+它会探测并写入拨号地址(`server_dial_host`)、**当场创建 Web 后台管理员**(用户名和密码
+你现在定,密码两遍隐藏输入)、创建第一个 VPN 用户,并直接在终端打出两个二维码:
 
 - **profile QR** —— 服务器地址与传输配置,不含密钥,可以公开传
 - **credentials QR** —— 用户名 + PSK,机密,只能一对一给本人
 
-重复跑是安全的(不重置 PSK、不动配置),之后加用户、重出二维码都用它。
-自动化部署可以 `sudo nanotun-setup --dial-host vpn.example.com --user alice --yes`。
+后台账号这一步别跳过:在第一个管理员出现之前,`/setup` 页面对全网公开 —— **谁先打开谁就是
+管理员**。向导把它建掉,这扇门就自动关了(之后访问 `/setup` 会跳到登录页)。
+
+重复跑是安全的(不重置 PSK、不动配置、已有管理员就跳过),之后加用户、重出二维码都用它。
+自动化部署一条命令做完:
+
+```bash
+sudo NANOTUN_WEB_ADMIN_PASSWORD='...' nanotun-setup \
+     --dial-host vpn.example.com --user alice --web-admin ops --yes
+```
+
+密码只走环境变量,不做成命令行参数 —— argv 对同机所有用户可见(`ps`),还会落进 shell
+history。`--yes` 下给了 `--web-admin` 却没给密码时,向导会随机生成一个并打在屏幕上(只此一次)。
+
+VPN 账号和 Web 后台是**两套东西**,最容易混:前者是客户端登录用的用户名 + PSK(PSK 由服务器
+生成,不能自选);后者是浏览器登录后台用的,密码你自己设。后台账号也可以随时用命令行加:
+
+```bash
+sudo nanotun-admin webadmin create <名字>     # 会提示输两遍密码,不回显
+sudo nanotun-admin webadmin list              # 看后台都有谁
+```
 
 客户端扫完两个码就能连。剩下的用户管理走 Web 后台或下面的命令行。
 

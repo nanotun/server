@@ -445,4 +445,21 @@ var catZH = map[string]string{
 	"rate.burstNegative":     "--burst-kib 不能为负: %v",
 	"rate.burstTooLarge":     "--burst-kib 不能超过 %d(16 MiB,安全上界)",
 	"rate.burstDefault":      "-(沿用 default 64 KiB)",
+
+	// ===== webadmin(Web 后台管理员)=====
+	"webadmin.flag.role":          "角色:admin(全权)或 viewer(只读);首位管理员一律 admin",
+	"webadmin.flag.passwordStdin": "从标准输入读密码(脚本 / 管道用;不进 argv,ps 看不到)",
+	"webadmin.usernameMin3":       "用户名至少 3 个字符",
+	"webadmin.created":            "Web 后台管理员已创建:id=%d username=%s role=%s",
+	"webadmin.setupClosedNote":    "这是首位管理员 —— /setup 抢占页从此自动关闭(再打开会跳到登录页),不需要另外设开关。",
+	"webadmin.duplicate":          "已有同名 Web 管理员(大小写不敏感):%s",
+	"webadmin.raceLost":           "首位管理员刚被别人抢先建走了(几毫秒之差)。这台机器的后台控制权现在不在你手里 —— 立刻 `nanotun-admin webadmin list` 看是谁。",
+	"webadmin.needPassword":       "没拿到密码。三条路任选:加 --password-stdin 从管道喂、设环境变量 %s、或在真终端里跑(会提示你输两遍)。",
+	"webadmin.pwPrompt":           "设置 Web 后台密码(至少 %d 位,不回显):",
+	"webadmin.pwAgain":            "再输一遍:",
+	"webadmin.pwMismatch":         "两次输入不一致",
+	"webadmin.pwTooShort":         "密码至少 %d 位,现在 %d 位",
+	"webadmin.pwTooLong":          "密码不能超过 %d 位",
+	"webadmin.pwBadChars":         "密码不能含换行 / TAB / NUL",
+	"webadmin.pwTooFewClasses":    "密码至少要含两类字符(数字、字母、符号任取两类)",
 }

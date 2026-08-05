@@ -32,6 +32,7 @@ QR_DIR="$LIB_DIR/qr"
 OPT_DIAL_HOST=""
 OPT_USER=""
 OPT_NO_USER=0
+OPT_WEB_ADMIN=""
 ASSUME_YES=0
 
 # ── 输出 ─────────────────────────────────────────────────────────────────────
@@ -59,19 +60,27 @@ usage() {
   cat <<EOF
 用法: sudo ${me} [选项]
 
-nanotun 开服向导:设置客户端拨号地址、引导创建 Web 管理员、创建首个用户并出二维码。
+nanotun 开服向导:设置客户端拨号地址、创建 Web 后台管理员、创建首个用户并出二维码。
 在 install-self-hosted.sh 之后跑。重复跑是安全的。
 
 选项:
   --dial-host HOST   客户端拨号地址(域名或 IP,不带端口/协议),跳过交互询问
   --user NAME        创建这个 VPN 用户并出二维码
   --no-user          跳过创建用户那一步
+  --web-admin NAME   Web 后台管理员用户名(密码见下面的环境变量)
   -y, --yes          不再交互,全部走默认值(必须配合 --dial-host)
   -h, --help         显示本帮助
+
+环境变量:
+  NANOTUN_WEB_ADMIN_PASSWORD   Web 后台密码。故意不做成命令行参数 —— argv 对同机
+                               所有用户可见(ps),还会落进 shell history。
+                               --yes 下不给它就随机生成一个并打出来。
 
 例:
   sudo ${me}
   sudo ${me} --dial-host vpn.example.com --user alice --yes
+  sudo NANOTUN_WEB_ADMIN_PASSWORD='...' ${me} --dial-host vpn.example.com \\
+       --user alice --web-admin ops --yes
 EOF
 }
 
@@ -80,6 +89,9 @@ while [ $# -gt 0 ]; do
     --dial-host) OPT_DIAL_HOST="${2:-}"; shift 2 ;;
     --user)      OPT_USER="${2:-}"; shift 2 ;;
     --no-user)   OPT_NO_USER=1; shift ;;
+    # 密码只从环境变量 NANOTUN_WEB_ADMIN_PASSWORD 读,故意**不做** --web-admin-password:
+    # 命令行参数会进 argv,同机任何用户 ps 一眼就看见,还会落进 shell history 和 journal。
+    --web-admin) OPT_WEB_ADMIN="${2:-}"; shift 2 ;;
     -y|--yes)    ASSUME_YES=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     # 点名是谁在说话:install.sh 会把自己不认得的参数原样转交本向导,所以这行
@@ -361,14 +373,99 @@ step "2. Web 后台管理员"
 if [ "$WEB_AVAILABLE" = 1 ]; then
   note "注意这跟 VPN 账号是**两套东西**,最容易搞混的一步:"
   note "  · VPN 用户 + PSK  —— 客户端登录用,安装时已建了一个 admin"
-  note "  · Web 后台管理员  —— 浏览器登录用,密码你现在设,只能在网页上创建"
+  note "  · Web 后台管理员  —— 浏览器登录用,用户名和密码现在就定下来"
   printf '\n'
-  printf '    打开: %shttps://%s:%s/setup%s\n' "$C_OK" "$current_dial" "$WEB_PORT" "$C_OFF"
-  printf '\n'
-  note "证书是自签的,浏览器会警告,确认地址无误后继续访问即可。"
-  warn "尽快去建 —— 在第一个管理员出现之前,谁先打开 /setup 谁就是管理员。"
-  note "机器暴露在公网且你暂时不想建的话,先把 $WEB_PORT 端口关掉:ufw deny $WEB_PORT/tcp"
-  [ "$ASSUME_YES" = 0 ] && confirm "已经建好了(或稍后再说),继续?" y >/dev/null || true
+
+  # 已经有管理员就什么都别做。重跑向导是常事(加用户、改拨号地址),这一步不该
+  # 每次都来问一遍,更不该给人「是不是要再建一个」的错觉。
+  WEB_ADMIN_COUNT="$(admin webadmin list 2>/dev/null | awk 'NR>1 && NF' | wc -l | tr -d '[:space:]')" || WEB_ADMIN_COUNT=0
+  if [ "${WEB_ADMIN_COUNT:-0}" -gt 0 ]; then
+    ok "已有 $WEB_ADMIN_COUNT 个 Web 后台管理员,跳过。"
+    note "  登录: https://$current_dial:$WEB_PORT/"
+    note "  看都有谁: nanotun-admin --db-path $DB webadmin list"
+  else
+    # 这里是整个向导里唯一一处「不做就有安全后果」的步骤,所以话要说在前面:
+    # /setup 在第一个管理员出现之前对全网公开,谁先打开谁就是管理员。装完到人想起来
+    # 开浏览器之间的这段时间,这台机器的后台控制权是先到先得的(captcha + 自适应 PoW
+    # 只是减速带)。当场把它建掉,窗口就是零。
+    warn "现在不建的话,/setup 会一直敞着 —— 谁先打开谁就是管理员。"
+    printf '\n'
+
+    web_admin_user="$OPT_WEB_ADMIN"
+    web_admin_pass="${NANOTUN_WEB_ADMIN_PASSWORD:-}"
+
+    if [ "$ASSUME_YES" = 1 ]; then
+      # 无人值守。给了名字才建 —— 没给就当调用方另有安排(比如它自己会调
+      # `webadmin create`),不替人凭空造账号。
+      if [ -z "$web_admin_user" ]; then
+        warn "--yes 且没给 --web-admin:跳过。这台机器的 /setup 仍然敞着,记得尽快:"
+        note "  nanotun-admin --db-path $DB webadmin create <名字>"
+      else
+        if [ -z "$web_admin_pass" ]; then
+          # 无人值守下没给密码,就地生成一个强的并打出来 —— 总好过留一个敞开的
+          # /setup。与 PSK 同一口径:只出现这一次,自己抄走。
+          #
+          # 两处讲究:
+          #  ① 管道里不能有 `head -c N` 这种拿够就退的消费者 —— 它会给上游 tr 一个
+          #     SIGPIPE,而本脚本开着 pipefail,整条赋值就以 141 失败,向导当场死在
+          #     这一行(实测就是这么炸的:屏幕停在「现在不建的话…」那句警告上,
+          #     后面什么都没有,而 /setup 还敞着 —— 恰恰是这段代码要防的局面)。
+          #     改成 cut:它读完全部输入才结束,上游不会被打断。
+          #  ② 组成写死:末尾接一段数字和一个连字符。纯随机 alnum 有约 0.7% 的概率
+          #     一个数字都不含,那样会被「至少两类字符」的校验挡下 —— 一百多次里
+          #     总要撞上一次,而撞上的人只会看到一句莫名其妙的「建失败」。
+          web_admin_pass="$(head -c 4096 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | cut -c1-24)-$(head -c 256 /dev/urandom | LC_ALL=C tr -dc '0-9' | cut -c1-4)"
+          WEB_ADMIN_PASS_GENERATED=1
+        fi
+        # 捕获再打,而不是让 CLI 直接写屏:它的输出顶格,夹在向导四格缩进的正文里
+        # 会像是另一个程序插了句嘴。内容照原样,只补缩进。
+        if wa_out="$(printf '%s' "$web_admin_pass" | admin webadmin create "$web_admin_user" --password-stdin 2>&1)"; then
+          printf '%s\n' "$wa_out" | sed 's/^/    /'
+          if [ "${WEB_ADMIN_PASS_GENERATED:-0}" = 1 ]; then
+            printf '\n'
+            printf '    %sWeb 后台密码:%s%s\n' "$C_WARN" "$web_admin_pass" "$C_OFF"
+            warn "这是它**唯一**一次出现(没给 NANOTUN_WEB_ADMIN_PASSWORD,所以是随机生成的)。"
+          fi
+        else
+          printf '%s\n' "$wa_out" | sed 's/^/    /'
+          warn "建 Web 管理员失败(原因见上一行)。/setup 仍然敞着,处理完记得补上。"
+        fi
+      fi
+    else
+      if confirm "现在就把 Web 后台管理员定下来?" y; then
+        [ -n "$web_admin_user" ] || web_admin_user="$(ask "后台用户名" "admin")"
+        # 密码不走 ask():它会回显。这里两遍隐藏输入,交给 CLI 自己校验强度
+        # (与网页 /setup 同一套判据,12 位起、至少两类字符)。
+        while true; do
+          printf '    后台密码(至少 12 位,不回显): ' >&2
+          IFS= read -rs web_admin_pass || die "输入意外结束(stdin EOF),向导中止。"
+          printf '\n' >&2
+          printf '    再输一遍: ' >&2
+          IFS= read -rs web_admin_pass2 || die "输入意外结束(stdin EOF),向导中止。"
+          printf '\n' >&2
+          if [ "$web_admin_pass" != "$web_admin_pass2" ]; then
+            warn "两次输入不一致,重来。"
+            continue
+          fi
+          # 密码经管道进 CLI,不进 argv —— 同机任何用户 ps 都看不到。
+          if wa_out="$(printf '%s' "$web_admin_pass" | admin webadmin create "$web_admin_user" --password-stdin 2>&1)"; then
+            printf '%s\n' "$wa_out" | sed 's/^/    /'
+            break
+          fi
+          # 失败的理由 CLI 已经说了(太短 / 字符类不够 / 重名)。原样转述再回去重来,
+          # 不退出向导:这一步退出等于把 /setup 继续敞着,而人多半不会再跑一遍。
+          printf '%s\n' "$wa_out" | sed 's/^/    /'
+          warn "换一个再试。"
+        done
+        unset web_admin_pass web_admin_pass2
+        note "登录: https://$current_dial:$WEB_PORT/(自签证书,浏览器会警告,确认地址无误后继续)"
+      else
+        warn "跳过了。/setup 仍然敞着 —— 谁先打开谁是管理员。想现在关掉这扇门:"
+        note "  ufw deny $WEB_PORT/tcp        # 或者"
+        note "  nanotun-admin --db-path $DB webadmin create <名字>"
+      fi
+    fi
+  fi
 else
   note "未安装 Web 后台。用户管理全部走命令行:nanotun-admin --db-path $DB ..."
 fi

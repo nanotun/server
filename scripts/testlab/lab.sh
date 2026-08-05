@@ -236,7 +236,11 @@ cmd_install() {
 cmd_setup() {
   need_up
   step "开服向导"
-  dex "$NAME" nanotun-setup ${PASS[@]+"${PASS[@]}"}
+  # Web 后台密码只走环境变量(向导故意不收命令行参数,理由见 setup.sh),而 docker exec
+  # 不继承宿主的环境 —— 不显式带进去的话,`--web-admin` 那条无人值守路径在这里根本测不到。
+  local envs=()
+  [ -n "${NANOTUN_WEB_ADMIN_PASSWORD:-}" ] && envs=(-e "NANOTUN_WEB_ADMIN_PASSWORD=${NANOTUN_WEB_ADMIN_PASSWORD}")
+  dex ${envs[@]+"${envs[@]}"} "$NAME" nanotun-setup ${PASS[@]+"${PASS[@]}"}
 }
 
 # preflight 用工作区里的这一份,不走网络 —— 测的是 HEAD,不是 main 上已发布的那份。

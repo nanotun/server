@@ -132,6 +132,10 @@ func runRoot(args []string, opts *globalOpts) int {
 		return runWithStore(opts, subIsReadOnly(subcmd, rest), func(ctx context.Context, st *store.Store) error {
 			return cmdAudit(ctx, st, opts, rest)
 		})
+	case "webadmin":
+		return runWithStore(opts, subIsReadOnly(subcmd, rest), func(ctx context.Context, st *store.Store) error {
+			return cmdWebAdmin(ctx, st, opts, rest)
+		})
 	case "reload":
 		// reload 不需要打开 SQLite,直接走 control socket。
 		if err := cmdReload(context.Background(), nil, opts, rest); err != nil {

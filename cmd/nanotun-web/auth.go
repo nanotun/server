@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
-	"strings"
 
 	"golang.org/x/crypto/argon2"
 
@@ -61,48 +60,32 @@ func VerifyWebPasswordOrDecoy(ctx context.Context, plaintext, encoded, decoy str
 // 不上 zxcvbn 之类的强密度检测,理由:nanotun-web 是给运维管理员用的,
 // 实际威胁是字典 / 撞库,而不是同事记不住的复杂密码。argon2id 已经让暴力
 // 破解成本很高;再加一道 rate limit + 锁定,P1 防护够用。
+//
+// 判据本身已经挪到 auth.CheckWebPassword —— nanotun-admin 现在也能建 Web 管理员
+// (装机时直接把后台账号定下来,不必去抢 /setup 那个 TOFU 窗口),两个入口共用同一套
+// 规则,不然会出现「命令行收下的密码,网页上改密时又被拒」这种没人解释得清的分歧。
+// 这里只剩把结果翻译成给人看的话。
 const (
-	minPasswordLen = 12
-	maxPasswordLen = 256
+	minPasswordLen = auth.MinWebPasswordLen
+	maxPasswordLen = auth.MaxWebPasswordLen
 )
 
 // ValidatePasswordStrength 拒绝弱密码。错误信息直接给用户看(zh-CN)。
 func ValidatePasswordStrength(p string) error {
-	if len(p) < minPasswordLen {
-		return newLocErr("auth.pwTooShort", minPasswordLen, len(p))
+	iss := auth.CheckWebPassword(p)
+	if iss == nil {
+		return nil
 	}
-	if len(p) > maxPasswordLen {
+	switch iss.Kind {
+	case auth.PasswordTooShort:
+		return newLocErr("auth.pwTooShort", minPasswordLen, iss.Got)
+	case auth.PasswordTooLong:
 		return newLocErr("auth.pwTooLong", maxPasswordLen)
-	}
-	if strings.ContainsAny(p, "\n\r\t\x00") {
+	case auth.PasswordBadChars:
 		return newLocErr("auth.pwBadChars")
-	}
-	// 必含两类字符以上(数字 + 字母 + 符号任二)。避免 "aaaaaaaaaaaa" 这种全同字符。
-	classes := 0
-	hasDigit, hasLetter, hasSym := false, false, false
-	for _, r := range p {
-		switch {
-		case r >= '0' && r <= '9':
-			if !hasDigit {
-				classes++
-				hasDigit = true
-			}
-		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
-			if !hasLetter {
-				classes++
-				hasLetter = true
-			}
-		default:
-			if !hasSym {
-				classes++
-				hasSym = true
-			}
-		}
-	}
-	if classes < 2 {
+	default:
 		return newLocErr("auth.pwTooFewClasses")
 	}
-	return nil
 }
 
 // =========================================================================
