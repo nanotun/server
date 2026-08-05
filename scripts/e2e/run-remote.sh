@@ -147,10 +147,31 @@ REMOTE_LOG="$RUNNER_DIR/last-run.log"
 REMOTE_RC="$RUNNER_DIR/last-run.rc"
 REMOTE_PID="$RUNNER_DIR/last-run.pid"
 
+# 开跑前先看锁。run.sh 自己也有单实例锁,但那道锁是在**新一轮已经起来之后**才发现
+# 撞车的 —— 而新一轮起来的第一件事就是 `> last-run.log`,把正在跑的那一轮的日志
+# 拦腰截断。于是代价不对称:撞车的是新来的,挨刀的是老的。2026-08-06 实测就这样,
+# 一轮跑到一半的门禁日志被清空,只剩尾巴。
+# 在这里先问一句就都躲开了,顺便告诉人怎么接上那一轮,而不是让他去猜。
+LOCKPID="$(rsh "cat /tmp/nanotun-e2e.lock/pid 2>/dev/null" | tr -d '\r[:space:]')"
+if [[ "$LOCKPID" =~ ^[0-9]+$ ]] && rsh "kill -0 $LOCKPID 2>/dev/null"; then
+  die "调度机上已有一轮 e2e 在跑(pid $LOCKPID),不能再起一轮 —— 两轮会互相踩。
+   要看那一轮:ssh $RUNNER_USER@$RUNNER_HOST \"tail -f --pid=$LOCKPID $REMOTE_LOG\"
+   确认它真死了再:ssh $RUNNER_USER@$RUNNER_HOST 'rm -rf /tmp/nanotun-e2e.lock'"
+fi
+
 # 不开 -t:没有伪终端时 assert.sh 自己会关掉颜色,落进日志的就是干净的纯文本。
+#
+# 几处都不能省:
+#  · setsid **-f**:光 `setsid` 在调用者已经是进程组长时不会 fork,于是压根没脱离
+#    这条 SSH 会话 —— 连接一关,SIGHUP 照样打到这一轮身上。实测就栽在这:341 条
+#    断言全跑完、总结都打出来了,却在 cleanup 里被 SIGHUP 掐死,退出码没写成、锁
+#    没清掉,一轮 28 分钟的门禁最后拿不出一个能盖戳的退出码。-f 强制 fork,断不掉。
+#  · 三个 fd 全部重定向:留一个连着,sshd 就攥着这条连接不放,本地这条 rsh 一直挂着。
+#  · 末尾 exit 0:让远端 shell 立刻收工,别等后台作业。
+# setsid -f 自己就立刻返回,不需要再加 &。
 rsh "cd '$RUNNER_DIR/scripts/e2e' && rm -f '$REMOTE_RC' '$REMOTE_PID' && \
-     setsid nohup bash -c 'echo \$\$ > \"$REMOTE_PID\"; ./run.sh $*; echo \$? > \"$REMOTE_RC\"' \
-       > '$REMOTE_LOG' 2>&1 < /dev/null & sleep 2" >/dev/null 2>&1
+     nohup setsid -f bash -c 'echo \$\$ > \"$REMOTE_PID\"; ./run.sh $*; echo \$? > \"$REMOTE_RC\"' \
+       > '$REMOTE_LOG' 2>&1 < /dev/null; sleep 2; exit 0" >/dev/null 2>&1
 
 RUN_PID="$(rsh "cat '$REMOTE_PID' 2>/dev/null" | tr -d '\r[:space:]')"
 [[ "$RUN_PID" =~ ^[0-9]+$ ]] || die "没能在调度机上把 e2e 起来 —— 看看 $REMOTE_LOG"
