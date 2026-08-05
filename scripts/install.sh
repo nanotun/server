@@ -54,6 +54,20 @@ BRANCH="${NANOTUN_BRANCH:-main}"
 INSTALL_DIR="${NANOTUN_INSTALL_DIR:-/opt/nanotun}"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts"
 
+# curl 的停滞防护。--retry 只在**失败**时重试,而最难受的一种失败根本不算失败:
+# 连接建好了、数据一个字节都不来。curl 会一直等下去,屏幕停在「下载 …」那一行 ——
+# 没有超时、没有进度、也没法判断该不该继续等。实测容器里就这么卡了 8 分钟,
+# 目标文件始终 0 字节;下面那个 `28) 下载失败:超时` 分支从来没有机会被走到。
+#
+# 大文件不能用 --max-time:真慢的小机器(几百 K 带宽拉十几 M)会被无辜掐断,而它
+# 本来是能装完的。--speed-limit/--speed-time 只掐「停住不动」的那种 —— 慢但在动的
+# 照样让它下完,这才是要区分的两件事。
+CURL_BASE=(--fail --silent --show-error --location --retry 3 --connect-timeout 20)
+# 几十 KB 的脚本与清单:整体封顶即可(最坏 4 次尝试 × 30 秒)。
+CURL_SMALL=("${CURL_BASE[@]}" --max-time 30)
+# 十几 M 的发布包:30 秒内传不满 1KB/s 就判死,重试 3 次,最坏约 2 分钟收敛。
+CURL_BIG=("${CURL_BASE[@]}" --speed-limit 1024 --speed-time 30)
+
 CHECK_ONLY=0; SKIP_CHECK=0; NO_SETUP=0; SETUP_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -178,7 +192,7 @@ run_preflight() {
   pf="$(mktemp)" || pf=""
   [ -n "$pf" ] || die "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 配额 / 空间不足)。
    换个位置重试,例如:TMPDIR=/var/tmp <刚才那条命令>"
-  curl -fsSL --retry 3 -o "$pf" "$RAW_BASE/preflight.sh" \
+  curl "${CURL_SMALL[@]}" -o "$pf" "$RAW_BASE/preflight.sh" \
     || { rm -f "$pf"; die "下载 preflight.sh 失败: $RAW_BASE/preflight.sh
    网络不通的话可以 --skip-check 跳过检查直接装(风险自负)。"; }
   bash "$pf" "${args[@]+"${args[@]}"}"
@@ -218,7 +232,7 @@ if [ -z "$VERSION" ]; then
   info "查询最新 Release ..."
   # 不解析 JSON(机器上不一定有 jq),跟着 /releases/latest 的 302 读 Location 里的 tag。
   # 比 grep API 返回体稳:API 有速率限制,未认证时一小时 60 次,CI 或反复重试很容易撞到。
-  latest_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+  latest_url="$(curl "${CURL_SMALL[@]}" -I -o /dev/null -w '%{url_effective}' \
     "https://github.com/${REPO}/releases/latest" 2>/dev/null)" \
     || die "查询最新版本失败,检查网络或用 NANOTUN_VERSION 指定版本。"
   VERSION="${latest_url##*/}"
@@ -233,7 +247,7 @@ if [ -z "$VERSION" ]; then
       # releases.atom 是公开 RSS:含预发布、按时间倒序、不像 API 有 60 次/小时的限速,
       # 也不需要 jq。写死一个示例版本号是会烂的 —— 这里原本举的例子是 rc1,
       # 而 rc2 第二天就把它顶掉了,照着抄只会装到一个过时的版本。
-      newest="$(curl -fsSL --retry 2 "https://github.com/${REPO}/releases.atom" 2>/dev/null \
+      newest="$(curl "${CURL_SMALL[@]}" "https://github.com/${REPO}/releases.atom" 2>/dev/null \
         | sed -n 's#.*<link[^>]*releases/tag/\([^"]*\)".*#\1#p' | head -1)"
       case "$newest" in
         # URL 要写全。这条命令是给人**原样粘走**的 —— 原来这里是 `.../install.sh`,
@@ -266,7 +280,7 @@ info "下载 $TARBALL ..."
 # 屏幕上让人去 GitHub Releases 查有没有这个产物 —— 方向完全错了,而真正要做的是腾地方
 # 或换 TMPDIR。实测在一个只剩 1M 的 TMPDIR 上就是这个下场。
 CURL_RC=0
-curl -fsSL --retry 3 -o "$TMP/$TARBALL" "$BASE/$TARBALL" || CURL_RC=$?
+curl "${CURL_BIG[@]}" -o "$TMP/$TARBALL" "$BASE/$TARBALL" || CURL_RC=$?
 if [ "$CURL_RC" != 0 ]; then
   case "$CURL_RC" in
     23) die "下载失败:写不进 ${TMPDIR:-/tmp}(curl 23:写目标文件失败)。
@@ -274,8 +288,10 @@ if [ "$CURL_RC" != 0 ]; then
    当前可用:$(df -h "$TMP" 2>/dev/null | awk 'NR==2{print $4}')" ;;
     6|7)  die "下载失败:连不上 github.com(curl $CURL_RC:DNS 解析不了 / 连接被拒)。
    检查网络、DNS、出站防火墙或代理。" ;;
-    28)   die "下载失败:超时(curl 28)。
-   网络太慢或被中断,重跑一次即可;也可以自己下好包再 NANOTUN_NO_INSTALL 的方式手动装。" ;;
+    28)   die "下载失败:连上了但数据不来(curl 28:30 秒内速度不到 1KB/s,已重试 3 次)。
+   不是「你的网慢」—— 慢但在动的下载不会走到这里,这是彻底停住了。多半是到
+   github.com 的链路被中断或被墙,换个时间 / 换条线路重试,或者自己把包下好再装:
+     curl -fsSL ${RAW_BASE}/install.sh | NANOTUN_NO_INSTALL=1 bash" ;;
     22)   die "下载失败:服务器返回 404 之类的错(curl 22): $BASE/$TARBALL
    确认该版本存在且有 linux-$ARCH 产物:https://github.com/${REPO}/releases" ;;
     *)    die "下载失败(curl $CURL_RC): $BASE/$TARBALL
@@ -284,7 +300,7 @@ if [ "$CURL_RC" != 0 ]; then
 fi
 
 info "校验 SHA256 ..."
-if curl -fsSL --retry 3 -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS" 2>/dev/null; then
+if curl "${CURL_SMALL[@]}" -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS" 2>/dev/null; then
   if command -v sha256sum >/dev/null 2>&1; then
     SHA_CHECK=(sha256sum -c --ignore-missing -)
   elif command -v shasum >/dev/null 2>&1; then

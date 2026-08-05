@@ -169,8 +169,8 @@ up() {
 
 wait_boot() {
   [ "$DISTRO" = alpine ] && return 0
-  local i st
-  for i in $(seq 1 60); do
+  local st
+  for _ in $(seq 1 60); do
     st="$(docker exec "$NAME" systemctl is-system-running 2>/dev/null || true)"
     # degraded 在容器里是常态:总有几个单元(时间同步、日志转发之类)没法在容器内起来,
     # 那不影响我们要测的东西。等到 running 才走,多数情况下永远等不到。
