@@ -274,10 +274,12 @@ client_addr = "example.com:8443"
 # 两边不一致会让 server 启空库 + admin 看不到用户(2026-05-21 事故的近邻场景)。
 db_path = "/var/lib/nanotun/nanotun.db"
 
-[admin]
-# 管理后台 Web UI 的占位配置:当前由 nanotun-admin CLI 直接读 SQLite,
-# Web 后台留待后续里程碑(M2)落地,enabled 暂时保持 false。
-enabled = false
-listen_addr = ":8443"
-tls_cert_file = "certs/admin-cert.pem"
-tls_key_file = "certs/admin-key.pem"
+# [admin] 段已废弃,故意不再出现在模板里。
+#
+# 它曾经是「管理后台 Web UI」的占位配置,但那个里程碑最终由独立的 nanotun-web
+# 落地(默认 7443,证书是 certs/cert.pem,由 nanotun-web 自己按需自签),没有任何
+# 代码读 [admin]。config.AdminConfig 结构体仍保留,只为让老机器上已有的 [admin]
+# 段通过 strict 校验 —— 见 config/config.go 的注释。
+#
+# 所以:写 enabled = true 不会启动任何监听,tls_cert_file 指向的证书也不会被生成
+# 或加载。别指望它,那是个静默的空操作。老配置里留着这一段无害,可以直接删掉。

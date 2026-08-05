@@ -105,8 +105,13 @@ type StoreConfig struct {
 	DBPath string `toml:"db_path"`
 }
 
-// AdminConfig 是管理后台 HTTP 服务的占位配置。M0 仅落库不启用，
-// 真正的 admin Web UI 在后续里程碑（M2）落地。
+// AdminConfig 已废弃：没有任何代码读它的字段，Enabled 置 true 也不会启动监听。
+// 管理后台最终由独立的 nanotun-web 落地（默认 7443，证书自己按需自签）。
+//
+// 保留本结构体的唯一理由是向后兼容：StrictCheck 用 DisallowUnknownFields，
+// 而 2026-08 之前装机的 config.toml 里都写着 [admin] 段。删掉字段会让那些机器
+// 的 `nanotun-admin config lint` 和 NANOTUN_CONFIG_STRICT=1 启动直接失败。
+// 模板 cmd/nanotund/config.toml 已不再生成这一段。
 type AdminConfig struct {
 	Enabled     bool   `toml:"enabled"`
 	ListenAddr  string `toml:"listen_addr"`
