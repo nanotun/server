@@ -133,9 +133,34 @@ step "3. 在调度机上跑 e2e($# 个参数)"
 printf '    日志同时落到 %s\n\n' "$LOG"
 
 START=$(date +%s)
+
+# 这一轮跑在 setsid 里、输出落到调度机本地的文件,我们只是 tail 回来看。
+#
+# 直接 `ssh … ./run.sh` 看着简单得多,但那样这轮的命运就绑死在这条 SSH 连接上:
+# 连接一断(网络抖一下、本地 Ctrl-C、终端被关),run.sh 不会跟着停 —— 它变成孤儿
+# 继续跑到底,锁还攥在它手里,而它的 stdout 是一根没人读的管道。于是三件事同时发生:
+# 拿不到这轮的结果、起不了新的一轮、只能 ssh 上去手工找 pid 杀掉。
+# 2026-08-05 就这么丢过一轮:27 分钟的门禁跑完了,结果一个字都没留下。
+#
+# 落盘之后这些都不成立:连接断了重连 tail 就接着看,结果永远留在调度机上。
+REMOTE_LOG="$RUNNER_DIR/last-run.log"
+REMOTE_RC="$RUNNER_DIR/last-run.rc"
+REMOTE_PID="$RUNNER_DIR/last-run.pid"
+
 # 不开 -t:没有伪终端时 assert.sh 自己会关掉颜色,落进日志的就是干净的纯文本。
-rsh "cd '$RUNNER_DIR/scripts/e2e' && ./run.sh $*" 2>&1 | tee "$LOG"
-RC=${PIPESTATUS[0]}
+rsh "cd '$RUNNER_DIR/scripts/e2e' && rm -f '$REMOTE_RC' '$REMOTE_PID' && \
+     setsid nohup bash -c 'echo \$\$ > \"$REMOTE_PID\"; ./run.sh $*; echo \$? > \"$REMOTE_RC\"' \
+       > '$REMOTE_LOG' 2>&1 < /dev/null & sleep 2" >/dev/null 2>&1
+
+RUN_PID="$(rsh "cat '$REMOTE_PID' 2>/dev/null" | tr -d '\r[:space:]')"
+[[ "$RUN_PID" =~ ^[0-9]+$ ]] || die "没能在调度机上把 e2e 起来 —— 看看 $REMOTE_LOG"
+
+# --pid:那个进程一结束,tail 自己退出,不用猜要跟多久。
+rsh "tail -n +1 -f --pid=$RUN_PID '$REMOTE_LOG'" 2>&1 | tee "$LOG"
+
+# 退出码从文件读,不是从 tail 读 —— tail 成功地跟完了日志,跟这轮红没红是两回事。
+RC="$(rsh "cat '$REMOTE_RC' 2>/dev/null" | tr -d '\r[:space:]')"
+[[ "$RC" =~ ^[0-9]+$ ]] || RC=2
 SECS=$(( $(date +%s) - START ))
 
 printf '\n'
@@ -148,4 +173,7 @@ case "$RC" in
   2) warn "退出码 2 = 环境或配置问题,红绿都不可信,别拿这轮去盖戳。" ;;
   *) warn "有断言失败,详见上面或 ${LOG}。" ;;
 esac
+
+# 本地这份是 tee 出来的副本,调度机上那份才是原件 —— 中途断线时它照样是全的。
+printf '\n    调度机上的原始日志:%s@%s:%s\n' "$RUNNER_USER" "$RUNNER_HOST" "$REMOTE_LOG"
 exit "$RC"
