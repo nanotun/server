@@ -490,12 +490,27 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
             warn "这是它**唯一**一次出现(没给 NANOTUN_WEB_ADMIN_PASSWORD,所以是随机生成的)。"
           fi
         else
-          # 「/setup 仍然敞着」只在一个管理员都没有时成立。库里已经有人时那扇门早关了,
-          # 这次失败的只是「再加一个账号」—— 说成安全敞口是吓唬人。
+          # 无人值守下这里必须**当场失败**,不能只警告一句就往下走。
+          #
+          # 调用方明确点了 --web-admin,却没建成(密码太弱、名字不合法……)。原来是
+          # warn 完继续,整条命令以 0 收场 —— 而 cloud-init / CI / Ansible 只看退出码:
+          # 它们看到「成功」就往下走人了,可这台机器一个管理员都没有,/setup 对任何
+          # 找到它的人敞着,谁先打开谁就是管理员。这正是 --web-admin 存在的理由,
+          # 却在最需要它的无人值守场景里被一句警告吞掉了。
+          # 实测:NANOTUN_WEB_ADMIN_PASSWORD='123' + --web-admin ops + --yes
+          # → 屏幕上一句「密码至少 12 位」,webadmin 列表为空,退出码 0。
+          #
+          # 交互模式不走这条(人就在屏幕前,看得见那句警告,下面还会让他重输)。
+          # 重名也不走这条:同名账号在上面就被「已存在,跳过」接住了,幂等重跑不受影响。
           if [ "${WEB_ADMIN_COUNT:-0}" = 0 ]; then
-            warn "建 Web 管理员失败(原因见上一行)。/setup 仍然敞着,处理完记得补上。"
+            die "建 Web 管理员失败(原因见上一行)。--yes 是无人值守,这里不能装作没事:
+   现在这台机器一个管理员都没有,/setup 谁先打开谁就是管理员。
+   改好 NANOTUN_WEB_ADMIN_PASSWORD(12 位起、至少两类字符)重跑本命令,或者手工补:
+     nanotun-admin --db-path $DB webadmin create <名字>"
           else
-            warn "建 Web 管理员失败(原因见上一行)。原有的管理员不受影响。"
+            die "建 Web 管理员失败(原因见上一行)。--yes 是无人值守,这里不能装作没事:
+   原有的管理员不受影响,但你要的这个账号没建成。改好密码重跑,或手工补:
+     nanotun-admin --db-path $DB webadmin create <名字>"
           fi
         fi
       fi
@@ -510,12 +525,16 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
         # 换成 webadmin 之类只是把别扭挪个地方),用一句话把它钉住。
         [ -n "$web_admin_user" ] || web_admin_user="$(ask "后台用户名(新账号,跟 VPN 那个 admin 无关)" "admin")"
 
-        if [ -n "$web_admin_pass" ]; then
+        if [ -n "$web_admin_pass" ] && wa_create "$web_admin_user" "$web_admin_pass"; then
           # 名字和密码都已经给全了(环境变量),即便没带 --yes 也不必再问一遍 ——
           # 交互只该问那些还没有答案的问题。
-          wa_create "$web_admin_user" "$web_admin_pass" || \
-            warn "建 Web 管理员失败(原因见上一行)。改好 NANOTUN_WEB_ADMIN_PASSWORD 再跑一次。"
+          :
         else
+          # 环境变量里那个密码没通过校验。原来到此为止,只留一句「改好再跑一次」——
+          # 可人就坐在屏幕前,而下面正好有一个现成的交互输入。让他当场重输一个就行,
+          # 没道理为了一个打错的环境变量把整个向导作废、还把 /setup 继续敞着。
+          [ -z "$web_admin_pass" ] || \
+            warn "NANOTUN_WEB_ADMIN_PASSWORD 没通过校验(原因见上一行),改成现在手输。"
           # 密码不走 ask():它会回显。这里两遍隐藏输入,交给 CLI 自己校验强度
           # (与网页 /setup 同一套判据,12 位起、至少两类字符)。
           while true; do
