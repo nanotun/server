@@ -496,6 +496,10 @@ SUBCOMMANDS
   lease set <device_id> [--v4 IP] [--v6 IP] [--manual]  手动指派 lease（管理员钉死）
   audit list [--since DURATION] [--limit N] [--action ACTION]
                                                 列出最近的审计日志(--action 精确过滤,例:user_reset_psk / login.fail.bad_psk)
+  webadmin create <username> [--role admin|viewer] [--password-stdin]
+                                                建 Web 后台管理员(浏览器登录用,与 VPN 账号是两套)。
+                                                密码走终端提问 / 管道 / env NANOTUN_WEB_ADMIN_PASSWORD,不收命令行参数
+  webadmin list                                 列出 Web 后台管理员
   acl list                                      列出 ACL 规则
   acl allow <src_user> <dst_user>               新增 allow 规则
   acl deny  <src_user> <dst_user>               新增 deny 规则
@@ -571,6 +575,10 @@ SUBCOMMANDS
   lease set <device_id> [--v4 IP] [--v6 IP] [--manual]  manually assign a lease (admin-pinned)
   audit list [--since DURATION] [--limit N] [--action ACTION]
                                                 list recent audit logs (--action filters exactly, e.g. user_reset_psk / login.fail.bad_psk)
+  webadmin create <username> [--role admin|viewer] [--password-stdin]
+                                                create a web console admin (browser login; separate from VPN accounts).
+                                                Password comes from the terminal, a pipe, or env NANOTUN_WEB_ADMIN_PASSWORD — never from argv
+  webadmin list                                 list web console admins
   acl list                                      list ACL rules
   acl allow <src_user> <dst_user>               add an allow rule
   acl deny  <src_user> <dst_user>               add a deny rule

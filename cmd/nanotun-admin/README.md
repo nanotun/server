@@ -59,6 +59,30 @@ PSK 仅在本次输出里出现一次，请立刻把它录入客户端。
 
 > 之后把 `cmd/nanotund/config.toml` 里 `[store].db_path` 改成 `/var/lib/nanotun/nanotun.db` 并重启 nanotun 即可(目前 PSK 是唯一认证模式,不需要额外开关)。
 
+### Web 后台管理员
+
+跟上面那个是**两套东西**:`init` 建的是 VPN 账号(客户端拿 PSK 登录),这里建的是浏览器
+登录 nanotun-web 用的。
+
+```bash
+nanotun-admin webadmin create ops        # 提示输两遍密码,不回显
+nanotun-admin webadmin list
+```
+
+装机时通常不用手敲 —— 开服向导(`nanotun-setup`)会问这一步。**建好之前**,`/setup`
+页面对全网公开:谁先打开谁就是管理员。建成之后它自动 302 到登录页,不需要额外开关。
+
+密码不收命令行参数(argv 对同机所有用户可见,还会落进 shell history)。脚本里这么给:
+
+```bash
+printf '%s' "$PW" | nanotun-admin webadmin create ops --password-stdin
+NANOTUN_WEB_ADMIN_PASSWORD="$PW" nanotun-admin webadmin create ops
+```
+
+规则与网页改密同一套(`auth.CheckWebPassword`):12 位起、至多 256 位、不含换行 / TAB /
+NUL、数字与字母与符号至少占两类。首位管理员一律 `admin` 角色 —— 若是 `viewer`,表一非空
+`/setup` 就永久关闭,没人能提权,整个控制台被锁成只读。
+
 ### 用户管理
 
 ```bash
