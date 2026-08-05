@@ -180,6 +180,32 @@ func TestPoWE2E_TamperedSignature(t *testing.T) {
 	}
 }
 
+// powNonceThatFails 找一个**确实**不满足难度的 nonce。
+//
+// 原来这里直接写 pow.Nonce = 0,注释说「8-bit 难度下 nonce=0 极不可能满足」。可
+// 「极不可能」是 1/256 —— salt 每次随机,跑得够多就会撞上,那一次 server 正常放行,
+// 测试报的却是 `typ=2 want LinkTypeClose`。这种失败最难查:日志里哪一行都没错,
+// 重跑又是绿的,于是只会被当成「CI 又抽风了」重跑掉,直到某天它挡在发版路上
+// (2026-08-05 就是这么挡的一次)。
+//
+// 概率换成搜索:从 0 往上找第一个验不过的,第一次命中的概率就是 255/256。
+func powNonceThatFails(t *testing.T, pow util.LoginReqPoW) uint64 {
+	t.Helper()
+	salt, err := base64StdDecode(pow.Salt)
+	if err != nil {
+		t.Fatalf("salt decode: %v", err)
+	}
+	for nonce := uint64(0); nonce < 1024; nonce++ {
+		if !powVerify(pow.ChallengeID, salt, pow.Difficulty, nonce) {
+			return nonce
+		}
+	}
+	// 连着 1024 个 nonce 全都满足难度,只可能是难度校验退化成了恒真 —— 那样这条
+	// 测试即便「通过」也毫无意义,不如在这里就喊出来。
+	t.Fatalf("找不到验不过的 nonce(difficulty=%d)—— 难度校验疑似恒真", pow.Difficulty)
+	return 0
+}
+
 // TestPoWE2E_BadNonce:**nonce 不满足难度的 PoW 被拒**。
 //
 // HMAC 签名对的情况下,server 还要做数学校验(SHA256 前导零比特数 ≥ difficulty)。
@@ -190,7 +216,7 @@ func TestPoWE2E_BadNonce(t *testing.T) {
 	clientEnd, _ := startHandlePipe(t, gw)
 
 	pow := runClientPoWHandshake(t, clientEnd)
-	pow.Nonce = 0 // 难度 8-bit,nonce=0 极不可能满足。
+	pow.Nonce = powNonceThatFails(t, pow)
 
 	body, _ := marshalLoginReqWithPoW(
 		"alice", "hunter2",

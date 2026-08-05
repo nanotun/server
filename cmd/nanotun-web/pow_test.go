@@ -289,18 +289,25 @@ func TestVerifyProof_Expired(t *testing.T) {
 
 func TestVerifyProof_InvalidNonce(t *testing.T) {
 	s := newPoWTestService()
-	c, _ := s.IssueChallenge(8) // 8-bit 让随便一个 nonce 大概率不合法
+	c, _ := s.IssueChallenge(8)
 	p := PoWProof{
 		ChallengeID: c.ChallengeID, Salt: c.Salt, Difficulty: c.Difficulty,
-		ExpiresAt: c.ExpiresAt, Signature: c.Signature, Nonce: 0, // 大概率不合法
+		ExpiresAt: c.ExpiresAt, Signature: c.Signature,
 	}
-	err := s.VerifyPoWProof(p, c.Difficulty)
-	// 0 也可能恰好合法(1/256 概率),那就换个 nonce
-	if err == nil {
-		t.Skip("nonce=0 happened to be valid, skip(rare)")
-	}
-	if !errors.Is(err, ErrPoWInvalid) {
-		t.Fatalf("invalid nonce: want ErrPoWInvalid, got %v", err)
+	// 原来固定 Nonce: 0,撞上「恰好合法」(8-bit 下 1/256)就 t.Skip 掉。跳过意味着这条
+	// 断言时不时根本没跑,而 skip 在一片 ok 里没人会去看 —— 校验哪天退化成恒真,这里
+	// 也只会以「偶尔跳过」的样子存在。改成往上找第一个验不过的 nonce,每次都真的验一遍。
+	for nonce := uint64(0); ; nonce++ {
+		if nonce >= 1024 {
+			t.Fatalf("找不到验不过的 nonce(difficulty=%d)—— 难度校验疑似恒真", c.Difficulty)
+		}
+		p.Nonce = nonce
+		if err := s.VerifyPoWProof(p, c.Difficulty); err != nil {
+			if !errors.Is(err, ErrPoWInvalid) {
+				t.Fatalf("invalid nonce: want ErrPoWInvalid, got %v", err)
+			}
+			break
+		}
 	}
 }
 
