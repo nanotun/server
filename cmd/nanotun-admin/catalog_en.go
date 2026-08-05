@@ -453,6 +453,8 @@ var catEN = map[string]string{
 	// ===== webadmin (web console administrators) =====
 	"webadmin.flag.role":          "role: admin (full) or viewer (read-only); the first admin is always admin",
 	"webadmin.flag.passwordStdin": "read the password from stdin (for scripts/pipes; never in argv, invisible to ps)",
+	"webadmin.badRole":            "--role must be admin or viewer, got %s",
+	"webadmin.firstRoleForced":    "(you asked for --role %s, but the first admin is always admin — a read-only first admin would permanently close /setup with nobody able to escalate, locking the whole console)",
 	"webadmin.usernameMin3":       "username must be at least 3 characters",
 	"webadmin.created":            "web admin created: id=%d username=%s role=%s",
 	"webadmin.setupClosedNote":    "This is the first admin — /setup now closes itself (it redirects to the login page). No extra switch needed.",

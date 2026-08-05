@@ -69,6 +69,17 @@ func cmdWebAdminCreate(ctx context.Context, st *store.Store, opts *globalOpts, a
 		return newLocErr("webadmin.usernameMin3")
 	}
 
+	// 角色在这里先验一道,而不是留给 DAL。两条写入路径对同一个错值的反应本来是不一样的:
+	// CreateWebAdmin 会拒(`invalid web admin role "superuser"`),而 CreateFirstWebAdmin
+	// 压根不看这个字段(首位强制 admin)—— 于是同一条打错的命令,在有管理员的机器上报错,
+	// 在全新机器上一声不吭地建成 admin。而全新机器恰恰是这条命令最常用的场合:装机时
+	// 打错一个词,不但没人拦,还会以为自己建的是只读账号。
+	switch *role {
+	case "admin", "viewer":
+	default:
+		return newLocErr("webadmin.badRole", *role)
+	}
+
 	password, err := readWebAdminPassword(opts, *pwStdin)
 	if err != nil {
 		return err
@@ -118,6 +129,13 @@ func cmdWebAdminCreate(ctx context.Context, st *store.Store, opts *globalOpts, a
 		})
 	}
 	fmt.Fprintf(opts.stdout, opts.T("webadmin.created")+"\n", admin.ID, admin.Username, admin.Role)
+	// 要了 viewer 却拿到 admin,必须当场说破。首位强制 admin 是 DAL 的硬规矩(首位若是
+	// viewer,表一非空 /setup 就永久关闭,没人能提权,整个控制台锁成只读),但对着屏幕的人
+	// 只会看到自己写了 viewer、上面那行印着 admin —— 不解释一句,他要么以为命令没生效,
+	// 要么以为自己建了个只读账号,然后拿它去做只有 admin 能做的事。
+	if n == 0 && *role != admin.Role {
+		fmt.Fprintf(opts.stdout, opts.T("webadmin.firstRoleForced")+"\n", *role)
+	}
 	if n == 0 {
 		// 首位建成之后 /setup 会自己 302 到 /login(handler 查 CountWebAdmins),
 		// 不需要再动配置。明说一句,免得有人以为还得手工关。

@@ -449,6 +449,8 @@ var catZH = map[string]string{
 	// ===== webadmin(Web 后台管理员)=====
 	"webadmin.flag.role":          "角色:admin(全权)或 viewer(只读);首位管理员一律 admin",
 	"webadmin.flag.passwordStdin": "从标准输入读密码(脚本 / 管道用;不进 argv,ps 看不到)",
+	"webadmin.badRole":            "--role 只能是 admin 或 viewer,得到 %s",
+	"webadmin.firstRoleForced":    "(要的是 --role %s,但首位管理员一律 admin —— 首位若是只读,表一非空 /setup 就永久关闭,再没人能提权,整个控制台锁死)",
 	"webadmin.usernameMin3":       "用户名至少 3 个字符",
 	"webadmin.created":            "Web 后台管理员已创建:id=%d username=%s role=%s",
 	"webadmin.setupClosedNote":    "这是首位管理员 —— /setup 抢占页从此自动关闭(再打开会跳到登录页),不需要另外设开关。",

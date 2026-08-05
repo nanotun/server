@@ -194,8 +194,23 @@ latest_version() {
 }
 
 # ── 命令 ────────────────────────────────────────────────────────────────
+# 带了 --yes 就说明调用方要的是「一条命令装完」那条路 —— 向导不需要人守着,该让它真跑一遍。
+#
+# 原来 install 一律硬加 --no-setup,理由是「向导要交互」。可用户实际打的那条命令
+# (curl … | sudo bash -s -- --dial-host X --web-admin ops --yes)恰恰是向导也一起跑的,
+# 于是这个测试台从来没覆盖过它 —— 装完那半段测得很熟,开服那半段一次都没走过。
+wants_wizard() {
+  local a
+  for a in ${PASS[@]+"${PASS[@]}"}; do
+    case "$a" in -y|--yes) return 0 ;; --no-setup) return 1 ;; esac
+  done
+  return 1
+}
+
 cmd_install() {
   need_up
+  local WIZARD=0
+  wants_wizard && WIZARD=1
   if [ "$LOCAL" = 1 ]; then
     local arch ver pkg
     arch="$(docker exec "$NAME" uname -m)"
@@ -213,10 +228,20 @@ cmd_install() {
     docker cp "$pkg" "$NAME:/var/tmp/nanotun-pkg.tar.gz"
     # 走 install-self-hosted.sh 而不是 install.sh:后者的职责是「把包从网上弄下来」,
     # 包已经在本地了就没它的事。真正动系统的逻辑全在前者,测的也正是它。
+    #
+    # 要跑向导时,透传的参数一个都不给安装脚本 —— 这与 install.sh 的分工一致:
+    # 它自己只认 --check-only / --skip-check / --no-setup,其余原样交给向导。
+    local inst_args=""
+    [ "$WIZARD" = 1 ] || inst_args="$(passq)"
     dex "$NAME" bash -c "set -e
       mkdir -p /opt/nanotun && tar -xzf /var/tmp/nanotun-pkg.tar.gz -C /opt/nanotun && rm -f /var/tmp/nanotun-pkg.tar.gz
       cd /opt/nanotun/nanotun-${ver}-linux-${arch}
-      ./scripts/install-self-hosted.sh $(passq)"
+      ./scripts/install-self-hosted.sh ${inst_args}"
+    if [ "$WIZARD" = 1 ]; then
+      echo
+      step "接着跑开服向导(用户那条一行命令的后半段)"
+      cmd_setup
+    fi
   else
     local ver="$VERSION"
     if [ -z "$ver" ]; then
@@ -225,11 +250,20 @@ cmd_install() {
       ok "未指定版本,取到最新的 ${ver}(含预发布)"
     fi
     step "在容器里跑 install.sh(和用户看到的是同一条命令)"
-    # --no-setup:向导要交互。装完接着 `lab.sh setup` 进去,或 `lab.sh setup -y --dial-host ...`。
-    dex -e "NANOTUN_VERSION=${ver}" "$NAME" bash -c \
-      "curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh | bash -s -- --no-setup $(passq)"
+    # 带了 --yes 就连向导一起跑,一步不拆 —— 那才是用户真打的那条命令。没带的话仍加
+    # --no-setup:交互式向导要人守着,docker exec 这边没有终端。
+    local no_setup="--no-setup"
+    local envs=(-e "NANOTUN_VERSION=${ver}")
+    if [ "$WIZARD" = 1 ]; then
+      no_setup=""
+      # 向导那边的密码只走环境变量(setup.sh 故意不收命令行参数,理由见那边注释),
+      # 而 docker exec 不继承宿主环境 —— 不显式带进去,--web-admin 这条路就测不到。
+      [ -n "${NANOTUN_WEB_ADMIN_PASSWORD:-}" ] && envs+=(-e "NANOTUN_WEB_ADMIN_PASSWORD=${NANOTUN_WEB_ADMIN_PASSWORD}")
+    fi
+    dex "${envs[@]}" "$NAME" bash -c \
+      "curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh | bash -s -- ${no_setup} $(passq)"
     echo
-    ok "接着跑开服向导:$0 setup       (非交互:$0 setup -y --dial-host 127.0.0.1)"
+    [ "$WIZARD" = 1 ] || ok "接着跑开服向导:$0 setup       (非交互:$0 setup -y --dial-host 127.0.0.1)"
   fi
 }
 

@@ -84,14 +84,27 @@ nanotun 开服向导:设置客户端拨号地址、创建 Web 后台管理员、
 EOF
 }
 
+# need_val <参数名> <值> —— 取值,没给就当场说清楚。
+#
+# 原来这几个带值的参数一律 `OPT_X="${2:-}"; shift 2`。少打一个值(`--user` 结尾、
+# 或者 `--web-admin` 后面忘了名字)时,shift 2 在只剩一个参数时返回非零,撞上 set -e
+# 就地退出 —— 退出码 1,**屏幕上一个字都没有**。人看到的是「什么都没发生」,
+# 而真正的原因是自己少打了一个词。
+need_val() {
+  case "${2:-}" in
+    ''|-*) die "$1 后面要跟一个值。例:$1 <值>" ;;
+  esac
+  printf '%s' "$2"
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dial-host) OPT_DIAL_HOST="${2:-}"; shift 2 ;;
-    --user)      OPT_USER="${2:-}"; shift 2 ;;
+    --dial-host) OPT_DIAL_HOST="$(need_val "$1" "${2:-}")"; shift 2 ;;
+    --user)      OPT_USER="$(need_val "$1" "${2:-}")"; shift 2 ;;
     --no-user)   OPT_NO_USER=1; shift ;;
     # 密码只从环境变量 NANOTUN_WEB_ADMIN_PASSWORD 读,故意**不做** --web-admin-password:
     # 命令行参数会进 argv,同机任何用户 ps 一眼就看见,还会落进 shell history 和 journal。
-    --web-admin) OPT_WEB_ADMIN="${2:-}"; shift 2 ;;
+    --web-admin) OPT_WEB_ADMIN="$(need_val "$1" "${2:-}")"; shift 2 ;;
     -y|--yes)    ASSUME_YES=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     # 点名是谁在说话:install.sh 会把自己不认得的参数原样转交本向导,所以这行
@@ -124,8 +137,14 @@ confirm() { # confirm <提示> [y|n 默认]
   while true; do
     printf '    %s [%s]: ' "$prompt" "$hint" >&2
     IFS= read -r reply || die "输入意外结束(stdin EOF),向导中止。"
-    reply="$(printf '%s' "${reply:-$def}" | tr '[:upper:]' '[:lower:]')"
+    # 先去空白再判空:答 "y " 或从别处粘进来带 \r 的都该算数,而只敲了个空格
+    # 应当与直接回车同义(人的本意就是「用默认的」)。
+    reply="$(printf '%s' "$reply" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    [ -n "$reply" ] || reply="$def"
     case "$reply" in y|yes) return 0 ;; n|no) return 1 ;; esac
+    # 不认识的答案原样重问,屏幕上就只是同一句话又出现一遍 —— 没人知道是自己答错了
+    # 还是终端卡住了(实测连问七遍的样子和死循环没有区别)。说破再问。
+    printf '    %s! 不认识「%s」,只能答 y 或 n(直接回车 = %s)%s\n' "$C_WARN" "$reply" "$def" "$C_OFF" >&2
   done
 }
 
@@ -370,16 +389,48 @@ done
 # ── 2. Web 后台管理员 ────────────────────────────────────────────────────────
 step "2. Web 后台管理员"
 
+# wa_create <用户名> <密码> —— 建后台管理员,把 CLI 的输出补上向导的缩进再打。
+#
+# 捕获再打而不是让 CLI 直接写屏:它的输出顶格,夹在向导四格缩进的正文里会像是另一个
+# 程序插了句嘴。内容照原样,只补缩进 —— 失败时那几行(太短 / 字符类不够 / 重名)正是
+# 人要照着改的依据,不能吞。
+#
+# 密码经管道进 CLI,不进 argv:同机任何用户 ps 都看得见 argv。
+wa_create() {
+  local out
+  if out="$(printf '%s' "$2" | admin webadmin create "$1" --password-stdin 2>&1)"; then
+    printf '%s\n' "$out" | sed 's/^/    /'
+    return 0
+  fi
+  printf '%s\n' "$out" | sed 's/^/    /'
+  return 1
+}
+
 if [ "$WEB_AVAILABLE" = 1 ]; then
   note "注意这跟 VPN 账号是**两套东西**,最容易搞混的一步:"
   note "  · VPN 用户 + PSK  —— 客户端登录用,安装时已建了一个 admin"
   note "  · Web 后台管理员  —— 浏览器登录用,用户名和密码现在就定下来"
   printf '\n'
 
-  # 已经有管理员就什么都别做。重跑向导是常事(加用户、改拨号地址),这一步不该
-  # 每次都来问一遍,更不该给人「是不是要再建一个」的错觉。
-  WEB_ADMIN_COUNT="$(admin webadmin list 2>/dev/null | awk 'NR>1 && NF' | wc -l | tr -d '[:space:]')" || WEB_ADMIN_COUNT=0
-  if [ "${WEB_ADMIN_COUNT:-0}" -gt 0 ]; then
+  # 重跑向导是常事(加用户、改拨号地址),已经有管理员时不该每次都来问一遍。但「跳过」
+  # 只在**没人点名**时才对:给了 --web-admin bob 却因为库里已经有个 ops 就整段跳过,
+  # 等于把一个明确的指令悄悄吞掉 —— 而屏幕上还打着绿勾说「跳过」,重跑安装命令换了个
+  # 后台名字的人会以为 bob 建好了,直到登录时才发现根本没这个账号。
+  #
+  # 所以分三种情况:点名的那个已经在了 → 跳过(幂等,cloud-init 重试会走到这);
+  # 点名了但还没有 → 建(这正是被要求的事);没点名且已有人 → 跳过。
+  WEB_ADMIN_LIST="$(admin webadmin list 2>/dev/null || true)"
+  WEB_ADMIN_COUNT="$(printf '%s\n' "$WEB_ADMIN_LIST" | awk 'NR>1 && NF' | wc -l | tr -d '[:space:]')"
+  WEB_ADMIN_NAMED_EXISTS=0
+  if [ -n "$OPT_WEB_ADMIN" ] && printf '%s\n' "$WEB_ADMIN_LIST" | awk 'NR>1 && NF {print $2}' \
+       | grep -qix -- "$OPT_WEB_ADMIN"; then
+    WEB_ADMIN_NAMED_EXISTS=1     # 大小写不敏感 —— 与库里的去重口径一致
+  fi
+
+  if [ "$WEB_ADMIN_NAMED_EXISTS" = 1 ]; then
+    ok "Web 后台管理员 $OPT_WEB_ADMIN 已存在,跳过。"
+    note "  登录: https://$current_dial:$WEB_PORT/"
+  elif [ "${WEB_ADMIN_COUNT:-0}" -gt 0 ] && [ -z "$OPT_WEB_ADMIN" ]; then
     ok "已有 $WEB_ADMIN_COUNT 个 Web 后台管理员,跳过。"
     note "  登录: https://$current_dial:$WEB_PORT/"
     note "  看都有谁: nanotun-admin --db-path $DB webadmin list"
@@ -388,8 +439,13 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
     # /setup 在第一个管理员出现之前对全网公开,谁先打开谁就是管理员。装完到人想起来
     # 开浏览器之间的这段时间,这台机器的后台控制权是先到先得的(captcha + 自适应 PoW
     # 只是减速带)。当场把它建掉,窗口就是零。
-    warn "现在不建的话,/setup 会一直敞着 —— 谁先打开谁就是管理员。"
-    printf '\n'
+    #
+    # 只在真的一个管理员都没有时说这句。库里已经有人时 /setup 早就关了,再喊一遍
+    # 「敞着」是假警报 —— 而这段代码的全部意义就是让人认真对待这一句。
+    if [ "${WEB_ADMIN_COUNT:-0}" = 0 ]; then
+      warn "现在不建的话,/setup 会一直敞着 —— 谁先打开谁就是管理员。"
+      printf '\n'
+    fi
 
     web_admin_user="$OPT_WEB_ADMIN"
     web_admin_pass="${NANOTUN_WEB_ADMIN_PASSWORD:-}"
@@ -417,50 +473,58 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
           web_admin_pass="$(head -c 4096 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | cut -c1-24)-$(head -c 256 /dev/urandom | LC_ALL=C tr -dc '0-9' | cut -c1-4)"
           WEB_ADMIN_PASS_GENERATED=1
         fi
-        # 捕获再打,而不是让 CLI 直接写屏:它的输出顶格,夹在向导四格缩进的正文里
-        # 会像是另一个程序插了句嘴。内容照原样,只补缩进。
-        if wa_out="$(printf '%s' "$web_admin_pass" | admin webadmin create "$web_admin_user" --password-stdin 2>&1)"; then
-          printf '%s\n' "$wa_out" | sed 's/^/    /'
+        if wa_create "$web_admin_user" "$web_admin_pass"; then
           if [ "${WEB_ADMIN_PASS_GENERATED:-0}" = 1 ]; then
             printf '\n'
             printf '    %sWeb 后台密码:%s%s\n' "$C_WARN" "$web_admin_pass" "$C_OFF"
             warn "这是它**唯一**一次出现(没给 NANOTUN_WEB_ADMIN_PASSWORD,所以是随机生成的)。"
           fi
         else
-          printf '%s\n' "$wa_out" | sed 's/^/    /'
-          warn "建 Web 管理员失败(原因见上一行)。/setup 仍然敞着,处理完记得补上。"
+          # 「/setup 仍然敞着」只在一个管理员都没有时成立。库里已经有人时那扇门早关了,
+          # 这次失败的只是「再加一个账号」—— 说成安全敞口是吓唬人。
+          if [ "${WEB_ADMIN_COUNT:-0}" = 0 ]; then
+            warn "建 Web 管理员失败(原因见上一行)。/setup 仍然敞着,处理完记得补上。"
+          else
+            warn "建 Web 管理员失败(原因见上一行)。原有的管理员不受影响。"
+          fi
         fi
       fi
     else
-      if confirm "现在就把 Web 后台管理员定下来?" y; then
+      # 名字是命令行点名给的,就别再问「要不要建」—— 那个问题已经被回答过了。
+      # (原来无条件问,于是 `--web-admin ops` 不带 --yes 时还会被问一遍,答 n 就把
+      #  明确的指令否掉了。)
+      if [ -n "$web_admin_user" ] || confirm "现在就把 Web 后台管理员定下来?" y; then
         # 提示里点明「新账号」:这一步开场白刚说完「VPN 账号和后台是两套东西」,而安装时
         # 建的那个 VPN 用户恰好也叫 admin —— 默认值一撞名,人很容易以为这是在给同一个
         # 账号补个密码,刚讲清楚的区分当场又糊掉了。默认值仍留 admin(后台就该叫这个,
         # 换成 webadmin 之类只是把别扭挪个地方),用一句话把它钉住。
         [ -n "$web_admin_user" ] || web_admin_user="$(ask "后台用户名(新账号,跟 VPN 那个 admin 无关)" "admin")"
-        # 密码不走 ask():它会回显。这里两遍隐藏输入,交给 CLI 自己校验强度
-        # (与网页 /setup 同一套判据,12 位起、至少两类字符)。
-        while true; do
-          printf '    后台密码(至少 12 位,不回显): ' >&2
-          IFS= read -rs web_admin_pass || die "输入意外结束(stdin EOF),向导中止。"
-          printf '\n' >&2
-          printf '    再输一遍: ' >&2
-          IFS= read -rs web_admin_pass2 || die "输入意外结束(stdin EOF),向导中止。"
-          printf '\n' >&2
-          if [ "$web_admin_pass" != "$web_admin_pass2" ]; then
-            warn "两次输入不一致,重来。"
-            continue
-          fi
-          # 密码经管道进 CLI,不进 argv —— 同机任何用户 ps 都看不到。
-          if wa_out="$(printf '%s' "$web_admin_pass" | admin webadmin create "$web_admin_user" --password-stdin 2>&1)"; then
-            printf '%s\n' "$wa_out" | sed 's/^/    /'
-            break
-          fi
-          # 失败的理由 CLI 已经说了(太短 / 字符类不够 / 重名)。原样转述再回去重来,
-          # 不退出向导:这一步退出等于把 /setup 继续敞着,而人多半不会再跑一遍。
-          printf '%s\n' "$wa_out" | sed 's/^/    /'
-          warn "换一个再试。"
-        done
+
+        if [ -n "$web_admin_pass" ]; then
+          # 名字和密码都已经给全了(环境变量),即便没带 --yes 也不必再问一遍 ——
+          # 交互只该问那些还没有答案的问题。
+          wa_create "$web_admin_user" "$web_admin_pass" || \
+            warn "建 Web 管理员失败(原因见上一行)。改好 NANOTUN_WEB_ADMIN_PASSWORD 再跑一次。"
+        else
+          # 密码不走 ask():它会回显。这里两遍隐藏输入,交给 CLI 自己校验强度
+          # (与网页 /setup 同一套判据,12 位起、至少两类字符)。
+          while true; do
+            printf '    后台密码(至少 12 位,不回显): ' >&2
+            IFS= read -rs web_admin_pass || die "输入意外结束(stdin EOF),向导中止。"
+            printf '\n' >&2
+            printf '    再输一遍: ' >&2
+            IFS= read -rs web_admin_pass2 || die "输入意外结束(stdin EOF),向导中止。"
+            printf '\n' >&2
+            if [ "$web_admin_pass" != "$web_admin_pass2" ]; then
+              warn "两次输入不一致,重来。"
+              continue
+            fi
+            wa_create "$web_admin_user" "$web_admin_pass" && break
+            # 失败的理由 CLI 已经说了(太短 / 字符类不够 / 重名)。回去重来,不退出向导:
+            # 这一步退出等于把 /setup 继续敞着,而人多半不会再跑一遍。
+            warn "换一个再试。"
+          done
+        fi
         unset web_admin_pass web_admin_pass2
         note "登录: https://$current_dial:$WEB_PORT/(自签证书,浏览器会警告,确认地址无误后继续)"
       else
@@ -472,6 +536,9 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
   fi
 else
   note "未安装 Web 后台。用户管理全部走命令行:nanotun-admin --db-path $DB ..."
+  # 给了 --web-admin 却没装后台:那个参数这一趟什么都没做。不说的话,人会以为账号建好了
+  # (上面那句只解释「没有后台」,没说「你要的账号没建」——两件事,读的人不会自己接上)。
+  [ -n "$OPT_WEB_ADMIN" ] && warn "--web-admin $OPT_WEB_ADMIN 这次没生效:这台机器上没有 Web 后台,建了也没处登。"
 fi
 
 # ── 3. 首个 VPN 用户 + 二维码 ────────────────────────────────────────────────

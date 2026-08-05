@@ -131,6 +131,51 @@ func TestWebAdminCreate_RejectsWhatTheWebWouldAlsoReject(t *testing.T) {
 	}
 }
 
+// TestWebAdminCreate_BogusRoleIsRejectedOnEmptyTableToo:两条写入路径对同一个错值的反应
+// 本来不一样 —— CreateWebAdmin 会拒,而 CreateFirstWebAdmin 压根不看 role(首位强制 admin)。
+// 于是同一条打错的命令在有管理员的机器上报错、在全新机器上一声不吭地建成 admin,而全新
+// 机器恰恰是这条命令最常用的场合。两种情形必须给同一个答复。
+func TestWebAdminCreate_BogusRoleIsRejectedOnEmptyTableToo(t *testing.T) {
+	for _, tc := range []struct{ name, seed string }{
+		{"全新库(走首位路径)", ""},
+		{"已有管理员(走普通路径)", "alice"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := webadminDB(t)
+			if tc.seed != "" {
+				if code, _, e := runCLI(t, db, "Str0ng-Console-Pass", "webadmin", "create", tc.seed, "--password-stdin"); code != 0 {
+					t.Fatalf("seed: %s", e)
+				}
+			}
+			code, _, errOut := runCLI(t, db, "Str0ng-Console-Pass", "webadmin", "create", "bob",
+				"--role", "superuser", "--password-stdin")
+			if code == 0 {
+				t.Fatal("打错的 --role 被收下了")
+			}
+			if !strings.Contains(errOut, "admin") || !strings.Contains(errOut, "viewer") {
+				t.Fatalf("报错没说清合法值是哪些:%s", errOut)
+			}
+		})
+	}
+}
+
+// TestWebAdminCreate_FirstAdminSaysItOverrodeYourRole:首位强制 admin 是硬规矩,但屏幕前的人
+// 写的是 viewer、看到的是 admin。不解释一句,他要么以为命令没生效,要么以为手里是个只读账号。
+func TestWebAdminCreate_FirstAdminSaysItOverrodeYourRole(t *testing.T) {
+	db := webadminDB(t)
+	code, out, errOut := runCLI(t, db, "Str0ng-Console-Pass", "webadmin", "create", "alice",
+		"--role", "viewer", "--password-stdin")
+	if code != 0 {
+		t.Fatalf("create: %s", errOut)
+	}
+	if !strings.Contains(out, "viewer") {
+		t.Fatalf("没提到人要的是 viewer,他不会知道自己那个参数去哪了:%s", out)
+	}
+	if !strings.Contains(out, "role=admin") {
+		t.Fatalf("没说清最终建成的是 admin:%s", out)
+	}
+}
+
 func TestWebAdminCreate_DuplicateNameIsCaseInsensitive(t *testing.T) {
 	db := webadminDB(t)
 	if code, _, e := runCLI(t, db, "Str0ng-Console-Pass", "webadmin", "create", "alice", "--password-stdin"); code != 0 {
