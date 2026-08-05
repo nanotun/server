@@ -277,6 +277,10 @@ while :; do
   fi
 
   if [ -z "$dial_host" ]; then
+    # 这里是本循环唯一的「回到起点」汇合点,所以兜底放这儿:非交互下再问一遍必然
+    # 还是空值,continue 就是死循环。任何以后新增的 dial_host="" + continue 分支
+    # 都会撞上这一条,而不是把机器跑满。
+    [ "$ASSUME_YES" = 0 ] || die "拨号地址为空,--yes 下无法追问 —— 用 --dial-host 显式给一个。"
     warn "不能为空 —— 没有它客户端不知道往哪连,Web 后台也拒绝生成服务器二维码。"
     continue
   fi
@@ -333,6 +337,12 @@ while :; do
   # 域名 DNS 还没解析过来是很正常的(先开服、后改 DNS),那种值 setting set 是收的,
   # 所以那一问有意义,该留着。
   if ! printf '%s' "$probe_out" | head -1 | grep -q '✓'; then
+    # 非交互下**不能**退回去重问,理由与下面那段 --yes 分支完全一样:ask() 在 --yes
+    # 下立刻返回默认值,而全新机器上 current_dial 和 guess 都是空的,于是循环体判空、
+    # 打一句「不能为空」、continue,再问再空 —— 满 CPU 的死循环,不会自己停。
+    # (实测 40 秒刷了 230 万行 warn。原来只防了 ICMP 那条软失败的路,漏了这条。)
+    [ "$ASSUME_YES" = 0 ] \
+      || die "--dial-host 给的值语法不合格(判词见上),写进去也会被拒 —— 换个地址重跑。"
     warn "这个值语法就不合格,写进去也会被拒 —— 换一个再试。"
     dial_host=""
     OPT_DIAL_HOST=""
