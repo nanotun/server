@@ -43,6 +43,11 @@ git rev-parse HEAD  # 记下来
 set -a && . scripts/e2e/e2e.env && set +a
 ./scripts/e2e/run.sh 00 10 20 30 40 50 60 70
 
+#    配了调度机的话改用 run-remote.sh:同样的断言,27 分钟而不是 47 分钟(差的全是
+#    网络往返,详见 scripts/e2e/README.md)。它会强制把调度机对齐到本地 HEAD,
+#    否则戳会盖在一个「没跑过 e2e」的 commit 上,而戳里只有一个 SHA,事后查不出来。
+./scripts/e2e/run-remote.sh 00 10 20 30 40 50 60 70
+
 # 2) 盖戳:把「刚跑过 e2e 的 commit」写进本地文件(不进 git)
 ./scripts/release/stamp-e2e.sh
 
