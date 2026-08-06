@@ -223,8 +223,8 @@ func (s *Store) CreateUser(ctx context.Context, in NewUser) (*User, error) {
 	// 第四轮深扫 MED(store #4/#15):用户名首尾空白**入库前统一裁剪**。此前 " alice " 会原样入库,与 "alice"
 	// 表面同名却被 BINARY UNIQUE 视作不同行 → 登录 / 展示歧义、可被用来伪装。裁剪 + 下方 NOCASE 预检共同收敛。
 	in.Username = strings.TrimSpace(in.Username)
-	if in.Username == "" {
-		return nil, errors.New("store: empty username")
+	if err := ValidateUsername(in.Username); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(in.PSKHash) == "" {
 		return nil, errors.New("store: empty psk_hash")

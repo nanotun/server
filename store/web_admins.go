@@ -70,8 +70,8 @@ func (s *Store) webAdminUsernameExistsCI(ctx context.Context, username string, e
 func (s *Store) CreateWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, error) {
 	// 第四轮深扫 MED(store #4/#15):裁剪首尾空白 + 大小写不敏感去重(见 users.CreateUser 同款说明)。
 	in.Username = strings.TrimSpace(in.Username)
-	if in.Username == "" {
-		return nil, errors.New("store: empty web admin username")
+	if err := ValidateUsername(in.Username); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(in.PasswordHash) == "" {
 		return nil, errors.New("store: empty web admin password_hash")
@@ -117,8 +117,8 @@ func (s *Store) CreateWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, 
 func (s *Store) CreateFirstWebAdmin(ctx context.Context, in NewWebAdmin) (*WebAdmin, error) {
 	// 首位管理员:表为空(NOT EXISTS 守门),无需 CI 去重,只裁剪首尾空白。
 	in.Username = strings.TrimSpace(in.Username)
-	if in.Username == "" {
-		return nil, errors.New("store: empty web admin username")
+	if err := ValidateUsername(in.Username); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(in.PasswordHash) == "" {
 		return nil, errors.New("store: empty web admin password_hash")
