@@ -63,6 +63,54 @@ func TestSubcommandHelp(t *testing.T) {
 	}
 }
 
+// 一条不成立的命令不该留下一个数据库。
+//
+// `nanotun-admin user create`(漏了用户名)从前会先开库、跑完 migration,才发现参数不够,
+// 于是当时的工作目录里凭空多出一个 data/nanotun.db。之后任何忘了 --db-path 的命令都会
+// 读到这个空库,答的是「没有用户」而不是「你指的库不存在」。
+func TestMalformedCommandsCreateNoDatabase(t *testing.T) {
+	cases := [][]string{
+		{"user", "create"},
+		{"user", "create", "--psk"},
+		{"user"},
+		{"webadmin", "create"},
+		{"setting", "set"},
+		{"device", "create"},
+		// init 不在此列:它的职责就是建库,敲它的人本来就奔着这个来。
+		// 哪怕 flag 打错了先建出库来也不算意外副作用(init 幂等,改对再跑一次即可)。
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "data", "nanotun.db")
+			var stdout, stderr bytes.Buffer
+			opts := &globalOpts{
+				stdout: &stdout, stderr: &stderr,
+				dbPath: dbPath, lang: langEN,
+			}
+			code := runRoot(args, opts)
+			if code == 0 {
+				t.Errorf("不成立的命令不该成功: %v", args)
+			}
+			if _, err := os.Stat(dbPath); err == nil {
+				t.Errorf("%v 造出了一个库 %s —— 参数都不成立就不该有副作用", args, dbPath)
+			}
+		})
+	}
+}
+
+// 正常的 `user create <name>` 仍然要保留「首次部署时库不存在就建」的语义。
+func TestUserCreateStillBootstraps(t *testing.T) {
+	if !subCanBootstrapDB("user", []string{"create", "alice"}) {
+		t.Error("user create alice 应仍是首次部署入口")
+	}
+	if !subCanBootstrapDB("init", nil) {
+		t.Error("init 应仍是首次部署入口")
+	}
+	if subCanBootstrapDB("user", []string{"create"}) {
+		t.Error("漏了用户名的 user create 不该造库")
+	}
+}
+
 // `--help` 夹在真实参数里时不算「问用法」,交回正常解析去报错,
 // 免得 `user --help create` 这种误打被当成查文档而悄悄什么都不做。
 func TestHelpTokenOnlyWhenAlone(t *testing.T) {

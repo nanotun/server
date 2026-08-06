@@ -367,7 +367,15 @@ func subCanBootstrapDB(subcmd string, rest []string) bool {
 	case "init":
 		return true
 	case "user":
-		return len(rest) > 0 && rest[0] == "create"
+		// 必须真的带了用户名才算首次部署入口。`user create` 光秃秃一条只是用法错误,
+		// 而从前它照样先把库开出来、跑完 migration,才发现参数不够 —— 于是当时的
+		// 工作目录里凭空多出一个 data/nanotun.db。之后任何忘了 --db-path 的命令都会
+		// 读到这个空库,答的是「没有用户」而不是「你指的库不存在」(2026-07-25 那次
+		// 派发出缺 server_id 的 profile 就是这么来的)。
+		//
+		// 第一个位置参数必须在场且不是 flag:宁可在新机器上答「db not found」,
+		// 也不要为一条不成立的命令造出一个库。
+		return len(rest) >= 2 && rest[0] == "create" && !strings.HasPrefix(rest[1], "-")
 	}
 	return false
 }
