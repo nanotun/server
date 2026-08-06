@@ -1390,7 +1390,13 @@ func main() {
 	// 不再有 legacy_backend 退路 —— 没 store 就启动不了。
 	authCleanup, err := initAuthBackend(globalContext, gw)
 	if err != nil {
-		util.FatalExit(util.ExitDBInit, logrus.Fields{"err": err.Error()}, "初始化 auth 后端失败: %v", err)
+		// 库损坏 / 降级回来的旧程序:重启一万次也是同一个错,单元会因这个 code 落到
+		// failed 而不是每 3 秒重来一遍把 journal 刷满(RestartPreventExitStatus)。
+		code := util.ExitDBInit
+		if store.IsUnrecoverable(err) {
+			code = util.ExitDBUnrecoverable
+		}
+		util.FatalExit(code, logrus.Fields{"err": err.Error()}, "初始化 auth 后端失败: %v", err)
 	}
 	defer authCleanup()
 

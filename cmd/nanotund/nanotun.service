@@ -69,10 +69,12 @@ RuntimeDirectoryPreserve=yes
 #   10 ExitConfigParse        配置 TOML 解析失败 / 必填字段缺失
 #   11 ExitConfigSemantic     配置语义错(冲突字段同设 / 范围越界 / firewall 名单空)
 #   20 ExitTLSCert            TLS 证书加载失败 / 过期
+#   41 ExitDBUnrecoverable    库损坏 / 不是 SQLite 文件 / schema 比程序新(降级回来了)
 # 注意:30 ExitListenInUse 仍交给 on-failure 重启 —— 端口被占有时是上次进程残留,
 # 给 3s 后再试一遍可以自愈;真不能 listen 才升级到 failed,与 2026-05-21 事故里
-# 「systemctl start 死循环」的诊断成本是不同量级。
-RestartPreventExitStatus=10 11 20
+# 「systemctl start 死循环」的诊断成本是不同量级。同理 40 ExitDBInit 也留给重启:
+# 库被 nanotun-admin 占着写锁、磁盘一时写满、挂载还没就绪,等一会儿真能自己好。
+RestartPreventExitStatus=10 11 20 41
 
 StandardOutput=journal
 StandardError=journal

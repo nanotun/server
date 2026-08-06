@@ -48,9 +48,13 @@ const (
 	ExitListenInUse    ExitCode = 30
 	ExitListenOther    ExitCode = 31
 	ExitDBInit         ExitCode = 40
-	ExitBackend        ExitCode = 50
-	ExitNetworkSetup   ExitCode = 60
-	ExitInternal       ExitCode = 70
+	// ExitDBUnrecoverable:库损坏 / 不是 SQLite 文件 / schema 比程序新(降级)。
+	// 与 40 分开是为了让单元把它列进 RestartPreventExitStatus —— 40 里还有
+	// 「被别的进程占着写锁」「磁盘一时满」这类等一会儿能自己好的,不该一并钉死。
+	ExitDBUnrecoverable ExitCode = 41
+	ExitBackend         ExitCode = 50
+	ExitNetworkSetup    ExitCode = 60
+	ExitInternal        ExitCode = 70
 )
 
 // String 给 ExitCode 起一个稳定的英文短名,作为 logrus 字段值方便 grep。
@@ -73,6 +77,8 @@ func (c ExitCode) String() string {
 		return "ExitListenOther"
 	case ExitDBInit:
 		return "ExitDBInit"
+	case ExitDBUnrecoverable:
+		return "ExitDBUnrecoverable"
 	case ExitBackend:
 		return "ExitBackend"
 	case ExitNetworkSetup:

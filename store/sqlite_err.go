@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"strings"
 )
 
@@ -26,4 +27,29 @@ func isUniqueConstraintErr(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "UNIQUE constraint failed") ||
 		strings.Contains(msg, "constraint failed: UNIQUE")
+}
+
+// IsUnrecoverable 判断一个打库 / 迁移错误是否**重启一万次也不会好**。
+//
+// 用途是让调用方挑退出码:systemd 单元把「修不好」的那几个 code 列进
+// RestartPreventExitStatus,单元直接落到 failed,`systemctl status` 一眼看到死因;
+// 其余的照旧 Restart=on-failure —— 库被别的进程占着写锁、磁盘一时写满、挂载还没
+// 就绪,这些等一会儿真能自己好,不该因为一次抖动就要人工介入。
+//
+// 只收录**确定性**的三类,宁可漏判(退回可重启)也不误判(把能自愈的场景钉死):
+//   - schema 比程序新:降级回来了,见 migrations.go 的守卫
+//   - database disk image is malformed:SQLITE_CORRUPT,库页损坏
+//   - file is not a database:SQLITE_NOTADB,压根不是 SQLite 文件(拿错文件 / 被覆盖)
+//
+// 错误码同样按 modernc.org/sqlite 的惯例走文本匹配,理由见 isUniqueConstraintErr。
+func IsUnrecoverable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrSchemaFromFuture) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database disk image is malformed") ||
+		strings.Contains(msg, "file is not a database")
 }
