@@ -70,6 +70,10 @@ git push origin v0.1.0
 - **GitHub Release**：`nanotun-vX.Y.Z-linux-{amd64,arm64}.tar.gz` + `SHA256SUMS`
 - **GHCR 镜像**：`ghcr.io/nanotun/server:{X.Y.Z, X.Y, latest}`（多架构 + 构建溯源）
 
+注意两边的版本号**差一个 `v`**：tarball 是 `v0.1.12`，镜像是 `0.1.12`（容器生态的
+惯例，metadata-action 默认剥掉前缀）。照抄 Release 页面的版本号去 pull 会拿到
+`not found`，而那句话看着像没权限或镜像是私有的。
+
 `dist/` 里本地打的那份从此只是**自检产物**，不要手工上传 —— 对外分发的一律以 CI
 构建的为准（本地产物依赖维护者那台机器的环境，别人复现不了）。
 

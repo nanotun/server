@@ -7,7 +7,10 @@
 # 想改代码自己构建见 docker-compose.dev.yml(那份带 build:,拿本地 Dockerfile 编)。
 #
 # 版本:默认 latest。生产建议钉一个具体版本,免得 `docker compose pull` 撞上不想要的升级:
-#   NANOTUN_IMAGE_TAG=0.1.0 docker compose up -d
+#   NANOTUN_IMAGE_TAG=0.1.12 docker compose up -d
+#
+# 注意镜像 tag **不带 v**:Release 页面写的是 v0.1.12,镜像那边是 0.1.12。照抄过来
+# 会拿到一句 not found —— 那句话看着像没权限或镜像私有,其实只是多了个字母。
 #
 # 为什么只有 host:这是个 VPN 网关,它要在**宿主的网络栈里**做三件 bridge 模式下做不成的事:
 #   1. hy2 端口跳跃靠 nanotund 自己往 nat PREROUTING 写 REDIRECT。bridge 下这条链在容器的

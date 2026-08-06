@@ -37,13 +37,17 @@ docker compose logs -f
 门禁的 tag 上构建（见 `docs/RELEASE.md`）。生产建议钉版本，别跟着 `latest` 漂：
 
 ```bash
-NANOTUN_IMAGE_TAG=0.1.0 docker compose up -d
+NANOTUN_IMAGE_TAG=0.1.12 docker compose up -d
 ```
+
+**镜像 tag 不带 `v`**。Release 页面上写的是 `v0.1.12`，镜像那边是 `0.1.12`（外加
+`0.1` 和 `latest`）—— 这是容器生态的惯例，照抄 Release 的版本号会拿到一句
+`not found`，而那句话看着像是没权限或者镜像是私有的，其实只是多了个字母。
 
 想验证镜像确实来自本仓库的构建流水线：
 
 ```bash
-gh attestation verify oci://ghcr.io/nanotun/server:0.1.0 --repo nanotun/server
+gh attestation verify oci://ghcr.io/nanotun/server:0.1.12 --repo nanotun/server
 ```
 
 首次启动会自动生成 REALITY 私钥、hy2 口令、自签证书，并初始化数据库。
