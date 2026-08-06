@@ -39,12 +39,49 @@ read_toml_field() {
 
 read_hysteria_field() { read_toml_field hysteria "$1"; }
 
+# usable_pem <path> <cert|key> —— 判断一份 PEM 是不是真能用。
+#
+# 从前只判 `-f`：文件在就算数。磁盘写满 / 恢复备份中断留下的 0 字节证书因此被当成
+# 「已经有了」而跳过，机器起不来（ExitTLSCert），而文档教的修复手段正是「重跑一遍
+# install.sh」—— 它什么也不会做，人只能自己去猜要删哪个文件。
+#
+# 两种坏法分开处置，理由是代价不同：
+#   - 0 字节：里面没有任何信息，删了不会丢东西，直接当缺失重新生成。
+#   - 非空但解析不出来：可能只是权限/编码问题，也可能还有备份能救。重签等于换掉服务器
+#     身份、踢掉所有已发出去的客户端配置 —— 这种不可逆的事不该由脚本替人决定。
+usable_pem() {
+  local p="$1" kind="$2"
+  [[ -s "$p" ]] || return 1
+  case "$kind" in
+    cert) openssl x509 -in "$p" -noout >/dev/null 2>&1 || return 2 ;;
+    key)  openssl pkey -in "$p" -noout >/dev/null 2>&1 || return 2 ;;
+  esac
+  return 0
+}
+
+# check_pem_or_die <path> <kind> —— 非空但坏掉时停下来说清楚,别默默覆盖。
+check_pem_or_die() {
+  local p="$1" kind="$2" rc=0
+  # 必须捕获返回码:脚本开了 errexit,裸调一个返回非 0 的函数会当场把整个脚本打断。
+  usable_pem "$p" "$kind" || rc=$?
+  case "$rc" in
+    2) echo "[ensure-server-assets] $p 存在但不是合法的 ${kind}(内容损坏?)。
+    没有替你重新生成 —— 重签会换掉服务器身份,已发出去的客户端配置全部作废。
+    先确认有没有备份可恢复;确实要重来的话删掉它再跑一次本脚本。" >&2
+       exit 1 ;;
+  esac
+}
+
 gen_self_signed() {
   # gen_self_signed <cert_path> <key_path> <subject> —— 缺文件时生成自签（带 SAN，失败退回无 SAN）。
   local cert_path="$1" key_path="$2" subj="$3"
-  if [[ -f "$cert_path" && -f "$key_path" ]]; then
+  check_pem_or_die "$cert_path" cert
+  check_pem_or_die "$key_path" key
+  if usable_pem "$cert_path" cert && usable_pem "$key_path" key; then
     return 0
   fi
+  # 走到这里说明至少一边是缺失或 0 字节。两边一起重签:半新半旧的证书/私钥配不上对。
+  rm -f "$cert_path" "$key_path"
   echo "[ensure-server-assets] 未找到 TLS 证书，生成自签 -> $cert_path" >&2
   mkdir -p "$(dirname "$cert_path")" "$(dirname "$key_path")"
   if openssl req -x509 -newkey rsa:2048 \
@@ -100,9 +137,11 @@ if [[ -n "${client_ca_rel// }" ]]; then
   if [[ "$client_ca_key_path" == "$client_ca_path" ]]; then
     client_ca_key_path="${client_ca_path}.key"
   fi
-  if [[ ! -f "$client_ca_path" ]]; then
+  check_pem_or_die "$client_ca_path" cert
+  if ! usable_pem "$client_ca_path" cert; then
     echo "[ensure-server-assets] 未找到 tls_client_ca_file，生成开发用 CA -> $client_ca_path" >&2
     mkdir -p "$(dirname "$client_ca_path")"
+    rm -f "$client_ca_path"
     if openssl req -x509 -newkey rsa:2048 -nodes \
       -keyout "$client_ca_key_path" -out "$client_ca_path" -days 3650 \
       -subj "/CN=nanotun-client-ca/O=nanotun-deploy" \

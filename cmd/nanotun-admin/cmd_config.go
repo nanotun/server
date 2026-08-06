@@ -11,6 +11,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -69,8 +70,45 @@ func cmdConfigLint(opts *globalOpts, args []string) int {
 		fmt.Fprintln(opts.stderr, opts.T("config.strictFail", path, lerr.Error()))
 		return 3
 	}
+	// 证书文件在不在,是启动期 Fatal(ExitTLSCert)里最常见的一种:路径打错、恢复备份时
+	// 漏了 certs/、权限改坏。lint 的价值就是「重启前拦下会 Fatal 的东西」,漏掉它等于
+	// 给出一个假绿灯 —— 人照着 OK 去 restart,服务当场趴下。
+	//
+	// 但只警告、不改退出码:lint 也被用来在别的机器上验一份配置模板(CI 里就是这么用的),
+	// 那里证书本就不该存在。把它判成失败会把这条正当用法一并堵死。
+	for _, w := range lintCertFiles(path, &cfg) {
+		fmt.Fprintln(opts.stderr, opts.T("config.certMissing", w))
+	}
 	fmt.Fprintf(opts.stdout, "%s OK\n", path)
 	return 0
+}
+
+// lintCertFiles 检查配置里引用到的证书 / 私钥在本机是否读得到,返回读不到的那些路径。
+//
+// 相对路径按 config.toml 所在目录解析 —— 与 nanotun.service 的 WorkingDirectory=/etc/nanotun
+// 同一口径,否则从别的 cwd 跑 lint 会把一份好配置全报成缺文件。
+func lintCertFiles(cfgPath string, cfg *config.Config) []string {
+	base := filepath.Dir(cfgPath)
+	seen := map[string]bool{}
+	var missing []string
+	// 未启用的段(hy2 关着时那三项全空)天然跳过,不会误报。
+	for _, p := range []string{
+		cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile,
+		cfg.Hysteria.TLSCertFile, cfg.Hysteria.TLSKeyFile, cfg.Hysteria.TLSClientCAFile,
+	} {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		full := p
+		if !filepath.IsAbs(full) {
+			full = filepath.Join(base, full)
+		}
+		if _, err := os.Stat(full); err != nil {
+			missing = append(missing, full)
+		}
+	}
+	return missing
 }
 
 // lintSemantic 复用 config 包里与 server 启动期一致的语义校验,聚合首个失败返回。

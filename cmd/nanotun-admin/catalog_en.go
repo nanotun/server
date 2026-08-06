@@ -247,6 +247,7 @@ var catEN = map[string]string{
                        recommended before systemctl restart in CI / upgrade flows.`,
 	"config.tomlParseFail": "TOML parse failed:\n%s",
 	"config.strictFail":    "[strict] %s validation failed:\n%s",
+	"config.certMissing":   "warning: cannot read certificate file — %s\n      The config itself is fine, but the server will exit 20 on startup. Ignore this when linting a template on another machine.",
 
 	// ===== profile =====
 	"profile.flag.dialHost":           "(required, one of this or --host) the server address the client actually dials, IPv4 / IPv6 / valid domain; strictly validated, rejects pseudo-hostnames whose last label is all digits (e.g. test-203.0.113.10)",

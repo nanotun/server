@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,59 @@ subnets = ["10.201.0.0/16"]
 	if !strings.Contains(out, "OK") {
 		t.Errorf("stdout 应含 OK, got %q", out)
 	}
+}
+
+// TestConfigLint_WarnsAboutUnreadableCerts:证书读不到只警告,不改退出码。
+//
+// 漏掉这条警告等于给假绿灯 —— 人照着 OK 去 restart,server 因 ExitTLSCert 当场趴下;
+// 但判成失败又会堵死「在别的机器上验一份配置模板」这条正当用法(CI 就是这么用的)。
+func TestConfigLint_WarnsAboutUnreadableCerts(t *testing.T) {
+	const tmpl = `
+[server]
+listen_addr = "0.0.0.0:443"
+tls_cert_file = %q
+tls_key_file = %q
+
+[tun]
+subnets = ["10.201.0.0/16"]
+`
+	t.Run("文件不存在时警告但仍 exit 0", func(t *testing.T) {
+		path := writeTOML(t, fmt.Sprintf(tmpl, "certs/nope.pem", "certs/nokey.pem"))
+		code, out, errMsg := runConfigLint(t, path)
+		if code != 0 {
+			t.Fatalf("只该警告不该失败,got exit %d", code)
+		}
+		if !strings.Contains(out, "OK") {
+			t.Errorf("stdout 仍应有 OK, got %q", out)
+		}
+		for _, want := range []string{"nope.pem", "nokey.pem", "exit 20"} {
+			if !strings.Contains(errMsg, want) {
+				t.Errorf("警告里应提到 %q, got %q", want, errMsg)
+			}
+		}
+	})
+
+	t.Run("文件齐全时一声不吭", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, n := range []string{"c.pem", "k.pem"} {
+			if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p := filepath.Join(dir, "config.toml")
+		if err := os.WriteFile(p, []byte(fmt.Sprintf(tmpl, "c.pem", "k.pem")), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, _, errMsg := runConfigLint(t, p)
+		if code != 0 {
+			t.Fatalf("exit %d, stderr=%q", code, errMsg)
+		}
+		// 相对路径必须按 config.toml 所在目录解析(与 unit 的 WorkingDirectory 同口径),
+		// 否则换个 cwd 跑 lint 会把一份好配置全报成缺文件。
+		if strings.Contains(errMsg, "警告") {
+			t.Errorf("证书都在,不该有警告: %q", errMsg)
+		}
+	})
 }
 
 func TestConfigLint_UnknownField_Exit3(t *testing.T) {

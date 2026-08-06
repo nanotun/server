@@ -244,6 +244,7 @@ var catZH = map[string]string{
                        建议在 CI / 升级流程里 systemctl restart 前跑一次。`,
 	"config.tomlParseFail": "TOML 解析失败:\n%s",
 	"config.strictFail":    "[strict] %s 校验失败:\n%s",
+	"config.certMissing":   "警告:证书文件读不到 —— %s\n      配置本身没问题,但 server 起来时会因此退出(exit 20)。在别的机器上验模板可以忽略这条。",
 
 	// ===== profile =====
 	"profile.flag.dialHost":           "(必填,与 --host 二选一) 客户端实际拨号的服务器地址,IPv4 / IPv6 / 合法域名;严格校验,拒末段纯数字的伪 hostname(如 test-203.0.113.10)",
