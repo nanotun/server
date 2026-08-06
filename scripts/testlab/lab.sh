@@ -263,7 +263,10 @@ cmd_install() {
     dex "${envs[@]}" "$NAME" bash -c \
       "curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh | bash -s -- ${no_setup} $(passq)"
     echo
-    [ "$WIZARD" = 1 ] || ok "接着跑开服向导:$0 setup       (非交互:$0 setup -y --dial-host 127.0.0.1)"
+    # 例子里的地址不能写 127.0.0.1 —— 向导会按语法把回环判掉("客户端拨到自己机器"),
+    # 照抄这行提示的人拿到的是一句 FATAL。用 RFC 5737 的文档保留段:语法过得去,又不会
+    # 有人误以为那是个真能拨的地址。
+    [ "$WIZARD" = 1 ] || ok "接着跑开服向导:$0 setup       (非交互:$0 setup -y --dial-host 198.51.100.7)"
   fi
 }
 
