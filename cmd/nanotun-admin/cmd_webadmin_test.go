@@ -293,3 +293,148 @@ func TestWebAdminList_JSONOmitsThePasswordHash(t *testing.T) {
 		t.Fatalf("JSON 里带了密码相关字段:%s", out)
 	}
 }
+
+// reset-password / unlock 补的是「人已经进不去」这一刻:忘了密码,或者被连续失败锁住。
+// 界面里本来就能改(/admins/{id}/reset-pwd),但那要先登进去 —— 而登不进去的正是他。
+// 此前 CLI 只有 create 和 list,同名 create 又被去重挡下,唯一出路是换个名字再建一个。
+
+func TestWebAdminResetPassword_NewPasswordWorksAndOldOneStops(t *testing.T) {
+	db := webadminDB(t)
+	const oldPW, newPW = "Str0ng-Console-Pass", "An0ther-Str0ng-Pass"
+	if code, _, errOut := runCLI(t, db, oldPW, "webadmin", "create", "alice", "--password-stdin"); code != 0 {
+		t.Fatalf("create: %s", errOut)
+	}
+
+	code, out, errOut := runCLI(t, db, newPW, "webadmin", "reset-password", "alice", "--password-stdin")
+	if code != 0 {
+		t.Fatalf("reset: code=%d err=%s", code, errOut)
+	}
+	if !strings.Contains(out, "alice") {
+		t.Errorf("输出里没提到改的是谁: %q", out)
+	}
+
+	st := openStoreForTest(t, db)
+	defer st.Close()
+	admin, err := st.GetWebAdminByUsername(t.Context(), "alice")
+	if err != nil {
+		t.Fatalf("查不到: %v", err)
+	}
+	// Web 登录就是这么验的:新密码必须过,旧密码必须不过。
+	if ok, err := auth.VerifyPSK(newPW, admin.PasswordHash); err != nil || !ok {
+		t.Fatalf("新密码验不过: ok=%v err=%v", ok, err)
+	}
+	if ok, _ := auth.VerifyPSK(oldPW, admin.PasswordHash); ok {
+		t.Fatal("旧密码还能用 —— 重置没真正生效")
+	}
+}
+
+// 改密码的人多半正是被失败次数锁在门外的那个:改完还要再等锁定窗口过去毫无道理。
+func TestWebAdminResetPassword_AlsoClearsTheLockout(t *testing.T) {
+	db := webadminDB(t)
+	if code, _, errOut := runCLI(t, db, "Str0ng-Console-Pass", "webadmin", "create", "alice", "--password-stdin"); code != 0 {
+		t.Fatalf("create: %s", errOut)
+	}
+	st := openStoreForTest(t, db)
+	admin, err := st.GetWebAdminByUsername(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 把账号敲进锁定状态。
+	for i := 0; i < 10; i++ {
+		if _, _, err := st.RecordWebAdminLoginFailure(t.Context(), admin.ID, 3, 600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	locked, err := st.GetWebAdminByUsername(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if locked.FailedLogins == 0 {
+		t.Fatal("没能造出锁定状态,后面的断言就没意义了")
+	}
+	st.Close()
+
+	if code, _, errOut := runCLI(t, db, "An0ther-Str0ng-Pass", "webadmin", "reset-password", "alice", "--password-stdin"); code != 0 {
+		t.Fatalf("reset: %s", errOut)
+	}
+
+	st2 := openStoreForTest(t, db)
+	defer st2.Close()
+	after, err := st2.GetWebAdminByUsername(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.FailedLogins != 0 {
+		t.Errorf("失败计数没清零: %d", after.FailedLogins)
+	}
+}
+
+// unlock 只解锁,不该顺手把密码也换了。
+func TestWebAdminUnlock_LeavesThePasswordAlone(t *testing.T) {
+	db := webadminDB(t)
+	const pw = "Str0ng-Console-Pass"
+	if code, _, errOut := runCLI(t, db, pw, "webadmin", "create", "alice", "--password-stdin"); code != 0 {
+		t.Fatalf("create: %s", errOut)
+	}
+	st := openStoreForTest(t, db)
+	admin, err := st.GetWebAdminByUsername(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		if _, _, err := st.RecordWebAdminLoginFailure(t.Context(), admin.ID, 3, 600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.Close()
+
+	if code, _, errOut := runCLI(t, db, "", "webadmin", "unlock", "alice"); code != 0 {
+		t.Fatalf("unlock: %s", errOut)
+	}
+
+	st2 := openStoreForTest(t, db)
+	defer st2.Close()
+	after, err := st2.GetWebAdminByUsername(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.FailedLogins != 0 {
+		t.Errorf("失败计数没清零: %d", after.FailedLogins)
+	}
+	if ok, err := auth.VerifyPSK(pw, after.PasswordHash); err != nil || !ok {
+		t.Fatalf("unlock 把密码也动了 —— 原密码验不过了: ok=%v err=%v", ok, err)
+	}
+}
+
+// 弱密码在这条路上同样要被拒:否则「找回账号」会变成把门槛悄悄降下来的后门。
+func TestWebAdminResetPassword_RejectsWeakPasswordAndKeepsTheOldOne(t *testing.T) {
+	db := webadminDB(t)
+	const pw = "Str0ng-Console-Pass"
+	if code, _, errOut := runCLI(t, db, pw, "webadmin", "create", "alice", "--password-stdin"); code != 0 {
+		t.Fatalf("create: %s", errOut)
+	}
+	code, _, _ := runCLI(t, db, "123", "webadmin", "reset-password", "alice", "--password-stdin")
+	if code == 0 {
+		t.Fatal("弱密码被接受了")
+	}
+	st := openStoreForTest(t, db)
+	defer st.Close()
+	after, err := st.GetWebAdminByUsername(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := auth.VerifyPSK(pw, after.PasswordHash); !ok {
+		t.Fatal("拒绝之后原密码也失效了 —— 半途改了库")
+	}
+}
+
+func TestWebAdminResetPassword_UnknownNameSaysSo(t *testing.T) {
+	db := webadminDB(t)
+	code, _, errOut := runCLI(t, db, "An0ther-Str0ng-Pass", "webadmin", "reset-password", "nobody", "--password-stdin")
+	if code == 0 {
+		t.Fatal("不存在的用户名居然成功了")
+	}
+	if !strings.Contains(errOut, "nobody") {
+		t.Errorf("报错里应带上那个名字: %q", errOut)
+	}
+}

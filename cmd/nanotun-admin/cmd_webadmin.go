@@ -30,7 +30,7 @@ import (
 // shell history 和 systemd 的 journal。所以只收三种来源:标准输入、环境变量、交互式隐藏输入。
 func cmdWebAdmin(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) == 0 {
-		return usageError(opts.usage("nanotun-admin webadmin <create|list> [...]"))
+		return usageError(opts.usage("nanotun-admin webadmin <create|list|reset-password|unlock> [...]"))
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -38,9 +38,99 @@ func cmdWebAdmin(ctx context.Context, st *store.Store, opts *globalOpts, args []
 		return cmdWebAdminCreate(ctx, st, opts, rest)
 	case "list", "ls":
 		return cmdWebAdminList(ctx, st, opts, rest)
+	case "reset-password", "reset-pwd":
+		return cmdWebAdminResetPassword(ctx, st, opts, rest)
+	case "unlock":
+		return cmdWebAdminUnlock(ctx, st, opts, rest)
 	default:
 		return newLocErr("cli.unknownSubcommand", "webadmin", sub)
 	}
+}
+
+// cmdWebAdminResetPassword / cmdWebAdminUnlock 补的是「人已经进不去」这一刻。
+//
+// 改密码和解锁在 Web 界面里本来就有(/admins/{id}/reset-pwd),但那要先登进去 —— 而忘了密码、
+// 或者被连续失败锁住的人,恰恰就是登不进去的那个。此前 CLI 只有 create 和 list,同名 create
+// 又会被去重挡下,于是唯一的出路是「换个名字再建一个管理员」,旧账号还删不掉。
+//
+// 密码来源与强度门槛和 create 完全一致:不收 --password(argv 对同机所有用户可见)。
+func cmdWebAdminResetPassword(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
+	fs := flag.NewFlagSet("webadmin reset-password", flag.ContinueOnError)
+	fs.SetOutput(opts.stderr)
+	pwStdin := fs.Bool("password-stdin", false, opts.T("webadmin.flag.passwordStdin"))
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return usageError(opts.usage("nanotun-admin webadmin reset-password <username> [--password-stdin]"))
+	}
+
+	admin, err := lookupWebAdmin(ctx, st, pos[0])
+	if err != nil {
+		return err
+	}
+
+	password, err := readWebAdminPassword(opts, *pwStdin)
+	if err != nil {
+		return err
+	}
+	if iss := auth.CheckWebPassword(password); iss != nil {
+		return webPasswordIssueErr(iss)
+	}
+	hash, err := auth.HashPSK(password)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+	if err := st.UpdateWebAdminPasswordHash(ctx, admin.ID, hash); err != nil {
+		return err
+	}
+	// 顺手清掉锁定计数:改密码的人多半正是被失败次数锁在门外的那个,
+	// 让他改完还要再等锁定窗口过去毫无道理。
+	if err := st.ResetWebAdminLockout(ctx, admin.ID); err != nil {
+		return err
+	}
+	if opts.json {
+		return printJSON(opts.stdout, webAdminView{
+			ID: admin.ID, Username: admin.Username, Role: admin.Role,
+			Enabled: admin.Enabled, CreatedAt: admin.CreatedAt,
+		})
+	}
+	fmt.Fprintf(opts.stdout, opts.T("webadmin.passwordReset")+"\n", admin.Username)
+	return nil
+}
+
+// lookupWebAdmin 按用户名取管理员;找不到时把 store 的 ErrNotFound 换成带名字的说法。
+func lookupWebAdmin(ctx context.Context, st *store.Store, name string) (*store.WebAdmin, error) {
+	admin, err := st.GetWebAdminByUsername(ctx, strings.TrimSpace(name))
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, newLocErr("webadmin.notFound", name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return admin, nil
+}
+
+func cmdWebAdminUnlock(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
+	fs := flag.NewFlagSet("webadmin unlock", flag.ContinueOnError)
+	fs.SetOutput(opts.stderr)
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return usageError(opts.usage("nanotun-admin webadmin unlock <username>"))
+	}
+	admin, err := lookupWebAdmin(ctx, st, pos[0])
+	if err != nil {
+		return err
+	}
+	if err := st.ResetWebAdminLockout(ctx, admin.ID); err != nil {
+		return err
+	}
+	fmt.Fprintf(opts.stdout, opts.T("webadmin.unlocked")+"\n", admin.Username)
+	return nil
 }
 
 // envWebAdminPassword 是无人值守时传密码的环境变量名。

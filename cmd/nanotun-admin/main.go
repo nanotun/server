@@ -584,6 +584,9 @@ SUBCOMMANDS
                                                 建 Web 后台管理员(浏览器登录用,与 VPN 账号是两套)。
                                                 密码走终端提问 / 管道 / env NANOTUN_WEB_ADMIN_PASSWORD,不收命令行参数
   webadmin list                                 列出 Web 后台管理员
+  webadmin reset-password <username> [--password-stdin]
+                                                重置密码并清掉失败锁定 —— 忘了密码 / 被锁在门外时走这条
+  webadmin unlock <username>                    只解除登录锁定,不动密码
   acl list                                      列出 ACL 规则
   acl allow <src_user> <dst_user>               新增 allow 规则
   acl deny  <src_user> <dst_user>               新增 deny 规则
@@ -663,6 +666,9 @@ SUBCOMMANDS
                                                 create a web console admin (browser login; separate from VPN accounts).
                                                 Password comes from the terminal, a pipe, or env NANOTUN_WEB_ADMIN_PASSWORD — never from argv
   webadmin list                                 list web console admins
+  webadmin reset-password <username> [--password-stdin]
+                                                reset the password and clear the failure lockout — use this when locked out
+  webadmin unlock <username>                    clear the login lockout only, leaving the password alone
   acl list                                      list ACL rules
   acl allow <src_user> <dst_user>               add an allow rule
   acl deny  <src_user> <dst_user>               add a deny rule
