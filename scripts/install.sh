@@ -300,7 +300,16 @@ if [ "$CURL_RC" != 0 ]; then
 fi
 
 info "校验 SHA256 ..."
-if curl "${CURL_SMALL[@]}" -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS" 2>/dev/null; then
+# 取不到清单要分清是「这个版本本来就没有」还是「这次没取到」。原来一律归成前者,
+# 打一句「该版本没有 SHA256SUMS,跳过校验」就往下走 —— 可眼下每一个已发布版本都带
+# 着 SHA256SUMS,于是这句话真出现的时候,说的必然是假话:真因是取失败(网络被掐、
+# CDN 抽风、出站被拦),而不是清单不存在。代价是悄悄把完整性校验降级了,接着还要
+# 以 root 解包、跑里面的安装脚本 —— 而管道形态下那行黄字多半没人看见。
+# 404 才是「真没有」(留给将来手工补发的老版本),其余一律当失败处理。
+SHA_RC=0
+SHA_HTTP="$(curl "${CURL_SMALL[@]}" -o "$TMP/SHA256SUMS" -w '%{http_code}' \
+  "$BASE/SHA256SUMS" 2>/dev/null)" || SHA_RC=$?
+if [ "$SHA_RC" = 0 ]; then
   if command -v sha256sum >/dev/null 2>&1; then
     SHA_CHECK=(sha256sum -c --ignore-missing -)
   elif command -v shasum >/dev/null 2>&1; then
@@ -320,8 +329,14 @@ if curl "${CURL_SMALL[@]}" -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS" 2>/dev/null; 
   else
     printf '    \033[1;33m!\033[0m 本机既无 sha256sum 也无 shasum,跳过校验\n'
   fi
+elif [ "$SHA_HTTP" = 404 ]; then
+  printf '    \033[1;33m!\033[0m %s 确实没有 SHA256SUMS(404),跳过校验\n' "$VERSION"
 else
-  printf '    \033[1;33m!\033[0m 该版本没有 SHA256SUMS,跳过校验\n'
+  die "取不到校验清单 SHA256SUMS(curl $SHA_RC,HTTP ${SHA_HTTP:-无响应}): $BASE/SHA256SUMS
+   包已经下下来了,但没法核对它是不是官方那一份 —— 这一步不能跳过就装,
+   下一步要以 root 解包并执行里面的安装脚本。
+   多半是网络抖动或出站被拦,重跑一次即可;确认这个版本本就没有清单的话,
+   到 https://github.com/${REPO}/releases 手动核对 SHA256 再装。"
 fi
 
 # ── 4. 解压 ──────────────────────────────────────────────────────────────────
