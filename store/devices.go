@@ -59,6 +59,16 @@ const DeviceAliasMaxLen = 128
 // 撑爆 DB。128 字节够日常「Wenhai's MacBook Pro 16-inch (M3 Max)」类全文展示。
 const DeviceNameMaxLen = 128
 
+// DevicePlatformMaxLen:platform 列的应用层长度上限(字节)。
+//
+// 与 device_name 同一个道理,只是漏在了外面:登录路径把 loginReq.Platform 原样落库
+// (admin CLI 那条路有 NormalizePlatformCSV 把关,登录这条没有)。合法取值都是
+// "macos"/"ios"/"windows"/"linux"/"android" 这类短词,32 字节绰绰有余。
+//
+// 只影响存储与展示:平台白名单的比对发生在 UpsertDevice **之前**(auth_login.go),
+// 这里的截断不改变授权语义。
+const DevicePlatformMaxLen = 32
+
 // UpsertDevice 创建或更新设备记录。
 //
 // 若 (user_id, device_uuid) 已存在，则更新 device_name / platform / last_seen_at；
@@ -82,6 +92,8 @@ func (s *Store) UpsertDevice(ctx context.Context, userID int64, uuid, name, plat
 	}
 	name = SanitizeDeviceName(name)
 	name = truncateUTF8(name, DeviceNameMaxLen)
+	// platform 与 name 同为客户端自报,一样会渲染进管理员的 device list 和审计字段。
+	platform = truncateUTF8(SanitizeDeviceName(platform), DevicePlatformMaxLen)
 	now := nowUnix()
 
 	// 每用户设备名唯一（Tailscale 式）：若归一后与该用户**其它**设备撞名，追加 "-1"/"-2"… 直到唯一。MagicDNS 主机名

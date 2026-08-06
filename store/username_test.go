@@ -86,6 +86,21 @@ func TestUpsertDevice_SanitizesClientSuppliedName(t *testing.T) {
 	if dev.DeviceName == "" {
 		t.Error("过滤过头了,名字不该被清空")
 	}
+
+	// platform 同为客户端自报,登录路径原样落库(admin CLI 那条有 NormalizePlatformCSV 把关)。
+	dev2, err := st.UpsertDevice(ctx, u.ID, "66666666-2222-4333-8444-555555555555",
+		"host2", "linux\x1b[2K\r"+strings.Repeat("x", 200))
+	if err != nil {
+		t.Fatalf("upsert device: %v", err)
+	}
+	for _, bad := range []string{"\n", "\r", "\x1b"} {
+		if strings.Contains(dev2.Platform, bad) {
+			t.Errorf("platform 里仍残留控制字符 %q:%q", bad, dev2.Platform)
+		}
+	}
+	if len(dev2.Platform) > DevicePlatformMaxLen {
+		t.Errorf("platform 未截断:%d 字节", len(dev2.Platform))
+	}
 }
 
 // 校验放在 store 层是为了让 CLI 和 Web 两条创建路径都过同一道门。
