@@ -47,6 +47,47 @@ func TestValidateUsername_AcceptsOrdinaryNames(t *testing.T) {
 	}
 }
 
+// 设备名走过滤而非拒绝:它是客户端登录时上报的 hostname,不该因为带个怪字符就把人挡在网外。
+func TestSanitizeDeviceName_StripsControlCharsButKeepsTheName(t *testing.T) {
+	cases := map[string]string{
+		"lap\ntop":    "laptop",
+		"a\rEVIL-DEV": "aEVIL-DEV",
+		"zed\x1b[31m": "zed[31m",
+		"tab\there":   "tabhere",
+		"  \r\n  ":    "", // 整个名字都是控制字符 → 归一成空
+		"张三的 MacBook": "张三的 MacBook",
+		"normal-host": "normal-host",
+	}
+	for in, want := range cases {
+		if got := SanitizeDeviceName(in); got != want {
+			t.Errorf("SanitizeDeviceName(%q) = %q,期望 %q", in, got, want)
+		}
+	}
+}
+
+// 关键在于这条路径跨了权限边界:设备名由普通用户的客户端提供,却要渲染进管理员的终端。
+func TestUpsertDevice_SanitizesClientSuppliedName(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := st.CreateUser(ctx, NewUser{Username: "dave", PSKHash: "x"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	dev, err := st.UpsertDevice(ctx, u.ID, "55555555-2222-4333-8444-555555555555", "lap\ntop\x1b[2K", "linux")
+	if err != nil {
+		t.Fatalf("upsert device: %v", err)
+	}
+	for _, bad := range []string{"\n", "\r", "\x1b", "\x7f"} {
+		if strings.Contains(dev.DeviceName, bad) {
+			t.Errorf("设备名里仍残留控制字符 %q:%q", bad, dev.DeviceName)
+		}
+	}
+	if dev.DeviceName == "" {
+		t.Error("过滤过头了,名字不该被清空")
+	}
+}
+
 // 校验放在 store 层是为了让 CLI 和 Web 两条创建路径都过同一道门。
 func TestCreateUser_RejectsControlCharacters(t *testing.T) {
 	st := newTestStore(t)

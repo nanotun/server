@@ -47,3 +47,26 @@ func ValidateUsername(name string) error {
 	}
 	return nil
 }
+
+// SanitizeDeviceName 抹掉设备名里的控制字符,后果与用户名那边一样:换行会把 `device list`
+// 撑成两行、回车会覆盖整行、ANSI 转义会重放进运维的终端。
+//
+// 这里**过滤而不是拒绝**,和用户名的处理有意不同:用户名是管理员当场敲的,报错他立刻能改;
+// 设备名却是客户端登录时上报的(auth_login.go → UpsertDevice),多半就是机器的 hostname。
+// 因为主机名里有个怪字符就把人挡在网外,代价远大于收益 —— 何况这条路径上没人能看见错误。
+//
+// 更要紧的是这里跨了权限边界:设备名由普通用户的客户端提供,却渲染在管理员的终端里。
+// 用户名只有管理员能写,设备名不是。
+func SanitizeDeviceName(name string) string {
+	if name == "" {
+		return ""
+	}
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, name)
+	// 抹完可能只剩空白(比如整个名字就是一串 \r\n),归一成空,交由上游的重名/占位逻辑处理。
+	return strings.TrimSpace(cleaned)
+}

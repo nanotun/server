@@ -80,6 +80,7 @@ func (s *Store) UpsertDevice(ctx context.Context, userID int64, uuid, name, plat
 	if uuid == "" {
 		return nil, errors.New("store: empty device uuid")
 	}
+	name = SanitizeDeviceName(name)
 	name = truncateUTF8(name, DeviceNameMaxLen)
 	now := nowUnix()
 
@@ -384,7 +385,8 @@ func (s *Store) scanDeviceCols(sc rowScanner) (*Device, error) {
 // SetDeviceAlias 设置/清除设备别名(空串 = 清除,展示回落客户端上报名)。
 // 登录路径的 UpsertDevice 不触碰 alias 列,故别名一经设置不会被上报名覆盖。
 func (s *Store) SetDeviceAlias(ctx context.Context, id int64, alias string) error {
-	alias = truncateUTF8(strings.TrimSpace(alias), DeviceAliasMaxLen)
+	// 别名由管理员敲,却和设备名走同一个 DisplayName() 出口渲染,控制字符的后果一模一样。
+	alias = truncateUTF8(SanitizeDeviceName(alias), DeviceAliasMaxLen)
 	res, err := s.db.ExecContext(ctx, `UPDATE devices SET alias=? WHERE id=?`, alias, id)
 	if err != nil {
 		return fmt.Errorf("store: set device alias: %w", err)
