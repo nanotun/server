@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"text/tabwriter"
 	"time"
@@ -11,6 +12,13 @@ import (
 
 // printJSON 将任意可序列化值以 JSON 形式写出，缩进 2 空格。
 func printJSON(w io.Writer, v any) error {
+	// 空列表要给 [] 而不是 null。列表命令普遍写成 `var out []T`,一行都没有时它是 nil,
+	// 直接编码就成了 null —— 而 jq 的 `.[]` 在 null 上直接报错("Cannot iterate over null"),
+	// `map`、`length` 也各有各的坑。「一个用户 / 一条租约都没有」恰恰是新装机器的初始状态,
+	// 脚本第一次跑就撞上。在这个唯一出口归一,新命令不必各自记得。
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Slice && rv.IsNil() {
+		v = reflect.MakeSlice(rv.Type(), 0, 0).Interface()
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)

@@ -241,6 +241,9 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 		if !ok {
 			return errors.New(opts.T("setting.notFound", rest[0]))
 		}
+		if opts.json {
+			return printJSON(opts.stdout, settingView{Key: rest[0], Value: v})
+		}
 		fmt.Fprintln(opts.stdout, v)
 		return nil
 	case "set":
@@ -270,7 +273,13 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 		if err := st.SettingsSet(ctx, key, value); err != nil {
 			return err
 		}
-		fmt.Fprintln(opts.stdout, opts.T("setting.written", key, value))
+		if opts.json {
+			if err := printJSON(opts.stdout, settingView{Key: key, Value: value}); err != nil {
+				return err
+			}
+		} else {
+			fmt.Fprintln(opts.stdout, opts.T("setting.written", key, value))
+		}
 		// 落库 ≠ 生效:有些 key 被 server 缓存在内存快照里,不通知就只是改了行 DB。见 aclSnapshotSettingKeys。
 		if aclSnapshotSettingKeys[key] {
 			if notifyACLChanged(opts) {
@@ -294,21 +303,38 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 			return err
 		}
 		defer rows.Close()
-		t := newTable(opts.stdout, "KEY", "VALUE")
+		var all []settingView
 		for rows.Next() {
 			var k, v string
 			if err := rows.Scan(&k, &v); err != nil {
 				return err
 			}
-			t.row(k, v)
+			all = append(all, settingView{Key: k, Value: v})
 		}
 		if err := rows.Err(); err != nil {
 			return err
+		}
+		if opts.json {
+			return printJSON(opts.stdout, all)
+		}
+		t := newTable(opts.stdout, "KEY", "VALUE")
+		for _, s := range all {
+			t.row(s.Key, s.Value)
 		}
 		return t.flush()
 	default:
 		return newLocErr("cli.unknownSubcommand", "setting", sub)
 	}
+}
+
+// settingView 是 setting get / list 的 --json 形状。
+//
+// 补这个是因为 setting 曾是唯一无视 --json 的一族:全局 flag 明说了「输出 JSON(供脚本用)」,
+// 而这两条照样吐表格和裸值。统一给所有命令加 --json 的封装脚本会在这里拿到喂不进 jq 的东西,
+// 还没有任何报错提示 —— 而 server_dial_host 这类值恰恰是装机脚本最常读的。
+type settingView struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 // cmdSettingRate(0011, 2026-05-23):全局默认带宽限速,对应 app_settings 两条 key
