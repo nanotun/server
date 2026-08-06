@@ -58,7 +58,10 @@ if [ "$(id -u)" != 0 ]; then
 fi
 [ -f "$CONFIG" ] || { echo "FATAL: 找不到配置文件 $CONFIG" >&2; exit 1; }
 
-CUR="$(awk -F'"' '/^[[:space:]]*domain_suffix[[:space:]]*=/{print $2; exit}' "$CONFIG" || true)"
+# 空白写 [ \t] 而不是 [[:space:]]:mawk 1.3.3(Ubuntu 18.04 / Debian 10 的默认 awk)
+# 不认 POSIX 字符类,正则会永不匹配 —— 这里的后果是「读不到现有值」被当成「还没设过」,
+# 下面那段改写于是走插入分支,给配置里塞进第二个 domain_suffix。
+CUR="$(awk -F'"' '/^[ \t]*domain_suffix[ \t]*=/{print $2; exit}' "$CONFIG" || true)"
 echo "当前 domain_suffix = '${CUR:-<未设置>}'  →  目标 '$SUFFIX'"
 if [ "$CUR" = "$SUFFIX" ]; then
   echo "已是目标值，无需改动。"
@@ -75,14 +78,14 @@ echo "已备份: $BACKUP"
 #   - 段内无该键 → 段末插入；
 #   - 全文无该段 → 文件末尾追加该段（边界情况，正常 config 不会走到）。
 awk -v suf="$SUFFIX" '
-  /^[[:space:]]*\[/ {
+  /^[ \t]*\[/ {
     if (insec && !done) { print "domain_suffix = \"" suf "\""; done=1 }
-    insec = ($0 ~ /^[[:space:]]*\[server\.magic_dns\][[:space:]]*$/)
+    insec = ($0 ~ /^[ \t]*\[server\.magic_dns\][ \t]*$/)
     if (insec) seen=1
     print; next
   }
   {
-    if (insec && !done && $0 ~ /^[[:space:]]*#?[[:space:]]*domain_suffix[[:space:]]*=/) {
+    if (insec && !done && $0 ~ /^[ \t]*#?[ \t]*domain_suffix[ \t]*=/) {
       print "domain_suffix = \"" suf "\""; done=1; next
     }
     print

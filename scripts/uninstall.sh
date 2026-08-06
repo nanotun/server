@@ -33,7 +33,7 @@ while [ $# -gt 0 ]; do
     --yes|-y)  ASSUME_YES=1; shift ;;
     --dry-run) DRY=1; shift ;;
     -h|--help)
-      awk 'NR>1 && /^#/ {sub(/^#[[:space:]]?/,""); print; next} NR>1 {exit}' "$0"
+      awk 'NR>1 && /^#/ {sub(/^#[ \t]?/,""); print; next} NR>1 {exit}' "$0"
       exit 0 ;;
     *) printf 'uninstall.sh: 未知参数 %s(--help 看用法)\n' "$1" >&2; exit 2 ;;
   esac

@@ -22,15 +22,25 @@ if [[ ! -f "$CFG" ]]; then
   exit 0
 fi
 
+# 空白一律写成 [ \t],不用 [[:space:]]。
+#
+# mawk 1.3.3(Ubuntu 18.04、Debian 10 的默认 awk)不认 POSIX 字符类,整条正则于是
+# 永不匹配 —— 本函数把每个字段都读成空串,而调用方把「空」理解成「配置里没写」,
+# 于是一份证书都不生成。装完看着一路绿灯,nanotund 起来却是 ExitTLSCert(20):
+# "open certs/dev-cert.pem: no such file or directory"。
+#
+# 报错离原因隔了十万八千里:文件确实不在,但为什么不在,要一路倒推回 awk 的方言差异。
+# TOML 里的缩进本来就只有空格和制表符两种,[ \t] 覆盖得完完整整,而它是所有 awk
+# 实现都认的写法。
 read_toml_field() {
   local section="$1" key="$2"
   awk -v sect="[$section]" -v k="$key" '
     $0 == sect { insection=1; next }
     /^\[/ { if (insection) exit }
-    insection && $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {
-      sub(/^[[:space:]]*[^=]+=[[:space:]]*/, "")
+    insection && $0 ~ "^[ \t]*" k "[ \t]*=" {
+      sub(/^[ \t]*[^=]+=[ \t]*/, "")
       gsub(/^["\047]|[\047"]$/, "")
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+      gsub(/^[ \t]+|[ \t]+$/, "")
       print
       exit
     }
@@ -137,22 +147,59 @@ if [[ -n "${client_ca_rel// }" ]]; then
   if [[ "$client_ca_key_path" == "$client_ca_path" ]]; then
     client_ca_key_path="${client_ca_path}.key"
   fi
+  # 已经落地的坏 CA 要能自愈。
+  #
+  # 1.1.1 生成的那份带重复扩展的证书,在 openssl 眼里完全正常(usable_pem 过得去),
+  # 所以下面的「缺了才生成」永远不会重签 —— 而「重跑一遍安装」正是文档给出的修复
+  # 动作,修不好的话人就卡死在那儿了。这里显式把它判成坏的。
+  #
+  # 重签会换掉 CA 身份,但这只影响 hy2 的 mTLS:能走到这一步的机器,nanotund 本来就
+  # 因为 Go 拒收这份 CA 而起不来,不存在「已经在用它的客户端」。
+  if [[ -f "$client_ca_path" ]]; then
+    ca_bc_count="$(openssl x509 -in "$client_ca_path" -noout -text 2>/dev/null \
+      | grep -c 'X509v3 Basic Constraints' || true)"
+    if [[ "${ca_bc_count:-0}" -gt 1 ]]; then
+      echo "[ensure-server-assets] client CA 带重复扩展(OpenSSL 1.1.1 的老毛病,Go 会拒收),重新生成 -> $client_ca_path" >&2
+      rm -f "$client_ca_path" "$client_ca_key_path"
+    fi
+  fi
+
   check_pem_or_die "$client_ca_path" cert
   if ! usable_pem "$client_ca_path" cert; then
     echo "[ensure-server-assets] 未找到 tls_client_ca_file，生成开发用 CA -> $client_ca_path" >&2
     mkdir -p "$(dirname "$client_ca_path")"
     rm -f "$client_ca_path"
-    if openssl req -x509 -newkey rsa:2048 -nodes \
+    # 这里**不能**用 -addext。
+    #
+    # OpenSSL 1.1.1 的 -addext 不会覆盖默认 openssl.cnf 里 [v3_ca] 已经写好的
+    # basicConstraints,两边各写一份,证书里同一个扩展就出现了两次。openssl 自己
+    # 读得下去(x509 -text 照常打印),但 Go 的 x509.ParseCertificate 直接拒绝重复
+    # 扩展,AppendCertsFromPEM 于是返回 false —— 表现是 nanotund 起不来:
+    # "hysteria: tls_client_ca_file 中无有效 PEM 证书",退 31,服务 crash-loop。
+    #
+    # 症状离原因很远:文件在、权限对、openssl 验得过,肉眼完全看不出毛病。
+    # OpenSSL 3 改掉了这个行为,所以只在 1.1.1 的发行版上炸 —— Ubuntu 20.04、
+    # Debian 11、RHEL/Rocky 8 全在其列,而这些恰恰是自建用户手上最多的老 LTS。
+    #
+    # 改用 -config 指一份只含所需扩展的临时配置:默认 cnf 的 x509_extensions 不再
+    # 参与,1.1.1 和 3.x 上得到的都是干净的单份扩展。
+    ca_cnf="$(mktemp)"
+    cat >"$ca_cnf" <<'CACNF'
+[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = nanotun-client-ca
+O = nanotun-deploy
+[v3_nanotun_ca]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+CACNF
+    openssl req -x509 -newkey rsa:2048 -nodes \
       -keyout "$client_ca_key_path" -out "$client_ca_path" -days 3650 \
-      -subj "/CN=nanotun-client-ca/O=nanotun-deploy" \
-      -addext "basicConstraints=critical,CA:TRUE" \
-      -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null; then
-      :
-    else
-      openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "$client_ca_key_path" -out "$client_ca_path" -days 3650 \
-        -subj "/CN=nanotun-client-ca/O=nanotun-deploy"
-    fi
+      -config "$ca_cnf" -extensions v3_nanotun_ca
+    rm -f "$ca_cnf"
     chmod 600 "$client_ca_key_path" 2>/dev/null || true
     chmod 644 "$client_ca_path" 2>/dev/null || true
   fi

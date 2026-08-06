@@ -79,7 +79,7 @@ while [ $# -gt 0 ]; do
     -h|--help)
       # 退回的那份必须自己够用。--help 最常见的用法恰恰是 curl | bash -s -- --help,
       # 而那时 $0 是 "bash"、读不到文件 —— 只回一个链接等于让人再去开一次浏览器。
-      awk 'NR>1 && /^#/ {sub(/^#[[:space:]]?/,""); print; next} NR>1 {exit}' "$0" 2>/dev/null || cat <<EOF
+      awk 'NR>1 && /^#/ {sub(/^#[ \t]?/,""); print; next} NR>1 {exit}' "$0" 2>/dev/null || cat <<EOF
 nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 → 开服向导。
 
   sudo bash -c "\$(curl -fsSL ${RAW_BASE}/install.sh)"

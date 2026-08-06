@@ -46,7 +46,14 @@ ProtectHome=yes
 PrivateTmp=yes
 # 数据库与控制 socket 默认路径,如运维改了 [store].db_path / [server].control_socket_path,
 # 请同步修改这里(否则 server 起来就因为只读拒写直接退)。
-ReadWritePaths=/var/lib/nanotun /run/nanotun
+#
+# /run/xtables.lock 是 legacy 后端 iptables 的锁文件。ProtectSystem=strict 把 /run 挂成
+# 只读,而 legacy 的 iptables 打不开这个锁就直接 Fatal —— 表现是 nanotund 退 60、
+# 服务 crash-loop、数据面全灭(Ubuntu 20.04 实测复现)。nft 后端不碰它,所以新发行版上
+# 一直没露出来。前缀 `-` 表示文件不在也不影响启动:nft-only 的机器上它本来就不该存在,
+# 没有 `-` 的话 namespace 建不起来,反而把好好的机器搞成 226/NAMESPACE。
+# 文件由 nanotun-tun-setup.service 在本单元之前建好(理由见那边注释)。
+ReadWritePaths=/var/lib/nanotun /run/nanotun -/run/xtables.lock
 
 # K(2026-05-23):RuntimeDirectory= 让 systemd 在 ExecStart 之前自动创建 /run/nanotun
 # (mode 0750,owner=User/Group),stop 后清理。否则与 ProtectSystem=strict +

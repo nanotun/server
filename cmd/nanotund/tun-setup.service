@@ -6,6 +6,22 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+
+# 先把 /run/xtables.lock 变出来,给下一个单元用。
+#
+# nanotund 跑在 ProtectSystem=strict 里,那会把 /run 挂成只读,而 **legacy 后端的**
+# iptables 要在 /run/xtables.lock 上加锁 —— 拿不到就是 "can't open lock file ...:
+# Read-only file system",nanotund 退 60,服务 crash-loop,数据面全灭。nft 后端不碰
+# 这个文件,所以新发行版上从来看不到(Ubuntu 20.04 实测是 legacy,当场复现)。
+#
+# 解法要两半才成立:文件得在 nanotun.service 建 mount namespace **之前**就存在,
+# 才能被那边的 ReadWritePaths 以读写方式 bind 进去。所以放在这个先跑一步的单元里,
+# 而不是 nanotun.service 自己的 ExecStartPre —— 那时 namespace 已经建好了,太晚。
+#
+# 用 touch 不用 install/truncate:已有的锁文件必须保住同一个 inode,否则正握着
+# flock 的并发 iptables 会锁到一个已经没人看的旧 inode 上。
+ExecStartPre=/bin/sh -c 'touch /run/xtables.lock 2>/dev/null || true'
+
 # 安装时把 tun-setup.sh、tun-isolate.sh 复制到 /usr/local/bin/ 并 chmod +x；setup 会顺带执行 isolate
 ExecStart=/usr/local/bin/nanotun-tun-setup.sh
 
