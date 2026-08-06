@@ -105,6 +105,13 @@ sudo nanotun-admin webadmin create <名字>     # 会提示输两遍密码,不�
 sudo nanotun-admin webadmin list              # 看后台都有谁
 ```
 
+忘了后台密码,或者被连续输错锁在门外了,从服务器上救回来:
+
+```bash
+sudo nanotun-admin webadmin reset-password <名字>   # 改密码,顺带清掉失败锁定
+sudo nanotun-admin webadmin unlock <名字>           # 只解锁,密码不动
+```
+
 客户端扫完两个码就能连。剩下的用户管理走 Web 后台或下面的命令行。
 
 ### 用 Docker 跑
