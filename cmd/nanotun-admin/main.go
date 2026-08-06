@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -70,6 +71,81 @@ func main() {
 func runRoot(args []string, opts *globalOpts) int {
 	subcmd, rest := args[0], args[1:]
 	opts.bootstrapDB = subCanBootstrapDB(subcmd, rest)
+
+	// `nanotun-admin user --help` 从前答的是 unknown subcommand "--help" —— 顶层认这三个词,
+	// 子命令一个都不认。更糟的是几个「动作型」子命令会把它当参数吞下去照常干活:
+	// `vacuum --help` 真的去独占锁库跑了一次 VACUUM,`restore --help` 真的开始尝试恢复。
+	// 想查用法结果把事做了,这是最不该有的一种意外。
+	//
+	// 所以在派发之前就截住,并且既不调 dispatcher 也不开库 —— 直接从顶层 help 里摘出这个
+	// 子命令那几行。那里本来就是所有子命令用法的唯一出处,不会另抄一份出来跑偏。
+	if isHelpToken(rest) {
+		printSubcommandUsage(opts, subcmd)
+		return 0
+	}
+	return runRootSub(subcmd, rest, opts)
+}
+
+// printSubcommandUsage 印出顶层 help 中属于 sub 的那几行;认不出来时退回整份 help。
+func printSubcommandUsage(opts *globalOpts, sub string) {
+	canonical := map[string]string{"conn": "connection", "cred": "credentials", "ls": "list"}
+	if c, ok := canonical[sub]; ok {
+		sub = c
+	}
+
+	var full bytes.Buffer
+	printUsage(&full, opts.lang)
+
+	var picked []string
+	inList, selected := false, false
+	for _, line := range strings.Split(full.String(), "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		indent := len(line) - len(trimmed)
+		switch {
+		case trimmed == "":
+			continue
+		case indent == 0: // 段落标题:SUBCOMMANDS / GLOBAL FLAGS / ...
+			inList = strings.HasPrefix(trimmed, "SUBCOMMANDS")
+			selected = false
+		case !inList:
+			continue
+		case indent <= 4: // 一条新条目
+			selected = strings.Fields(trimmed)[0] == sub
+			if selected {
+				picked = append(picked, line)
+			}
+		case selected: // 上一条折行的续行
+			picked = append(picked, line)
+		}
+	}
+
+	if len(picked) == 0 {
+		printUsage(opts.stdout, opts.lang)
+		return
+	}
+	fmt.Fprintf(opts.stdout, "%s\n", strings.Join(picked, "\n"))
+
+	// 少数子命令(config / credentials)另有一段更细的专属用法 —— 顶层那一行概括不了
+	// 它们的 flag 与退出码。有就一并印出,别让 --help 反而比裸打子命令看到的还少。
+	if _, ok := cliCatalogs[langDefault][sub+".usage"]; ok {
+		fmt.Fprintf(opts.stdout, "\n%s\n", opts.T(sub+".usage"))
+	}
+}
+
+// isHelpToken 判断子命令后面跟的是不是「就想看看用法」。
+// 只认单独出现的情形:`user --help create` 这类还是交给正常解析去报错。
+func isHelpToken(rest []string) bool {
+	if len(rest) != 1 {
+		return false
+	}
+	switch rest[0] {
+	case "help", "-h", "--help":
+		return true
+	}
+	return false
+}
+
+func runRootSub(subcmd string, rest []string, opts *globalOpts) int {
 
 	switch subcmd {
 	case "help", "-h", "--help":
