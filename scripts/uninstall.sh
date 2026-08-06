@@ -61,7 +61,11 @@ BINS=(nanotund nanotun-admin nanotun-web nanotun-setup nanotun-preflight
       nanotun-tun-isolate.sh nanotun-tun-isolate-teardown.sh)
 
 # --purge 才删。全部是服务端独有的,客户端不碰。
-PURGE_FILES=("$ETC_DIR/config.toml" "$ETC_DIR/config.toml.dist")
+#
+# web.env 漏掉的代价比一般残留大:它写着 NANOTUN_WEB_ALLOW_SETUP=0。purge 之后重装,
+# 新机器的库里一个管理员都没有,却带着一份「已关门」的残留 —— /setup 打不开、也没有
+# 账号可登,Web 后台直接进不去,而向导还照着旧逻辑说「/setup 仍然敞着」。
+PURGE_FILES=("$ETC_DIR/config.toml" "$ETC_DIR/config.toml.dist" "$ETC_DIR/web.env")
 # 数据库连同它的一族随从一起走:-wal / -shm(SQLite)、.migrate.lock(store.Migrate
 # 建的)、.preimport.*(旧库导入前的备份,里面是整个用户表)。
 #

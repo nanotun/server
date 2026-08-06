@@ -439,6 +439,18 @@ wa_create() {
 #
 # 已经写过就不再动,免得每次重跑向导都去踢一次服务;显式写了 =1 的也不覆盖(那是人自己
 # 要把向导打开,比如正准备重新 bootstrap)。
+# 门是不是已经关了。
+#
+# 「一个管理员都没有」曾经等价于「/setup 对全网敞着」,close_setup_gate 之后不再是 ——
+# 库丢了(门照样关着,这正是它的用意)、或者 purge 没清干净 web.env 就重装,都会落到
+# 「零管理员 + 门已关」。这时候还照着旧逻辑喊「/setup 敞着,谁先打开谁是管理员」就是
+# 把话说反了,而且给的建议(封端口)也是错的 —— 人该做的是用 CLI 补一个账号。
+setup_gate_closed() {
+  local env_file="$ETC_DIR/web.env"
+  [ -f "$env_file" ] || return 1
+  grep -qE '^NANOTUN_WEB_ALLOW_SETUP=(0|false|no)[[:space:]]*$' "$env_file" 2>/dev/null
+}
+
 close_setup_gate() {
   local env_file="$ETC_DIR/web.env"
 
@@ -498,7 +510,13 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
     # 只在真的一个管理员都没有时说这句。库里已经有人时 /setup 早就关了,再喊一遍
     # 「敞着」是假警报 —— 而这段代码的全部意义就是让人认真对待这一句。
     if [ "${WEB_ADMIN_COUNT:-0}" = 0 ]; then
-      warn "现在不建的话,/setup 会一直敞着 —— 谁先打开谁就是管理员。"
+      if setup_gate_closed; then
+        # 零管理员 + 门已关:多半是库丢了(门就是为这一刻留的),或者这台机器之前 purge
+        # 过。网页那条路现在走不通,只能从这里或 CLI 建。
+        warn "这台机器的 /setup 已经关闭,现在一个管理员都没有 —— Web 后台登不进去。"
+      else
+        warn "现在不建的话,/setup 会一直敞着 —— 谁先打开谁就是管理员。"
+      fi
       printf '\n'
     fi
 
@@ -509,7 +527,11 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
       # 无人值守。给了名字才建 —— 没给就当调用方另有安排(比如它自己会调
       # `webadmin create`),不替人凭空造账号。
       if [ -z "$web_admin_user" ]; then
-        warn "--yes 且没给 --web-admin:跳过。这台机器的 /setup 仍然敞着,记得尽快:"
+        if setup_gate_closed; then
+          warn "--yes 且没给 --web-admin:跳过。这台机器的 /setup 已关闭且没有管理员,后台进不去:"
+        else
+          warn "--yes 且没给 --web-admin:跳过。这台机器的 /setup 仍然敞着,记得尽快:"
+        fi
         note "  nanotun-admin --db-path $DB webadmin create <名字>"
       else
         if [ -z "$web_admin_pass" ]; then
@@ -548,8 +570,14 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
           # 交互模式不走这条(人就在屏幕前,看得见那句警告,下面还会让他重输)。
           # 重名也不走这条:同名账号在上面就被「已存在,跳过」接住了,幂等重跑不受影响。
           if [ "${WEB_ADMIN_COUNT:-0}" = 0 ]; then
+            # 同一件事有两种后果,取决于门开着没有:开着是被人抢占,关着是自己也进不去。
+            if setup_gate_closed; then
+              gate_state="而 /setup 已关闭 —— 谁也进不去这个后台,包括你。"
+            else
+              gate_state="/setup 谁先打开谁就是管理员。"
+            fi
             die "建 Web 管理员失败(原因见上一行)。--yes 是无人值守,这里不能装作没事:
-   现在这台机器一个管理员都没有,/setup 谁先打开谁就是管理员。
+   现在这台机器一个管理员都没有,$gate_state
    改好 NANOTUN_WEB_ADMIN_PASSWORD(12 位起、至少两类字符)重跑本命令,或者手工补:
      nanotun-admin --db-path $DB webadmin create <名字>"
           else
@@ -601,6 +629,9 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
         fi
         unset web_admin_pass web_admin_pass2
         note "登录: https://$current_dial:$WEB_PORT/(自签证书,浏览器会警告,确认地址无误后继续)"
+      elif setup_gate_closed; then
+        warn "跳过了。这台机器的 /setup 已关闭,而一个管理员都没有 —— Web 后台进不去。补一个:"
+        note "  nanotun-admin --db-path $DB webadmin create <名字>"
       else
         warn "跳过了。/setup 仍然敞着 —— 谁先打开谁是管理员。想现在关掉这扇门:"
         note "  ufw deny $WEB_PORT/tcp        # 或者"
