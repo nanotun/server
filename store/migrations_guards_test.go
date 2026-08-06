@@ -70,6 +70,44 @@ func TestMigrate_RunsCleanOnAFreshDatabase(t *testing.T) {
 	}
 }
 
+// TestMigrate_RefusesADatabaseFromTheFuture:库的 schema 比程序新(= 有人降级了)时必须停。
+//
+// runner 的循环只跳过 `<= current` 的迁移,所以这种库原本会一条不跑、静默返回 nil,旧二进制
+// 就跑在一个它不认识的 schema 上 —— 报错要等到某次真实读写才发生,离病根十万八千里。
+func TestMigrate_RefusesADatabaseFromTheFuture(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("版本高于内嵌的最高迁移号即拒绝", func(t *testing.T) {
+		s := newTestStore(t)
+		setSchemaVersionRaw(t, s, "9999")
+		err := s.Migrate(ctx)
+		if !errors.Is(err, ErrSchemaFromFuture) {
+			t.Fatalf("想要 ErrSchemaFromFuture,拿到 %v", err)
+		}
+		// 报错要说清「库是多少、程序认到多少」,否则运维只知道起不来,不知道是降级导致的。
+		if !strings.Contains(err.Error(), "9999") {
+			t.Fatalf("报错里没有库的版本号: %v", err)
+		}
+		if got := schemaVersionRaw(t, s); got != "9999" {
+			t.Fatalf("拒绝之后不该改动版本号,却成了 %s", got)
+		}
+	})
+
+	t.Run("同版本的库照常放行", func(t *testing.T) {
+		// 落后的库(部分迁移过)由 TestMigrate_RunsCleanOnAFreshDatabase 覆盖 —— 不在这里
+		// 把版本号倒回去伪造:历史迁移里有裸 ALTER TABLE ADD COLUMN,在已经迁移完的库上重跑
+		// 会撞 duplicate column,测出来的是伪造手法的毛病,不是守卫的。
+		s := newTestStore(t)
+		newest := schemaVersionRaw(t, s)
+		if err := s.Migrate(ctx); err != nil {
+			t.Fatalf("与程序同版本的库被误拦: %v", err)
+		}
+		if got := schemaVersionRaw(t, s); got != newest {
+			t.Fatalf("放行后版本不该变,却从 %s 成了 %s", newest, got)
+		}
+	})
+}
+
 func TestMigrate_NeverAdvancesTheVersionPastAFailure(t *testing.T) {
 	ctx := t.Context()
 

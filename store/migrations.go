@@ -46,6 +46,24 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return err
 	}
 
+	// 库比程序新 = 有人降级了。runner 的循环只跳过 `<= current` 的迁移,所以这种库会
+	// 一条不跑、静默放行,旧二进制就跑在一个它不认识的 schema 上:少一列的 INSERT 要等
+	// 到某次真实写入才炸,改过名的列要等到那个页面被打开才炸 —— 报错点离病根十万八千里,
+	// 而且期间写进去的数据未必还能被新版本读回去。宁可开机就停。
+	//
+	// 这道守卫只在**旧**二进制里才起作用,所以必须赶在第一个改 schema 的版本之前就带上
+	// (截至 v0.1.10 所有发布版都停在同一个迁移号,降级从没被真正走过)。
+	if len(files) > 0 {
+		newest := files[len(files)-1].version
+		if current > newest {
+			return fmt.Errorf(
+				"%w:库的 schema 版本是 %d,本程序只认到 %d。"+
+					"这台机器上装过更新的 nanotun,降级回来不安全 —— 请换回原来的版本,"+
+					"或从降级前的备份恢复数据库",
+				ErrSchemaFromFuture, current, newest)
+		}
+	}
+
 	for _, m := range files {
 		if m.version <= current {
 			continue

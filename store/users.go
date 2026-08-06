@@ -214,6 +214,10 @@ var ErrSetupClosed = errors.New("store: web admin setup already completed")
 // DeleteWebAdminEnsuringAdmin / SetWebAdminRoleEnsuringAdmin 在单个事务里「先写后验 floor,违则回滚」返回它。
 var ErrLastAdmin = errors.New("store: refuse to leave zero enabled admins")
 
+// ErrSchemaFromFuture:库的 schema 版本高于本程序内嵌的最高迁移号 —— 这台机器上装过更新的
+// nanotun,现在跑的是降级回来的旧二进制。Migrate 拒绝在这种库上继续,详见 migrations.go 里的守卫。
+var ErrSchemaFromFuture = errors.New("store: database schema is newer than this binary")
+
 // CreateUser 创建一个新用户并返回其完整记录（含自增 ID）。
 func (s *Store) CreateUser(ctx context.Context, in NewUser) (*User, error) {
 	// 第四轮深扫 MED(store #4/#15):用户名首尾空白**入库前统一裁剪**。此前 " alice " 会原样入库,与 "alice"
