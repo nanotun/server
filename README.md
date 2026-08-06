@@ -68,26 +68,36 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/preflig
 便宜 VPS 用 OpenVZ / LXC 虚拟化拿不到 TUN 设备(得换 KVM),和 Alpine 这类不用 systemd 的
 发行版(得改走 Docker)。
 
-### 支持哪些发行版
+### 支持哪些发行版、最低到什么版本
 
 **不挑发行版,挑的是上面那几样东西。** 二进制是静态编译的(`CGO_ENABLED=0`),不链接
-glibc 或 musl,发行版和版本对它没有意义;真正的门槛只有一条 —— **systemd 在跑**,
-因为装的是 systemd unit。除此之外要的 `iptables`/`ip`/`openssl`/`sysctl` 任何发行版
-都能装上,preflight 会按你的包管理器给出对的包名(Debian 系 `procps`、RHEL 系
-`procps-ng`,不会给错)。
+glibc 或 musl,所以发行版和版本对程序本身没有意义。
 
-实测装通并跑完开服向导的:
+**硬门槛是 systemd ≥ 235。** 单元文件里用到 `RuntimeDirectoryPreserve=`,那是 systemd 235
+(2017 年 10 月)才有的指令;更低的版本会把这行当没看见,于是两个服务共享的 `/run/nanotun`
+会在各自重启时被对方清掉,控制 socket 跟着消失 —— 症状是 Web 后台一直说「运行时数据不可用」。
+换算到发行版,就是下面这张表的下限。
 
-| 发行版 | 结果 |
-| --- | --- |
-| Ubuntu 26.04 | 装通(线上服务器与发版 e2e 用的就是它) |
-| Debian 13 | 装通(最小镜像要先按提示补 `procps`) |
-| Rocky 9 / RHEL 系 | 装通(防火墙走 firewalld,脚本会自动放行) |
-| Alpine | **裸机装不了**,preflight 直接挡下并指向 Docker |
+每一行都在容器里从空系统装到开服向导跑完,不是照着版本号推的:
+
+| 发行版 | 最低 | 实测过 | 备注 |
+| --- | --- | --- | --- |
+| Ubuntu | 18.04 | 18.04 / 20.04 / 26.04 | 18.04 的 systemd 是 237,刚好在门槛之上 |
+| Debian | 10 | 11 / 13 | 10 的软件源已归档、装不动包,没能实测;它与 18.04 同代,组件版本一一对应 |
+| RHEL 系 | 8 | Rocky 8 / 9 | 防火墙是 firewalld,脚本会自动放行 |
+| Alpine | — | 明确挡下 | 用 OpenRC 而非 systemd,改走 Docker |
 
 没列到的发行版不代表不行:Fedora、Alma、openSUSE、Arch 只要 systemd 在跑就是同一条路,
-preflight 都认得它们的包管理器。拿不准就先跑上面那条只读的检查命令 —— 它给的是这台
-机器的答案,比任何兼容性列表都准。
+preflight 也认得它们的包管理器。拿不准就跑上面那条只读的检查命令 —— 它给的是这台机器的
+答案,比任何兼容性列表都准。
+
+**但仍然建议用还在收安全更新的版本。** Ubuntu 18.04 和 Debian 10 都已 EOL:nanotun 装得上
+也跑得起来,可那台机器的内核和 OpenSSL 不再有人修,而它是要对公网开端口的。
+
+老发行版上有三处与新版本不同,装机脚本都已经处理,列在这里只是为了排障时不必重新发现一遍:
+OpenSSL 1.1.1(Ubuntu ≤ 20.04 / Debian 11 / RHEL 8)生成证书时会写出重复的扩展项而 Go 拒收;
+mawk 1.3.3(Ubuntu 18.04 / Debian 10)不认 `[[:space:]]` 这类字符类;老版本默认的 legacy
+iptables 需要写 `/run/xtables.lock`,而 systemd 沙盒把 `/run` 挂成了只读。
 
 Alpine、Devuan 这类不用 systemd 的,以及连 init 都没有的容器环境,走
 [Docker 部署](docs/DOCKER.md):那条路不要求宿主有 systemd,发行版就更无所谓了。

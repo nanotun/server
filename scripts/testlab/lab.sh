@@ -11,6 +11,7 @@
 #
 # 选项(跟在命令后面):
 #   --distro ubuntu|debian|rocky|alpine   默认 ubuntu(与线上 SRV 的 Ubuntu 26.04 对齐)
+#                                         可带版本验最低支持线:ubuntu:20.04 / debian:11 / rocky:8
 #   --local                               装本地 HEAD 构建的包,而不是从 GitHub 下发布包
 #   --version vX.Y.Z                      指定要装的版本;不给就自动取最新(含预发布)
 #   其余参数原样透传给里面的脚本,例如:lab.sh install --skip-check
@@ -67,23 +68,45 @@ while (( $# )); do
 done
 [ -n "$CMD" ] || { usage; exit 2; }
 
-case "$DISTRO" in
-  ubuntu) BASE=ubuntu:26.04 ;;
-  debian) BASE=debian:13 ;;
+# --distro 可以带版本:`ubuntu:20.04`、`debian:11`、`rocky:8`。不带就是下面的默认值。
+#
+# 加这个是为了能验「最低支持版本」那句话。README 里写 Ubuntu 18.04 起、Debian 10 起,
+# 依据是 systemd ≥ 235(RuntimeDirectoryPreserve 那条指令)—— 但推算出来的版本号和
+# 实际装得上是两回事,而这种话一旦写进文档就是承诺。有了这个开关,声明的每一个下限
+# 都能当场跑一遍。
+DISTRO_NAME="${DISTRO%%:*}"
+DISTRO_VER=""
+[ "$DISTRO" != "$DISTRO_NAME" ] && DISTRO_VER="${DISTRO#*:}"
+
+case "$DISTRO_NAME" in
+  ubuntu) BASE="ubuntu:${DISTRO_VER:-26.04}" ;;
+  debian) BASE="debian:${DISTRO_VER:-13}" ;;
   # Docker Hub 上的 rockylinux 仓库已归档,官方现在发在 quay.io。
-  rocky)  BASE=quay.io/rockylinux/rockylinux:9 ;;
-  alpine) BASE=alpine:3 ;;
-  *) die "不认识的发行版 ${DISTRO}(可选:ubuntu / debian / rocky / alpine)" ;;
+  # 但 8 只在旧的 docker.io/rockylinux 下面有,quay 那边最早是 9。
+  rocky)
+    if [ "${DISTRO_VER:-9}" = 8 ]; then BASE="rockylinux:8"
+    else BASE="quay.io/rockylinux/rockylinux:${DISTRO_VER:-9}"; fi ;;
+  alpine) BASE="alpine:${DISTRO_VER:-3}" ;;
+  *) die "不认识的发行版 ${DISTRO_NAME}(可选:ubuntu / debian / rocky / alpine,可带版本如 ubuntu:20.04)" ;;
 esac
-IMAGE="nanotun-lab:${DISTRO}"
-NAME="nanotun-lab-${DISTRO}"
+
+TAG="$DISTRO_NAME"
+[ -n "$DISTRO_VER" ] && TAG="${DISTRO_NAME}-${DISTRO_VER//./-}"
+IMAGE="nanotun-lab:${TAG}"
+NAME="nanotun-lab-${TAG}"
 # 每个发行版一个默认端口。四台可以同时开着(比如一边在 ubuntu 上装,一边在 rocky 上
 # 看 preflight),共用 7443 的话第二台起不来,而报错是 docker 的「port is already
 # allocated」—— 跟 nanotun 毫无关系,查起来先入为主地往错的方向想。
-case "$DISTRO" in
+case "$DISTRO_NAME" in
   ubuntu) DEF_PORT=7443 ;; debian) DEF_PORT=7444 ;;
   rocky)  DEF_PORT=7445 ;; alpine) DEF_PORT=7446 ;;
 esac
+# 钉了版本的另占一段端口:同一个发行版的两个版本经常要同时开着比对(比如 20.04 上
+# 复现的问题,要立刻在 26.04 上确认是不是版本相关),共用默认端口的话第二台起不来。
+# 用版本串的 cksum 散进 7500-7899,同名同版本每次都落在同一个号上,可复现。
+if [ -n "$DISTRO_VER" ]; then
+  DEF_PORT=$(( 7500 + $(printf '%s' "$DISTRO" | cksum | cut -d' ' -f1) % 400 ))
+fi
 WEB_PORT="${LAB_WEB_PORT:-$DEF_PORT}"
 # 缺 TUN 的那台是独立一台,不能跟正常那台共用容器名/端口 —— 否则 up 会直接复用
 # 已存在的那个(带着 /dev/net/tun),测出来的是假绿。
@@ -141,7 +164,7 @@ up() {
 
   # Alpine 没有 systemd,/sbin/init 是 busybox 的,拿它当 PID 1 会立刻退出。
   # 这台只用来跑 preflight —— 看它是否老老实实报「没有 systemd」。
-  if [ "$DISTRO" = alpine ]; then
+  if [ "$DISTRO_NAME" = alpine ]; then
     run+=("$IMAGE" sleep infinity)
   else
     run+=("$IMAGE")
@@ -168,7 +191,7 @@ up() {
 }
 
 wait_boot() {
-  [ "$DISTRO" = alpine ] && return 0
+  [ "$DISTRO_NAME" = alpine ] && return 0
   local st
   for _ in $(seq 1 60); do
     st="$(docker exec "$NAME" systemctl is-system-running 2>/dev/null || true)"

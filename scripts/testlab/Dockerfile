@@ -36,12 +36,29 @@ RUN set -eux; \
       # 这里刻意不写 curl 和 ca-certificates:RHEL 9 预装的是 curl-minimal,它与
       # curl 互斥,显式装 curl 会让整条 dnf 直接失败(conflicting requests)。
       # 包名也与 Debian 系不同:iproute(不是 iproute2)、procps-ng(不是 procps)。
-      "$PM" -y install systemd iproute iptables-nft openssl procps-ng; \
+      "$PM" -y install systemd iproute openssl procps-ng; \
+      # 包名在 RHEL 8/9 之间变过:9 里 nft 后端单独叫 iptables-nft,8 里就叫 iptables
+      # (那时 nft 已经是默认后端)。写死任一个,另一边的镜像就构建不出来 —— 而我们
+      # 恰恰要用 Rocky 8 去验最低支持版本那句话。
+      "$PM" -y install iptables-nft || "$PM" -y install iptables; \
       "$PM" clean all || true; \
     elif command -v apk >/dev/null 2>&1; then \
       apk add --no-cache bash ca-certificates curl iproute2 iptables openssl; \
     else \
       echo "未知发行版:没有 apt / dnf / apk" >&2; exit 1; \
+    fi
+
+# 屏蔽几个在容器里永远完不成的 getty:老 systemd(Ubuntu 20.04 的 245 实测)会为
+# serial-getty@hvc0 去等一个 dev-hvc0.device,而容器里没有这个设备,那个 job 就一直
+# "running",multi-user.target 跟着停在 waiting —— systemctl is-system-running 永远
+# 停在 starting,开机检测就此超时。新版本上没这个现象,但屏蔽掉也无害。
+#
+# 用 ln 而不是 systemctl mask:构建时没有在跑的 systemd,mask 会因为连不上总线而报错。
+RUN if [ -d /etc/systemd ]; then \
+      mkdir -p /etc/systemd/system; \
+      for u in serial-getty@hvc0.service getty@tty1.service console-getty.service; do \
+        ln -sf /dev/null "/etc/systemd/system/$u"; \
+      done; \
     fi
 
 # systemd 只认 SIGRTMIN+3 是「关机」,默认的 SIGTERM 它当没看见,docker stop 会一直
