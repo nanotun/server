@@ -93,6 +93,16 @@ services:
       # NANOTUN_WEB_EXTRA_SANS: "vpn.example.com"
       # 管理面放在 nginx 后面时必须填,否则按 IP 的登录限流看到的全是反代地址。
       # NANOTUN_WEB_TRUSTED_PROXIES: "127.0.0.1,10.0.0.0/8"
+      #
+      # 建好第一个管理员后,把下面这行取消注释 —— 这是容器部署里最值得做的一步。
+      #
+      # /setup 只在 web_admins 表为空时开放,建好管理员就自然关上了 —— 但那个「关上」
+      # 是数据库里的一行。卷没挂上、路径打错、误删,容器照样启动、静默重建空库,/setup
+      # 就重新对全网敞开,谁先打开谁就是这台机器的管理员。而卷丢失恰恰是容器部署最常见
+      # 的事故。这行写在 compose 里,跟卷不在一起,正好在那种时候还活着。
+      #
+      # 之后要补管理员走 CLI:docker compose exec nanotun nanotun-admin webadmin create <名字>
+      # NANOTUN_WEB_ALLOW_SETUP: "0"
 
     # 日志走 stdout。默认 json-file 不限大小,长跑会把磁盘吃满 —— 这是容器部署最常见的
     # 事后翻车点,给它上限。

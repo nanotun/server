@@ -342,6 +342,27 @@ tag,workflow 只认这种 tag —— 手工 `git tag` 推上去发不出版本�
 **备份**:`nanotun-admin backup`(热一致,走 `VACUUM INTO`)拿 SQLite 库,
 再连 `/etc/nanotun` 一起存 —— REALITY 私钥和 hy2 口令都在那儿,丢了客户端要重新接入。
 
+**数据库丢了怎么办**:服务不会因为库不见了就停 —— 它会重建一个空库照常启动,
+所以别指望「服务挂了」来提醒你。恢复就是把备份拷回去:
+
+```bash
+sudo systemctl stop nanotun nanotun-web
+sudo cp /path/to/backup.db /var/lib/nanotun/nanotun.db
+sudo chmod 600 /var/lib/nanotun/nanotun.db
+sudo systemctl start nanotun nanotun-web
+```
+
+安装向导会往 `/etc/nanotun/web.env` 写一行 `NANOTUN_WEB_ALLOW_SETUP=0`,
+把 /setup 的关闭状态放在数据库之外。否则库一没,/setup 会重新对全网敞开,
+谁先打开谁就是这台机器的管理员。真要重新 bootstrap 一个后台账号,用 CLI:
+
+```bash
+sudo nanotun-admin webadmin create <名字>
+```
+
+容器部署同理,只是那行写在 compose 的 `environment:` 里(见 `docker/docker-compose.yml`)——
+卷丢失是容器最常见的事故,而 compose 文件跟卷不在一起,那种时候它还活着。
+
 **卸载**:[`scripts/uninstall.sh`](scripts/uninstall.sh)(随发布包走)。
 
 ```bash

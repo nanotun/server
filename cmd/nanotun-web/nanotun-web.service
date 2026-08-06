@@ -16,6 +16,17 @@ Type=simple
 User=root
 Group=root
 
+# setup 向导的关闭状态要独立于数据库存在。
+#
+# /setup 只在 web_admins 表为空时开放,建好管理员后自然关上 —— 但那个「关上」是数据库
+# 里的一行。库一旦没了(Docker 卷没挂上、路径写错、误删、磁盘故障),服务照常启动、
+# 静默重建空库,/setup 就重新对全网敞开,谁先打开谁就是这台机器的管理员。而正牌管理员
+# 访问 /login 还会被 302 进这个向导。
+#
+# 所以装机流程在管理员建好后往这里写一行 NANOTUN_WEB_ALLOW_SETUP=0,把关闭状态落在
+# 数据库之外。前缀 `-` 表示文件不存在也不影响启动(全新安装、或用户自己拉起服务)。
+EnvironmentFile=-/etc/nanotun/web.env
+
 ExecStart=/usr/local/bin/nanotun-web \
     -listen=0.0.0.0:7443 \
     -db=/var/lib/nanotun/nanotun.db \

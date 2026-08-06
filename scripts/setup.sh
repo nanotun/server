@@ -428,6 +428,39 @@ wa_create() {
   return 1
 }
 
+# 把 /setup 的关闭状态落到数据库之外。
+#
+# /setup 只在 web_admins 表为空时开放,建好管理员就自然关上了 —— 但那个「关上」是库里的
+# 一行。库一旦没了(Docker 卷没挂上、路径写错、误删、磁盘故障),服务照常启动、静默重建
+# 空库,/setup 就重新对全网敞开,谁先打开谁就是这台机器的管理员;正牌管理员访问 /login
+# 还会被 302 进这个向导。实测过:删掉库再起服务,GET /setup 回 200。
+#
+# 只在**确认已有管理员**时调用。一个都没有的机器绝不能关 —— 那等于把人彻底挡在后台外面。
+#
+# 已经写过就不再动,免得每次重跑向导都去踢一次服务;显式写了 =1 的也不覆盖(那是人自己
+# 要把向导打开,比如正准备重新 bootstrap)。
+close_setup_gate() {
+  local env_file="$ETC_DIR/web.env"
+
+  if [ -f "$env_file" ] && grep -qE '^NANOTUN_WEB_ALLOW_SETUP=' "$env_file" 2>/dev/null; then
+    return 0
+  fi
+
+  [ -d "$ETC_DIR" ] || return 0
+  {
+    printf '# 由 nanotun-setup 写入:已有 Web 管理员,永久关闭 /setup 抢占入口。\n'
+    printf '# 需要重新 bootstrap 时改成 1 并重启 nanotun-web;日常补管理员用:\n'
+    printf '#   nanotun-admin webadmin create <名字>\n'
+    printf 'NANOTUN_WEB_ALLOW_SETUP=0\n'
+  } >> "$env_file" 2>/dev/null || return 0
+  chmod 600 "$env_file" 2>/dev/null || true
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart nanotun-web >/dev/null 2>&1 || true
+  fi
+  ok "已永久关闭 /setup(库若丢失也不会重新敞开)。"
+}
+
 if [ "$WEB_AVAILABLE" = 1 ]; then
   note "注意这跟 VPN 账号是**两套东西**,最容易搞混的一步:"
   note "  · VPN 用户 + PSK  —— 客户端登录用,安装时已建了一个 admin"
@@ -574,6 +607,13 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
         note "  nanotun-admin --db-path $DB webadmin create <名字>"
       fi
     fi
+  fi
+
+  # 重新数一遍再决定关不关:上面几条分支有的建了、有的因为已经有人而跳过、有的被用户
+  # 否掉,只有「此刻确实有人」才是关门的依据。放在三条分支之外,重跑安装(管理员早就
+  # 存在、走的是「跳过」那条)也能补上这道门 —— 那正是升级上来的机器。
+  if [ "$(admin webadmin list 2>/dev/null | awk 'NR>1 && NF' | wc -l | tr -d '[:space:]')" -gt 0 ]; then
+    close_setup_gate
   fi
 else
   note "未安装 Web 后台。用户管理全部走命令行:nanotun-admin --db-path $DB ..."
