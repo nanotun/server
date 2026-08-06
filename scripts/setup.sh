@@ -68,7 +68,8 @@ nanotun 开服向导:设置客户端拨号地址、创建 Web 后台管理员、
   --user NAME        创建这个 VPN 用户并出二维码
   --no-user          跳过创建用户那一步
   --web-admin NAME   Web 后台管理员用户名(密码见下面的环境变量)
-  -y, --yes          不再交互,全部走默认值(必须配合 --dial-host)
+  -y, --yes          不再交互,全部走默认值(全新机器必须配合 --dial-host;
+                     已配过的机器不给就沿用现有值)
   -h, --help         显示本帮助
 
 环境变量:
@@ -213,7 +214,13 @@ if [ "$ASSUME_YES" = 0 ] && [ ! -t 0 ]; then
   die "stdin 不是终端,无法交互。脚本化请加 --yes 并显式给出 --dial-host。"
 fi
 if [ "$ASSUME_YES" = 1 ] && [ -z "$OPT_DIAL_HOST" ]; then
-  die "--yes 必须配合 --dial-host(拨号地址没有安全的默认值可猜)。"
+  # 全新机器上确实没得猜。但这台机器要是已经配过,那个值就是最安全的默认值 ——
+  # 交互模式在这种情况下的行为正是「回车即保留」,--yes 没有理由更严。
+  # 之前一律致命,于是「重跑一行命令升级」这条路在 --yes 下必然以 exit 1 收场:
+  # 装其实成功了,自动化却读成失败,人还得回去翻当初填的是什么再原样敲一遍。
+  if [ -z "$(admin setting get server_dial_host 2>/dev/null || true)" ]; then
+    die "--yes 必须配合 --dial-host(这台机器还没配过拨号地址,没有安全的默认值可猜)。"
+  fi
 fi
 
 # 等守护进程真的就绪再动用户数据。nanotun.service 是 Type=notify,active 基本等于
@@ -271,6 +278,11 @@ if [ -z "$current_dial" ] && [ -z "$OPT_DIAL_HOST" ] && [ "$ASSUME_YES" = 0 ]; t
 fi
 
 dial_host="$OPT_DIAL_HOST"
+# --yes 且没显式给值:沿用库里已有的那个(前置检查已确保它非空)。不这么接一手的话,
+# 下面 ask 在非交互下拿到的是空串,直接撞进「为空即致命」那条。
+if [ -z "$dial_host" ] && [ "$ASSUME_YES" = 1 ]; then
+  dial_host="$current_dial"
+fi
 while :; do
   if [ -z "$dial_host" ]; then
     dial_host="$(ask "拨号地址" "${current_dial:-$guess}")"
