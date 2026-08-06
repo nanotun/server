@@ -181,7 +181,11 @@ EXPOSE 443/udp 8443/tcp 7443/tcp
 
 # 探活走控制面 unix socket,而不是 /health 的 127.0.0.1:8081 —— 后者在 host 网络模式下
 # 与宿主回环共用,容易和宿主上别的服务撞端口;socket 是文件,不存在这个问题。
+#
+# 除了数据面探活,还要看 entrypoint 有没有留下 web-degraded 标记:管理面连挂到不再重启时,
+# 数据面照样健康,只探 socket 会一直报 healthy,而用户此时已经进不去后台了。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -sf --unix-socket /run/nanotun/control.sock http://localhost/status >/dev/null || exit 1
+    CMD curl -sf --unix-socket /run/nanotun/control.sock http://localhost/status >/dev/null \
+        && [ ! -e /run/nanotun/web-degraded ] || exit 1
 
 ENTRYPOINT ["/usr/local/bin/nanotun-entrypoint.sh"]

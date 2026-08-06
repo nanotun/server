@@ -310,6 +310,14 @@ docker compose exec nanotun diff /etc/nanotun/config.toml /etc/nanotun/config.to
 代价和收益完全不成比例。60 秒内连挂 5 次就不再拉起，只留日志 —— 配置写错时无限重启
 只会把日志刷爆，反而盖住真正的错误行。
 
+放弃拉起后容器会转成 **unhealthy**，尽管数据面还在正常转发。systemd 那边这种情况
+`systemctl is-active nanotun-web` 会显示 failed，容器里没有第二个 unit 可看，只能靠健康
+状态把「后台已经进不去了」这件事说出来。看见 unhealthy 又能连上 VPN，先查日志里
+`nanotun-web` 的退出原因（host 模式下最常见的是 7443 被宿主上别的服务占了），修好后
+`docker compose restart` 即可 —— 管理面不会自己回来。
+
+`NANOTUN_WEB_ENABLED=0` 是有意只跑数据面，不算降级，健康状态照常。
+
 有几个退出码重启也没用，entrypoint 会直接停下并说明：
 
 | 退出码 | 含义 |

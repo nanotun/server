@@ -208,6 +208,11 @@ DAEMON_PID=""
 WEB_PID=""
 SHUTTING_DOWN=0
 
+# 放弃拉起 web 后留下的降级标记。HEALTHCHECK 是独立进程,看不到这里的 shell 变量,
+# 只能靠文件传话 —— 否则管理面永久死掉时容器仍报 healthy,而 systemd 那边
+# `systemctl is-active nanotun-web` 是会显示 failed 的,两条路的可观测性不该差这么远。
+WEB_DEGRADED_FLAG="$RUN_DIR/web-degraded"
+
 start_web() {
   local args=(
     -db "$LIB_DIR/nanotun.db"
@@ -238,6 +243,7 @@ shutdown_handler() {
 
 supervise() {
   trap shutdown_handler TERM INT
+  rm -f "$WEB_DEGRADED_FLAG"
 
   nanotund -config "$CFG" &
   DAEMON_PID=$!
@@ -297,7 +303,8 @@ supervise() {
       web_fails=$((web_fails + 1))
       if (( web_fails > 5 )); then
         warn "nanotun-web 60 秒内连挂 ${web_fails} 次(最后一次 code=$wrc),不再自动重启。
-     数据面不受影响,继续运行;修好后重启容器即可恢复管理面。"
+     数据面不受影响,继续运行;容器会转为 unhealthy 提示管理面已失守,修好后重启容器恢复。"
+        : > "$WEB_DEGRADED_FLAG"
         WEB_PID=""
         continue
       fi
