@@ -342,10 +342,20 @@ fi
 # ── 4. 解压 ──────────────────────────────────────────────────────────────────
 DEST="${INSTALL_DIR}/${VERSION}-${ARCH}"
 info "解压到 $DEST ..."
-mkdir -p "$DEST"
+mkdir -p "$DEST" || die "建不出 $DEST —— 检查 $INSTALL_DIR 的权限,或用 NANOTUN_INSTALL_DIR 换个落点。"
 # --strip-components=1:tar 内是 nanotun-<ver>-linux-<arch>/ 一层目录,
 # 剥掉它,免得路径变成 /opt/nanotun/v0.1.0-amd64/nanotun-v0.1.0-linux-amd64/。
-tar -xzf "$TMP/$TARBALL" -C "$DEST" --strip-components=1
+#
+# 解压失败最常见的就是磁盘不够:包 ~19MB,解开约 150MB。preflight 那道空间检查看的是
+# /usr/local(装二进制的地方),与这里的落点未必同一个文件系统,而且它是 soft 警告、
+# 不拦安装。所以这里必须自己兜住 —— 否则用户只看到 tar 的一行 "No space left on
+# device" 然后脚本戛然而止,不知道要腾多少、腾在哪。
+if ! tar -xzf "$TMP/$TARBALL" -C "$DEST" --strip-components=1; then
+  rm -rf "$DEST"   # 半个解压目录留着只会让下次重跑以为装过了
+  die "解压失败:$DEST
+   包解开约 150MB。当前该分区可用:$(df -h "$INSTALL_DIR" 2>/dev/null | awk 'NR==2{print $4}')
+   腾出空间后重跑,或换个落点:NANOTUN_INSTALL_DIR=/data/nanotun <刚才那条命令>"
+fi
 ok "已解压"
 
 if [ "${NANOTUN_NO_INSTALL:-0}" = "1" ]; then
