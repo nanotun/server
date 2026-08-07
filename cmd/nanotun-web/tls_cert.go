@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -67,6 +68,19 @@ func ensureTLSCert(certDir string, extraSANs []string) (certPath, keyPath string
 	cExists := fileExists(certPath)
 	kExists := fileExists(keyPath)
 	if cExists && kExists {
+		// 两个文件都在,还得真读一遍 —— 存在不等于能用。
+		//
+		// 不读的话,坏证书要拖到 http.ServeTLS 真去加载时才炸,而在那之前已经打了一句
+		// 「TLS 服务就绪,等待请求」:日志上先宣布就绪、再猝死,人第一反应是去查端口和
+		// 防火墙。最后拿到的是 Go 标准库的原话「tls: failed to find any PEM data in
+		// certificate input」—— 不说是哪个文件,也不说怎么办。
+		//
+		// 而写了一半的证书恰恰是断电 / 磁盘写满最常见的残留(0 字节反倒少见),
+		// 也就是说更可能出现的那种坏法,原先给的提示反而更差。
+		if _, err := tls.LoadX509KeyPair(certPath, keyPath); err != nil {
+			return "", "", fmt.Errorf("证书目录 %s 里的证书用不了(%s;%s):%w。多半是写到一半断电或磁盘写满留下的残件 —— 两个一起删掉再重启本服务,会自动重新签发自签证书(浏览器会因此提示一次新证书):rm -f %s %s",
+				certDir, describeCertFile(certPath), describeCertFile(keyPath), err, certPath, keyPath)
+		}
 		logrus.WithFields(logrus.Fields{
 			"cert": certPath, "key": keyPath,
 		}).Info("[tls] 复用已存在的证书")
@@ -74,11 +88,21 @@ func ensureTLSCert(certDir string, extraSANs []string) (certPath, keyPath string
 		_ = os.Chmod(keyPath, keyFileMode)
 		return certPath, keyPath, nil
 	}
-	// 半残:只剩一个文件,拒绝起来,提示运维清理。
+	// 半残:两个文件只有一个可用,拒绝起来,提示运维清理。
 	// 否则可能 cert 是别的 hostname / key 不匹配,排查超烦。
+	//
+	// 报错必须点名是哪个文件、什么状态。原先一律说成「only one of cert.pem/key.pem
+	// present」,可 fileExists 把「不存在」和「存在但 0 字节」判成同一种 —— 于是磁盘
+	// 写满或装到一半断电留下的空文件,报出来是「只有一个文件在」。运维 ls 一看两个
+	// 明明都在,第一反应是这条报错不可信,转头去别的地方找原因,而修法其实就在眼前。
+	//
+	// 给的办法必须是**两个一起删**。说「把不完整的那个删掉」是不成立的:删完剩下的那个
+	// 依旧只有一半,这里照样拦下,人照做一遍发现服务还是起不来,于是连带怀疑上面那句
+	// 状态描述也是错的。自动重签只在两个都不在时才发生 —— 证书和私钥必须是配对生成的,
+	// 单独补一个必然对不上。
 	if cExists != kExists {
-		return "", "", fmt.Errorf("cert dir %s is half-populated (only one of %s/%s present); please clean it up and retry",
-			certDir, certFileName, keyFileName)
+		return "", "", fmt.Errorf("证书目录 %s 不完整:%s;%s。证书和私钥必须成对,单补一个对不上 —— 两个一起删掉再重启本服务,会自动重新签发自签证书(浏览器会因此提示一次新证书):rm -f %s %s",
+			certDir, describeCertFile(certPath), describeCertFile(keyPath), certPath, keyPath)
 	}
 
 	logrus.WithField("cert_dir", certDir).Info("[tls] 未发现证书,自动生成 self-signed(10 年有效)")
@@ -94,6 +118,25 @@ func ensureTLSCert(certDir string, extraSANs []string) (certPath, keyPath string
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir() && st.Size() > 0
+}
+
+// describeCertFile 说清楚一个证书文件眼下是什么状态,专门把「不存在」和「在但是空的」
+// 分开 —— 这两种在 fileExists 里是同一个答案,而对着屏幕排障的人看到的完全是两回事。
+func describeCertFile(p string) string {
+	name := filepath.Base(p)
+	st, err := os.Stat(p)
+	switch {
+	case err != nil:
+		return name + " 不存在"
+	case st.IsDir():
+		return name + " 是个目录"
+	case st.Size() == 0:
+		return name + " 在,但是 0 字节"
+	default:
+		// 只报字节数,不下「正常」这种判断 —— 调用方之一恰恰是「读出来发现用不了」,
+		// 那句话里再说文件正常就是自相矛盾:同一行里既说证书用不了,又说它正常。
+		return fmt.Sprintf("%s %d 字节", name, st.Size())
+	}
 }
 
 // collectSANs 推导一个尽可能"覆盖管理员可能用到的访问方式"的 SAN 集合。

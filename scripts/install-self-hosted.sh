@@ -608,6 +608,17 @@ if [ "$STATUS_BAD" = 1 ] || [ "$START_FAILED" = 1 ] || [ "${NANOTUN_VERBOSE:-0}"
   ss -lntup 2>&1 | grep -E ":(443|7443|8080|8443)" || echo "(443/7443/8080/8443 上没有任何监听)"
   echo "--- journalctl -u nanotun -n 40 ---"
   journalctl -u nanotun.service --no-pager -n 40 || true
+  # nanotun-web 的日志也要抓 —— 只抓 status 是不够的。
+  #
+  # 挂的是 web 时,status 那段只有一句 status=1/FAILURE,而**为什么**挂全在它自己的
+  # 日志里(比如「cert dir … is half-populated」这种一句话就能照着修的)。少了这一段,
+  # 屏幕上就成了:一个没有信息量的失败码,配上 40 行**健康的** nanotund 日志 —— 人会
+  # 拿着那些正常日志反复找茬,而真正的原因一个字都没露面。实测一个 0 字节的 cert.pem
+  # 就是这个下场:web 早就把话说清楚了,只是没人转达。
+  if [ "$WEB_AVAILABLE" -eq 1 ]; then
+    echo "--- journalctl -u nanotun-web -n 30 ---"
+    journalctl -u nanotun-web.service --no-pager -n 30 || true
+  fi
 else
   printf '    \033[2m· 详细状态与日志:NANOTUN_VERBOSE=1 重跑,或 journalctl -u nanotun -n 50\033[0m\n'
 fi
