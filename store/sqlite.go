@@ -20,6 +20,43 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// lockedHint 给开库失败的错误加一句「谁占着、该怎么办」—— 只在确实是被占着时加。
+//
+// SQLite 对这种情形只说一句 "database is locked (5) (SQLITE_BUSY)":没提 nanotun,
+// 没提该做什么,而它出现的场合几乎只有一种 —— 照着「恢复数据库」那几步做,却只停了两个
+// 服务中的一个,然后把备份 cp 回去。没停的那个还开着库,于是:
+//
+//   - 另一个服务从此 crash-loop,日志里翻来覆去就这一句;
+//   - 没停的那个仍然 active,正拿着一个被人从底下换掉字节的库继续服务,一声不吭;
+//   - 连重跑安装脚本都救不回来 —— 它第 5 步的 nanotun-admin init 撞的是同一堵墙,
+//     报的也是同一句没头没尾的话。
+//
+// 出路很简单(实测:把两个服务都停掉就恢复了,-wal/-shm 由 SQLite 自己收干净),
+// 但从那句原始错误里一个字也读不出来。所以在这里说全。
+func lockedHint(path, op string, err error) error {
+	if !isLockedErr(err) {
+		return fmt.Errorf("store: %s: %w", op, err)
+	}
+	return fmt.Errorf("store: %s: %w\n"+
+		"  这个库正被另一个进程占着 —— 多半是 nanotun 或 nanotun-web 还在跑。\n"+
+		"  恢复备份时两个服务都要停,只停一个就会是现在这样:\n"+
+		"    systemctl stop nanotun nanotun-web\n"+
+		"    cp <备份> %s && chmod 600 %s\n"+
+		"    systemctl start nanotun nanotun-web\n"+
+		"  已经在没停全的时候拷过一次了的话,照上面重做一遍:那个没停的进程手里是换之前的库,\n"+
+		"  不重启它,两边的数据对不上。", op, err, path, path)
+}
+
+// isLockedErr 判断这个错误是不是「库被别人占着」。
+//
+// 认字符串而不是错误码:驱动是 modernc.org/sqlite 的纯 Go 实现,它把 SQLITE_BUSY 包在
+// 自己的错误类型里,为了取一个错误码去引它的内部包,换来的耦合比这里省下的稳当性还多。
+// 判错了的代价也只是少给一段提示 —— 原始错误照样原样带出去。
+func isLockedErr(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "SQLITE_BUSY") || strings.Contains(s, "database is locked")
+}
+
 // Store 封装一个 SQLite 连接池。所有 DAL 方法都挂在 *Store 上。
 type Store struct {
 	db *sql.DB
@@ -156,7 +193,7 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("store: ping: %w", err)
+		return nil, lockedHint(path, "ping", err)
 	}
 
 	// db-wide pragma:只跑一次即对整个数据库文件生效,后续新 conn 拿到的就是
@@ -171,7 +208,17 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	for _, p := range pragmas {
 		if _, err := db.ExecContext(ctx, p); err != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("store: %s: %w", p, err)
+			// journal_mode 是开库路上第一个要拿写锁的动作,于是「有别人占着这个库」
+			// 一律在这里现形,而 SQLite 只会说一句 "database is locked (5)
+			// (SQLITE_BUSY)" —— 一个没提到 nanotun、没提到该做什么的错误。
+			//
+			// 现实里撞上它几乎只有一种走法:照着「恢复数据库」那几步做,却只停了两个服务
+			// 中的一个,然后把备份 cp 回去。没停的那个还开着库,于是另一个从此
+			// crash-loop,日志里翻来覆去就是这一句。更糟的是没停的那个仍然 active ——
+			// 它正拿着一个被人从底下换掉字节的库继续服务,而那一半一声不吭。
+			//
+			// 所以这里把话说全:谁占着、该怎么办。
+			return nil, lockedHint(path, p, err)
 		}
 	}
 
