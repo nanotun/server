@@ -79,6 +79,17 @@ func cmdConfigLint(opts *globalOpts, args []string) int {
 	for _, w := range lintCertFiles(path, &cfg) {
 		fmt.Fprintln(opts.stderr, opts.T("config.certMissing", w))
 	}
+	// 权限也顺手看一眼:这个文件里有 REALITY 私钥和 hy2 口令,组/其他可读就等于摊给
+	// 机器上任何本地用户。安装脚本每次都会收紧到 0600,但两次安装之间会漂 —— 最常见的
+	// 是「改一份副本再 mv 回原位」,mv 带的是新文件的权限(umask 022 就是 0644)。
+	// nanotund 启动时也会喊一声,但没人天天看 journal;而排查配置时跑的恰恰是这条命令。
+	//
+	// 同样只警告不改退出码:CI 里拿它验模板,那种场合权限是什么都不重要。
+	if fi, err := os.Stat(path); err == nil {
+		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+			fmt.Fprintln(opts.stderr, opts.T("config.loosePerm", path, fmt.Sprintf("%04o", perm), path))
+		}
+	}
 	fmt.Fprintf(opts.stdout, "%s OK\n", path)
 	return 0
 }

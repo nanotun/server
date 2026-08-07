@@ -20,6 +20,10 @@
 #   sudo ./scripts/setup.sh --dial-host 203.0.113.10 --no-user --yes
 set -euo pipefail
 
+# 向导也会落文件(web.env、二维码 PNG),同样不看调用者的 umask —— 它装成
+# /usr/local/bin/nanotun-setup,谁都可能在自己的环境里直接敲。
+umask 022
+
 ETC_DIR=/etc/nanotun
 LIB_DIR=/var/lib/nanotun
 DB="$LIB_DIR/nanotun.db"

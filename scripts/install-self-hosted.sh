@@ -52,6 +52,11 @@
 
 set -euo pipefail
 
+# 装系统文件不看调用者的 umask。关键文件都有显式 -m,但用重定向建出来的那些(sysctl
+# 片段、备份、web.env 之类)会原样继承 —— umask 0 下就是 0666。装机这件事常常发生在
+# 别人的 wrapper、CI、或者一句随手的 umask 之后,这里归一比逐个补 chmod 可靠。
+umask 022
+
 # 发布包根目录 = 本脚本所在 scripts/ 的上一级。写死路径的老行为靠环境变量保留:
 # 2026-08 之前这里钉的是 /root/nanotun_deploy,那是维护者自己的 scp 落点,
 # 对下载发布包的人没有任何意义 —— 解压到 ~/nanotun 就装不了,而报错只会说「缺文件」。
@@ -298,8 +303,19 @@ fi
 [ -f "$SCRIPTS_DIR/preflight.sh" ] && \
   install -m 0755 "$SCRIPTS_DIR/preflight.sh" /usr/local/bin/nanotun-preflight
 
-mkdir -p "$ETC_DIR/certs" "$ETC_DIR/masquerade" "$LIB_DIR"
-chmod 0750 "$LIB_DIR"
+# 目录权限写死,不跟调用者的 umask 走。
+#
+# 实测 umask 000 装出来:/etc/nanotun 是 0777。里面的密钥文件仍然是 0600(上面全是
+# install -m),看着像没事 —— 但目录可写就已经够了:本机任何用户可以把 config.toml
+# 整个 mv 走、换上自己的一份,而 nanotund 以 root 读它,证书路径、监听地址、出口策略
+# 都在里面。等于把本机提权和全体客户端的 MITM 一起送出去。
+#
+# umask 是调用者说了算的东西(CI、别人的 wrapper、手滑的一句 umask 0),不该由它决定
+# /etc 下的目录权限。install -d -m 对已存在的目录同样会纠正模式,所以老机器重跑一次
+# 安装就能修回来。
+install -d -m 0755 "$ETC_DIR" "$ETC_DIR/masquerade"
+install -d -m 0700 "$ETC_DIR/certs"
+install -d -m 0750 "$LIB_DIR"
 
 # config.toml：**绝不覆盖已有配置**。
 #
@@ -582,7 +598,7 @@ if [ "$WEB_AVAILABLE" -eq 1 ]; then
   step "6b. 安装 nanotun-web(Web 管理后台,M2)"
   install -m 0755 "$DEPLOY_DIR/nanotun-web" /usr/local/bin/nanotun-web
   install -m 0644 "$EXTRAS_DIR/nanotun-web.service" /etc/systemd/system/nanotun-web.service
-  mkdir -p "$ETC_DIR/certs"  # web TLS 自签证书会落到这里
+  install -d -m 0700 "$ETC_DIR/certs"  # web TLS 自签证书会落到这里
   systemctl daemon-reload
   systemctl enable nanotun-web.service >/dev/null 2>&1 || true
   # 同上:先记账,别让它把第 7 步的诊断挤掉。

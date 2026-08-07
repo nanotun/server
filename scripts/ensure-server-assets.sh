@@ -5,6 +5,12 @@
 #   传源码树根时自动找 cmd/nanotund/config.toml。
 set -euo pipefail
 
+# 这里会签私钥、建 /etc/nanotun 下的目录,一律不看调用者的 umask(它也被装成
+# /usr/local/bin/nanotun-ensure-assets.sh 单独跑,更接不住外面是什么环境)。
+# umask 0 下 mkdir 出来的 certs/ 是 0777:私钥文件本身照样 0600,可目录能写就等于
+# 谁都能把它换掉,而服务以 root 加载。
+umask 022
+
 ARG="${1:-/etc/nanotun}"
 if [[ -f "$ARG" ]]; then
   CFG="$ARG"
@@ -93,7 +99,8 @@ gen_self_signed() {
   # 走到这里说明至少一边是缺失或 0 字节。两边一起重签:半新半旧的证书/私钥配不上对。
   rm -f "$cert_path" "$key_path"
   echo "[ensure-server-assets] 未找到 TLS 证书，生成自签 -> $cert_path" >&2
-  mkdir -p "$(dirname "$cert_path")" "$(dirname "$key_path")"
+  # 证书目录写死 0700:里面是私钥,而它常常正好是新建的那次(全新装机)。
+  install -d -m 0700 "$(dirname "$cert_path")" "$(dirname "$key_path")"
   if openssl req -x509 -newkey rsa:2048 \
     -keyout "$key_path" -out "$cert_path" -days 3650 -nodes \
     -subj "$subj" \
@@ -167,7 +174,7 @@ if [[ -n "${client_ca_rel// }" ]]; then
   check_pem_or_die "$client_ca_path" cert
   if ! usable_pem "$client_ca_path" cert; then
     echo "[ensure-server-assets] 未找到 tls_client_ca_file，生成开发用 CA -> $client_ca_path" >&2
-    mkdir -p "$(dirname "$client_ca_path")"
+    install -d -m 0700 "$(dirname "$client_ca_path")"
     rm -f "$client_ca_path"
     # 这里**不能**用 -addext。
     #
@@ -211,7 +218,7 @@ if [[ -n "${masq_rel// }" ]]; then
   idx="${masq_dir}/index.html"
   if [[ ! -f "$idx" ]]; then
     echo "[ensure-server-assets] 生成 masquerade 占位页 -> $idx" >&2
-    mkdir -p "$masq_dir"
+    install -d -m 0755 "$masq_dir"
     cat >"$idx" <<'HTML'
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -227,6 +234,12 @@ if [[ -n "${masq_rel// }" ]]; then
 </html>
 HTML
   fi
+  # 权限每次都纠,不只在新建时:坏权限会粘住。这个文件曾经在 umask 0 的环境下被建成
+  # 0666,而后面每次重装都因为「文件已存在」跳过整段,于是那个 666 一路带下去 ——
+  # 本机任何用户都能改掉伪装页,也就是能借服务器的证书和端口发任意内容出去。
+  # 内容不动(运维常常换成自己的页面),只管模式。
+  chmod 0644 "$idx" 2>/dev/null || true
+  chmod 0755 "$masq_dir" 2>/dev/null || true
 fi
 
 echo "[ensure-server-assets] 完成。" >&2

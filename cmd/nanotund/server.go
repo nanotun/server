@@ -1002,6 +1002,25 @@ func main() {
 		util.FatalExit(util.ExitConfigParse, logrus.Fields{"config_path": *configPath}, "加载配置 %s: %v", *configPath, err)
 	}
 
+	// 配置文件里有 REALITY 私钥和 hy2 口令,组/其他可读就等于摊给机器上任何本地用户。
+	//
+	// 安装脚本每次都会把它收紧到 0600(install-self-hosted.sh 里有同样的注释),但两次安装
+	// 之间会漂,而且漂法一点也不冷门:改一份副本再 mv 回原位 —— mv 带的是新文件的权限,
+	// umask 022 下就是 0644。之后没有任何迹象:服务照常起,日志干净,只是私钥从此人人可读。
+	//
+	// 库和 key.pem 会在打开时自己收紧(store/sqlite.go、tls_cert.go),这里只能喊一声:
+	// 单元是 ProtectSystem=strict,/etc 对本进程只读(ReadWritePaths 只给了库和 socket),
+	// chmod 必然失败 —— 而这恰恰是对的,守护进程本来就不该改自己的配置。所以说清楚
+	// 现状和那一条命令,不去做注定失败的补救。
+	if fi, statErr := os.Stat(*configPath); statErr == nil {
+		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+			logrus.Warnf("[config] %s 权限是 %04o —— 里面有 REALITY 私钥和 hy2 口令,"+
+				"这台机器上任何本地用户都能读。收紧:chmod 600 %s"+
+				"(这段时间里读过的人已经读到了,真在意就轮换密钥)",
+				*configPath, perm, *configPath)
+		}
+	}
+
 	if cfg.Log.Level != "" {
 		lvl, err := logrus.ParseLevel(cfg.Log.Level)
 		if err != nil {

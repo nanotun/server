@@ -248,6 +248,7 @@ var catEN = map[string]string{
                        recommended before systemctl restart in CI / upgrade flows.`,
 	"config.tomlParseFail": "TOML parse failed:\n%s",
 	"config.strictFail":    "[strict] %s validation failed:\n%s",
+	"config.loosePerm":     "warning: %s is mode %s — it holds the REALITY private key and the hy2 password, and every local user on this machine can read it.\n      Tighten it: chmod 600 %s (ignore this when linting a template on another machine)",
 	"config.certMissing":   "warning: cannot read certificate file — %s\n      The config itself is fine, but the server will exit 20 on startup. Ignore this when linting a template on another machine.",
 
 	// ===== profile =====
