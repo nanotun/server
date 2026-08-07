@@ -23,7 +23,11 @@ var migrationsFS embed.FS
 // I8: 跨进程互斥。Migrate 现在用 <db>.migrate.lock 上 flock(LOCK_EX) 串行化跨
 // 进程并发(vpn-server + nanotun-admin 同时启动时尤其重要),内存库 / 空 path
 // 自动 noop;Windows 上退化为单进程 sync.Mutex 行为(详见 migrate_lock_other.go)。
-func (s *Store) Migrate(ctx context.Context) error {
+func (s *Store) Migrate(ctx context.Context) (retErr error) {
+	// 盘写满时 SQLite 报的是「disk I/O error」,不是「disk is full」——
+	// 那句话会把人往硬盘坏了的方向带,而真实处置是清空间。见 diskFullHint。
+	defer func() { retErr = diskFullHint(s.path, retErr) }()
+
 	unlock, err := acquireMigrateLock(s.path)
 	if err != nil {
 		return err

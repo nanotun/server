@@ -2,6 +2,9 @@ package store
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -52,4 +55,54 @@ func IsUnrecoverable(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "database disk image is malformed") ||
 		strings.Contains(msg, "file is not a database")
+}
+
+// diskFullHint 在「其实是盘满了」的错误后面补一句人话。
+//
+// 盘满时 SQLite 未必说 "database or disk is full"。建表这类要落盘的动作报的是
+// **"disk I/O error (4874)"**,而这句话会把人往完全错误的方向带:看见 I/O error 的第一反应
+// 是硬盘要坏了、是不是该换机器,没人会想到去 df 一眼。2026-08-07 实测:库所在文件系统写满的
+// 机器上跑安装脚本,屏幕上只有
+//
+//	migrate: store: create app_settings: disk I/O error (4874)
+//
+// 一句,而清出几百 KB 就一切正常。
+//
+// 判定不靠猜错误码,直接去库目录里试着写一小块 —— 能不能写,本来就是这里唯一关心的事。
+// 写得进去就说明另有原因,那时一个字都不加,免得把真的 I/O 故障说成盘满。
+func diskFullHint(dbPath string, err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "disk i/o error") && !strings.Contains(msg, "disk is full") {
+		return err
+	}
+	dir := filepath.Dir(dbPath)
+	if dirWritable(dir) {
+		return err
+	}
+	return fmt.Errorf("%w\n"+
+		"  写不进 %s —— 这个文件系统满了(或者配额用尽)。\n"+
+		"  SQLite 这时报的是「disk I/O error」,看着像硬盘坏了,其实清出空间就好:\n"+
+		"    df -h %s\n"+
+		"    du -xh %s | sort -h | tail   # 谁占的\n"+
+		"  日志把盘吃满是最常见的一种,journalctl --vacuum-size=200M 往往就够。", err, dir, dir, dir)
+}
+
+// dirWritable 试着在 dir 里写 64 KB 再删掉,报告成功与否。
+//
+// 用真写一次而不是 statfs:要判的就是「现在能不能往这儿落盘」,而这件事还会被配额、
+// 只读挂载、预留块这些 statfs 看不全的东西左右。判不出来(比如建不了临时文件)时返回 true,
+// 也就是不下结论 —— 宁可少说一句,不可把别的故障说成盘满。
+func dirWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".nanotun-space-")
+	if err != nil {
+		return true
+	}
+	defer func() { _ = os.Remove(f.Name()); _ = f.Close() }()
+	if _, err := f.Write(make([]byte, 64<<10)); err != nil {
+		return false
+	}
+	return f.Sync() == nil
 }

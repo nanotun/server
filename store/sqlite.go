@@ -35,7 +35,10 @@ import (
 // 但从那句原始错误里一个字也读不出来。所以在这里说全。
 func lockedHint(path, op string, err error) error {
 	if !isLockedErr(err) {
-		return fmt.Errorf("store: %s: %w", op, err)
+		// 开库失败的另一大来源是盘满 —— 而它同样只报一句 "disk I/O error"。
+		// 建库要落盘,所以这条路比 Migrate 那条更早撞上:全新机器上盘一满,
+		// 连 ping 都过不去。
+		return diskFullHint(path, fmt.Errorf("store: %s: %w", op, err))
 	}
 	return fmt.Errorf("store: %s: %w\n"+
 		"  这个库正被另一个进程占着 —— 多半是 nanotun 或 nanotun-web 还在跑。\n"+

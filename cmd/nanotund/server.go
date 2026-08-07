@@ -1396,7 +1396,10 @@ func main() {
 		if store.IsUnrecoverable(err) {
 			code = util.ExitDBUnrecoverable
 		}
-		util.FatalExit(code, logrus.Fields{"err": err.Error()}, "初始化 auth 后端失败: %v", err)
+		// 不再往 fields 里塞一份 err:消息里已经有整条了,两份等于同一段话说两遍。
+		// 平时那是两行冗余,不显眼;而开不了库的错误现在会带一段「盘满了怎么办」的多行提示,
+		// 复制一份就是十几行 —— 真要看的那句话反而更难找了。
+		util.FatalExit(code, nil, "初始化 auth 后端失败: %v", err)
 	}
 	defer authCleanup()
 
