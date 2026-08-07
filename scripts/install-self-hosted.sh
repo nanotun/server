@@ -629,6 +629,27 @@ check_port udp 443  "443/udp(hy2)"
 [ ${#PORTS_UP[@]}   -gt 0 ] && ok   "监听中:${PORTS_UP[*]}"
 [ ${#PORTS_DOWN[@]} -gt 0 ] && warn "没听上:${PORTS_DOWN[*]}"
 
+# TUN 到底有没有拿到 IPv4 —— 这一项服务状态和端口都照不出来。
+#
+# [tun].subnets 里的候选如果**全部**与本机网段冲突,nanotund 会跳过 IPv4 继续跑:
+# 服务 active、端口都听上了、这个脚本一路打勾,而客户端从此拿不到 IPv4 虚拟 IP,
+# 等于一台只剩 IPv6 的 VPN。原因只在 journal 里留一句 warning,而装完一切正常的人
+# 是不会去翻 journal 的。
+#
+# 触发它不需要多奇怪的配置:本机地址是 10.x/**8**(企业内网、部分云内网的常规分法)
+# 就能一次撞掉 10.200-10.202 三段。实测 10.5.3.4/8 必现。
+TUN_DEV="$(sed -n 's/^[[:space:]]*device_name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+             "$ETC_DIR/config.toml" 2>/dev/null | head -1)"
+TUN_DEV="${TUN_DEV:-tun0}"
+if [ "$START_FAILED" != 1 ] && ip link show "$TUN_DEV" >/dev/null 2>&1 \
+   && ! ip -4 addr show dev "$TUN_DEV" 2>/dev/null | grep -q 'inet '; then
+  warn "$TUN_DEV 没有 IPv4 地址 —— [tun].subnets 里的候选网段与本机网段全部冲突,已跳过 IPv4。"
+  warn "  服务是起来了,但客户端拿不到 IPv4 虚拟 IP,这台 VPN 眼下只有 IPv6 能用。"
+  warn "  本机占着:$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | tr '\n' ' ')"
+  warn "  改 $ETC_DIR/config.toml 的 [tun].subnets 换一段不冲突的,再 systemctl restart nanotun"
+  STATUS_BAD=1
+fi
+
 if [ "$STATUS_BAD" = 1 ] || [ "$START_FAILED" = 1 ] || [ "${NANOTUN_VERBOSE:-0}" = 1 ]; then
   echo
   echo "--- systemctl status nanotun-tun-setup ---"
