@@ -1,5 +1,5 @@
 [Unit]
-Description=Create TUN devices for VPN (10/192.168/172.16)
+Description=nanotun pre-start (xtables.lock; 清理旧版遗留 TUN)
 After=network-online.target
 Wants=network-online.target
 
