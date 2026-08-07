@@ -35,10 +35,20 @@ set -e
 # 一直留到下次重启，那台机器的网也就一直坏着。升级路径上顺手治好，比在文档里写一句
 # 「请手动检查」有用得多。
 #
-# 只删「名字对得上、类型是 tun、地址正好是老脚本会分的那一个」的设备。少了这层核对，
-# 一台自己建了 tun3 干别的事的机器，会在装 nanotun 时被无声地拆掉网卡。tun0 不在清理
-# 范围里 —— 那是 nanotund 自己要用的，它启动时会先删后建。
-for i in $(seq 1 14); do
+# 只删「名字对得上、类型是 tun、persist on、地址正好是老脚本会分的那一个」的设备。
+# 四项都对才动手 —— 少了这层核对，一台自己建了 tun3 干别的事的机器，会在装 nanotun 时
+# 被无声地拆掉网卡。
+#
+# tun0 也在清理范围里，靠 persist 这一项把它和 nanotund 自己那张区分开:老脚本用
+# `ip tuntap add` 建的都是 persist on，而 nanotund 建的永远是 persist off(进程一退就
+# 由内核回收)。所以这条规则**不可能**误伤正在服务的那张网卡，哪怕有人真把 mesh 网段
+# 配成了 10.0.0.0/24。
+#
+# 必须捎上 tun0 是因为它占的 10.0.0.1/24 恰恰是最常见的局域网段之一。它平时看不见 ——
+# nanotund 启动时会先删后建，于是那个地址转瞬即逝;可 nanotund 那次要是没起来
+# (配置写错、端口被占、库坏了)，这张 persist on 的空网卡就留在那儿，接着按上面说的方式
+# 把机器的网弄断。也就是说它专挑「已经出了一个问题」的时候再补一刀。
+for i in $(seq 0 14); do
   dev=tun$i
   ip link show "$dev" >/dev/null 2>&1 || continue
 
@@ -49,6 +59,7 @@ for i in $(seq 1 14); do
 
   # 类型必须是 tun:名字叫 tun3 的网桥 / 物理口不能碰。
   ip -d link show "$dev" 2>/dev/null | grep -q ' tun ' || continue
+  ip -d link show "$dev" 2>/dev/null | grep -q 'persist on' || continue
   ip -o -4 addr show dev "$dev" 2>/dev/null | grep -qF " $legacy_addr " || continue
 
   ip link set "$dev" down 2>/dev/null || true

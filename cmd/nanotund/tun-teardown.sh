@@ -28,6 +28,7 @@ for i in $(seq 1 14); do
   fi
 
   ip -d link show "$dev" 2>/dev/null | grep -q ' tun ' || continue
+  ip -d link show "$dev" 2>/dev/null | grep -q 'persist on' || continue
   ip -o -4 addr show dev "$dev" 2>/dev/null | grep -qF " $legacy_addr " || continue
 
   ip link set "$dev" down 2>/dev/null || true
