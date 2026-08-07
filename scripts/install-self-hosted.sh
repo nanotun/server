@@ -555,7 +555,18 @@ step "6. 启动并设为开机自启"
 START_FAILED=0
 # --quiet 只是压掉 "Created symlink ..." 那行 —— 它是 systemd 的实现细节,
 # 对着装机的人说不出任何有用的东西,却混在本脚本的 ✓ 里显得像出了什么事。
-systemctl enable --quiet --now nanotun-tun-setup.service || START_FAILED=1
+systemctl enable --quiet nanotun-tun-setup.service || START_FAILED=1
+# 必须是 restart,不能是 --now(那等于 start)。
+#
+# 这个单元是 oneshot + RemainAfterExit=yes:装过一次之后它就一直是 active,于是
+# 升级时 start 是个空操作 —— 盘上换成了新脚本,跑的还是上次开机那一次的结果,新逻辑
+# 要等到下次重启才生效。而它现在的正事恰恰是**升级时**清掉旧版留下的那 14 张空网卡
+# (见 tun-setup.sh),偏偏就是这条路上不生效:升级完一看,tun1-14 一张没少,
+# 而屏幕上全是 ✓。
+#
+# 它是 Requires= 的被依赖方,restart 会把 nanotun 一起带停 —— 下面紧接着就 restart
+# nanotun,顺序不能反。
+systemctl restart nanotun-tun-setup.service || START_FAILED=1
 sleep 1
 # enable + restart：保证开机自启 + 应用最新配置
 systemctl enable nanotun.service >/dev/null 2>&1 || true
