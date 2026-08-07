@@ -246,6 +246,34 @@ check_arch() {
 }
 check_arch
 
+# 从这里往下开始改这台机器,先占住单实例锁。
+#
+# 两个安装同时跑会撞在 install 上:coreutils 的 install 是先 unlink 再以 O_EXCL 建,
+# 两边都 unlink 成功、只有一边能建出来,输的那个拿到
+# "install: cannot create regular file '/usr/local/bin/nanotun-admin': File exists"
+# —— 一句完全看不出「另一个安装正在跑」的话,而它是在第 1 步中途退的,二进制只换了
+# 一半。实测两个并发安装必现,退出码 1。
+#
+# 自动化里这不是奇景:Ansible 超时重试、cloud-init 与人工同时动手、CI 里两个 job 撞车,
+# 都会到这一步。
+#
+# 用 -n 立刻拒绝而不是排队等:后来者等半天再把同样的活重做一遍没有意义,而「有人正在
+# 装」这件事本身就是要告诉人的。锁在 fd 上,进程一退就释放,不留死锁。
+#
+# 开锁那句要写成 `{ exec 9>…; } 2>/dev/null`,花括号不能省。
+# 写成 `exec 9>"$LOCK_FILE" 2>/dev/null` 的话,这是一条没有命令的 exec —— 两个重定向
+# **都**会永久落到当前 shell 上,于是整个脚本剩下的 stderr 全进了 /dev/null:下面每一句
+# die 都还照常退出,但一个字都不会显示。实测就是这样:并发那次被拒的进程静静地退了 1,
+# 屏幕上最后一行是「架构自检通过」。花括号把 stderr 的重定向限定在这个语句组里。
+LOCK_FILE=/run/nanotun-install.lock
+if command -v flock >/dev/null 2>&1 && { exec 9>"$LOCK_FILE"; } 2>/dev/null; then
+  if ! flock -n 9; then
+    die "另一个 nanotun 安装 / 升级正在进行(锁:$LOCK_FILE)。
+   等它跑完再重试。确认没有别的安装在跑却仍报这句的话,是上次被强杀留下的:
+     fuser -k $LOCK_FILE   # 或直接重启这台机器"
+  fi
+fi
+
 step "1. 安装二进制 / 脚本 / 证书 / 配置 / systemd 单元"
 install -m 0755 "$DEPLOY_DIR/nanotund"  /usr/local/bin/nanotund
 install -m 0755 "$DEPLOY_DIR/nanotun-admin"    /usr/local/bin/nanotun-admin
