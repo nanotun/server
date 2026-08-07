@@ -118,6 +118,16 @@ rsh 'set -e
   install -m 0755 "$D/scripts/setup.sh"                /usr/local/bin/nanotun-setup
   install -m 0755 "$D/scripts/preflight.sh"            /usr/local/bin/nanotun-preflight
   install -m 0755 "$D/scripts/ensure-server-assets.sh" /usr/local/bin/nanotun-ensure-assets.sh
+  # 开机前跑的那两个也要一起换,否则它们的改动永远不经门禁。
+  #
+  # 这份清单是手工维护的,漏一个不会有任何提示 —— 跑出来照样全绿,只是绿的是旧脚本。
+  # tun-setup.sh 就这么漏了很久:它建的 14 张空网卡能把整台机器的网弄断(见该文件注释),
+  # 而 e2e 从来没碰过它。
+  install -m 0755 "$D/scripts/tun-setup.sh"    /usr/local/bin/nanotun-tun-setup.sh
+  install -m 0755 "$D/scripts/tun-teardown.sh" /usr/local/bin/nanotun-tun-teardown.sh
+  # 先重跑 tun-setup:它是 oneshot + RemainAfterExit,不 restart 就还是上次开机那一次的
+  # 结果,新脚本等于没生效。nanotun.service Requires 它,所以顺序不能反。
+  systemctl restart nanotun-tun-setup
   systemctl restart nanotun nanotun-web
   rm -rf /var/tmp/nanotun-head.tar.gz /var/tmp/nanotun-head' \
   || die "SRV 上安装或重启失败 —— 去看 journalctl -u nanotun -n 50"
