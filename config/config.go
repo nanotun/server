@@ -226,9 +226,9 @@ type TUNConfig struct {
 	// 设为 true 时回到老行为：在 FORWARD 链插入 `-i <tun> -o <tun> -j DROP`，把任何客户端
 	// 之间的横向流量统统丢弃；适用于公共出口型部署、企业版「访客网络」等不允许互访的场景。
 	//
-	// 注意：本开关只影响**进程内**插入的 iptables 规则；如果同时还有外部 systemd
-	// `nanotun-tun-isolate.service` 在跑，那是另一套独立机制（参见 cmd/nanotund/tun-isolate.sh），
-	// 须各自启停。M0 起 systemd 单元已默认禁用 [Install]，相互不冲突。
+	// 早先还有一套 systemd + shell 的隔离实现（`nanotun-tun-isolate.service`），已经删除：
+	// 它锁的是一组早已不存在的网段、规则又挂在 INPUT（客户端互访走 FORWARD），开着也不起
+	// 作用；且依赖 ipset，缺了会让 nanotun.service 连带起不来。网络层隔离现在只有这一条路。
 	//
 	// P2#16 以后 ExitMode 优先,ClientIsolate 仅作为「上一代配置」兼容路径(见 ResolveExitMode)。
 	ClientIsolate bool `toml:"client_isolate"`

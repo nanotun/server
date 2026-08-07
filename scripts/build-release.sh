@@ -74,7 +74,6 @@ for GOARCH in $ARCHES; do
   cp cmd/nanotun-web/nanotun-web.service "${STAGING}/extras/" 2>/dev/null || true
   # 这些文件是 install-self-hosted.sh 的硬性依赖(缺了装不上),缺失时要在打包阶段就失败。
   cp cmd/nanotund/tun-setup.sh cmd/nanotund/tun-teardown.sh cmd/nanotund/tun-setup.service \
-     cmd/nanotund/tun-isolate.sh cmd/nanotund/tun-isolate-teardown.sh cmd/nanotund/tun-isolate.service \
      "${STAGING}/scripts/"
   # setup.sh 是安装之后的开服向导,必须随包走 —— 它是「服务起来了」到「客户端能连」
   # 之间那段的唯一引导,install-self-hosted.sh 的结尾会指向它。

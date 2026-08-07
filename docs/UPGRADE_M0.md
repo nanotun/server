@@ -96,28 +96,23 @@ export NANOTUN_DB=data/nanotun.db
 ### 5. 关闭客户端互访隔离(mesh 关键)
 
 历史 deploy 流程会安装 `tun-isolate.sh` 并由 `tun-setup.sh` 自动调用,
-往 iptables 里灌一条 DROP 规则禁止虚拟 IP 互通。M0 起默认关掉:
+往 iptables 里灌一条 DROP 规则禁止虚拟 IP 互通。M0 起默认关掉,现在**整套已经删除**。
 
-- `cmd/nanotund/tun-setup.sh` 只在 `NANOTUN_TUN_ISOLATE=1` 时才会执行
-  `nanotun-tun-isolate.sh`;
-- `cmd/nanotund/tun-isolate.service` 移除了 `[Install]` 段,stock `systemctl enable`
-  不再把它挂上 multi-user.target;
-- 老用户升级后应当主动取消旧服务:
+删掉是因为它三样全占:锁的是一组早已不存在的网段(真实客户端一个都匹配不上)、规则挂在
+INPUT 而客户端互访走 FORWARD —— 开着也不起作用,却让人以为隔离生效了;而且它依赖
+`ipset`,没装的机器上会让 `nanotun-tun-setup` 退 127,连带 `nanotun.service` 起不来。
 
-```bash
-# 单元名:标准安装(install-self-hosted.sh)为 nanotun-tun-isolate.service;
-# 更早的历史部署可能装成过无前缀的 tun-isolate.service,一并 disable 即可。
-sudo systemctl disable --now nanotun-tun-isolate.service 2>/dev/null || true
-sudo systemctl disable --now tun-isolate.service 2>/dev/null || true
-sudo /usr/local/bin/nanotun-tun-isolate-teardown.sh   # 清掉残留的 iptables 规则
+**不用手工做任何事**:升级(跑安装脚本)时会自动 disable 并删掉旧单元与脚本,残留的
+ipset 与 iptables 规则也会一并清掉;卸载同理。
+
+确实需要禁止客户端互访的,改 `config.toml`:
+
+```toml
+exit_mode = "isolate"   # 禁止客户端互访,仍允许出 WAN
 ```
 
-如果确实希望保留历史隔离行为:
-
-```bash
-sudo systemctl enable --now nanotun-tun-isolate.service
-# 或 export NANOTUN_TUN_ISOLATE=1; tun-setup.sh
-```
+这条走的是 Go 里的实现:规则插在 FORWARD、用实际生效的 TUN 网段,并且处理了与出口节点 /
+子网路由的互斥(那两个特性都要经另一个客户端中转,回程会被这条 DROP 黑洞掉)。
 
 未来 mesh 内的访问控制走 `store/acl.go` 的 ACL 表,不再依赖 iptables。
 

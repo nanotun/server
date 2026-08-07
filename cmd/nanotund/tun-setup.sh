@@ -59,9 +59,26 @@ done
 
 echo "TUN 预处理完成:不预建网卡,nanotund 会自己建 [tun].device_name 那一张"
 
-# M0 起默认不再做客户端间隔离：自托管 mesh 场景下，客户端互通是核心功能，
-# 同账号 / 同组的访问控制由 nanotun 在应用层 ACL 完成（store/acl.go）。
-# 仅当显式设置 NANOTUN_TUN_ISOLATE=1 时才执行 iptables 隔离脚本。
-if [ "${NANOTUN_TUN_ISOLATE:-0}" = "1" ] && [ -x /usr/local/bin/nanotun-tun-isolate.sh ]; then
-  /usr/local/bin/nanotun-tun-isolate.sh
+# 清掉旧版「客户端隔离」shell 脚本(NANOTUN_TUN_ISOLATE=1)留下的规则。
+#
+# 那套东西已经删了,因为它三样全占:
+#  · 不起作用 —— ipset 里锁的是上面那 15 个早已不存在的网段,真实客户端在
+#    [tun].subnets(默认 10.201/16),一个都匹配不上;而且规则挂在 INPUT,客户端互访
+#    走的是 FORWARD。开着它的人以为客户端之间互相隔离了,实际一点没隔。
+#  · 会断服 —— 它依赖 ipset,而它是被本脚本在 set -e 下调用的。没装 ipset 的机器上
+#    tun-setup 退 127,nanotun.service 因为 Requires= 直接起不来,日志里只有一句
+#    status=127/n/a,连 ipset 三个字都不出现。
+#  · 是重复的 —— 真正能用的隔离在 Go 里:config.toml 的 exit_mode = "isolate",
+#    规则插在 FORWARD、用的是实际网段,还处理了与出口节点 / 子网路由的互斥。
+#
+# 只在确实有残留时才动手,并且不让失败影响本脚本 —— 这是打扫,不是本职工作,
+# 没有任何理由因为打扫没做成而把 VPN 拖下水(那正是上面第二条的教训)。
+if command -v ipset >/dev/null 2>&1 && ipset list vpn_client_ips >/dev/null 2>&1; then
+  while iptables -C INPUT -i tun+ -m set --match-set vpn_client_ips src \
+        -m set --match-set vpn_client_ips dst -j DROP 2>/dev/null; do
+    iptables -D INPUT -i tun+ -m set --match-set vpn_client_ips src \
+      -m set --match-set vpn_client_ips dst -j DROP 2>/dev/null || break
+  done
+  ipset destroy vpn_client_ips 2>/dev/null || true
+  echo "已清除旧版客户端隔离残留（那套机制不起作用且会断服，已移除；要隔离请用 exit_mode = \"isolate\"）"
 fi

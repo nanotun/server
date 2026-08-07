@@ -28,7 +28,7 @@
 #      /usr/local/bin/{nanotund, nanotun-admin, nanotun-tun-setup.sh, ...}
 #      /etc/nanotun/{config.toml, certs/, masquerade/}（证书由 ensure-server-assets.sh 按需自签）
 #      /var/lib/nanotun/                        （SQLite home）
-#      /etc/systemd/system/{nanotun-tun-setup,nanotun-tun-isolate,nanotun}.service
+#      /etc/systemd/system/{nanotun-tun-setup,nanotun}.service
 #      config.toml 已存在则**原样保留**（模板另存 config.toml.dist 供 diff）；模板里的
 #      REPLACE_WITH_* 占位与示例 short_ids 由 fill_config_secrets 就地换成本机随机值，
 #      否则 [reality].private_key 非法会让 nanotund 起不来（exit 31）。权限 0600。
@@ -189,10 +189,8 @@ fi
 # ensure-server-assets.sh 在 config.toml 落位后按需自签(见 step 1 末尾)。
 for f in "$DEPLOY_DIR/nanotund" "$DEPLOY_DIR/nanotun-admin" \
          "$EXTRAS_DIR/config.toml" "$EXTRAS_DIR/nanotun.service" \
-         "$SCRIPTS_DIR/tun-setup.sh" "$SCRIPTS_DIR/tun-isolate.sh" \
-         "$SCRIPTS_DIR/tun-isolate-teardown.sh" \
+         "$SCRIPTS_DIR/tun-setup.sh" \
          "$SCRIPTS_DIR/tun-teardown.sh" "$SCRIPTS_DIR/tun-setup.service" \
-         "$SCRIPTS_DIR/tun-isolate.service" \
          "$SCRIPTS_DIR/ensure-server-assets.sh"; do
   [ -e "$f" ] || die "缺文件: $f"
 done
@@ -278,10 +276,14 @@ step "1. 安装二进制 / 脚本 / 证书 / 配置 / systemd 单元"
 install -m 0755 "$DEPLOY_DIR/nanotund"  /usr/local/bin/nanotund
 install -m 0755 "$DEPLOY_DIR/nanotun-admin"    /usr/local/bin/nanotun-admin
 install -m 0755 "$SCRIPTS_DIR/tun-setup.sh"     /usr/local/bin/nanotun-tun-setup.sh
-install -m 0755 "$SCRIPTS_DIR/tun-isolate.sh"   /usr/local/bin/nanotun-tun-isolate.sh
-# teardown 与 UPGRADE_M0.md 里「关掉历史隔离」的卸载指引配套,必须一起装上。
-install -m 0755 "$SCRIPTS_DIR/tun-isolate-teardown.sh" /usr/local/bin/nanotun-tun-isolate-teardown.sh
 install -m 0755 "$SCRIPTS_DIR/tun-teardown.sh"  /usr/local/bin/nanotun-tun-teardown.sh
+# 老版本装过的 tun-isolate 那套(脚本 + 单元)在这里主动铲掉:它不起作用还会断服
+# (原因写在 tun-setup.sh 里),留在盘上只会被人当成还能用的功能。规则残留由
+# tun-setup.sh 每次开机顺手清。要客户端隔离用 config.toml 的 exit_mode = "isolate"。
+systemctl disable --quiet --now nanotun-tun-isolate.service 2>/dev/null || true
+rm -f /etc/systemd/system/nanotun-tun-isolate.service \
+      /usr/local/bin/nanotun-tun-isolate.sh \
+      /usr/local/bin/nanotun-tun-isolate-teardown.sh
 # 开服向导装成 nanotun-setup:它是要反复用的(加用户、重出二维码、改拨号地址),
 # 而解压出来的发布包目录用完多半就删了,只留在包里等于用一次就丢。
 # 老发布包没有这个文件,缺了不 fatal。
@@ -346,10 +348,7 @@ else
 fi
 rm -f "$ASSETS_LOG"
 
-# systemd 单元。tun-isolate 是「恢复历史客户端隔离」的逃生阀:装上但**不** enable,
-# 需要时 `systemctl enable --now nanotun-tun-isolate.service`(单元本身无 [Install] 段)。
 install -m 0644 "$SCRIPTS_DIR/tun-setup.service" /etc/systemd/system/nanotun-tun-setup.service
-install -m 0644 "$SCRIPTS_DIR/tun-isolate.service" /etc/systemd/system/nanotun-tun-isolate.service
 install -m 0644 "$EXTRAS_DIR/nanotun.service"  /etc/systemd/system/nanotun.service
 systemctl daemon-reload
 ok "二进制 / 配置 / 证书 / systemd 单元已就位"

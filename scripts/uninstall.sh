@@ -50,7 +50,8 @@ ETC_DIR=/etc/nanotun
 LIB_DIR=/var/lib/nanotun
 RUN_DIR=/run/nanotun
 
-# 服务端装的 systemd 单元。tun-isolate 装了但默认不 enable,照样要清。
+# 服务端装的 systemd 单元。tun-isolate 那套已经删了,这里仍然留着名字 —— 卸载要能
+# 收拾**老版本**装下的东西,而老机器上它确实在。
 UNITS=(nanotun.service nanotun-web.service nanotun-tun-setup.service nanotun-tun-isolate.service)
 
 # 服务端装进 /usr/local/bin 的东西。
@@ -139,8 +140,18 @@ done
 # 不跑的话 TUN 网卡与 iptables 规则会留到下次重启 —— 而卸载完还占着 tun0 和一堆
 # FORWARD/NAT 规则,是最容易被当成「别的软件坏了」的那种残留。
 step "2. 拆掉 TUN 网卡与 iptables 规则"
-[ -x /usr/local/bin/nanotun-tun-isolate-teardown.sh ] \
-  && run "撤销客户端隔离规则" /usr/local/bin/nanotun-tun-isolate-teardown.sh
+# 旧版那套 shell 客户端隔离(ipset + INPUT DROP)的残留自己就地清,不再调它的
+# teardown 脚本 —— 那个脚本已经随功能一起删了,新装的机器上根本没有,而残留是**老**
+# 机器上的东西:靠一个新版不再分发的文件去清老版本的垃圾,恰好在唯一需要它的场合缺席。
+if command -v ipset >/dev/null 2>&1 && ipset list vpn_client_ips >/dev/null 2>&1; then
+  while iptables -C INPUT -i tun+ -m set --match-set vpn_client_ips src \
+        -m set --match-set vpn_client_ips dst -j DROP 2>/dev/null; do
+    iptables -D INPUT -i tun+ -m set --match-set vpn_client_ips src \
+      -m set --match-set vpn_client_ips dst -j DROP 2>/dev/null || break
+  done
+  ipset destroy vpn_client_ips 2>/dev/null || true
+  ok "清除旧版客户端隔离残留"
+fi
 [ -x /usr/local/bin/nanotun-tun-teardown.sh ] \
   && run "删除 TUN 网卡" /usr/local/bin/nanotun-tun-teardown.sh
 

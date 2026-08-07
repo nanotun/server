@@ -25,8 +25,9 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
-# 关闭 isolate（mesh 默认互通）；如需重新启用，把下行去掉或改为 1
-Environment=NANOTUN_TUN_ISOLATE=0
+# 要禁止客户端互访:改 config.toml 的 exit_mode = "isolate"（规则在 FORWARD 链，
+# 用的是实际 TUN 网段，并处理了与出口节点 / 子网路由的互斥）。
+# 早先那个 NANOTUN_TUN_ISOLATE 环境变量对应的 shell 脚本已删除，原因见 tun-setup.sh。
 
 # E4(2026-05-22) systemd hardening：在保持 root + TUN/iptables 能力的前提下尽量
 # 降低 blast radius。任何一条让 server 起不来时,请先看 journalctl,再视场景松绑。
