@@ -42,6 +42,11 @@ type globalOpts struct {
 	// 不是命令行开关。放在 opts 上是为了不给十几处 runWithStore 调用点加参数。
 	bootstrapDB bool
 
+	// unanswered:confirm 问了却一个字都没读到(EOF / 不是交互终端)。由 confirm 置,
+	// 用来把「没人应答」和「答了不做」区分成不同的退出码 —— 前者退 0 会让脚本
+	// 以为事情做完了。见 confirm.go。
+	unanswered bool
+
 	stdout io.Writer // 默认 os.Stdout；测试可替换
 	stderr io.Writer
 	stdin  io.Reader
@@ -488,6 +493,11 @@ func runWithStoreOpts(opts *globalOpts, readOnly, migrate, mustExist bool, fn fu
 		// 第十一轮深扫 LOW:usage/参数错误 → exit 2(与 restore / config lint / 顶层 dispatch 一致),
 		// 其余运行期错误 → exit 1。
 		return exitCodeForErr(err)
+	}
+	// 子命令没报错,但它是在「问了确认、没人应答」之后收的手 —— 事情没做,退出码不能是 0。
+	// 明确回答 n 的仍然退 0:那是一次有人做出的决定,不是意外。
+	if opts.unanswered {
+		return 2
 	}
 	return 0
 }

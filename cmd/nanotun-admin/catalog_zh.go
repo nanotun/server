@@ -94,6 +94,7 @@ var catZH = map[string]string{
 
 	// ===== 通用 =====
 	"common.canceled":    "已取消",
+	"common.noAnswer":    "没有可读的输入(stdin 不是交互终端?)——没人回答,所以什么都没做。\n脚本 / ssh 里要它照做,显式加 --yes;只是想看看会发生什么,那现在这样就对了。",
 	"common.usagePrefix": "用法: ",
 	// 复用型分发 / 解析错误(命令语法本身不翻译,仅前缀 / 提示词按语言切换):
 	"cli.unknownSubcommand":     "未知的 %s 子命令 %q",

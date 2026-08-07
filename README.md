@@ -389,10 +389,18 @@ tag,workflow 只认这种 tag —— 手工 `git tag` 推上去发不出版本�
 
 ```bash
 sudo systemctl stop nanotun nanotun-web
-sudo cp /path/to/backup.db /var/lib/nanotun/nanotun.db
-sudo chmod 600 /var/lib/nanotun/nanotun.db
+sudo nanotun-admin --db-path /var/lib/nanotun/nanotun.db restore /path/to/backup.db
 sudo systemctl start nanotun nanotun-web
 ```
+
+用 `restore` 而不是 `cp`:它会先验源文件是不是一个完整的 nanotun 库(半截下载的备份、
+拿错的 tar.gz、0 字节的 cron 产物都挡在门外),覆盖前把现库留一份
+`.pre-restore-<时间戳>`,并且**在服务还开着时直接拒绝**。
+
+最后这条最要紧。`cp` 是原地覆盖、inode 不变,所以服务端那道「库文件被换掉就重开」的
+兜底照不到它:漏停一个服务再 cp,那个进程会拿着一个从底下被换掉字节的库继续服务,
+一声不吭,而另一个服务从此起不来,日志里只有一句 `database is locked`。
+非交互场景(ssh、脚本)记得加 `--yes` —— 没有 TTY 时它问不到人,会什么都不做并以非 0 退出。
 
 安装向导会往 `/etc/nanotun/web.env` 写一行 `NANOTUN_WEB_ALLOW_SETUP=0`,
 把 /setup 的关闭状态放在数据库之外。否则库一没,/setup 会重新对全网敞开,
@@ -415,10 +423,10 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install
   && sudo bash nanotun-install.sh --yes --dial-host <新地址>
 
 # 2) 停服务,把备份盖回去 —— 两样都要:/etc/nanotun 是身份,库是用户和设置
+#    库用 restore 而不是 cp,理由见上一节(它会验源、留一份旧库、服务没停就拒绝)
 sudo systemctl stop nanotun nanotun-web
 sudo tar -xzf etc-nanotun.tar.gz -C /etc
-sudo cp backup.db /var/lib/nanotun/nanotun.db
-sudo chmod 600 /var/lib/nanotun/nanotun.db
+sudo nanotun-admin --db-path /var/lib/nanotun/nanotun.db restore backup.db --yes
 sudo systemctl start nanotun nanotun-web
 
 # 3) 新机器 IP 变了的话,拨号地址是从备份里恢复的,还指着旧机器

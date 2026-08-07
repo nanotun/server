@@ -19,7 +19,16 @@ func confirm(opts *globalOpts, prompt string) bool {
 	fmt.Fprintf(opts.stdout, "%s [y/N]: ", prompt)
 	r := bufio.NewReader(opts.stdin)
 	line, err := r.ReadString('\n')
-	if err != nil {
+	if err != nil && strings.TrimSpace(line) == "" {
+		// 读不到任何输入 —— 没人被问到,这跟「问了,回答不做」不是一回事。
+		//
+		// 两者都不该动手,这一点没变;区别在退出码。压根没人应答时还退 0,等于告诉调用它的
+		// 脚本「做完了」。而这条路太好走了:`ssh 主机 'nanotun-admin restore 备份.db'`
+		// 不带 -t 就没有 TTY,stdin 一关就是 EOF —— 恰好是灾难恢复时最可能的用法。
+		// 实测那一条命令打印「已取消」、退出码 0、库一个字节没动,而写脚本的人下一行
+		// 就 && echo 恢复完成。
+		opts.unanswered = true
+		fmt.Fprintln(opts.stderr, opts.T("common.noAnswer"))
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {

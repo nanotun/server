@@ -97,6 +97,7 @@ var catEN = map[string]string{
 
 	// ===== common =====
 	"common.canceled":    "canceled",
+	"common.noAnswer":    "no input to read (stdin is not a terminal?) — nobody answered, so nothing was done.\nPass --yes to go ahead in scripts / over ssh; if you just wanted to see what would happen, this is the right outcome.",
 	"common.usagePrefix": "usage: ",
 	// 复用型分发 / 解析错误(命令语法本身不翻译,仅前缀 / 提示词按语言切换):
 	"cli.unknownSubcommand":     "unknown %s subcommand %q",

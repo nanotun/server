@@ -443,12 +443,17 @@ func TestCmdExitRevoke_ConfirmGuard(t *testing.T) {
 		}
 	})
 
-	// 读不到回答(stdin 被关掉 / 非交互环境)按「否」处理并正常退出 —— 保守方向是
-	// 「什么都不做」,而不是失败退出去污染上层脚本的错误处理。关键是绝不能当成同意。
-	t.Run("stdin 直接 EOF 按否处理", func(t *testing.T) {
+	// 读不到回答(stdin 被关掉 / 非交互环境)绝不能当成同意 —— 这一条没变,也是这里最要紧的。
+	//
+	// 变的是退出码:从 0 改成 2。原先的理由是「别失败退出去污染上层脚本的错误处理」,
+	// 那只站在交互用户的角度;而真正读这个退出码的是脚本,退 0 等于告诉它「你要的事做完了」,
+	// 可事情一件没做。ssh 主机 'nanotun-admin restore 备份.db' 不带 -t 就正好走这条路
+	// (没有 TTY → EOF),实测打印「已取消」、退出码 0、库一个字节没动。
+	// 明确回答 n 的仍然退 0:那是有人做出的决定,不是意外。
+	t.Run("stdin 直接 EOF:不做,且退出码非 0", func(t *testing.T) {
 		code, stdout, stderr := runCLIInteractive(t, db, "", "exit", "revoke", idStr)
-		if code != 0 {
-			t.Fatalf("EOF 应按否处理并正常退出, got %d stderr=%s", code, stderr)
+		if code != 2 {
+			t.Fatalf("没人应答应退 2(不能让脚本以为做过了), got %d stderr=%s", code, stderr)
 		}
 		if !strings.Contains(stdout, "取消") {
 			t.Errorf("没告诉用户已取消: %q", stdout)
@@ -913,9 +918,10 @@ func TestCmdRouteDelete_ConfirmGuard(t *testing.T) {
 		t.Fatalf("答了不,路由却被删了: 状态=%q", s)
 	}
 
-	// 读不到回答(EOF)按「否」处理:正常退出但绝不能删。
-	if code, _, e := runCLIInteractive(t, db, "", "route", "delete", fmt.Sprint(id), "10.88.0.0/24"); code != 0 {
-		t.Fatalf("EOF 应按否处理并正常退出, got %d stderr=%s", code, e)
+	// 读不到回答(EOF):绝不能删,而且退出码非 0 —— 没人应答时退 0,等于告诉调用它的脚本
+	// 「删掉了」。理由与 TestCmdExitRevoke_ConfirmGuard 那条同源,详见那里。
+	if code, _, e := runCLIInteractive(t, db, "", "route", "delete", fmt.Sprint(id), "10.88.0.0/24"); code != 2 {
+		t.Fatalf("没人应答应退 2(不能让脚本以为删过了), got %d stderr=%s", code, e)
 	}
 	if s := routeStatus(t, db, id, "10.88.0.0/24"); s != util.RouteStatusApproved {
 		t.Fatalf("EOF 却把路由删了: 状态=%q", s)

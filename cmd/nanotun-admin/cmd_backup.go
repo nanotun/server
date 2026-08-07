@@ -157,6 +157,12 @@ func cmdRestore(opts *globalOpts, args []string) int {
 	if !opts.yes {
 		if !confirm(opts, opts.T("backup.confirmRestore", srcAbs, dstAbs)) {
 			fmt.Fprintln(opts.stdout, opts.T("common.canceled"))
+			// 这条命令不走 runWithStore,退出码得自己接上「没人应答」那一路。
+			// 它恰恰是最需要接的一条:远程恢复常写成 ssh 主机 'nanotun-admin restore …',
+			// 没有 TTY 就是 EOF,退 0 会让人以为库已经换过来了。
+			if opts.unanswered {
+				return 2
+			}
 			return 0
 		}
 	}
