@@ -32,14 +32,22 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
 > bash 的 stdin 就是终端本身,不存在这个问题。真用了管道形态也不会挂:`install.sh`
 > 认得出这个组合,会把系统装完、跳过向导,并提示你补一句 `sudo nanotun-setup`。
 
-**无人值守**(CI / cloud-init):把向导要问的直接给它,一条命令做到底。这种场景不需要
-问话,用管道形态最省事 ——
+**无人值守**(CI / cloud-init):把向导要问的直接给它,一条命令做到底 ——
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh \
-  | sudo NANOTUN_WEB_ADMIN_PASSWORD='换成你的密码' bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh -o nanotun-install.sh \
+  && sudo NANOTUN_WEB_ADMIN_PASSWORD='换成你的密码' bash nanotun-install.sh \
       --dial-host vpn.example.com --user alice --web-admin ops --yes
 ```
+
+> **这里要先落盘,不能写成 `curl … | bash`。** 管道形态下,curl 失败时 bash 拿到的是一个
+> 空脚本 —— 它老老实实跑完那零行内容,然后**以 0 退出**。`bash -c "$(curl …)"` 一样。
+> 人在旁边看着无所谓(屏幕上什么都没发生),但 cloud-init / Ansible / CI 只认退出码:
+> 它们会把「一个字节都没下下来」当成装好了,继续往下走,而那台机器上什么都没有。
+> 先落盘再执行,curl 的失败就由 `&&` 如实挡住了。
+>
+> 落在当前目录而不是 `/tmp`:`/tmp` 人人可写,下载完到 sudo 执行之间那一瞬,同机器上
+> 的其他用户能把文件换掉 —— 而下一步是 root 在跑它。
 
 这一条装完之后 Web 后台就能用 `ops` 加那个密码直接登录 —— 不带 `--web-admin` 也能装,
 只是后台账号留着没建,而 `/setup` 在建成之前对全网公开(谁先打开谁是管理员)。

@@ -283,8 +283,13 @@ cmd_install() {
       # 而 docker exec 不继承宿主环境 —— 不显式带进去,--web-admin 这条路就测不到。
       [ -n "${NANOTUN_WEB_ADMIN_PASSWORD:-}" ] && envs+=(-e "NANOTUN_WEB_ADMIN_PASSWORD=${NANOTUN_WEB_ADMIN_PASSWORD}")
     fi
+    # 先落盘再执行,别用 `curl … | bash`:curl 失败时 bash 拿到的是个空脚本,跑完零行
+    # 内容以 0 退出 —— 测试台会报「安装成功」,而容器里一个字节都没下下来。实测被这个
+    # 骗过一次:容器 DNS 挂了,退出码 0,机器上还是旧版本,差点当成升级路径的 bug 去查。
+    # 测试台谎报成功比装不上更糟。
     dex "${envs[@]}" "$NAME" bash -c \
-      "curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh | bash -s -- ${no_setup} $(passq)"
+      "curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh -o /root/nanotun-install.sh \
+         && bash /root/nanotun-install.sh ${no_setup} $(passq)"
     echo
     # 例子里的地址不能写 127.0.0.1 —— 向导会按语法把回环判掉("客户端拨到自己机器"),
     # 照抄这行提示的人拿到的是一句 FATAL。用 RFC 5737 的文档保留段:语法过得去,又不会

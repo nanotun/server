@@ -288,10 +288,16 @@ if [ "$CURL_RC" != 0 ]; then
    当前可用:$(df -h "$TMP" 2>/dev/null | awk 'NR==2{print $4}')" ;;
     6|7)  die "下载失败:连不上 github.com(curl $CURL_RC:DNS 解析不了 / 连接被拒)。
    检查网络、DNS、出站防火墙或代理。" ;;
+    # 这里**不能**建议 NANOTUN_NO_INSTALL=1:那条路自己也要先下同一个包,照做只会在
+    # 同一步再失败一次。给不通的建议比不给更糟 —— 人会以为是自己哪里做错了,再试一遍。
+    # 真正的出路是绕开这台机器的网络:在别处把 tar 下好,拷进来,直接跑包里的安装脚本
+    # (那一步不联网)。
     28)   die "下载失败:连上了但数据不来(curl 28:30 秒内速度不到 1KB/s,已重试 3 次)。
    不是「你的网慢」—— 慢但在动的下载不会走到这里,这是彻底停住了。多半是到
-   github.com 的链路被中断或被墙,换个时间 / 换条线路重试,或者自己把包下好再装:
-     curl -fsSL ${RAW_BASE}/install.sh | NANOTUN_NO_INSTALL=1 bash" ;;
+   github.com 的链路被中断或被墙,换个时间 / 换条线路重试。
+   一直不通的话,在能上网的机器上下好这个包,拷到这台机器上装(装的这一步不联网):
+     $BASE/$TARBALL
+     tar -xzf $TARBALL && sudo ./${TARBALL%.tar.gz}/scripts/install-self-hosted.sh" ;;
     22)   die "下载失败:服务器返回 404 之类的错(curl 22): $BASE/$TARBALL
    确认该版本存在且有 linux-$ARCH 产物:https://github.com/${REPO}/releases" ;;
     *)    die "下载失败(curl $CURL_RC): $BASE/$TARBALL
