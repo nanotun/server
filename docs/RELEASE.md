@@ -54,6 +54,9 @@ set -a && . scripts/e2e/e2e.env && set +a
 ./scripts/e2e/run-remote.sh 00 10 20 30 40 50 60 70
 
 # 3) 盖戳:把「刚跑过 e2e 的 commit」写进本地文件(不进 git)
+#    配了调度机时它会自己去读那一轮的退出码(last-run.rc),非 0 直接拒绝盖戳。
+#    别用日志末尾那句「合计 …,失败 0」判断过没过 —— 环境塌掉的那一轮长得一模一样
+#    (断言没跑成只记 ENV、不计失败),唯一的区别就是退出码 2。
 ./scripts/release/stamp-e2e.sh
 
 # 4) 唯一发版入口:再跑一遍单测,核对戳与 HEAD 一致,打包,打 tag
