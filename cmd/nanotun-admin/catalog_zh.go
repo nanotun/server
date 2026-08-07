@@ -93,9 +93,10 @@ var catZH = map[string]string{
 	"setting.probe.probeErr":      "✗ probe 异常(可能 ctx 取消 / 网络抖动): %s",
 
 	// ===== 通用 =====
-	"common.canceled":    "已取消",
-	"common.noAnswer":    "没有可读的输入(stdin 不是交互终端?)——没人回答,所以什么都没做。\n脚本 / ssh 里要它照做,显式加 --yes;只是想看看会发生什么,那现在这样就对了。",
-	"common.usagePrefix": "用法: ",
+	"common.canceled":      "已取消",
+	"common.dbFromInstall": "没带 --db-path,用的是本机装好的库 %s。",
+	"common.noAnswer":      "没有可读的输入(stdin 不是交互终端?)——没人回答,所以什么都没做。\n脚本 / ssh 里要它照做,显式加 --yes;只是想看看会发生什么,那现在这样就对了。",
+	"common.usagePrefix":   "用法: ",
 	// 复用型分发 / 解析错误(命令语法本身不翻译,仅前缀 / 提示词按语言切换):
 	"cli.unknownSubcommand":     "未知的 %s 子命令 %q",
 	"cli.unknownSubcommandBare": "未知子命令 %q",
@@ -245,6 +246,7 @@ var catZH = map[string]string{
                        建议在 CI / 升级流程里 systemctl restart 前跑一次。`,
 	"config.tomlParseFail": "TOML 解析失败:\n%s",
 	"config.strictFail":    "[strict] %s 校验失败:\n%s",
+	"config.noDBPath":      "警告:[store].db_path 没写 —— nanotund 会用 cwd 相对的 data/nanotun.db(也就是 /etc/nanotun/data/nanotun.db,一个空库)。\n      表现是服务照常起、所有客户端登录一律失败,而 nanotun-admin 查什么都正常。补上:db_path = \"/var/lib/nanotun/nanotun.db\"",
 	"config.loosePerm":     "警告:%s 权限是 %s —— 里面有 REALITY 私钥和 hy2 口令,这台机器上任何本地用户都能读。\n      收紧:chmod 600 %s(在别的机器上验模板可以忽略这条)",
 	"config.certMissing":   "警告:证书文件读不到 —— %s\n      配置本身没问题,但 server 起来时会因此退出(exit 20)。在别的机器上验模板可以忽略这条。",
 

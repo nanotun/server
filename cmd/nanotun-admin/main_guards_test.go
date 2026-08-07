@@ -464,3 +464,72 @@ func TestRouteAndCredentialsReadOnlyClassification(t *testing.T) {
 		}
 	}
 }
+
+// 已经装好的机器上,忘了 --db-path 的命令必须落到装好的那个库,而不是在 cwd 里造一个新的。
+//
+// 这条守的是最难发现的一种失败:user create 保留 bootstrap 语义(它是首次部署入口),
+// 所以在任意目录敲 `nanotun-admin user create bob` 会建出一个完整的新库,打印
+// "user created" 和一串 PSK —— 真在跑的服务端却没有这个人。PSK 发出去连不上,而
+// 同目录的 user list 还查得到 bob,把错觉坐实。2026-08-07 实测。
+func TestResolveDefaultDBPath_PrefersInstalledDB(t *testing.T) {
+	installed := t.TempDir() + "/nanotun.db"
+	if err := os.WriteFile(installed, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 用一个临时 cwd:默认路径 data/nanotun.db 在这里不存在。
+	t.Chdir(t.TempDir())
+
+	t.Run("默认路径不存在时改用装好的库", func(t *testing.T) {
+		var errb bytes.Buffer
+		o := &globalOpts{dbPath: "data/nanotun.db", stderr: &errb}
+		resolveDefaultDBPathAt(o, installed)
+		if o.dbPath != installed {
+			t.Fatalf("应改用装好的库,实际 %q", o.dbPath)
+		}
+		if !o.dbPathFromInstall {
+			t.Error("换了库却没留标记 —— 开库时就没人告诉用户动的是哪一个")
+		}
+		if errb.Len() != 0 {
+			t.Errorf("不该在这里就说话(config lint 这类命令根本不开库): %q", errb.String())
+		}
+	})
+
+	t.Run("显式指定过就不许改", func(t *testing.T) {
+		var errb bytes.Buffer
+		o := &globalOpts{dbPath: "data/nanotun.db", dbPathExplicit: true, stderr: &errb}
+		resolveDefaultDBPathAt(o, installed)
+		if o.dbPath != "data/nanotun.db" {
+			t.Fatalf("人明确指定的路径被改成了 %q", o.dbPath)
+		}
+	})
+
+	t.Run("cwd 下真有库时不改(源码树里开发自己的库)", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+		if err := os.MkdirAll(dir+"/data", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dir+"/data/nanotun.db", []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var errb bytes.Buffer
+		o := &globalOpts{dbPath: "data/nanotun.db", stderr: &errb}
+		resolveDefaultDBPathAt(o, installed)
+		if o.dbPath != "data/nanotun.db" {
+			t.Fatalf("cwd 下的库被抢走了: %q", o.dbPath)
+		}
+	})
+
+	t.Run("这台机器没装过就维持原样", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		var errb bytes.Buffer
+		o := &globalOpts{dbPath: "data/nanotun.db", stderr: &errb}
+		resolveDefaultDBPathAt(o, t.TempDir()+"/不存在.db")
+		if o.dbPath != "data/nanotun.db" {
+			t.Fatalf("dbPath=%q", o.dbPath)
+		}
+		if errb.Len() != 0 {
+			t.Errorf("什么都没改却说了话: %q", errb.String())
+		}
+	})
+}

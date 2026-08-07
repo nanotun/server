@@ -96,9 +96,10 @@ var catEN = map[string]string{
 	"setting.probe.probeErr":      "✗ probe error (possibly ctx canceled / network jitter): %s",
 
 	// ===== common =====
-	"common.canceled":    "canceled",
-	"common.noAnswer":    "no input to read (stdin is not a terminal?) — nobody answered, so nothing was done.\nPass --yes to go ahead in scripts / over ssh; if you just wanted to see what would happen, this is the right outcome.",
-	"common.usagePrefix": "usage: ",
+	"common.canceled":      "canceled",
+	"common.dbFromInstall": "no --db-path given; using this machine's installed database %s.",
+	"common.noAnswer":      "no input to read (stdin is not a terminal?) — nobody answered, so nothing was done.\nPass --yes to go ahead in scripts / over ssh; if you just wanted to see what would happen, this is the right outcome.",
+	"common.usagePrefix":   "usage: ",
 	// 复用型分发 / 解析错误(命令语法本身不翻译,仅前缀 / 提示词按语言切换):
 	"cli.unknownSubcommand":     "unknown %s subcommand %q",
 	"cli.unknownSubcommandBare": "unknown subcommand %q",
@@ -248,6 +249,7 @@ var catEN = map[string]string{
                        recommended before systemctl restart in CI / upgrade flows.`,
 	"config.tomlParseFail": "TOML parse failed:\n%s",
 	"config.strictFail":    "[strict] %s validation failed:\n%s",
+	"config.noDBPath":      "warning: [store].db_path is unset — nanotund falls back to data/nanotun.db relative to its cwd (/etc/nanotun/data/nanotun.db, an empty database).\n      The service starts fine and every client login fails, while nanotun-admin still looks healthy. Set: db_path = \"/var/lib/nanotun/nanotun.db\"",
 	"config.loosePerm":     "warning: %s is mode %s — it holds the REALITY private key and the hy2 password, and every local user on this machine can read it.\n      Tighten it: chmod 600 %s (ignore this when linting a template on another machine)",
 	"config.certMissing":   "warning: cannot read certificate file — %s\n      The config itself is fine, but the server will exit 20 on startup. Ignore this when linting a template on another machine.",
 

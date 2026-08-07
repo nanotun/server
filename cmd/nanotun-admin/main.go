@@ -32,11 +32,16 @@ var version = "dev"
 
 // globalOpts 由 main 解析后传给所有子命令。
 type globalOpts struct {
-	dbPath        string
-	controlSocket string
-	json          bool
-	yes           bool
-	lang          string // "en"(默认)/ "zh";--lang 或 env NANOTUN_LANG
+	dbPath string
+	// dbPathExplicit:库路径是人明确指定的(--db-path / --db / env NANOTUN_DB),
+	// 而不是那个 cwd 相对的默认值。用来判断能不能替他改主意,见 resolveDefaultDBPath。
+	dbPathExplicit bool
+	// dbPathFromInstall:上面那个「改主意」真的发生了 —— 开库时要告诉人一声。
+	dbPathFromInstall bool
+	controlSocket     string
+	json              bool
+	yes               bool
+	lang              string // "en"(默认)/ "zh";--lang 或 env NANOTUN_LANG
 
 	// bootstrapDB:本次子命令是否允许「库不存在就建」。由 runRoot 按 subCanBootstrapDB 置一次,
 	// 不是命令行开关。放在 opts 上是为了不给十几处 runWithStore 调用点加参数。
@@ -76,6 +81,7 @@ func main() {
 func runRoot(args []string, opts *globalOpts) int {
 	subcmd, rest := args[0], args[1:]
 	opts.bootstrapDB = subCanBootstrapDB(subcmd, rest)
+	resolveDefaultDBPath(opts)
 
 	// `nanotun-admin user --help` 从前答的是 unknown subcommand "--help" —— 顶层认这三个词,
 	// 子命令一个都不认。更糟的是几个「动作型」子命令会把它当参数吞下去照常干活:
@@ -452,6 +458,13 @@ func runWithStoreOpts(opts *globalOpts, readOnly, migrate, mustExist bool, fn fu
 		}
 	}
 
+	// 悄悄换库和悄悄造库是同一类毛病:人得知道自己刚才动的是哪一个库。走 stderr,
+	// --json 的 stdout 不受影响;只在真要开库这一刻说,说完就归位,免得一条命令里喊两遍。
+	if opts.dbPathFromInstall {
+		opts.dbPathFromInstall = false
+		fmt.Fprintln(opts.stderr, opts.T("common.dbFromInstall", opts.dbPath))
+	}
+
 	st, err := store.Open(ctx, opts.dbPath, store.Options{ReadOnly: readOnly})
 	if err != nil {
 		fmt.Fprintf(opts.stderr, "open store %s: %v\n", opts.dbPath, err)
@@ -502,6 +515,44 @@ func runWithStoreOpts(opts *globalOpts, readOnly, migrate, mustExist bool, fn fu
 	return 0
 }
 
+// installedDBPath 是 install-self-hosted.sh 的落点,也是两个 systemd 单元实际读的那一个库。
+const installedDBPath = "/var/lib/nanotun/nanotun.db"
+
+// resolveDefaultDBPath:没人指定库、默认的那个相对路径又不存在、而这台机器装过 nanotun 时,
+// 认准装好的那个库。
+//
+// 不这么做的后果不是「报个错」,而是**装作成功**:默认路径是 cwd 相对的 data/nanotun.db,
+// 而 user create 是保留 bootstrap 语义的首次部署入口之一(见 subCanBootstrapDB)。于是在
+// 一台**已经装好**的机器上,随便哪个目录里敲一句
+//
+//	nanotun-admin user create bob
+//
+// 会在当前目录凭空建出一个 184 KB 的新库、迁完 schema、打印 "user created: id=1" 和一串
+// PSK —— 而真正在跑的服务端根本没有这个人。PSK 发给客户端,连不上,两边都没有任何线索;
+// 更坏的是同目录下 user list 还查得到 bob,把这个错觉坐实。2026-08-07 实测。
+//
+// 显式给了 --db-path / NANOTUN_DB 的照办不动(打错路径是另一类问题,那边有 mustExist 兜);
+// cwd 下真有 data/nanotun.db 的也不动 —— 那是源码树里开发自己的库,轮不到这里改主意。
+func resolveDefaultDBPath(opts *globalOpts) { resolveDefaultDBPathAt(opts, installedDBPath) }
+
+// resolveDefaultDBPathAt 是它可测的那一半:安装路径作为参数传进来,测试才能不碰真 /var/lib。
+func resolveDefaultDBPathAt(opts *globalOpts, installed string) {
+	if opts.dbPathExplicit {
+		return
+	}
+	if _, err := os.Stat(opts.dbPath); err == nil {
+		return
+	}
+	if _, err := os.Stat(installed); err != nil {
+		return
+	}
+	opts.dbPath = installed
+	// 只记下,不在这里说话:runRoot 对每条子命令都会走这里,而 config lint / help 这些
+	// 根本不开库 —— 冲它们喊一句「用的是装好的库」是句没有后果的废话。真去开库时再说
+	// (runWithStoreOpts),那时候这句才对应着一件确实发生了的事。
+	opts.dbPathFromInstall = true
+}
+
 // parseGlobalFlags 抽出 --db-path / --json / --yes 等全局 flag，返回剩余 args。
 //
 // 故意手写，不用 flag.FlagSet：那东西遇到「子命令前没声明过的 flag」会直接 fail，
@@ -510,6 +561,7 @@ func parseGlobalFlags(args []string, opts *globalOpts) ([]string, error) {
 	opts.dbPath = "data/nanotun.db"
 	if v := os.Getenv("NANOTUN_DB"); v != "" {
 		opts.dbPath = v
+		opts.dbPathExplicit = true
 	}
 
 	// 语言:默认英文;env NANOTUN_LANG 覆盖;--lang 最高优先(下面循环里处理)。
@@ -546,11 +598,14 @@ func parseGlobalFlags(args []string, opts *globalOpts) ([]string, error) {
 				return nil, fmt.Errorf("%s expects an argument", a)
 			}
 			opts.dbPath = args[i+1]
+			opts.dbPathExplicit = true
 			i++
 		case strings.HasPrefix(a, "--db-path="):
 			opts.dbPath = a[len("--db-path="):]
+			opts.dbPathExplicit = true
 		case strings.HasPrefix(a, "--db="):
 			opts.dbPath = a[len("--db="):]
+			opts.dbPathExplicit = true
 		case a == "--json":
 			opts.json = true
 		case a == "--yes" || a == "-y":

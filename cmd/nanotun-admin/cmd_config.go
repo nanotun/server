@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -78,6 +79,12 @@ func cmdConfigLint(opts *globalOpts, args []string) int {
 	// 那里证书本就不该存在。把它判成失败会把这条正当用法一并堵死。
 	for _, w := range lintCertFiles(path, &cfg) {
 		fmt.Fprintln(opts.stderr, opts.T("config.certMissing", w))
+	}
+	// [store].db_path 空着不是语法错,但后果是「用户全不见了」:nanotund 会回落到 cwd
+	// 相对的 data/nanotun.db,也就是 WorkingDirectory 下的 /etc/nanotun/data/nanotun.db ——
+	// 一个空库。服务照常起、登录一律失败,而 nanotun-admin 那边的库原封不动,查什么都正常。
+	if strings.TrimSpace(cfg.Store.DBPath) == "" {
+		fmt.Fprintln(opts.stderr, opts.T("config.noDBPath"))
 	}
 	// 权限也顺手看一眼:这个文件里有 REALITY 私钥和 hy2 口令,组/其他可读就等于摊给
 	// 机器上任何本地用户。安装脚本每次都会收紧到 0600,但两次安装之间会漂 —— 最常见的

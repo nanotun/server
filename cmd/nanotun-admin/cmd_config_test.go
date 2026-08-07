@@ -58,11 +58,16 @@ subnets = ["10.201.0.0/16"]
 // 漏掉这条警告等于给假绿灯 —— 人照着 OK 去 restart,server 因 ExitTLSCert 当场趴下;
 // 但判成失败又会堵死「在别的机器上验一份配置模板」这条正当用法(CI 就是这么用的)。
 func TestConfigLint_WarnsAboutUnreadableCerts(t *testing.T) {
+	// db_path 写上:缺它自成一条警告(nanotund 会回落到 cwd 相对的空库),
+	// 这里要验的是证书那条,配置的其余部分得是干净的。
 	const tmpl = `
 [server]
 listen_addr = "0.0.0.0:443"
 tls_cert_file = %q
 tls_key_file = %q
+
+[store]
+db_path = "/var/lib/nanotun/nanotun.db"
 
 [tun]
 subnets = ["10.201.0.0/16"]
