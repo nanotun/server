@@ -267,11 +267,26 @@ func main() {
 	// M4:全新安装(尚无任何管理员)+ setup 向导开启 + 监听非环回地址 = 「首次运行 TOFU 抢占」窗口:
 	// 管理员建成前,任何网络访客过了验证码即可 POST /setup 抢占首个管理员。启动日志显著告警,
 	// 建议先绑 127.0.0.1 / 防火墙尽快完成 /setup,或用 nanotun-admin 预置管理员后以 -allow-setup=false 关闭向导。
-	if cfg.AllowSetup && listenAddrIsPublic(cfg.ListenAddr) {
-		if n, _ := st.CountWebAdmins(ctx); n == 0 {
-			logrus.WithField("listen", cfg.ListenAddr).Warn(
-				"[web] 安全提示:尚无管理员且 setup 向导对公网开放 — 任何网络访客可能抢占首个管理员。" +
-					"建议先绑 127.0.0.1 或用防火墙限制来源,尽快完成 /setup;或用 nanotun-admin 预置管理员后以 -allow-setup=false 关闭向导")
+	if n, _ := st.CountWebAdmins(ctx); n == 0 {
+		if cfg.AllowSetup {
+			if listenAddrIsPublic(cfg.ListenAddr) {
+				logrus.WithField("listen", cfg.ListenAddr).Warn(
+					"[web] 安全提示:尚无管理员且 setup 向导对公网开放 — 任何网络访客可能抢占首个管理员。" +
+						"建议先绑 127.0.0.1 或用防火墙限制来源,尽快完成 /setup;或用 nanotun-admin 预置管理员后以 -allow-setup=false 关闭向导")
+			}
+		} else {
+			// 反过来这一半也要说:门关着、又一个管理员都没有 = 谁都登不进后台。
+			//
+			// 这不是假想。换机器恢复备份时必现:新机器装的时候向导写下了
+			// /etc/nanotun/web.env(ALLOW_SETUP=0),而恢复用的 tar 解开时**不会**删掉
+			// 归档里没有的文件,那行就留了下来;偏偏搬回来的库里没有管理员 —— 于是
+			// /setup 跳转到登录页,登录页却没有任何账号可用。
+			//
+			// 症状里没有一处指向原因:服务 active,日志干净,页面也正常打开。少了这行
+			// 告警,人只能对着一个"看起来完全健康"的后台猜为什么进不去。
+			logrus.Warn("[web] 一个管理员都没有,而 /setup 抢占入口是关的 — 现在没人能登进 Web 后台。" +
+				"常见于换机器恢复备份(新机器的 web.env 留着,库里却没有管理员)或 purge 后重装。" +
+				"用 CLI 建一个即可:nanotun-admin webadmin create <名字>")
 		}
 	}
 

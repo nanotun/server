@@ -405,6 +405,40 @@ sudo nanotun-admin webadmin create <名字>
 容器部署同理,只是那行写在 compose 的 `environment:` 里(见 `docker/docker-compose.yml`)——
 卷丢失是容器最常见的事故,而 compose 文件跟卷不在一起,那种时候它还活着。
 
+**整台机器没了怎么办**:上面那几条针对的是「库丢了、机器还在」,那时 `/etc/nanotun`
+原封不动,只补库就够。换一台机器要多一步 —— 把身份也搬过去,否则新机器会给自己生成
+一套全新的 REALITY 私钥和证书,老客户端一个都连不上,而服务端日志一切正常。
+
+```bash
+# 1) 新机器上照常装(版本不必与旧机相同,新的即可)
+curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh -o nanotun-install.sh \
+  && sudo bash nanotun-install.sh --yes --dial-host <新地址>
+
+# 2) 停服务,把备份盖回去 —— 两样都要:/etc/nanotun 是身份,库是用户和设置
+sudo systemctl stop nanotun nanotun-web
+sudo tar -xzf etc-nanotun.tar.gz -C /etc
+sudo cp backup.db /var/lib/nanotun/nanotun.db
+sudo chmod 600 /var/lib/nanotun/nanotun.db
+sudo systemctl start nanotun nanotun-web
+
+# 3) 新机器 IP 变了的话,拨号地址是从备份里恢复的,还指着旧机器
+sudo nanotun-admin --db-path /var/lib/nanotun/nanotun.db setting set server_dial_host <新地址>
+
+# 4) 备份里没有 Web 后台管理员的话,现在建一个(理由见下)
+sudo nanotun-admin --db-path /var/lib/nanotun/nanotun.db webadmin create <名字>
+```
+
+第 4 步容易漏:新机器装的时候向导写下了 `/etc/nanotun/web.env`(`ALLOW_SETUP=0`),而第 2 步
+解 tar **不会**删掉归档里没有的文件,那一行就留了下来 —— 于是 /setup 关着、库里又没有管理员,
+后台谁也进不去。服务是 active 的、日志干净、页面照常打开,没有一处症状指向原因,所以
+`nanotun-web` 会在启动日志里直说这件事(`journalctl -u nanotun-web`)。
+
+实测跨发行版也成立(源机 Ubuntu 26.04 → 新机 Ubuntu 20.04):恢复后证书指纹、REALITY
+私钥、用户列表与源机逐字相同。
+
+第 3 步换地址救不了已经发出去的客户端配置 —— 那里面写的是旧地址。**所以拨号地址从一开始
+就该填域名而不是 IP**:换机器时改一条 DNS 记录,客户端什么都不用动。
+
 **卸载**:[`scripts/uninstall.sh`](scripts/uninstall.sh)(随发布包走)。
 
 ```bash
