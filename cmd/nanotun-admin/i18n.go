@@ -110,13 +110,27 @@ func (o *globalOpts) usage(syntax string) string {
 type usageErr struct {
 	msg   string
 	inner error
+	// reported:详情已经由别人(flag 包)打到 stderr 了,顶层不要再打一遍。
+	// 见 flagparse.go —— fs.SetOutput(opts.stderr) 让 flag 自己把错误和 flag 清单都印了,
+	// 这里返回错误只为把退出码定成 2。
+	reported bool
 }
 
 func (e *usageErr) Error() string {
-	if e.inner != nil {
+	switch {
+	case e.msg == "" && e.inner != nil:
+		return e.inner.Error()
+	case e.inner != nil:
 		return e.msg + ": " + e.inner.Error()
+	default:
+		return e.msg
 	}
-	return e.msg
+}
+
+// errAlreadyReported 报告这个错误的详情是不是已经打过了。
+func errAlreadyReported(err error) bool {
+	var u *usageErr
+	return errors.As(err, &u) && u.reported
 }
 func (e *usageErr) Unwrap() error { return e.inner }
 
@@ -199,4 +213,12 @@ func (o *globalOpts) notFoundErr(err error, key string, ident any) error {
 		return errors.New(o.T(key, ident))
 	}
 	return err
+}
+
+// reportErr 把一次子命令的错误打到 stderr —— 详情已经有人打过的除外(见 usageErr.reported)。
+func reportErr(opts *globalOpts, err error) {
+	if errAlreadyReported(err) {
+		return
+	}
+	fmt.Fprintln(opts.stderr, opts.errText(err))
 }

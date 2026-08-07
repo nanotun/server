@@ -157,7 +157,7 @@ func cmdConnection(opts *globalOpts, args []string) int {
 	cli := newControlHTTPClient(resolveControlSocketPath(opts.controlSocket))
 	out, err := controlStatusDo(cli, WithLimit(limit), WithOffset(offset))
 	if err != nil {
-		fmt.Fprintln(opts.stderr, opts.errText(err))
+		reportErr(opts, err)
 		return 1
 	}
 	switch sub {

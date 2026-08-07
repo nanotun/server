@@ -83,6 +83,22 @@ func runRoot(args []string, opts *globalOpts) int {
 		printSubcommandUsage(opts, subcmd)
 		return 0
 	}
+
+	// 再往下一层:`user create --help`、`webadmin create --help`。
+	//
+	// 这两个词的形式上面那条截不住(rest 有两个),于是落进正常派发 —— 而派发做的第一件事
+	// 是开库。结果在还没有库的机器上,问一句用法答的是「db not found: data/nanotun.db」,
+	// 还顺手把人指向 `nanotun-admin init` —— 而 init 恰恰是**建库**的那条命令,照做就
+	// 多出一个本不该有的空库。想查用法,查出个数据库来。
+	//
+	// 库在的时候故意不截:那条路上 flag 包会印出这个动作自己的 flag 列表(`-admin`、
+	// `--password-stdin` 之类),比顶层 help 里那一行「[flags]」细得多,留着更有用。
+	if len(rest) > 1 && isHelpToken(rest[len(rest)-1:]) {
+		if _, err := os.Stat(opts.dbPath); err != nil {
+			printSubcommandUsage(opts, subcmd)
+			return 0
+		}
+	}
 	return runRootSub(subcmd, rest, opts)
 }
 
@@ -183,7 +199,7 @@ func runRootSub(subcmd string, rest []string, opts *globalOpts) int {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			if err := cmdSettingProbeDialHost(ctx, opts, rest[1:]); err != nil {
-				fmt.Fprintln(opts.stderr, opts.errText(err))
+				reportErr(opts, err)
 				return exitCodeForErr(err)
 			}
 			return 0
@@ -215,13 +231,13 @@ func runRootSub(subcmd string, rest []string, opts *globalOpts) int {
 	case "reload":
 		// reload 不需要打开 SQLite,直接走 control socket。
 		if err := cmdReload(context.Background(), nil, opts, rest); err != nil {
-			fmt.Fprintln(opts.stderr, opts.errText(err))
+			reportErr(opts, err)
 			return exitCodeForErr(err)
 		}
 		return 0
 	case "kick":
 		if err := cmdKick(context.Background(), nil, opts, rest); err != nil {
-			fmt.Fprintln(opts.stderr, opts.errText(err))
+			reportErr(opts, err)
 			return exitCodeForErr(err)
 		}
 		return 0
@@ -468,7 +484,7 @@ func runWithStoreOpts(opts *globalOpts, readOnly, migrate, mustExist bool, fn fu
 	}
 
 	if err := fn(ctx, st); err != nil {
-		fmt.Fprintln(opts.stderr, opts.errText(err))
+		reportErr(opts, err)
 		// 第十一轮深扫 LOW:usage/参数错误 → exit 2(与 restore / config lint / 顶层 dispatch 一致),
 		// 其余运行期错误 → exit 1。
 		return exitCodeForErr(err)
