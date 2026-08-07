@@ -285,9 +285,19 @@ if have ss || have netstat; then
             # 实测在一台 443/udp 被别人占着的机器上就是这个下场:装了一半的系统,
             # 加几十行 journal,还得自己去 ss 里翻是谁占的 —— 而这些信息此刻就在手上。
             # 检查这一步的意义正是在动系统之前把必败的情形挡下来。
+            # 「换个端口」这条出路得看配置文件在不在。全新机器上它还不存在(装完才有),
+            # 照着去找只会扑空 —— 又是一条把人支到空地方的建议。所以分开说。
+            local port_fix
+            if [ -f /etc/nanotun/config.toml ]; then
+              port_fix="停掉占用它的进程,或在 /etc/nanotun/config.toml 里给 nanotun 换个端口,再重跑安装"
+            else
+              port_fix="停掉占用它的进程再重跑安装。
+       要让 nanotun 改用别的端口的话:配置文件这会儿还不存在(装完才有),
+       先 --skip-check 装上,再改 /etc/nanotun/config.toml 的端口并 systemctl restart nanotun"
+            fi
             fail "$2/$1 被别的进程占着($3)" \
                  "$(printf '%s' "$hit" | tr -s ' ' | cut -c1-100)
-       停掉占用它的进程,或在 /etc/nanotun/config.toml 里给 nanotun 换个端口,再重跑安装"
+       $port_fix"
           else
             # 只是检查、不马上装:说清楚就够了,不替人下「这台机器不行」的结论 ——
             # 占用者可能一会儿就停了,或者这次本来就只是问问。

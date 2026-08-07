@@ -22,7 +22,7 @@ RemainAfterExit=yes
 # flock 的并发 iptables 会锁到一个已经没人看的旧 inode 上。
 ExecStartPre=/bin/sh -c 'touch /run/xtables.lock 2>/dev/null || true'
 
-# 安装时把 tun-setup.sh、tun-isolate.sh 复制到 /usr/local/bin/ 并 chmod +x；setup 会顺带执行 isolate
+# 安装时把 tun-setup.sh 复制到 /usr/local/bin/nanotun-tun-setup.sh 并 chmod +x
 ExecStart=/usr/local/bin/nanotun-tun-setup.sh
 
 [Install]
