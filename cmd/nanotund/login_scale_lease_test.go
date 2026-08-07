@@ -48,9 +48,18 @@ func TestScale_LoginThroughputVsLeaseCount(t *testing.T) {
 		baseline, preload, loaded, float64(loaded)/float64(baseline))
 
 	// 只兜住「灾难性劣化」:锁内查询若退化成全表扫且没走索引,这里会是几十倍。
-	// 5x 是留了充分余量的哨兵,不是性能目标。
-	if baseline > 0 && loaded > baseline*5 {
-		t.Errorf("租约数从 0 涨到 %d 后,单次登录耗时从 %v 涨到 %v(>5x)。"+
+	// 下面这个倍数是哨兵,不是性能目标。
+	//
+	// 原来写的是 5x,而它比**正常**行为还低:开发机上量到约 3x,GitHub runner 上
+	// 量到 5.71x(2.35ms → 13.43ms,2026-08-06 那次 CI)—— 于是这条 blocking 测试
+	// 在慢一点的机器上会随机翻红,而红的原因跟被测的改动毫无关系。哨兵一旦开始
+	// 误报,下一步就是有人习惯性重跑,那时它连真问题也拦不住了。
+	//
+	// 15x 取在「真实倍率(3–6x)的两倍以上」和「全表扫会到的几十倍」之间:慢机器的
+	// 正常波动够不着,真退化跑不掉。倍率本身无论过不过都会打印在上面那行日志里,
+	// 想看趋势不必等它失败。
+	if baseline > 0 && loaded > baseline*15 {
+		t.Errorf("租约数从 0 涨到 %d 后,单次登录耗时从 %v 涨到 %v(>15x)。"+
 			"登录热路径在 connectionsMu 锁内查 leases(dbReservedVIPs),"+
 			"这条串行段会随设备总数变慢 —— 上万设备规模需要先给它加缓存或挪出锁。",
 			preload, baseline, loaded)
