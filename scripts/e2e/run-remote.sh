@@ -156,6 +156,8 @@ LOCKPID="$(rsh "cat /tmp/nanotun-e2e.lock/pid 2>/dev/null" | tr -d '\r[:space:]'
 if [[ "$LOCKPID" =~ ^[0-9]+$ ]] && rsh "kill -0 $LOCKPID 2>/dev/null"; then
   die "调度机上已有一轮 e2e 在跑(pid $LOCKPID),不能再起一轮 —— 两轮会互相踩。
    要看那一轮:ssh $RUNNER_USER@$RUNNER_HOST \"tail -f --pid=$LOCKPID $REMOTE_LOG\"
+   跑完后看退出码(**别只看日志末尾那句合计**):
+     ssh $RUNNER_USER@$RUNNER_HOST 'cat $REMOTE_RC'
    确认它真死了再:ssh $RUNNER_USER@$RUNNER_HOST 'rm -rf /tmp/nanotun-e2e.lock'"
 fi
 
