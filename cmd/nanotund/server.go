@@ -1767,7 +1767,14 @@ func main() {
 	}
 
 	errAcc := <-acceptErr
-	logrus.WithError(errAcc).Warn("VPN HTTP 服务退出")
+	// 同 hysteriaServe 那处:关停时 Accept 必然带着「use of closed network connection」
+	// 返回,那是 systemctl restart / stop 的正常尾声。判据用 globalContext 而不是错误
+	// 文案 —— 关停一定先 cancel 它,而 net 包那句措辞不属于任何导出的 sentinel。
+	if globalContext != nil && globalContext.Err() != nil {
+		logrus.WithError(errAcc).Info("VPN HTTP 服务已随进程关停退出")
+	} else {
+		logrus.WithError(errAcc).Warn("VPN HTTP 服务退出")
+	}
 }
 
 // tunReadLoop 从共享 TUN 批量读包，投递池化包到 tunReadChan；消费者用完后归还 Buf 与 TunPacket
