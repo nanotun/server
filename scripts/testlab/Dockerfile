@@ -16,7 +16,8 @@
 ARG BASE=ubuntu:26.04
 FROM ${BASE}
 
-# 一份 Dockerfile 覆盖四个发行版:Ubuntu / Debian 走 apt,Rocky 走 dnf,Alpine 走 apk。
+# 一份 Dockerfile 覆盖五个发行版:Ubuntu / Debian 走 apt,Rocky 走 dnf,openSUSE 走
+# zypper,Alpine 走 apk。
 #
 # Alpine 这里**故意不补 systemd**(它本来就用 OpenRC,也装不上)。那正是要看的东西:
 # preflight 应当明确报「这台机器没有 systemd,装不了」,而不是让人装到一半才在
@@ -42,10 +43,23 @@ RUN set -eux; \
       # 恰恰要用 Rocky 8 去验最低支持版本那句话。
       "$PM" -y install iptables-nft || "$PM" -y install iptables; \
       "$PM" clean all || true; \
+    elif command -v zypper >/dev/null 2>&1; then \
+      # openSUSE Leap:出厂镜像里 sysctl / openssl / curl 已经有,缺的是 systemd 本体、
+      # iproute2、iptables —— 与真机(装了 systemd 的 Leap)出厂状态一致。
+      # systemd-sysvinit 提供 /sbin/init → systemd 的软链(职责同 Debian 系的 systemd-sysv);
+      # 少了它 CMD ["/sbin/init"] 会落到一个不存在的路径,容器起来就退。
+      # 包名与别家不同:iproute2(与 Debian 同名,但 RHEL 那边叫 iproute)、dbus-1(不是 dbus)。
+      zypper --non-interactive --no-gpg-checks refresh; \
+      # tar / gzip 也要补:opensuse/leap 的最小镜像不带它们(别家基础镜像恰好自带),
+      # 而真实的 Leap 服务器安装是有的 —— install.sh 下载发布包后正是靠 `tar -xzf` 解压,
+      # 缺了整条网络安装链在第一步就断。别家不必显式列,是因为它们的镜像出厂就有。
+      zypper --non-interactive install -y \
+        systemd systemd-sysvinit dbus-1 iproute2 iptables openssl curl tar gzip; \
+      zypper clean --all || true; \
     elif command -v apk >/dev/null 2>&1; then \
       apk add --no-cache bash ca-certificates curl iproute2 iptables openssl; \
     else \
-      echo "未知发行版:没有 apt / dnf / apk" >&2; exit 1; \
+      echo "未知发行版:没有 apt / dnf / zypper / apk" >&2; exit 1; \
     fi
 
 # 屏蔽几个在容器里永远完不成的 getty:老 systemd(Ubuntu 20.04 的 245 实测)会为

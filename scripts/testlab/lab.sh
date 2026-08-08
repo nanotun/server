@@ -12,7 +12,7 @@
 #   up / status / install / setup / browse / drill / preflight / uninstall / sh / logs / down / reset
 #
 # 选项(跟在命令后面):
-#   --distro ubuntu|debian|rocky|alpine   默认 ubuntu(与线上 SRV 的 Ubuntu 26.04 对齐)
+#   --distro ubuntu|debian|rocky|opensuse|alpine   默认 ubuntu(与线上 SRV 的 Ubuntu 26.04 对齐)
 #                                         可带版本验最低支持线:ubuntu:20.04 / debian:11 / rocky:8
 #   --local                               装本地 HEAD 构建的包,而不是从 GitHub 下发布包
 #   --version vX.Y.Z                      指定要装的版本;不给就自动取最新(含预发布)
@@ -94,8 +94,11 @@ case "$DISTRO_NAME" in
   rocky)
     if [ "${DISTRO_VER:-9}" = 8 ]; then BASE="rockylinux:8"
     else BASE="quay.io/rockylinux/rockylinux:${DISTRO_VER:-9}"; fi ;;
+  # openSUSE Leap:官方镜像在 docker.io/opensuse/leap。Tumbleweed(滚动版)是另一个仓库,
+  # 这里只覆盖 Leap —— 自托管用户装的绝大多数是 Leap 这种带固定版本号的。
+  opensuse) BASE="opensuse/leap:${DISTRO_VER:-15.6}" ;;
   alpine) BASE="alpine:${DISTRO_VER:-3}" ;;
-  *) die "不认识的发行版 ${DISTRO_NAME}(可选:ubuntu / debian / rocky / alpine,可带版本如 ubuntu:20.04)" ;;
+  *) die "不认识的发行版 ${DISTRO_NAME}(可选:ubuntu / debian / rocky / opensuse / alpine,可带版本如 ubuntu:20.04)" ;;
 esac
 
 TAG="$DISTRO_NAME"
@@ -106,8 +109,9 @@ NAME="nanotun-lab-${TAG}"
 # 看 preflight),共用 7443 的话第二台起不来,而报错是 docker 的「port is already
 # allocated」—— 跟 nanotun 毫无关系,查起来先入为主地往错的方向想。
 case "$DISTRO_NAME" in
-  ubuntu) DEF_PORT=7443 ;; debian) DEF_PORT=7444 ;;
-  rocky)  DEF_PORT=7445 ;; alpine) DEF_PORT=7446 ;;
+  ubuntu)   DEF_PORT=7443 ;; debian) DEF_PORT=7444 ;;
+  rocky)    DEF_PORT=7445 ;; alpine) DEF_PORT=7446 ;;
+  opensuse) DEF_PORT=7447 ;;
 esac
 # 钉了版本的另占一段端口:同一个发行版的两个版本经常要同时开着比对(比如 20.04 上
 # 复现的问题,要立刻在 26.04 上确认是不是版本相关),共用默认端口的话第二台起不来。
