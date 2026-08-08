@@ -4,10 +4,11 @@
 #   scripts/testlab/lab.sh up          起一台(已存在就复用)
 #   scripts/testlab/lab.sh install     跑完整安装:curl 真实发布包 → install.sh
 #   scripts/testlab/lab.sh setup       跑开服向导(不带参数即交互式)
+#   scripts/testlab/lab.sh browse      真 Chrome 把 Web 后台点一遍(要 pip3 install playwright)
 #   scripts/testlab/lab.sh reset       推倒重来,回到刚开机的干净状态
 #
 # 全部命令:
-#   up / status / install / setup / preflight / uninstall / sh / logs / down / reset
+#   up / status / install / setup / browse / preflight / uninstall / sh / logs / down / reset
 #
 # 选项(跟在命令后面):
 #   --distro ubuntu|debian|rocky|alpine   默认 ubuntu(与线上 SRV 的 Ubuntu 26.04 对齐)
@@ -24,6 +25,9 @@
 # 凭据、config 模板占位填充、开服向导、卸载后重装;以及 preflight 在不同发行版上
 # 给的包名提示,和各种「坏机器」(没有 TUN / 没有 iptables / /proc 只读 / 没有 systemd)。
 # 装坏了 `lab.sh reset` 十几秒回到干净状态,不必再去真机上开备份窗口。
+#
+# `browse` 再往上盖一层:Web 后台的**界面**。e2e 那边的 60-web.sh 打的是 HTTP 接口,
+# 页面渲不渲得出来、按钮点了有没有反应,它一概不知道 —— 那一层归这里。
 #
 # ── 它测不了什么(重要)──────────────────────────────────────────────────
 # 数据面。客户端真的拨上来跑流量、出口节点、子网路由、MagicDNS —— 内核、网络拓扑
@@ -354,11 +358,40 @@ cmd_status() {
   fi
 }
 
+# 真浏览器走一遍 Web 后台。断言都在 browse.py 里,这边只负责把「跑之前该具备的条件」
+# 一次讲清楚 —— 这几条任何一条不满足,Playwright 报出来的都是让人查错方向的错。
+cmd_browse() {
+  need_up
+  step "浏览器实操(真 Chrome 把后台点一遍)"
+
+  command -v python3 >/dev/null 2>&1 || die "没有 python3"
+  python3 -c 'import playwright' 2>/dev/null || die "缺 playwright:pip3 install playwright"
+
+  # 浏览器跑在宿主上,必须真的能连进容器。macOS 上 Docker Desktop 的端口转发时好时坏
+  # (见 cmd_status 里那段),不先探一下的话,Playwright 报的是 ERR_CONNECTION_REFUSED,
+  # 看着像 nanotun-web 没起来 —— 方向就带偏了。
+  local code
+  code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 "https://127.0.0.1:${WEB_PORT}/" 2>/dev/null || true)"
+  [ -n "$code" ] && [ "$code" != 000 ] \
+    || die "宿主连不上 https://127.0.0.1:${WEB_PORT}/ —— 先 $0 status 看是端口转发还是服务没起"
+
+  # 第一步就是抢首位管理员,所以 /setup 必须还开着。已经有管理员的话那条断言必挂,
+  # 而挂出来的样子是「找不到 password_confirm 输入框」,跟真实原因隔着好几层。
+  code="$(docker exec "$NAME" curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
+            https://127.0.0.1:7443/setup 2>/dev/null || true)"
+  [ "$code" = 200 ] \
+    || die "这台已经有 Web 管理员了(/setup 回 ${code},已自动关闭)。这个测试要自己抢首位管理员:
+       $0 reset && $0 install --local        # 装的时候别带 --web-admin"
+
+  python3 "$HERE/browse.py" --base "https://127.0.0.1:${WEB_PORT}" ${PASS[@]+"${PASS[@]}"}
+}
+
 case "$CMD" in
   up)        up ;;
   status)    cmd_status ;;
   install)   cmd_install ;;
   setup)     cmd_setup ;;
+  browse)    cmd_browse ;;
   preflight) cmd_preflight ;;
   uninstall) cmd_uninstall ;;
   sh)        need_up; dex "$NAME" bash ;;
