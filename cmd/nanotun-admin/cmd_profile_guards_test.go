@@ -570,7 +570,7 @@ func TestAttachIssuedHy2ClientCert_FailuresAreFatal(t *testing.T) {
 		}
 	})
 
-	t.Run("有效期为 0 时落到 90 天默认", func(t *testing.T) {
+	t.Run("有效期为 0 时落到默认值", func(t *testing.T) {
 		dir := t.TempDir()
 		cfgPath := writeFixtureConfigWithMTLS(t, dir)
 		in := buildProfileInput{
@@ -586,9 +586,11 @@ func TestAttachIssuedHy2ClientCert_FailuresAreFatal(t *testing.T) {
 			t.Fatal("没签出客户端证书")
 		}
 		notAfter := certNotAfter(t, h.ClientCertPEM)
-		days := notAfter.Sub(time.Now()).Hours() / 24
-		if days < 85 || days > 95 {
-			t.Errorf("证书有效期 %.0f 天,期望落到 90 天默认 —— 0 天的证书当场就是过期的", days)
+		days := time.Until(notAfter).Hours() / 24
+		// 绑常量而不是写死数字:这里要保的是「0 不能原样用」(那样签出的证书当场就是
+		// 过期的),而不是某个具体天数。fixture CA 与默认值同为十年,故应当基本贴合。
+		if want := float64(defaultHy2ClientCertDays); days < want*0.9 || days > want*1.01 {
+			t.Errorf("证书有效期 %.0f 天,期望落到默认的 %.0f 天 —— 0 天的证书当场就是过期的", days, want)
 		}
 	})
 

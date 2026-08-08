@@ -88,8 +88,11 @@ type profileSchemaHy2 struct {
 //
 // **2026-05-25 解耦** `Username` / `PSK` 已剥离到 [`credentialsSchema`](cmd_credentials.go),
 // 分别通过 `nanotun-admin profile show` 与 `nanotun-admin credentials show` 输出独立 QR。
-// 改造目标:profile 可云同步 / 公开传阅(只含服务器配置),credentials 仅本地 Keychain
+// 改造目标:profile 可云同步(只含服务器配置,不含 PSK),credentials 仅本地 Keychain
 // 持久化(含敏感 PSK)。两份 QR 客户端各自扫描后,client 在内存里合并出 LoginReq。
+//
+// 注意「可云同步」不等于「可公开」:hy2 mTLS 开着时 profile 内嵌一张客户端证书和私钥
+// (ClientCertPEM / ClientKeyPEM),它不是登录凭证,却是进 QUIC 那道门的钥匙。
 //
 // **2026-05-26 加 server_id** 与 credentials.id(用户级凭证指纹)对称的「服务器实例指纹」:
 //   - 取自 `app_settings.server_id`(`store.GetOrInitServerID` lazy 生成的 UUID v4);
@@ -190,7 +193,7 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 	// 也签发「跳过校验」的 profile,弱化 MITM 防护;dev 若配置读不到,"auto" 退到 false(fail-closed,可显式 --hy2-tls-insecure true)。
 	hy2InsecureFlag := fs.String("hy2-tls-insecure", "auto", opts.T("profile.flag.hy2Insecure"))
 	noIssueHy2Cert := fs.Bool("no-issue-hy2-client-cert", false, opts.T("profile.flag.noIssueHy2Cert"))
-	hy2CertDays := fs.Uint("hy2-client-cert-days", 90, opts.T("profile.flag.hy2CertDays"))
+	hy2CertDays := fs.Uint("hy2-client-cert-days", defaultHy2ClientCertDays, opts.T("profile.flag.hy2CertDays"))
 	var nodeFlags stringList
 	fs.Var(&nodeFlags, "node", opts.T("profile.flag.node"))
 
@@ -373,6 +376,26 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 	return emitProfile(prof, *format, *output, *forceOverwrite, opts)
 }
 
+// defaultHy2ClientCertDays 是内嵌客户端证书的默认有效期,与装机时自签的那几张对齐(十年)。
+//
+// 之前是 90 天。短效证书的道理是「过期即吊销」,但这套里没有任何续期机制:到期那天
+// 客户端的 Hy2/QUIC 通道悄悄握不上手、退到别的传输,人只觉得变慢;要修得管理员手工
+// 给每个用户重发一遍二维码 —— 一个季度一轮,没人会做。做不到的承诺不如不许。
+//
+// 而它挡的本来就不是「谁能用」:mTLS 这层只验签证书链、不看 CN,也没有 CRL,真正的
+// 门是用户名 + PSK。要停掉某个人,`user disable` 立刻生效,不必等证书过期。
+//
+// 签发端会把叶子夹到 CA 的 NotAfter 以内(certs.IssueClientCert),所以这个值再大也不会
+// 签出比 CA 还长命的废证 —— 装机十年的 CA 用满第九年时,新发的二维码就只剩一年。
+const defaultHy2ClientCertDays = 3650
+
+// hy2CertShelfLifeNoticeWindow 决定那句「这张码什么时候过期」还值不值得说。
+//
+// 默认十年的话每次都报一句「还剩 3650 天」纯属噪音,而噪音会把真要紧的那次一起淹掉。
+// 只在半年以内才出声:显式要了短效证书的人,和 CA 快用完的机器,都落在这个窗口里 ——
+// 半年也够给所有用户重发一轮二维码。
+const hy2CertShelfLifeNoticeWindow = 180 * 24 * time.Hour
+
 // warnHy2ClientCertShelfLife 在 profile 内嵌了 Hy2 客户端证书时,把它的到期日说出来。
 //
 // 这张证书是临场签发的短期证书(默认 90 天),而二维码发出去之后没人再看它一眼。到期
@@ -393,9 +416,13 @@ func warnHy2ClientCertShelfLife(p *profileSchema, opts *globalOpts) {
 	if err != nil {
 		return
 	}
+	remain := time.Until(leaf.NotAfter)
+	if remain > hy2CertShelfLifeNoticeWindow {
+		return
+	}
 	// 取整而不是截断:签 7 天的证书当场显示「还剩 6 天」,看着像个 bug ——
 	// 签发到现在中间隔的那几毫秒,不该让人怀疑天数算错了。
-	days := int(time.Until(leaf.NotAfter).Round(24*time.Hour).Hours() / 24)
+	days := int(remain.Round(24*time.Hour).Hours() / 24)
 	fmt.Fprintln(opts.stderr, opts.T("profile.hy2CertShelfLife", leaf.NotAfter.Format("2006-01-02"), days))
 }
 
@@ -854,7 +881,7 @@ func attachIssuedHy2ClientCert(h *profileSchemaHy2, in buildProfileInput, caRelP
 	}
 	days := in.hy2ClientCertDays
 	if days <= 0 {
-		days = 90
+		days = defaultHy2ClientCertDays
 	}
 	issued, err := certs.IssueClientCertFromFiles(caCertPath, caKeyPath, cn, days)
 	if err != nil {

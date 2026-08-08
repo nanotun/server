@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/curve25519"
 
@@ -470,9 +471,10 @@ func TestProfileShow_FlagValidation(t *testing.T) {
 	}
 }
 
-// 内嵌的 Hy2 客户端证书是短期证书,而二维码发出去之后没人再看它一眼 —— 到期那天用户
-// 只觉得「变慢了」。签发时就把到期日说出来,并且天数要跟 --hy2-client-cert-days 对得上
-// (曾经截断成「签 7 天,还剩 6 天」)。
+// 二维码发出去之后没人再看它一眼,到期那天用户只觉得「变慢了」—— 所以短效证书要在
+// 签发时就把到期日说出来,天数还得跟 --hy2-client-cert-days 对得上(曾经截断成「签 7 天,
+// 还剩 6 天」)。默认那十年则不必每次都念一遍:「还剩 3650 天」是噪音,而噪音会把真要紧
+// 的那次一起淹掉。
 func TestProfileShow_TellsHy2CertShelfLife(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "p.db")
@@ -492,6 +494,17 @@ func TestProfileShow_TellsHy2CertShelfLife(t *testing.T) {
 		t.Errorf("应说出还剩 7 天(不能截断成 6), got %q", errMsg)
 	}
 
+	// 默认十年,离到期还远着,不该有这一行。
+	c, _, errMsg = runCLI(t, db, "",
+		"profile", "show", "alice", "--dial-host", "203.0.113.10", "--config", cfgPath,
+	)
+	if c != 0 {
+		t.Fatalf("exit %d: %s", c, errMsg)
+	}
+	if strings.Contains(errMsg, "expires") {
+		t.Errorf("默认有效期够长时不该念到期日, got %q", errMsg)
+	}
+
 	// 不签证书就没什么保质期可说,别平白多一行噪音。
 	c, _, errMsg = runCLI(t, db, "",
 		"profile", "show", "alice", "--dial-host", "203.0.113.10",
@@ -502,6 +515,38 @@ func TestProfileShow_TellsHy2CertShelfLife(t *testing.T) {
 	}
 	if strings.Contains(errMsg, "Hy2") && strings.Contains(errMsg, "expires") {
 		t.Errorf("没签证书就不该提到期, got %q", errMsg)
+	}
+}
+
+// 默认签出来的客户端证书应当与装机时自签的那几张同寿(十年),且绝不超过 CA ——
+// 这条 fixture CA 就是十年,所以叶子应当落在同一天上下。
+func TestProfileShow_ClientCertMatchesCALifetime(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "p.db")
+	if c, _, e := runCLI(t, db, "", "user", "create", "alice", "--psk", "p"); c != 0 {
+		t.Fatalf("create alice: %s", e)
+	}
+	cfgPath := writeFixtureConfigWithMTLS(t, dir)
+
+	c, out, errMsg := runCLI(t, db, "",
+		"profile", "show", "alice", "--dial-host", "203.0.113.10", "--config", cfgPath,
+	)
+	if c != 0 {
+		t.Fatalf("exit %d: %s", c, errMsg)
+	}
+	var p profileSchema
+	if err := json.Unmarshal([]byte(out), &p); err != nil {
+		t.Fatalf("解析 profile: %v", err)
+	}
+	if p.Hy2 == nil || p.Hy2.ClientCertPEM == "" {
+		t.Fatal("这份 fixture 开着 mTLS,应当签出客户端证书")
+	}
+	notAfter := certNotAfter(t, p.Hy2.ClientCertPEM)
+	days := time.Until(notAfter).Hours() / 24
+	// 90 天的旧默认会落在这个下界之外 —— 它正是这条测试要挡住的回归。
+	if days < 3000 {
+		t.Errorf("默认应当接近十年(受 CA 夹制),got %.0f 天 —— 短效默认没有续期机制,"+
+			"到期那天客户端只会「变慢」,而管理员要给每个用户重发二维码", days)
 	}
 }
 

@@ -122,7 +122,7 @@ sudo nanotun-setup
 它会探测并写入拨号地址(`server_dial_host`)、**当场创建 Web 后台管理员**(用户名和密码
 你现在定,密码两遍隐藏输入)、创建第一个 VPN 用户,并直接在终端打出两个二维码:
 
-- **profile QR** —— 服务器地址与传输配置,不含密钥,可以公开传
+- **profile QR** —— 服务器地址与传输配置,不含 PSK。但开着 hy2 mTLS(装机默认)时它内嵌一张客户端证书 —— 那不是登录凭证,却是进 QUIC 那道门的钥匙,所以发给本人、别公开贴
 - **credentials QR** —— 用户名 + PSK,机密,只能一对一给本人
 
 后台账号这一步别跳过:在第一个管理员出现之前,`/setup` 页面对全网公开 —— **谁先打开谁就是
@@ -201,8 +201,8 @@ export NANOTUN_DB=/var/lib/nanotun/nanotun.db
 # 1) 创建用户:PSK 仅在这一次以明文回显,同时分配 credential_id (UUID v4)。
 nanotun-admin user create alice --admin --exit-allowed=true
 
-# 2) 客户端 profile QR(只含服务器节点 / 路由,不含 PSK,可公开传阅)。
-#    --dial-host 必须显式给,CLI 不会去读库里的 server_dial_host 设置。
+# 2) 客户端 profile QR(服务器节点 / 路由,不含 PSK;开着 hy2 mTLS 时内嵌一张客户端证书,
+#    所以是「发给本人」而不是「随便贴」)。--dial-host 不给就用库里存的 server_dial_host。
 nanotun-admin profile show alice --dial-host vpn.example.com --format qr
 
 # 3) 客户端 credentials QR(用 PSK 明文 + UUID 生成,**仅这一次能拿到明文**)。

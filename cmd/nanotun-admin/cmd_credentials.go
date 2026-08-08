@@ -3,7 +3,9 @@ package main
 // cmd_credentials.go(2026-05-25,0013):「profile / credentials 解耦」的服务端导出入口。
 //
 // 设计动机(对应 cmd_profile.go 顶部注释):
-//   - profile QR 仅含服务器配置(host / reality / hy2 / nodes / ...),公开传阅 / 云同步友好;
+//   - profile QR 仅含服务器配置(host / reality / hy2 / nodes / ...),不含 PSK —— 云同步友好。
+//     但开着 hy2 mTLS 时它还内嵌一张客户端证书和私钥(见 profileSchemaHy2.ClientKeyPEM),
+//     所以「公开传阅」这个说法不准:那把钥匙开的是 QUIC 那道门,给本人就好;
 //   - credentials QR 含敏感的 (username, psk),仅本地分发,client 持久化进 Keychain;
 //   - 客户端按 credential_id(UUID v4)索引:同 UUID 新 QR 自动覆盖旧 PSK,达成
 //     「server 端 rotate-psk → 用户重新扫码 → 本地 PSK 无缝更新」的承诺。
