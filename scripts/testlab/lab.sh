@@ -5,10 +5,11 @@
 #   scripts/testlab/lab.sh install     跑完整安装:curl 真实发布包 → install.sh
 #   scripts/testlab/lab.sh setup       跑开服向导(不带参数即交互式)
 #   scripts/testlab/lab.sh browse      真 Chrome 把 Web 后台点一遍(要 pip3 install playwright)
+#   scripts/testlab/lab.sh drill       灾难恢复演练:备份 → 删库 → 还原 → 逐字对账
 #   scripts/testlab/lab.sh reset       推倒重来,回到刚开机的干净状态
 #
 # 全部命令:
-#   up / status / install / setup / browse / preflight / uninstall / sh / logs / down / reset
+#   up / status / install / setup / browse / drill / preflight / uninstall / sh / logs / down / reset
 #
 # 选项(跟在命令后面):
 #   --distro ubuntu|debian|rocky|alpine   默认 ubuntu(与线上 SRV 的 Ubuntu 26.04 对齐)
@@ -28,6 +29,9 @@
 #
 # `browse` 再往上盖一层:Web 后台的**界面**。e2e 那边的 60-web.sh 打的是 HTTP 接口,
 # 页面渲不渲得出来、按钮点了有没有反应,它一概不知道 —— 那一层归这里。
+#
+# `drill` 补的是另一个洞:真还原。e2e 只敢验 restore 的守卫会拒绝,不敢在共用的真机上
+# 把生产库覆盖掉;这里的机器用完即弃,可以把「停服 → 删库 → 还原 → 对账」整条走完。
 #
 # ── 它测不了什么(重要)──────────────────────────────────────────────────
 # 数据面。客户端真的拨上来跑流量、出口节点、子网路由、MagicDNS —— 内核、网络拓扑
@@ -386,12 +390,24 @@ cmd_browse() {
   python3 "$HERE/browse.py" --base "https://127.0.0.1:${WEB_PORT}" ${PASS[@]+"${PASS[@]}"}
 }
 
+# 灾难恢复演练。断言都在 restore-drill.sh 里。
+#
+# 它会把这台机器的库删掉再还原 —— 这正是要测的东西,所以只让它在 lab 容器上跑。
+cmd_drill() {
+  need_up
+  step "灾难恢复演练(备份 → 删库 → 还原 → 对账)"
+  docker exec "$NAME" test -x /usr/local/bin/nanotun-admin \
+    || die "这台还没装 nanotun,先 $0 install"
+  bash "$HERE/restore-drill.sh" --container "$NAME" --base "https://127.0.0.1:${WEB_PORT}"
+}
+
 case "$CMD" in
   up)        up ;;
   status)    cmd_status ;;
   install)   cmd_install ;;
   setup)     cmd_setup ;;
   browse)    cmd_browse ;;
+  drill)     cmd_drill ;;
   preflight) cmd_preflight ;;
   uninstall) cmd_uninstall ;;
   sh)        need_up; dex "$NAME" bash ;;

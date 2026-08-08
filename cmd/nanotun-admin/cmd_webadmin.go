@@ -227,9 +227,18 @@ func cmdWebAdminCreate(ctx context.Context, st *store.Store, opts *globalOpts, a
 		fmt.Fprintf(opts.stdout, opts.T("webadmin.firstRoleForced")+"\n", *role)
 	}
 	if n == 0 {
-		// 首位建成之后 /setup 会自己 302 到 /login(handler 查 CountWebAdmins),
-		// 不需要再动配置。明说一句,免得有人以为还得手工关。
+		// 首位建成之后 /setup 会自己 302 到 /login(handler 查 CountWebAdmins)。
 		fmt.Fprintln(opts.stdout, opts.T("webadmin.setupClosedNote"))
+		// 但那个「关上」只是库里的一行。库一没,server 不停机,而是重建一个空库照常
+		// 起来,于是零管理员 + /setup 重新对全网敞开,谁先打开谁就是这台机器的管理员。
+		// 实测:删掉 db 重启,两个服务都 active,curl /setup 回 200 带着建管理员的表单。
+		// 这句原来写的是「不需要另外设开关」—— 在最要紧的那个场景里恰好说反了。
+		//
+		// 向导是例外:它随后会把开关钉进 web.env 并自己报一句,这里再讲一遍「没人替你
+		// 钉」就成了先警告再否掉,读的人不知道该信哪句。
+		if os.Getenv("NANOTUN_SETUP_WIZARD") != "1" {
+			fmt.Fprintln(opts.stdout, opts.T("webadmin.setupClosedDBOnly"))
+		}
 	}
 	return nil
 }

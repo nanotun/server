@@ -417,7 +417,14 @@ sudo systemctl start nanotun nanotun-web
 
 安装向导会往 `/etc/nanotun/web.env` 写一行 `NANOTUN_WEB_ALLOW_SETUP=0`,
 把 /setup 的关闭状态放在数据库之外。否则库一没,/setup 会重新对全网敞开,
-谁先打开谁就是这台机器的管理员。真要重新 bootstrap 一个后台账号,用 CLI:
+谁先打开谁就是这台机器的管理员。
+
+**写这行的只有向导。** 跳过向导装机、后台账号用 `nanotun-admin webadmin create` 建的机器
+没有这一行 —— 那台机器上「已有管理员所以 /setup 关着」这件事只记在库里,库一丢就跟着丢。
+实测:删掉库重启,两个服务都是 active,`/setup` 回 200 并带着建管理员的表单。
+不放心就自己补上那行再重启 `nanotun-web`(`nanotun-web` 每次启动也会就此警告一句)。
+
+真要重新 bootstrap 一个后台账号,用 CLI:
 
 ```bash
 sudo nanotun-admin webadmin create <名字>

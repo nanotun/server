@@ -174,6 +174,14 @@ json_field() { # json_field <字段名>,JSON 从 stdin 读
 # setting get 的原始值;user list 那张表两种语言下逐字一致(表格不本地化)。
 export NANOTUN_LANG="${NANOTUN_LANG:-zh}"
 
+# 告诉 nanotun-admin「你是被向导调起来的」。
+#
+# 只影响一处:建首位管理员时它会讲一段「/setup 的关闭只记在库里,库丢了就重新敞开,
+# 要自己往 web.env 钉一行」。那话对着裸敲 CLI 的人是对的,对着这里就不是 —— 下面的
+# close_setup_gate 紧接着就把那行钉上并报「已永久关闭」。不区分的话,主路径上会先
+# 警告一遍再自己否掉,读的人不知道该信哪句。
+export NANOTUN_SETUP_WIZARD=1
+
 # nanotun-admin 包装:--db-path 一定要显式传。
 #
 # 不传时它也能自己找到装好的库,但那个回退有个前提 —— 当前目录下没有 data/nanotun.db,
