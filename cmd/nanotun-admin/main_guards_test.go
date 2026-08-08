@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nanotun/server/store"
 )
 
 // =========================================================================
@@ -530,6 +532,56 @@ func TestResolveDefaultDBPath_PrefersInstalledDB(t *testing.T) {
 		}
 		if errb.Len() != 0 {
 			t.Errorf("什么都没改却说了话: %q", errb.String())
+		}
+	})
+}
+
+// 降级之后:不跑 Migrate 的路径也得说一句「这个库比我新」。
+//
+// Migrate 里那道守卫让 nanotund / nanotun-web 开机就停、写命令也被挡下,唯独只读命令
+// 和 backup 绕开了它(前者是 query_only 连接跑不了 DDL,后者刻意不碰 schema)——
+// 于是 `user list` 照常出表、照常退 0,而那些列的含义可能在新版本里已经变了。
+// 只警告不拦:降级后人正需要看看库里还剩什么,backup 更是那道守卫自己建议的下一步。
+func TestReadPathsWarnAboutSchemaFromFuture(t *testing.T) {
+	dir := t.TempDir()
+	db := newInitializedDB(t, dir, "future.db")
+
+	binVer, err := store.NewestKnownSchemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("正常库不该有这条警告", func(t *testing.T) {
+		_, _, errMsg := runCLI(t, db, "", "user", "list")
+		if strings.Contains(errMsg, "schema") {
+			t.Errorf("正常库误报了: %q", errMsg)
+		}
+	})
+
+	// 把版本号顶到未来。
+	st := openStoreForTest(t, db)
+	if _, err := st.DB().ExecContext(t.Context(),
+		`UPDATE app_settings SET value=? WHERE key='schema_version'`, binVer+1); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	t.Run("只读命令警告但照常出结果", func(t *testing.T) {
+		code, out, errMsg := runCLI(t, db, "", "user", "list")
+		if code != 0 {
+			t.Fatalf("只读命令不该被拦下(降级后正需要看库): code=%d %s", code, errMsg)
+		}
+		if !strings.Contains(errMsg, "schema") {
+			t.Errorf("没警告: stderr=%q", errMsg)
+		}
+		if !strings.Contains(out, "USERNAME") {
+			t.Errorf("警告归警告,结果还是要给: %q", out)
+		}
+	})
+
+	t.Run("写命令仍然被 Migrate 那道守卫挡下", func(t *testing.T) {
+		if code, _, _ := runCLI(t, db, "", "user", "create", "someone"); code == 0 {
+			t.Error("库比程序新时不该让写进去")
 		}
 	})
 }

@@ -499,6 +499,8 @@ func runWithStoreOpts(opts *globalOpts, readOnly, migrate, mustExist bool, fn fu
 			fmt.Fprintf(opts.stderr, "migrate: %v\n", err)
 			return 1
 		}
+	} else {
+		warnIfSchemaFromFuture(ctx, opts, st)
 	}
 
 	if err := fn(ctx, st); err != nil {
@@ -513,6 +515,27 @@ func runWithStoreOpts(opts *globalOpts, readOnly, migrate, mustExist bool, fn fu
 		return 2
 	}
 	return 0
+}
+
+// warnIfSchemaFromFuture:不跑 Migrate 的路径(只读命令、backup)自己看一眼库的版本号。
+//
+// Migrate 里那道「库比程序新 = 有人降级了」的守卫,这两条路都碰不到:只读连接是
+// query_only 跑不了 DDL,backup 则是刻意不碰 schema。结果是 nanotund 和 nanotun-web
+// 双双开机就停、写命令也被挡下,唯独 `user list` / `device list` 照常出表、照常退 0
+// —— 而那些列的含义可能在新版本里已经变了。2026-08-08 实测(把库改成 schema 31)。
+//
+// 只警告不拦:降级之后人正需要看看库里还剩什么,backup 更是那道守卫自己建议的下一步。
+// 但得让他知道眼前这张表未必可信。
+func warnIfSchemaFromFuture(ctx context.Context, opts *globalOpts, st *store.Store) {
+	dbVer, initialized, err := st.SchemaVersionIfInitialized(ctx)
+	if err != nil || !initialized {
+		return
+	}
+	binVer, err := store.NewestKnownSchemaVersion()
+	if err != nil || dbVer <= binVer {
+		return
+	}
+	fmt.Fprintln(opts.stderr, opts.T("common.schemaFromFuture", dbVer, binVer))
 }
 
 // installedDBPath 是 install-self-hosted.sh 的落点,也是两个 systemd 单元实际读的那一个库。

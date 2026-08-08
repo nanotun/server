@@ -740,8 +740,16 @@ $create_out"
       cred_qr_rc=0
       qr_if_fits credentials show "$username" --psk "$psk" --format qr || cred_qr_rc=$?
       [ "$cred_qr_rc" -eq 1 ] && warn "终端二维码生成失败,可用下面的 PSK 手动重出"
-      [ "$cred_qr_rc" -eq 2 ] && note "把窗口拉宽到上面那个列数再重跑就能直接显示;或者存成 PNG(下面会问)。"
-      true   # 上面两个 [ ] 都不成立时整体为假,set -e 会误杀
+      if [ "$cred_qr_rc" -eq 2 ]; then
+        if [ "$ASSUME_YES" = 0 ]; then
+          note "把窗口拉宽到上面那个列数再重跑就能直接显示;或者存成 PNG(下面会问)。"
+        else
+          # --yes 下面那个「存成 PNG?」的问句根本不会出现(见下面的 ASSUME_YES 判断)。
+          # 指着一个不会到来的提示,等于让人对着屏幕干等,然后自己去猜是不是哪里出错了。
+          note "把窗口拉宽到上面那个列数再重跑就能直接显示;PSK 明文在下面,手抄同样能用。"
+        fi
+      fi
+      true   # 上面的 [ ] 不成立时整体为假,set -e 会误杀
 
       printf '\n'
       printf '    PSK: %s%s%s\n' "$C_WARN" "$psk" "$C_OFF"

@@ -98,10 +98,11 @@ var catEN = map[string]string{
 	"setting.probe.probeErr":      "✗ probe error (possibly ctx canceled / network jitter): %s",
 
 	// ===== common =====
-	"common.canceled":      "canceled",
-	"common.dbFromInstall": "no --db-path given; using this machine's installed database %s.",
-	"common.noAnswer":      "no input to read (stdin is not a terminal?) — nobody answered, so nothing was done.\nPass --yes to go ahead in scripts / over ssh; if you just wanted to see what would happen, this is the right outcome.",
-	"common.usagePrefix":   "usage: ",
+	"common.canceled":         "canceled",
+	"common.schemaFromFuture": "warning: this database is at schema %d but this binary only knows up to %d — a newer nanotun was installed on this machine.\n      What follows may be inaccurate (a newer version may have changed what these columns mean), and writes will be refused. Go back to the newer version, or restore the backup you took before downgrading.",
+	"common.dbFromInstall":    "no --db-path given; using this machine's installed database %s.",
+	"common.noAnswer":         "no input to read (stdin is not a terminal?) — nobody answered, so nothing was done.\nPass --yes to go ahead in scripts / over ssh; if you just wanted to see what would happen, this is the right outcome.",
+	"common.usagePrefix":      "usage: ",
 	// 复用型分发 / 解析错误(命令语法本身不翻译,仅前缀 / 提示词按语言切换):
 	"cli.unknownSubcommand":     "unknown %s subcommand %q",
 	"cli.unknownSubcommandBare": "unknown subcommand %q",

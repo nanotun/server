@@ -95,10 +95,11 @@ var catZH = map[string]string{
 	"setting.probe.probeErr":      "✗ probe 异常(可能 ctx 取消 / 网络抖动): %s",
 
 	// ===== 通用 =====
-	"common.canceled":      "已取消",
-	"common.dbFromInstall": "没带 --db-path,用的是本机装好的库 %s。",
-	"common.noAnswer":      "没有可读的输入(stdin 不是交互终端?)——没人回答,所以什么都没做。\n脚本 / ssh 里要它照做,显式加 --yes;只是想看看会发生什么,那现在这样就对了。",
-	"common.usagePrefix":   "用法: ",
+	"common.canceled":         "已取消",
+	"common.schemaFromFuture": "警告:这个库的 schema 版本是 %d,而本程序只认到 %d —— 这台机器上装过更新的 nanotun。\n      下面显示的内容未必准(新版本可能改过列的含义),而且写操作会被拒。要么换回原来的版本,要么从降级前的备份恢复。",
+	"common.dbFromInstall":    "没带 --db-path,用的是本机装好的库 %s。",
+	"common.noAnswer":         "没有可读的输入(stdin 不是交互终端?)——没人回答,所以什么都没做。\n脚本 / ssh 里要它照做,显式加 --yes;只是想看看会发生什么,那现在这样就对了。",
+	"common.usagePrefix":      "用法: ",
 	// 复用型分发 / 解析错误(命令语法本身不翻译,仅前缀 / 提示词按语言切换):
 	"cli.unknownSubcommand":     "未知的 %s 子命令 %q",
 	"cli.unknownSubcommandBare": "未知子命令 %q",

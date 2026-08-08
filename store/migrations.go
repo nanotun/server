@@ -160,6 +160,23 @@ func (s *Store) SchemaVersionIfInitialized(ctx context.Context) (version int, in
 	return v, v > 0, nil
 }
 
+// NewestKnownSchemaVersion 返回本二进制内置的最新迁移号 —— 也就是 Migrate 那道
+// 「库比程序新」守卫用来比对的上限。
+//
+// 导出它是给**不跑 Migrate** 的路径用的:只读命令和 backup 都绕开了那道守卫(前者
+// 是 query_only 连接跑不了 DDL,后者是刻意不碰 schema),于是一个由更新版本写过的库
+// 在它们眼里跟正常库没有区别 —— 照常列表、照常退 0,而列的含义可能早就变了。
+func NewestKnownSchemaVersion() (int, error) {
+	files, err := listMigrations()
+	if err != nil {
+		return 0, err
+	}
+	if len(files) == 0 {
+		return 0, nil
+	}
+	return files[len(files)-1].version, nil
+}
+
 func (s *Store) currentSchemaVersion(ctx context.Context) (int, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key='schema_version'`)
 	var v string
