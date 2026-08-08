@@ -33,9 +33,17 @@ import (
 
 const backupFileMode = 0o600
 
-// cmdBackup:`nanotun-admin backup [--out PATH]`
+// cmdBackup:`nanotun-admin backup [PATH | --out PATH]`
 func cmdBackup(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	out := ""
+	// 出现两次就是用法错误(--out 与位置参数各给一个、或两个位置参数),别悄悄用后面那个。
+	setOut := func(v string) error {
+		if out != "" {
+			return usageError(opts.T("backup.outTwice"))
+		}
+		out = v
+		return nil
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--out", "-o":
@@ -43,13 +51,28 @@ func cmdBackup(ctx context.Context, st *store.Store, opts *globalOpts, args []st
 				// 第十四轮深扫 LOW:缺 flag 取值属用法错误 → exit 2。
 				return usageError(opts.T("backup.outNeedsPath"))
 			}
-			out = args[i+1]
+			if err := setOut(args[i+1]); err != nil {
+				return err
+			}
 			i++
 		default:
-			if strings.HasPrefix(args[i], "--out=") {
-				out = args[i][len("--out="):]
-			} else {
+			switch {
+			case strings.HasPrefix(args[i], "--out="):
+				if err := setOut(args[i][len("--out="):]); err != nil {
+					return err
+				}
+			case strings.HasPrefix(args[i], "-"):
 				return newLocErr("cli.unknownFlag", args[i])
+			default:
+				// 裸路径 = 输出位置,跟 restore 一个写法。
+				//
+				// 此前只认 --out,敲成 `backup out.db` 回的是「unknown flag "out.db"」——
+				// 一个裸路径根本不是 flag,那句话连「它其实该是输出路径」都没说出来。
+				// 而这两条命令总是成对出现(备份完就是恢复),灾难现场人凭记忆敲,
+				// 记混哪个带 flag 是迟早的事。收下就是了。
+				if err := setOut(args[i]); err != nil {
+					return err
+				}
 			}
 		}
 	}

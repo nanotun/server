@@ -382,7 +382,7 @@ tag,workflow 只认这种 tag —— 手工 `git tag` 推上去发不出版本�
 脚本幂等,**不会动**已生效的 `config.toml` 和密钥 —— 重签密钥等于踢掉全部现有客户端。
 详见脚本头部注释与 [`docs/UPGRADE_M0.md`](docs/UPGRADE_M0.md)。
 
-**备份**:`nanotun-admin backup`(热一致,走 `VACUUM INTO`)拿 SQLite 库,
+**备份**:`nanotun-admin backup <路径>`(热一致,走 `VACUUM INTO`;路径不给就按时间戳命名)拿 SQLite 库,
 再连 `/etc/nanotun` 一起存 —— REALITY 私钥和 hy2 口令都在那儿,丢了客户端要重新接入。
 
 **数据库丢了怎么办**:服务不会因为库不见了就停 —— 它会重建一个空库照常启动,

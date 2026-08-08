@@ -350,6 +350,7 @@ var catZH = map[string]string{
 
 	// ===== backup / restore / vacuum =====
 	"backup.outNeedsPath":    "--out 需要路径",
+	"backup.outTwice":        "输出路径给了不止一次(--out 与位置参数只用其一)",
 	"backup.absOutFail":      "解析 out 路径失败",
 	"backup.targetExists":    "目标文件 %s 已存在,请改名或先删",
 	"backup.vacuumIntoFail":  "VACUUM INTO 失败",

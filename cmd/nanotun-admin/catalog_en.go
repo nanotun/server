@@ -353,6 +353,7 @@ var catEN = map[string]string{
 
 	// ===== backup / restore / vacuum =====
 	"backup.outNeedsPath":    "--out needs a path",
+	"backup.outTwice":        "the output path was given more than once (use either --out or a positional path, not both)",
 	"backup.absOutFail":      "failed to resolve out path",
 	"backup.targetExists":    "target file %s already exists, rename it or delete it first",
 	"backup.vacuumIntoFail":  "VACUUM INTO failed",

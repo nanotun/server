@@ -722,7 +722,7 @@ SUBCOMMANDS
   kick user <username|u<id>> [--reason TEXT]    踢某 user 所有会话
   kick device <devices.id|device_uuid> [--reason TEXT]    踢某 device 所有会话(0011)
   connection list                               列出当前所有在线会话(从 server 实时拉)
-  backup [--out PATH]                           SQLite VACUUM INTO 强一致快照
+  backup [PATH]                                 SQLite VACUUM INTO 强一致快照(不给路径则按时间戳命名)
   restore <src.db> [--force-while-running]      用快照覆盖现役 DB(server 应停)
   vacuum                                        VACUUM 重建,回收空闲页
   config lint <config.toml>                     strict 校验 server 配置(未知字段 → 退出 3)
@@ -805,7 +805,7 @@ SUBCOMMANDS
   kick user <username|u<id>> [--reason TEXT]    kick all sessions of a user
   kick device <devices.id|device_uuid> [--reason TEXT]    kick all sessions of a device (0011)
   connection list                               list all currently online sessions (fetched live from the server)
-  backup [--out PATH]                           strongly-consistent snapshot via SQLite VACUUM INTO
+  backup [PATH]                                 strongly-consistent snapshot via SQLite VACUUM INTO (timestamped name if omitted)
   restore <src.db> [--force-while-running]      overwrite the live DB with a snapshot (server should be stopped)
   vacuum                                        VACUUM rebuild to reclaim free pages
   config lint <config.toml>                     strict-validate the server config (unknown field → exit 3)

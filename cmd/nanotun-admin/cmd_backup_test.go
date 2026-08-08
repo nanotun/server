@@ -96,6 +96,67 @@ func TestCmdBackup_WritesFileAndPreservesRows(t *testing.T) {
 	}
 }
 
+// backup 与 restore 总是成对出现,而 restore 的路径是位置参数。此前 backup 只认 --out,
+// 敲成 `backup out.db` 回的是「unknown flag "out.db"」—— 一个裸路径不是 flag,那句话连
+// 「它其实该是输出路径」都没说出来。灾难现场是凭记忆敲命令的,记混哪个带 flag 迟早发生。
+func TestCmdBackup_TakesPathPositionallyLikeRestore(t *testing.T) {
+	newStore := func(t *testing.T, dir string) *store.Store {
+		t.Helper()
+		st, err := store.Open(t.Context(), filepath.Join(dir, "src.db"), store.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		if err := st.Migrate(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+
+	t.Run("裸路径与 --out 等价", func(t *testing.T) {
+		dir := t.TempDir()
+		st := newStore(t, dir)
+		out := &bytes.Buffer{}
+		opts := &globalOpts{stdout: out, stderr: out, stdin: os.Stdin, yes: true, lang: langZH}
+		p := filepath.Join(dir, "positional.db")
+		if err := cmdBackup(t.Context(), st, opts, []string{p}); err != nil {
+			t.Fatalf("cmdBackup: %v", err)
+		}
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("备份没写到位置参数给的路径: %v", err)
+		}
+	})
+
+	t.Run("两处都给就是用法错误", func(t *testing.T) {
+		dir := t.TempDir()
+		st := newStore(t, dir)
+		out := &bytes.Buffer{}
+		opts := &globalOpts{stdout: out, stderr: out, stdin: os.Stdin, yes: true, lang: langZH}
+		err := cmdBackup(t.Context(), st, opts,
+			[]string{filepath.Join(dir, "a.db"), "--out", filepath.Join(dir, "b.db")})
+		if err == nil {
+			t.Fatal("给了两个输出路径应当报错,而不是悄悄用其中一个")
+		}
+		// 悄悄挑一个写出去最糟:人以为备份在 a,实际在 b,发现时已经是要用它的时候。
+		if _, e := os.Stat(filepath.Join(dir, "a.db")); e == nil {
+			t.Error("报错了却还是写出了文件")
+		}
+		if _, e := os.Stat(filepath.Join(dir, "b.db")); e == nil {
+			t.Error("报错了却还是写出了文件")
+		}
+	})
+
+	t.Run("真打错 flag 仍要拦", func(t *testing.T) {
+		dir := t.TempDir()
+		st := newStore(t, dir)
+		out := &bytes.Buffer{}
+		opts := &globalOpts{stdout: out, stderr: out, stdin: os.Stdin, yes: true, lang: langZH}
+		if err := cmdBackup(t.Context(), st, opts, []string{"--oout", "x.db"}); err == nil {
+			t.Fatal("--oout 是拼错的 flag,不该被当成路径收下")
+		}
+	})
+}
+
 func TestCmdBackup_RefusesExistingTarget(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
