@@ -674,6 +674,7 @@ SUBCOMMANDS
   acl del <id>                                  删除一条规则
   setting get <key>                             读取 app_settings
   setting set <key> <value>                     写入 app_settings
+  setting unset <key>                           删掉一个 app_settings 键(回到默认值)
   setting list                                  列出 app_settings 全表
   setting rate [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--burst-kib N] [--no-refresh]
                                                 全局默认带宽限速(0011)+ rate.Limiter burst(0012);不传任何值 = dry-run 仅展示
@@ -756,6 +757,7 @@ SUBCOMMANDS
   acl del <id>                                  delete a rule
   setting get <key>                             read app_settings
   setting set <key> <value>                     write app_settings
+  setting unset <key>                           remove an app_settings key (back to its default)
   setting list                                  list the whole app_settings table
   setting rate [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--burst-kib N] [--no-refresh]
                                                 global default bandwidth limit (0011) + rate.Limiter burst (0012); no values = dry-run (show only)

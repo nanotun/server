@@ -136,22 +136,43 @@ func knownSettingKeys() []string {
 // 故保留写入,但在 stderr 打一行醒目告警(stdout 只留 "written:",不破坏脚本解析),并列出拼写
 // 相近的已知 key。
 func warnIfUnknownSettingKey(opts *globalOpts, key string) {
-	known := knownSettingKeys()
-	for _, k := range known {
+	if isKnownSettingKey(key) {
+		return
+	}
+	fmt.Fprintf(opts.stderr, "%s\n", opts.T("setting.unknownKeyWarn", key))
+	if near := nearSettingKeys(key); len(near) > 0 {
+		fmt.Fprintf(opts.stderr, "%s\n", opts.T("setting.unknownKeyNear", strings.Join(near, ", ")))
+	}
+}
+
+// hintUnknownSettingKey:`setting get` 查不到时,只在 key 本身也不认识的情况下补一句相近拼写。
+// 已知 key 查不到就是「还没设」,那是正常状态,不该借机敲打人。
+func hintUnknownSettingKey(opts *globalOpts, key string) {
+	if isKnownSettingKey(key) {
+		return
+	}
+	if near := nearSettingKeys(key); len(near) > 0 {
+		fmt.Fprintf(opts.stderr, "%s\n", opts.T("setting.unknownKeyNear", strings.Join(near, ", ")))
+	}
+}
+
+func isKnownSettingKey(key string) bool {
+	for _, k := range knownSettingKeys() {
 		if k == key {
-			return
+			return true
 		}
 	}
+	return false
+}
+
+func nearSettingKeys(key string) []string {
 	var near []string
-	for _, k := range known {
+	for _, k := range knownSettingKeys() {
 		if settingKeysLookAlike(k, key) {
 			near = append(near, k)
 		}
 	}
-	fmt.Fprintf(opts.stderr, "%s\n", opts.T("setting.unknownKeyWarn", key))
-	if len(near) > 0 {
-		fmt.Fprintf(opts.stderr, "%s\n", opts.T("setting.unknownKeyNear", strings.Join(near, ", ")))
-	}
+	return near
 }
 
 // settingKeysLookAlike:两个 setting key 是否「像是同一个东西的不同写法」。
@@ -239,6 +260,11 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 			return err
 		}
 		if !ok {
+			// 「这个键还没设」和「你把键名打错了」在这里长得一模一样,而两者该做的事
+			// 完全相反。打错的那个人看到 "not found" 只会得出「还没配」,然后照着错
+			// 键名再 set 一遍 —— set 那边的告警他刚才已经忽略过一次了。
+			// 拼写提示的机器 set 已经有一套,这里复用同一套,免得两条命令口径不一。
+			hintUnknownSettingKey(opts, rest[0])
 			return errors.New(opts.T("setting.notFound", rest[0]))
 		}
 		if opts.json {
@@ -289,6 +315,54 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 			}
 		}
 		// 限速三件套同理:在线会话的 rate.Limiter 是**连接上的对象**,不推 /rate/refresh 就只是改了行 DB。
+		if rateRefreshSettingKeys[key] {
+			if err := pushRateRefresh(opts, 0); err != nil {
+				fmt.Fprintln(opts.stderr, opts.T("setting.reloadHint", key))
+			} else {
+				fmt.Fprintln(opts.stderr, opts.T("setting.reloaded", key))
+			}
+		}
+		return nil
+	case "unset", "delete", "rm":
+		// 有 set 就得有 unset。set 有意收下不认识的 key(兼容口子),于是把 key 打错的人
+		// 会在 `setting list` 里留下一行永久垃圾 —— 此前 CLI 一个删法都没有,只能去手
+		// 改数据库,而那正是文档里反复劝阻的事。
+		//
+		// 三个名字都收:第一反应敲的是 delete 还是 unset,人各不同,为这个再吃一次
+		// "unknown setting subcommand" 没有意义。
+		if len(rest) != 1 {
+			return usageError(opts.usage("nanotun-admin setting unset <key>"))
+		}
+		key := rest[0]
+		if hintKey, blocked := systemManagedSettingKeys[key]; blocked {
+			// 说「拒绝删除」而不是复用 set 那句「拒绝写入」:人刚才敲的是删,
+			// 回一句答非所问的话会让他怀疑自己敲错了命令。
+			return errors.New(opts.T("setting.blockedDelete", key, opts.T(hintKey)))
+		}
+		existed, err := st.SettingsDelete(ctx, key)
+		if err != nil {
+			return err
+		}
+		if !existed {
+			hintUnknownSettingKey(opts, key)
+			return errors.New(opts.T("setting.notFound", key))
+		}
+		if opts.json {
+			if err := printJSON(opts.stdout, settingView{Key: key}); err != nil {
+				return err
+			}
+		} else {
+			fmt.Fprintln(opts.stdout, opts.T("setting.removed", key))
+		}
+		// 与 set 同理:删掉只是改了行 DB,跑着的 server 还拿着内存里的旧快照。
+		// 已知 key 被删意味着回落到默认值,那同样是一次行为变化,得推下去。
+		if aclSnapshotSettingKeys[key] {
+			if notifyACLChanged(opts) {
+				fmt.Fprintln(opts.stderr, opts.T("setting.reloaded", key))
+			} else {
+				fmt.Fprintln(opts.stderr, opts.T("setting.reloadHint", key))
+			}
+		}
 		if rateRefreshSettingKeys[key] {
 			if err := pushRateRefresh(opts, 0); err != nil {
 				fmt.Fprintln(opts.stderr, opts.T("setting.reloadHint", key))

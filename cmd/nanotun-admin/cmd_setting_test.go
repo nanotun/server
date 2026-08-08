@@ -368,3 +368,61 @@ func TestSettingProbeDialHost_SkipICMP_RejectsDNSToLoopback(t *testing.T) {
 		t.Errorf("应输出黑名单拒绝前缀;stdout=%s", stdout)
 	}
 }
+
+// setting unset:能写进去的就得能收回去,但系统托管的那几个一个都不许删。
+//
+// set 有意收下不认识的 key(给新版本留兼容口子),代价是打错 key 会在 setting list 里
+// 留下一行永久垃圾。此前 CLI 没有任何删法,只能手改数据库 —— 而那正是文档反复劝阻的事。
+func TestCmdSettingUnset(t *testing.T) {
+	dir := t.TempDir()
+	db := newInitializedDB(t, dir, "unset.db")
+
+	t.Run("删掉打错的键", func(t *testing.T) {
+		if c, _, e := runCLI(t, db, "", "setting", "set", "server_dialhost", "203.0.113.9"); c != 0 {
+			t.Fatalf("先写进去: code=%d %s", c, e)
+		}
+		c, out, e := runCLI(t, db, "", "setting", "unset", "server_dialhost")
+		if c != 0 {
+			t.Fatalf("code=%d stderr=%s", c, e)
+		}
+		if !strings.Contains(out, "server_dialhost") {
+			t.Errorf("没说删了哪个键: %q", out)
+		}
+		if c, _, _ := runCLI(t, db, "", "setting", "get", "server_dialhost"); c == 0 {
+			t.Error("删完还查得到")
+		}
+	})
+
+	t.Run("delete / rm 是同一件事(第一反应敲哪个的人都有)", func(t *testing.T) {
+		for _, alias := range []string{"delete", "rm"} {
+			if c, _, e := runCLI(t, db, "", "setting", "set", "some_typo_key", "1"); c != 0 {
+				t.Fatalf("%s: 先写进去 code=%d %s", alias, c, e)
+			}
+			if c, _, e := runCLI(t, db, "", "setting", alias, "some_typo_key"); c != 0 {
+				t.Fatalf("%s: code=%d stderr=%s", alias, c, e)
+			}
+		}
+	})
+
+	t.Run("键本来就不存在时报错而不是假装删过", func(t *testing.T) {
+		c, _, e := runCLI(t, db, "", "setting", "unset", "server_dail_host")
+		if c == 0 {
+			t.Fatal("不存在的键不该退 0 —— 脚本会以为清理成功了")
+		}
+		if !strings.Contains(e, "server_dial_host") {
+			t.Errorf("拼错的键该顺手提示相近的那个: %q", e)
+		}
+	})
+
+	t.Run("系统托管的键一个都不许删", func(t *testing.T) {
+		for _, k := range []string{"server_id", "schema_version"} {
+			_, before, _ := runCLI(t, db, "", "setting", "get", k)
+			if c, _, _ := runCLI(t, db, "", "setting", "unset", k); c == 0 {
+				t.Errorf("%s 被删掉了 —— 删它比改它更糟:下次启动会以为从没初始化过", k)
+			}
+			if _, after, _ := runCLI(t, db, "", "setting", "get", k); after != before {
+				t.Errorf("%s 的值变了: %q → %q", k, before, after)
+			}
+		}
+	})
+}

@@ -262,6 +262,30 @@ var reservedSettingKeys = map[string]bool{
 	MeshCIDRsKey: true, // "mesh_cidrs"
 }
 
+// SettingsDelete 删掉一个 app_settings key,返回它是否真的存在过。
+//
+// 存在的理由是 SettingsSet 有意接受不认识的 key(给新版本 / 别的组件留兼容口子)——
+// 代价是把 key 打错也照样落库,而那行垃圾此前没有任何办法删掉:它会永远躺在
+// `setting list` 里,让下一个看见的人分不清「这是谁配的、生效没有」。能写出来的东西
+// 就得能收回去。
+//
+// 系统托管的那几个照旧硬拒:删 server_id / schema_version 比改它们更糟(改是错值,
+// 删是让下次启动以为从没初始化过)。
+func (s *Store) SettingsDelete(ctx context.Context, key string) (bool, error) {
+	if reservedSettingKeys[key] {
+		return false, fmt.Errorf("store: setting %q is system-managed and must not be deleted: %w", key, ErrInvalid)
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM app_settings WHERE key=?`, key)
+	if err != nil {
+		return false, fmt.Errorf("store: settings delete %q: %w", key, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: settings delete %q: %w", key, err)
+	}
+	return n > 0, nil
+}
+
 func (s *Store) SettingsSet(ctx context.Context, key, value string) error {
 	if reservedSettingKeys[key] {
 		return fmt.Errorf("store: setting %q is system-managed and must not be set via SettingsSet: %w", key, ErrInvalid)

@@ -232,9 +232,27 @@ if [ -z "$VERSION" ]; then
   info "查询最新 Release ..."
   # 不解析 JSON(机器上不一定有 jq),跟着 /releases/latest 的 302 读 Location 里的 tag。
   # 比 grep API 返回体稳:API 有速率限制,未认证时一小时 60 次,CI 或反复重试很容易撞到。
+  # 失败原因要分开说。原来一律是「检查网络或用 NANOTUN_VERSION 指定版本」,而最常撞上
+  # 这一步的恰恰是「这台机器连不上 github.com」—— 那种情形下指定版本号救不了:下一步取
+  # 发布包走的还是 github.com,照做只会在二十秒后死在同一堵墙上。给不通的建议比不给更糟。
+  LATEST_RC=0
   latest_url="$(curl "${CURL_SMALL[@]}" -I -o /dev/null -w '%{url_effective}' \
-    "https://github.com/${REPO}/releases/latest" 2>/dev/null)" \
-    || die "查询最新版本失败,检查网络或用 NANOTUN_VERSION 指定版本。"
+    "https://github.com/${REPO}/releases/latest" 2>/dev/null)" || LATEST_RC=$?
+  if [ "$LATEST_RC" != 0 ]; then
+    case "$LATEST_RC" in
+      6|7|28) die "查询最新版本失败:连不上 github.com(curl $LATEST_RC:解析不了 / 连不上 / 连上了不给数据)。
+   先检查网络、DNS、出站防火墙或代理。注意这时候**指定 NANOTUN_VERSION 也没用** ——
+   下一步取发布包走的还是 github.com。
+   这台机器一直上不去的话,绕开它:在能上网的机器上打开
+     https://github.com/${REPO}/releases
+   下 linux-$ARCH 那个包,拷到这台机器上装(装的这一步不联网):
+     tar -xzf nanotun-<版本>-linux-$ARCH.tar.gz
+     sudo ./nanotun-<版本>-linux-$ARCH/scripts/install-self-hosted.sh" ;;
+      *) die "查询最新版本失败(curl $LATEST_RC)。
+   可以用 NANOTUN_VERSION 钉一个版本绕开这次查询,版本号见
+     https://github.com/${REPO}/releases" ;;
+    esac
+  fi
   VERSION="${latest_url##*/}"
   case "$VERSION" in
     v[0-9]*) ;;

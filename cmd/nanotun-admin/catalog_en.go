@@ -47,7 +47,8 @@ var catEN = map[string]string{
 	"store.users.emptyExpectedHash":  "store: empty expected_old_hash (CAS requires a base)",
 
 	// ===== setting =====
-	"setting.blocked": "refusing to write %q: %s",
+	"setting.blocked":       "refusing to write %q: %s",
+	"setting.blockedDelete": "refusing to delete %q: %s",
 	"setting.sysHint.serverId": "server's permanent fingerprint (UUID), generated once by the Migrate hook. " +
 		"Overwriting it breaks dedup / auto-override for already-issued client profiles, causing \"ghost\" entries. " +
 		"If you must reset it (rarely needed): DELETE the row directly via sqlite3 + restart the nanotun / nanotun-web processes.",
@@ -65,6 +66,7 @@ var catEN = map[string]string{
 	"setting.reloadHint": "note: %s was written but is NOT in effect yet — the data plane reads an in-memory snapshot. " +
 		"Run `nanotun-admin reload` or `systemctl reload nanotun` to make the running process pick it up.",
 	"setting.written":             "written: %s=%s",
+	"setting.removed":             "removed: %s (back to its default)",
 	"setting.notFound":            "setting %q not found",
 	"setting.rate.flagUpMibs":     "global default upload MiB/s, 0 = clear",
 	"setting.rate.flagUpBps":      "global default upload byte/s (exact; mutually exclusive with --up-mibs)",

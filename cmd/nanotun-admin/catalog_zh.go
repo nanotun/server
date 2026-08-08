@@ -44,7 +44,8 @@ var catZH = map[string]string{
 	"store.users.emptyExpectedHash":  "store: empty expected_old_hash (CAS 必须有 base)",
 
 	// ===== setting =====
-	"setting.blocked": "拒绝写入 %q:%s",
+	"setting.blocked":       "拒绝写入 %q:%s",
+	"setting.blockedDelete": "拒绝删除 %q:%s",
 	"setting.sysHint.serverId": "服务器永久指纹(UUID),由 Migrate hook 一次性生成。" +
 		"覆盖会让已发出的客户端 profile 无法去重 / 自动覆盖,触发\"重影\"问题。" +
 		"若必须重置(极少需要):用 sqlite3 直接 DELETE 该行 + 重启 nanotun / nanotun-web 进程。",
@@ -62,6 +63,7 @@ var catZH = map[string]string{
 	"setting.reloadHint": "提示: %s 已落库但**尚未生效** —— 数据面读的是内存快照。" +
 		"执行 `nanotun-admin reload` 或 `systemctl reload nanotun` 让运行中进程刷新。",
 	"setting.written":             "已写入：%s=%s",
+	"setting.removed":             "已删除:%s(回到默认值)",
 	"setting.notFound":            "未找到设置项 %q",
 	"setting.rate.flagUpMibs":     "全局上行默认 MiB/s,0 = 清除",
 	"setting.rate.flagUpBps":      "全局上行默认 byte/s(精确,与 --up-mibs 互斥)",
