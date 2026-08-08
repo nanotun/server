@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // ACLAction 列出当前支持的动作。
@@ -244,11 +246,62 @@ const aclSelectSQL = `SELECT id, COALESCE(src_user_id,0), COALESCE(dst_user_id,0
 
 func (s *Store) scanACLCols(sc rowScanner) (*ACLPair, error) {
 	var a ACLPair
+	// created_at 用一个宽松的容器接,别的列照旧严格。
+	//
+	// 它只用来显示,不参与任何放行判断(acl_runtime 拿到规则后根本不读这个字段)。而
+	// SQLite 是动态类型:列声明成 INTEGER 也拦不住外部工具往里写字符串。此前一个歪了的
+	// 时间戳会让整条 ListACLPairs 失败,后果不成比例 —— 数据面在启动期拒绝上线(拒绝
+	// 本身是对的,ACL 装不全就不该以放行姿态开门),而理由是一列它根本不看的元数据;
+	// 更糟的是 `acl ls` 走同一个 scan,于是人既看不到是哪条坏了、也没有 CLI 能删它,
+	// 只剩手改数据库这一条路 —— 而那正是文档反复劝阻的事。
+	//
+	// 现在:时间戳读不懂就当 0(列表里显示为空),规则本身照常装载、照常生效。action /
+	// proto / 端口这些真正决定放行的列仍然严格 —— 它们歪了就该整条拒绝。
+	var createdAt any
 	if err := sc.Scan(&a.ID, &a.SrcUserID, &a.DstUserID, &a.Action,
-		&a.Proto, &a.DstPortLo, &a.DstPortHi, &a.DstKind, &a.CreatedAt); err != nil {
+		&a.Proto, &a.DstPortLo, &a.DstPortHi, &a.DstKind, &createdAt); err != nil {
 		return nil, err
 	}
+	a.CreatedAt = CoerceUnixSeconds(createdAt)
 	return &a, nil
+}
+
+// CoerceUnixSeconds 把 SQLite 里一列时间戳可能是的几种东西折成 unix 秒;认不出来就是 0。
+//
+// 我们自己写的永远是整数,字符串只会来自外部写入(手改库、第三方脚本、从别处导回来的
+// 备份)。既然认得出来就顺手认了,认不出也不该因此丢掉整行 —— 时间戳是给人看的,
+// 不参与任何判断。导出是因为 nanotun-admin 的列表查询自带 JOIN、不走这里的 scan,
+// 两边得是同一套宽容度,否则「服务起得来但 acl ls 看不见」这种错位又会回来。
+func CoerceUnixSeconds(v any) int64 {
+	switch t := v.(type) {
+	case nil:
+		return 0
+	case int64:
+		return t
+	case float64:
+		return int64(t)
+	case []byte:
+		return CoerceUnixSeconds(string(t))
+	case time.Time:
+		return t.Unix()
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return 0
+		}
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return n
+		}
+		// SQLite 的 datetime() 默认吐这个形状,且是 UTC。
+		for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339} {
+			if ts, err := time.Parse(layout, s); err == nil {
+				return ts.Unix()
+			}
+		}
+		return 0
+	default:
+		return 0
+	}
 }
 
 func nullableInt(v int64) any {

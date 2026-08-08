@@ -45,9 +45,13 @@ func cmdACLList(ctx context.Context, st *store.Store, opts *globalOpts, _ []stri
 	for rows.Next() {
 		var r aclPairView
 		var srcID, dstID *int64
-		if err := rows.Scan(&r.ID, &r.Action, &r.Proto, &r.DstPortLo, &r.DstPortHi, &r.DstKind, &r.CreatedAt, &srcID, &r.SrcUsername, &dstID, &r.DstUsername); err != nil {
+		// created_at 宽松接:歪了的时间戳不该让人看不见这条规则 —— 服务端那边同样宽容
+		// (store.scanACLCols),这里再严格就成了「服务照常跑,acl ls 却报错」。
+		var createdAt any
+		if err := rows.Scan(&r.ID, &r.Action, &r.Proto, &r.DstPortLo, &r.DstPortHi, &r.DstKind, &createdAt, &srcID, &r.SrcUsername, &dstID, &r.DstUsername); err != nil {
 			return err
 		}
+		r.CreatedAt = store.CoerceUnixSeconds(createdAt)
 		if srcID != nil {
 			r.SrcUserID = *srcID
 		}

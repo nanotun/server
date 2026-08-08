@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // AddACLPair 的入参闸门此前一条都没被执行过。这一层特别值得钉住:写进 acl_pairs 的规则
@@ -274,6 +275,54 @@ func TestACLReads_SurfaceCorruptRowsAndDeadDB(t *testing.T) {
 			t.Fatal("GetACLPair 遇到损坏行应当报错")
 		} else if errors.Is(err, ErrNotFound) {
 			t.Fatalf("损坏被归一成 ErrNotFound: %v —— 会掩盖数据损坏", err)
+		}
+	})
+
+	// 上一条的反面:决定放行的列歪了要整条拒绝,而只用来显示的时间戳歪了不该有任何
+	// 后果。此前两者一视同仁,代价是数据面在启动期拒绝上线 —— 理由是一列它根本不看的
+	// 元数据;而 acl ls 走同一个 scan,人连是哪条坏了都看不到,只剩手改数据库一条路。
+	t.Run("时间戳歪了不影响规则本身", func(t *testing.T) {
+		s := newTestStore(t)
+		ctx := t.Context()
+		u := seedACLUsers(t, s, 2)
+		got, err := s.AddACLPairBasic(ctx, u[0], u[1], ACLDeny)
+		if err != nil {
+			t.Fatalf("AddACLPairBasic: %v", err)
+		}
+		// SQLite 是动态类型:列声明成 INTEGER 也拦不住外部工具写进一个字符串。
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE acl_pairs SET created_at='2026-08-08 02:39:57' WHERE id=?`, got.ID); err != nil {
+			t.Fatalf("注入字符串时间戳: %v", err)
+		}
+		list, err := s.ListACLPairs(ctx)
+		if err != nil {
+			t.Fatalf("时间戳读不懂不该让整条装载失败: %v", err)
+		}
+		if len(list) != 1 {
+			t.Fatalf("规则应当还在,got %d 条", len(list))
+		}
+		if list[0].Action != ACLDeny {
+			t.Errorf("规则内容不该受影响, got action=%q", list[0].Action)
+		}
+		// 认得出来就顺手认了(SQLite datetime() 的默认形状,UTC)。
+		if want := time.Date(2026, 8, 8, 2, 39, 57, 0, time.UTC).Unix(); list[0].CreatedAt != want {
+			t.Errorf("这个形状应当解析得出 %d, got %d", want, list[0].CreatedAt)
+		}
+		if _, err := s.GetACLPair(ctx, got.ID); err != nil {
+			t.Errorf("GetACLPair 同样不该因时间戳失败: %v", err)
+		}
+
+		// 彻底认不出来的就当没有 —— 仍然不许把规则弄丢。
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE acl_pairs SET created_at='不是时间' WHERE id=?`, got.ID); err != nil {
+			t.Fatalf("注入乱码时间戳: %v", err)
+		}
+		list, err = s.ListACLPairs(ctx)
+		if err != nil || len(list) != 1 {
+			t.Fatalf("认不出的时间戳也不该丢规则: err=%v len=%d", err, len(list))
+		}
+		if list[0].CreatedAt != 0 {
+			t.Errorf("认不出来就该是 0, got %d", list[0].CreatedAt)
 		}
 	})
 

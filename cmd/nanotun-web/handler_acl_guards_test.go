@@ -54,9 +54,11 @@ func TestACLList_ReadFailureIsNotAnEmptyRuleset(t *testing.T) {
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("前置建规则失败: code=%d body=%q", w.Code, trimForLog(w.Body.String()))
 	}
-	// 把规则行的 created_at 写坏:这一行之后扫不出来,库其余部分照常。
+	// 写坏一个**参与放行判断**的列。以前这里用的是 created_at,但那一列如今是有意宽容的
+	// (歪了的时间戳不该让规则从列表里消失,更不该让数据面拒绝上线 —— 它根本不看这列),
+	// 拿它当损坏样本已经验不出东西来了。端口号则相反:读不出来就不知道这条规则管的是谁。
 	if _, err := s.store.DB().ExecContext(t.Context(),
-		`UPDATE acl_pairs SET created_at='not-a-number'`); err != nil {
+		`UPDATE acl_pairs SET dst_port_lo='坏了'`); err != nil {
 		t.Fatalf("注入坏规则行: %v", err)
 	}
 
@@ -64,6 +66,31 @@ func TestACLList_ReadFailureIsNotAnEmptyRuleset(t *testing.T) {
 	s.handleACLList(w, adminGetReq("/acl"))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("code=%d body=%q, 期望 500", w.Code, trimForLog(w.Body.String()))
+	}
+}
+
+// 反过来:时间戳歪了,页面照常列出这条规则。三处(数据面、CLI、网页)必须一样宽容 ——
+// 只要有一处更严,就会出现「服务在跑、规则在生效,而页面上打不开」这种自相矛盾的现场。
+func TestACLList_BrokenTimestampStillLists(t *testing.T) {
+	s := aclGuardServer(t)
+	form := aclForm(t, s, "ts-src", "ts-dst")
+	w := httptest.NewRecorder()
+	s.handleACLNew(w, newAdminPostRequest(t, "/acl/new", form))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("前置建规则失败: code=%d body=%q", w.Code, trimForLog(w.Body.String()))
+	}
+	if _, err := s.store.DB().ExecContext(t.Context(),
+		`UPDATE acl_pairs SET created_at='not-a-number'`); err != nil {
+		t.Fatalf("注入坏时间戳: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	s.handleACLList(w, adminGetReq("/acl"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%q, 期望 200", w.Code, trimForLog(w.Body.String()))
+	}
+	if !strings.Contains(w.Body.String(), "ts-src") {
+		t.Errorf("规则应当照常列出来, body=%q", trimForLog(w.Body.String()))
 	}
 }
 

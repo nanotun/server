@@ -1736,7 +1736,18 @@ func main() {
 	if hySrv != nil {
 		go safeGlobalGoroutine("hysteriaServe", globalContextCancel, func() {
 			if err := hySrv.Serve(); err != nil {
-				logrus.WithError(err).Error("Hysteria Serve 退出")
+				// 关服时 Serve 必然带着「server closed」返回,那是 systemctl restart /
+				// stop 的正常尾声,不是故障。此前一律打成 error —— 于是每次重启都在
+				// journal 里留一条红字,而运维排查时第一件事就是 grep level=error。
+				// 天天见到的告警等于没有告警,真出事那条也会被一起略过。
+				//
+				// 用 globalContext 判断而不是比对错误文案:关停一定先 cancel 它,
+				// 而库那边的 sentinel / 措辞换个版本就可能变。
+				if globalContext != nil && globalContext.Err() != nil {
+					logrus.WithError(err).Info("Hysteria Serve 已随进程关停退出")
+				} else {
+					logrus.WithError(err).Error("Hysteria Serve 退出")
+				}
 			}
 		})
 	}
