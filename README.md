@@ -193,8 +193,9 @@ cd docker && docker compose -f docker-compose.dev.yml up --build
 credentials 解耦后**双 QR**:profile 不含 PSK + credentials 独立下发):
 
 ```bash
-# 注意 --db-path:它的默认值是**相对当前目录**的 data/nanotun.db。忘了传不会报错,
-# 而是在 cwd 建一个空库,现象是「刚建的用户查不到」。设 NANOTUN_DB 环境变量也行。
+# 装过 nanotun 的机器上不带 --db-path 也行:找不到当前目录下的 data/nanotun.db 时,
+# 会自动用 /var/lib/nanotun/nanotun.db 并说一声。想固定下来就设 NANOTUN_DB ——
+# 写进文档、脚本、工单里的命令不该依赖「在哪个目录跑」。
 export NANOTUN_DB=/var/lib/nanotun/nanotun.db
 
 # 1) 创建用户:PSK 仅在这一次以明文回显,同时分配 credential_id (UUID v4)。

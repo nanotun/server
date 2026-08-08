@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"github.com/pelletier/go-toml/v2"
@@ -209,6 +212,18 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 		}
 	}
 	if effectiveDial == "" {
+		// 装机向导问过一次并存进了 app_settings.server_dial_host,Web 后台发二维码用的
+		// 就是它。CLI 这边此前不看,每次都要人重打一遍 —— 同一个值两个来源,打错一次就
+		// 悄悄分叉:网页发的和命令行发的 profile 指向不同地址,而两边都显示「成功」。
+		// 存过就用存的,并说一声用的是哪个,免得人以为自己传了别的值。
+		if v, ok, err := st.SettingsGet(ctx, "server_dial_host"); err == nil && ok {
+			if v = strings.TrimSpace(v); v != "" {
+				effectiveDial = v
+				fmt.Fprintln(opts.stderr, opts.T("profile.dialHostFromSetting", v))
+			}
+		}
+	}
+	if effectiveDial == "" {
 		return usageError(opts.T("profile.dialHostRequired"))
 	}
 	// strict 校验:本字段是客户端 PacketTunnel `tunnelRemoteAddress`,
@@ -354,7 +369,34 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 
 	_ = st // 留 st 引用,方便将来加 "profile_issuance" 审计表;当前 show 路径完全只读。
 
+	warnHy2ClientCertShelfLife(prof, opts)
 	return emitProfile(prof, *format, *output, *forceOverwrite, opts)
+}
+
+// warnHy2ClientCertShelfLife 在 profile 内嵌了 Hy2 客户端证书时,把它的到期日说出来。
+//
+// 这张证书是临场签发的短期证书(默认 90 天),而二维码发出去之后没人再看它一眼。到期
+// 那天客户端的 Hy2/QUIC 通道握不上手,退到其余传输 —— 用户感觉是「变慢了」而不是断线,
+// 排查时也很难联想到三个月前扫的那张码。发的时候顺口说一句,比到时候翻日志便宜得多。
+//
+// 读的是证书里真实的 NotAfter,不是拿 --hy2-client-cert-days 回推:那个 flag 只是入参,
+// 真正写进 profile 的是什么,只有证书自己知道。
+func warnHy2ClientCertShelfLife(p *profileSchema, opts *globalOpts) {
+	if p == nil || p.Hy2 == nil || strings.TrimSpace(p.Hy2.ClientCertPEM) == "" {
+		return
+	}
+	blk, _ := pem.Decode([]byte(p.Hy2.ClientCertPEM))
+	if blk == nil {
+		return
+	}
+	leaf, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		return
+	}
+	// 取整而不是截断:签 7 天的证书当场显示「还剩 6 天」,看着像个 bug ——
+	// 签发到现在中间隔的那几毫秒,不该让人怀疑天数算错了。
+	days := int(time.Until(leaf.NotAfter).Round(24*time.Hour).Hours() / 24)
+	fmt.Fprintln(opts.stderr, opts.T("profile.hy2CertShelfLife", leaf.NotAfter.Format("2006-01-02"), days))
 }
 
 // emitProfile 按 --format 写出 profile；qr / qr-png 编码 nanotun:// URL（非裸 JSON）。

@@ -252,6 +252,7 @@ var catZH = map[string]string{
 	"config.noDBPath":      "警告:[store].db_path 没写 —— nanotund 会用 cwd 相对的 data/nanotun.db(也就是 /etc/nanotun/data/nanotun.db,一个空库)。\n      表现是服务照常起、所有客户端登录一律失败,而 nanotun-admin 查什么都正常。补上:db_path = \"/var/lib/nanotun/nanotun.db\"",
 	"config.loosePerm":     "警告:%s 权限是 %s —— 里面有 REALITY 私钥和 hy2 口令,这台机器上任何本地用户都能读。\n      收紧:chmod 600 %s(在别的机器上验模板可以忽略这条)",
 	"config.certMissing":   "警告:证书文件读不到 —— %s\n      配置本身没问题,但 server 起来时会因此退出(exit 20)。在别的机器上验模板可以忽略这条。",
+	"config.certBroken":    "警告:证书读得到但用不了 —— %s\n      server 起来时会因此退出(exit 20)。在别的机器上验模板可以忽略这条。",
 
 	// ===== profile =====
 	"profile.flag.dialHost":           "(必填,与 --host 二选一) 客户端实际拨号的服务器地址,IPv4 / IPv6 / 合法域名;严格校验,拒末段纯数字的伪 hostname(如 test-203.0.113.10)",
@@ -280,7 +281,9 @@ var catZH = map[string]string{
 	"profile.flag.node":               "v2 入口节点（可重复）；裸 host 或 id=hk,name=名称,host=IP。有此项时导出 version=2（--host 为唯一出口）",
 	"profile.usageTooMany":            "usage: nanotun-admin profile show [<username>] --dial-host HOST [--advertised-host LABEL] [...]\n  (credentials 走 `nanotun-admin credentials show <username>`,profile 不再含 PSK)",
 	"profile.hostDeprecated":          "[warn] --host 是 DEPRECATED 别名,本轮拆字段后建议改用 --dial-host(语义清晰,与 --advertised-host 配套)",
-	"profile.dialHostRequired":        "--dial-host 必填(客户端实际拨号的 IPv4 / IPv6 / 合法域名)",
+	"profile.dialHostRequired":        "--dial-host 必填(客户端实际拨号的 IPv4 / IPv6 / 合法域名)\n  这台机器上存一次就不用每回都打:setting set server_dial_host <host>",
+	"profile.dialHostFromSetting":     "没带 --dial-host,用的是本机存着的 server_dial_host = %s(与 Web 后台发的二维码同一个值)。",
+	"profile.hy2CertShelfLife":        "这份 profile 里内嵌的 Hy2 客户端证书 %s 到期(还剩 %d 天)。过期后客户端的 Hy2/QUIC 通道握不上手,会退到其余传输 —— 表现是变慢而不是断线,不容易联想到是这张码老了。到时候重发一次即可,想要更长有效期用 --hy2-client-cert-days。",
 	"profile.dialHostInvalid":         "--dial-host 不合法: %s(必须是 IPv4 / IPv6 / 末段含字母的合法域名)",
 	"profile.advertisedHostInvalid":   "--advertised-host 不合法: %s",
 	"profile.formatInvalid":           "--format 必须是 json | url | both | qr | qr-png，当前是 %q",

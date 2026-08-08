@@ -51,33 +51,11 @@ func LoadAndCheckTLSKeyPair(certPath, keyPath, role string) (tls.Certificate, er
 	// I9: 加载之前先检查 key 文件权限。warn-but-not-fatal,详见 KeyFilePermMax 注释。
 	checkKeyFilePerm(keyPath, role)
 
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	cert, leaf, err := loadAndValidateKeyPair(certPath, keyPath, role)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("util: load tls keypair %s (%s + %s): %w",
-			role, certPath, keyPath, err)
+		return cert, err
 	}
-	if len(cert.Certificate) == 0 {
-		return cert, fmt.Errorf("util: tls keypair %s has empty Certificate chain", role)
-	}
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		// 第十四轮深扫 MED:此前是「Warn + 返回 cert,nil」→ 跳过有效期检查,等于 fail-open:一份我们**无法解析**
-		// 的 leaf(损坏 / 非标准 X.509)会「成功」启动、把错误推迟到 TLS 握手期才炸,且分散难查。既然连 NotBefore/
-		// NotAfter 都验不了,就在启动期直接拒(fail-closed),与「空链」「已过期」同等对待。
-		return cert, fmt.Errorf("util: tls cert %s parse leaf failed (cannot verify validity): %w", role, err)
-	}
-	now := time.Now()
-	// 第十四轮深扫 MED:除 NotAfter 外也验 NotBefore —— 未生效证书(提前部署 / 时钟偏)此前能「成功」启动,
-	// 直到握手才被对端(或自身 verify)拒 → 难排查。启动期一并 fail-closed(留 tlsNotBeforeSkew 容忍小幅漂移)。
-	if leaf.NotBefore.After(now.Add(tlsNotBeforeSkew)) {
-		return cert, fmt.Errorf("util: tls cert %s 尚未生效 (NotBefore=%s, now=%s)",
-			role, leaf.NotBefore.Format(time.RFC3339), now.Format(time.RFC3339))
-	}
-	if !leaf.NotAfter.After(now) {
-		return cert, fmt.Errorf("util: tls cert %s 已过期 (NotAfter=%s, now=%s)",
-			role, leaf.NotAfter.Format(time.RFC3339), now.Format(time.RFC3339))
-	}
-	remain := leaf.NotAfter.Sub(now)
+	remain := time.Until(leaf.NotAfter)
 	if remain < CertExpiryWarnWindow {
 		logrus.WithFields(logrus.Fields{
 			"role":      role,
@@ -93,6 +71,58 @@ func LoadAndCheckTLSKeyPair(certPath, keyPath, role string) (tls.Certificate, er
 		}).Infof("[cert:%s] TLS 证书有效", role)
 	}
 	return cert, nil
+}
+
+// ValidateTLSKeyPairFiles 跟上面同一套判据,但不打日志、也不返回证书 —— 给「重启之前
+// 先看一眼」的路径用(nanotun-admin config lint)。
+//
+// 分出来是因为 lint 此前只判文件在不在:一对配不上的证书私钥(拷文件时最常见)、一份
+// 被截断的 PEM、一张过期的 Let's Encrypt 证书,统统能拿到 OK。人照着这个绿灯去 restart,
+// 服务当场趴下 —— 而 lint 的全部意义就是不让这种事发生。判据只能有一处,散成两份迟早对不上。
+func ValidateTLSKeyPairFiles(certPath, keyPath, role string) error {
+	_, _, err := loadAndValidateKeyPair(certPath, keyPath, role)
+	return err
+}
+
+func loadAndValidateKeyPair(certPath, keyPath, role string) (tls.Certificate, *x509.Certificate, error) {
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return tls.Certificate{}, nil, fmt.Errorf("util: load tls keypair %s (%s + %s): %w",
+			role, certPath, keyPath, err)
+	}
+	if len(cert.Certificate) == 0 {
+		return cert, nil, fmt.Errorf("util: tls keypair %s has empty Certificate chain", role)
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		// 第十四轮深扫 MED:此前是「Warn + 返回 cert,nil」→ 跳过有效期检查,等于 fail-open:一份我们**无法解析**
+		// 的 leaf(损坏 / 非标准 X.509)会「成功」启动、把错误推迟到 TLS 握手期才炸,且分散难查。既然连 NotBefore/
+		// NotAfter 都验不了,就在启动期直接拒(fail-closed),与「空链」「已过期」同等对待。
+		return cert, nil, fmt.Errorf("util: tls cert %s parse leaf failed (cannot verify validity): %w", role, err)
+	}
+	now := time.Now()
+	// 第十四轮深扫 MED:除 NotAfter 外也验 NotBefore —— 未生效证书(提前部署 / 时钟偏)此前能「成功」启动,
+	// 直到握手才被对端(或自身 verify)拒 → 难排查。启动期一并 fail-closed(留 tlsNotBeforeSkew 容忍小幅漂移)。
+	if leaf.NotBefore.After(now.Add(tlsNotBeforeSkew)) {
+		// 证书是「未来才生效」的,九成是本机时钟不对而不是证书签错了 —— 新装的 VPS
+		// 没跑 NTP、虚拟机从快照恢复,都会把系统时间甩到过去。先看一眼再折腾证书。
+		return cert, nil, fmt.Errorf("util: tls cert %s 尚未生效 (NotBefore=%s, now=%s)\n"+
+			"  证书要到 NotBefore 才生效,而本机现在停在 now —— 多半是这台机器的时钟不对,\n"+
+			"  不是证书签错了。先对时:timedatectl(或 date -u),校准后重启服务。",
+			role, leaf.NotBefore.Format(time.RFC3339), now.Format(time.RFC3339))
+	}
+	if !leaf.NotAfter.After(now) {
+		// 说清楚下一步。两种来源要分开讲,而且必须点名哪一对**不能**动:profile 里
+		// 内嵌的客户端证书是 client-CA 签的,换掉 CA 等于已发出去的二维码全部作废,
+		// 而服务器证书这一对重签不影响它们。慌乱中 rm certs/* 是很自然的动作。
+		return cert, nil, fmt.Errorf("util: tls cert %s 已过期 (NotAfter=%s, now=%s)\n"+
+			"  自带证书(Let's Encrypt 之类)的话:续签后重启服务即可。\n"+
+			"  这是装机时自签的那对的话:删掉 %s 与 %s,再跑 nanotun-ensure-assets.sh 重签。\n"+
+			"  别顺手删 client-CA(certs/*client-ca*.pem)—— 已发出去的 profile 里的客户端证书\n"+
+			"  是它签的,换掉等于所有二维码作废,每个用户都得重发。",
+			role, leaf.NotAfter.Format(time.RFC3339), now.Format(time.RFC3339), certPath, keyPath)
+	}
+	return cert, leaf, nil
 }
 
 // checkKeyFilePerm 在 Unix 上检查 keyPath 文件权限,group/others 可读时 Warn。

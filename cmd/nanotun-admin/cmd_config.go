@@ -17,6 +17,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/nanotun/server/config"
+	"github.com/nanotun/server/util"
 )
 
 func cmdConfig(opts *globalOpts, args []string) int {
@@ -80,6 +81,12 @@ func cmdConfigLint(opts *globalOpts, args []string) int {
 	for _, w := range lintCertFiles(path, &cfg) {
 		fmt.Fprintln(opts.stderr, opts.T("config.certMissing", w))
 	}
+	// 文件在,不等于能用。只判存在拦不住最常见的三种坏法:证书与私钥不是一对(从别的
+	// 机器拷文件时最容易)、PEM 被截断、证书已过期(自带 Let's Encrypt 忘了续)。三种都
+	// 会让 restart 当场死在 exit 20 上,而此前 lint 一律回 OK。
+	for _, w := range lintCertPairs(path, &cfg) {
+		fmt.Fprintln(opts.stderr, opts.T("config.certBroken", w))
+	}
 	// [store].db_path 空着不是语法错,但后果是「用户全不见了」:nanotund 会回落到 cwd
 	// 相对的 data/nanotun.db,也就是 WorkingDirectory 下的 /etc/nanotun/data/nanotun.db ——
 	// 一个空库。服务照常起、登录一律失败,而 nanotun-admin 那边的库原封不动,查什么都正常。
@@ -127,6 +134,47 @@ func lintCertFiles(cfgPath string, cfg *config.Config) []string {
 		}
 	}
 	return missing
+}
+
+// lintCertPairs 在两端文件都读得到时,把它们真加载一次 —— 用的是 nanotund 启动期同一
+// 个判据(util.ValidateTLSKeyPairFiles),不另写一套:两份判据迟早对不上,那时 lint 说的
+// 话就再也不能信了。
+//
+// 缺文件的情况这里跳过,由 lintCertFiles 单独报,免得同一件事说两遍。
+func lintCertPairs(cfgPath string, cfg *config.Config) []string {
+	base := filepath.Dir(cfgPath)
+	seen := map[string]bool{}
+	var problems []string
+	for _, pair := range []struct{ cert, key, role string }{
+		{cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile, "vpn-wss"},
+		{cfg.Hysteria.TLSCertFile, cfg.Hysteria.TLSKeyFile, "hy2"},
+	} {
+		if pair.cert == "" || pair.key == "" {
+			continue
+		}
+		// 两段常指向同一对文件(装机默认就是),验一次够了。
+		if seen[pair.cert+"\x00"+pair.key] {
+			continue
+		}
+		seen[pair.cert+"\x00"+pair.key] = true
+		certPath, keyPath := pair.cert, pair.key
+		if !filepath.IsAbs(certPath) {
+			certPath = filepath.Join(base, certPath)
+		}
+		if !filepath.IsAbs(keyPath) {
+			keyPath = filepath.Join(base, keyPath)
+		}
+		if _, err := os.Stat(certPath); err != nil {
+			continue
+		}
+		if _, err := os.Stat(keyPath); err != nil {
+			continue
+		}
+		if err := util.ValidateTLSKeyPairFiles(certPath, keyPath, pair.role); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	return problems
 }
 
 // lintSemantic 复用 config 包里与 server 启动期一致的语义校验,聚合首个失败返回。

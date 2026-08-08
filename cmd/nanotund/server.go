@@ -1381,7 +1381,7 @@ func main() {
 		pcfg.TTLSec,
 	)
 	if errPoW != nil {
-		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"err": errPoW.Error()}, "初始化 PoW 服务失败: %v", errPoW)
+		util.FatalExit(util.ExitConfigSemantic, nil, "初始化 PoW 服务失败: %v", errPoW)
 	}
 	gw.powService = powSvc
 	// PoW 服务 GC goroutine:每 60s 扫一遍已过期 challenge_id + IP 失败窗口。
@@ -1424,7 +1424,7 @@ func main() {
 
 	vpnLn, errLn := net.Listen("tcp", cfg.Server.ListenAddr)
 	if errLn != nil {
-		util.FatalExit(util.ClassifyListenError(errLn), logrus.Fields{"listen_addr": cfg.Server.ListenAddr, "err": errLn.Error()}, "VPN Listen %s: %v", cfg.Server.ListenAddr, errLn)
+		util.FatalExit(util.ClassifyListenError(errLn), logrus.Fields{"listen_addr": cfg.Server.ListenAddr}, "VPN Listen %s: %v", cfg.Server.ListenAddr, errLn)
 	}
 	defer vpnLn.Close()
 
@@ -1447,7 +1447,7 @@ func main() {
 	if tlsOn {
 		cert, errTLS := util.LoadAndCheckTLSKeyPair(certPath, keyPath, "vpn-wss")
 		if errTLS != nil {
-			util.FatalExit(util.ExitTLSCert, logrus.Fields{"cert": certPath, "key": keyPath, "err": errTLS.Error()}, "VPN TLS 加载证书 %s / %s: %v", certPath, keyPath, errTLS)
+			util.FatalExit(util.ExitTLSCert, logrus.Fields{"cert": certPath, "key": keyPath}, "VPN TLS 加载证书 %s / %s: %v", certPath, keyPath, errTLS)
 		}
 		tlsSrv := util.NewServerTLSConfig(util.ServerTLSOptions{
 			Certificates: []tls.Certificate{cert},
@@ -1479,7 +1479,7 @@ func main() {
 
 	hySrv, hyUDPPort, hyPortHopCleanup, errHy := startEmbeddedHysteria(&cfg, cfg.Server.ListenAddr, loopbackWSURL, loopbackSmuxPoolRef, loopbackWSTLS)
 	if errHy != nil {
-		util.FatalExit(util.ClassifyListenError(errHy), logrus.Fields{"err": errHy.Error()}, "Hysteria: %v", errHy)
+		util.FatalExit(util.ClassifyListenError(errHy), nil, "Hysteria: %v", errHy)
 	}
 	if hyPortHopCleanup != nil {
 		defer hyPortHopCleanup()
@@ -1490,7 +1490,7 @@ func main() {
 	// 旧客户端连 :8444 失败只影响其自身保活重试循环,不影响数据面。
 	realityClose, realityStartAccept, realityTCPPort, errReality := startRealityVPNListener(&cfg, loopbackSmuxPoolRef, loopbackWSTLS)
 	if errReality != nil {
-		util.FatalExit(util.ClassifyListenError(errReality), logrus.Fields{"err": errReality.Error()}, "REALITY: %v", errReality)
+		util.FatalExit(util.ClassifyListenError(errReality), nil, "REALITY: %v", errReality)
 	}
 	if realityClose != nil {
 		defer realityClose()

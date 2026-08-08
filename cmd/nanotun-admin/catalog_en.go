@@ -255,6 +255,7 @@ var catEN = map[string]string{
 	"config.noDBPath":      "warning: [store].db_path is unset — nanotund falls back to data/nanotun.db relative to its cwd (/etc/nanotun/data/nanotun.db, an empty database).\n      The service starts fine and every client login fails, while nanotun-admin still looks healthy. Set: db_path = \"/var/lib/nanotun/nanotun.db\"",
 	"config.loosePerm":     "warning: %s is mode %s — it holds the REALITY private key and the hy2 password, and every local user on this machine can read it.\n      Tighten it: chmod 600 %s (ignore this when linting a template on another machine)",
 	"config.certMissing":   "warning: cannot read certificate file — %s\n      The config itself is fine, but the server will exit 20 on startup. Ignore this when linting a template on another machine.",
+	"config.certBroken":    "warning: certificate is readable but unusable — %s\n      The server will exit 20 on startup. Ignore this when linting a template on another machine.",
 
 	// ===== profile =====
 	"profile.flag.dialHost":           "(required, one of this or --host) the server address the client actually dials, IPv4 / IPv6 / valid domain; strictly validated, rejects pseudo-hostnames whose last label is all digits (e.g. test-203.0.113.10)",
@@ -283,7 +284,9 @@ var catEN = map[string]string{
 	"profile.flag.node":               "v2 entry node (repeatable); bare host or id=hk,name=NAME,host=IP. When present, exports version=2 (--host is the sole exit)",
 	"profile.usageTooMany":            "usage: nanotun-admin profile show [<username>] --dial-host HOST [--advertised-host LABEL] [...]\n  (credentials go through `nanotun-admin credentials show <username>`; profile no longer contains a PSK)",
 	"profile.hostDeprecated":          "[warn] --host is a DEPRECATED alias; prefer --dial-host (clearer semantics, pairs with --advertised-host)",
-	"profile.dialHostRequired":        "--dial-host is required (the IPv4 / IPv6 / valid domain the client actually dials)",
+	"profile.dialHostRequired":        "--dial-host is required (the IPv4 / IPv6 / valid domain the client actually dials)\n  Store it once on this machine and you won't have to retype it: setting set server_dial_host <host>",
+	"profile.dialHostFromSetting":     "no --dial-host given; using this machine's stored server_dial_host = %s (the same value the web admin QR uses).",
+	"profile.hy2CertShelfLife":        "the Hy2 client certificate embedded in this profile expires on %s (%d days left). After that the client's Hy2/QUIC path stops handshaking and falls back to the other transports — it feels slower rather than broken, which is hard to trace back to this QR code. Just reissue it then, or pass --hy2-client-cert-days for a longer life.",
 	"profile.dialHostInvalid":         "--dial-host is invalid: %s (must be IPv4 / IPv6 / a valid domain whose last label contains a letter)",
 	"profile.advertisedHostInvalid":   "--advertised-host is invalid: %s",
 	"profile.formatInvalid":           "--format must be json | url | both | qr | qr-png, got %q",

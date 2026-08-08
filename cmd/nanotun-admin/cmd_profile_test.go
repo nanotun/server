@@ -470,6 +470,89 @@ func TestProfileShow_FlagValidation(t *testing.T) {
 	}
 }
 
+// 内嵌的 Hy2 客户端证书是短期证书,而二维码发出去之后没人再看它一眼 —— 到期那天用户
+// 只觉得「变慢了」。签发时就把到期日说出来,并且天数要跟 --hy2-client-cert-days 对得上
+// (曾经截断成「签 7 天,还剩 6 天」)。
+func TestProfileShow_TellsHy2CertShelfLife(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "p.db")
+	if c, _, e := runCLI(t, db, "", "user", "create", "alice", "--psk", "p"); c != 0 {
+		t.Fatalf("create alice: %s", e)
+	}
+	cfgPath := writeFixtureConfigWithMTLS(t, dir)
+
+	c, _, errMsg := runCLI(t, db, "",
+		"profile", "show", "alice", "--dial-host", "203.0.113.10",
+		"--config", cfgPath, "--hy2-client-cert-days", "7",
+	)
+	if c != 0 {
+		t.Fatalf("exit %d: %s", c, errMsg)
+	}
+	if !strings.Contains(errMsg, "7 ") {
+		t.Errorf("应说出还剩 7 天(不能截断成 6), got %q", errMsg)
+	}
+
+	// 不签证书就没什么保质期可说,别平白多一行噪音。
+	c, _, errMsg = runCLI(t, db, "",
+		"profile", "show", "alice", "--dial-host", "203.0.113.10",
+		"--config", cfgPath, "--no-issue-hy2-client-cert",
+	)
+	if c != 0 {
+		t.Fatalf("exit %d: %s", c, errMsg)
+	}
+	if strings.Contains(errMsg, "Hy2") && strings.Contains(errMsg, "expires") {
+		t.Errorf("没签证书就不该提到期, got %q", errMsg)
+	}
+}
+
+// 装机向导把 server_dial_host 问过一次就存下了,Web 后台发二维码用的正是它。CLI 这边
+// 也该认这个值:否则同一个地址两个来源,人重打一遍打错,网页发的和命令行发的 profile
+// 就指向不同机器,而两边都显示成功。显式 --dial-host 仍然压过存着的值。
+func TestProfileShow_FallsBackToStoredDialHost(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "p.db")
+	if c, _, e := runCLI(t, db, "", "user", "create", "alice", "--psk", "p"); c != 0 {
+		t.Fatalf("create alice: %s", e)
+	}
+	if c, _, e := runCLI(t, db, "", "setting", "set", "server_dial_host", "198.51.100.7"); c != 0 {
+		t.Fatalf("set server_dial_host: %s", e)
+	}
+
+	hostOf := func(t *testing.T, args ...string) string {
+		t.Helper()
+		c, out, errMsg := runCLI(t, db, "", append([]string{"profile", "show", "alice"}, args...)...)
+		if c != 0 {
+			t.Fatalf("exit %d: %s", c, errMsg)
+		}
+		var p profileSchema
+		if err := json.Unmarshal([]byte(out), &p); err != nil {
+			t.Fatalf("解析 profile: %v (out=%q)", err, out)
+		}
+		return p.Host
+	}
+
+	if got := hostOf(t); got != "198.51.100.7" {
+		t.Errorf("没带 --dial-host 时应回落到存着的值, got %q", got)
+	}
+	if got := hostOf(t, "--dial-host", "203.0.113.10"); got != "203.0.113.10" {
+		t.Errorf("显式 --dial-host 应压过存着的值, got %q", got)
+	}
+
+	// 两边都没有才算真的缺,且报错要指出「存一次就不用每回打」这条路。
+	dir2 := t.TempDir()
+	db2 := filepath.Join(dir2, "p.db")
+	if c, _, e := runCLI(t, db2, "", "user", "create", "bob", "--psk", "p"); c != 0 {
+		t.Fatalf("create bob: %s", e)
+	}
+	c, _, errMsg := runCLI(t, db2, "", "profile", "show", "bob")
+	if c == 0 {
+		t.Fatal("既没传参也没存过,应当失败")
+	}
+	if !strings.Contains(errMsg, "server_dial_host") {
+		t.Errorf("报错里该给出 setting set server_dial_host 这条路, got %q", errMsg)
+	}
+}
+
 // TestProfileShow_NoConfig：config 文件不存在时 → warn 但 cmd 不失败；
 // reality / hy2 都为 nil（因为没数据），但 profile 主体仍可用。
 func TestProfileShow_NoConfig(t *testing.T) {

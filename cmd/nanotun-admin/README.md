@@ -18,7 +18,7 @@ sudo install -m 0755 nanotun-admin /usr/local/bin/nanotun-admin
 
 | Flag | 默认值 | 说明 |
 |------|-------|------|
-| `--db-path PATH` | `data/nanotun.db`（env `NANOTUN_DB`） | SQLite 路径 |
+| `--db-path PATH` | `data/nanotun.db`（env `NANOTUN_DB`） | SQLite 路径。该文件不存在、而本机装过 nanotun 时，自动改用 `/var/lib/nanotun/nanotun.db` 并在 stderr 说一声 |
 | `--json` | false | 以 JSON 输出（脚本化用） |
 | `--yes`, `-y` | false | 危险操作（删除用户/设备）跳过二次确认 |
 

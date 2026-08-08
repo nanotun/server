@@ -2,11 +2,18 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // J4 regression:nanotun-admin config lint。
@@ -88,13 +95,11 @@ subnets = ["10.201.0.0/16"]
 		}
 	})
 
-	t.Run("文件齐全时一声不吭", func(t *testing.T) {
+	t.Run("文件齐全且证书本身没问题时一声不吭", func(t *testing.T) {
 		dir := t.TempDir()
-		for _, n := range []string{"c.pem", "k.pem"} {
-			if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
+		// 这里必须写一对真证书:随手写 "x" 曾经也能过,因为 lint 只 stat 不加载 ——
+		// 而那正是下面几个子测试要堵的洞。
+		writeTestKeyPair(t, dir, "c.pem", "k.pem", time.Now().Add(-time.Hour), time.Now().Add(24*time.Hour))
 		p := filepath.Join(dir, "config.toml")
 		if err := os.WriteFile(p, []byte(fmt.Sprintf(tmpl, "c.pem", "k.pem")), 0o600); err != nil {
 			t.Fatal(err)
@@ -109,6 +114,100 @@ subnets = ["10.201.0.0/16"]
 			t.Errorf("证书都在,不该有警告: %q", errMsg)
 		}
 	})
+
+	// 文件在 ≠ 能用。下面三种坏法都会让 nanotund 当场死在 exit 20 上,而 lint 此前
+	// 一律回 OK —— 人拿着那个绿灯去 restart,服务再也起不来。
+	for _, tc := range []struct {
+		name string
+		// prep 造出一对坏证书,返回 cert / key 文件名
+		prep func(t *testing.T, dir string) (string, string)
+		want string
+	}{
+		{
+			name: "证书与私钥不是一对",
+			prep: func(t *testing.T, dir string) (string, string) {
+				now := time.Now()
+				writeTestKeyPair(t, dir, "a.pem", "a-key.pem", now.Add(-time.Hour), now.Add(24*time.Hour))
+				writeTestKeyPair(t, dir, "b.pem", "b-key.pem", now.Add(-time.Hour), now.Add(24*time.Hour))
+				return "a.pem", "b-key.pem"
+			},
+			want: "exit 20",
+		},
+		{
+			name: "PEM 被截断",
+			prep: func(t *testing.T, dir string) (string, string) {
+				now := time.Now()
+				writeTestKeyPair(t, dir, "c.pem", "k.pem", now.Add(-time.Hour), now.Add(24*time.Hour))
+				full, err := os.ReadFile(filepath.Join(dir, "c.pem"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "c.pem"), full[:len(full)/2], 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return "c.pem", "k.pem"
+			},
+			want: "exit 20",
+		},
+		{
+			name: "证书已过期",
+			prep: func(t *testing.T, dir string) (string, string) {
+				now := time.Now()
+				writeTestKeyPair(t, dir, "c.pem", "k.pem", now.Add(-48*time.Hour), now.Add(-time.Hour))
+				return "c.pem", "k.pem"
+			},
+			want: "过期",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cert, key := tc.prep(t, dir)
+			p := filepath.Join(dir, "config.toml")
+			if err := os.WriteFile(p, []byte(fmt.Sprintf(tmpl, cert, key)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, errMsg := runConfigLint(t, p)
+			// 与「缺文件」同样只警告:CI 里拿 lint 验别处的配置模板是正当用法。
+			if code != 0 {
+				t.Fatalf("只该警告不该失败,got exit %d (%s)", code, errMsg)
+			}
+			if !strings.Contains(out, "OK") {
+				t.Errorf("stdout 仍应有 OK, got %q", out)
+			}
+			if !strings.Contains(errMsg, tc.want) {
+				t.Errorf("警告里应提到 %q, got %q", tc.want, errMsg)
+			}
+		})
+	}
+}
+
+// writeTestKeyPair 在 dir 下生成一对自签证书,给上面几个子测试当素材。
+func writeTestKeyPair(t *testing.T, dir, certName, keyName string, notBefore, notAfter time.Time) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: certName},
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, certName),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, keyName),
+		pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestConfigLint_UnknownField_Exit3(t *testing.T) {

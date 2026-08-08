@@ -175,8 +175,9 @@ json_field() { # json_field <字段名>,JSON 从 stdin 读
 export NANOTUN_LANG="${NANOTUN_LANG:-zh}"
 
 # nanotun-admin 包装:--db-path 一定要显式传。
-# 它的默认值是**相对 cwd** 的 data/nanotun.db —— 忘了传不会报错,而是在当前目录
-# 建一个空库然后在里面查不到任何用户,现象是「刚建的用户不见了」。
+#
+# 不传时它也能自己找到装好的库,但那个回退有个前提 —— 当前目录下没有 data/nanotun.db,
+# 有就用那个。向导是 sudo 起来的,cwd 是谁的当前目录不好说,不该把开服这一步押在上面。
 admin() { "$ADMIN" --db-path "$DB" "$@"; }
 
 # 放得下才打二维码。
@@ -797,7 +798,10 @@ fi
 printf '    数据库     %s\n' "$DB"
 printf '    配置       %s/config.toml\n' "$ETC_DIR"
 printf '\n'
-note "常用命令(都要带 --db-path,否则会去读 cwd 下的空库):"
+# --db-path 已经不是必须的了:不带它时 nanotun-admin 会自己找到这台机器装好的库
+# (只有当前目录下正好有 data/nanotun.db 时才用那个)。但这里照旧写全 —— 贴进
+# 文档、脚本、工单里的命令,不该依赖「在哪个目录跑」。
+note "常用命令(在这台机器上不带 --db-path 也行,会自动用下面这个库):"
 note "  nanotun-admin --db-path $DB user list"
 note "  nanotun-admin --db-path $DB connection list"
 note "  journalctl -u nanotun -f"
