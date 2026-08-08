@@ -2802,6 +2802,12 @@ func cleanupConnection(c *Connection) {
 	}).Info("[takeover] 老链路已被接管，跳过 vip / TunChan / SessionRelease 清理")
 }
 
+// preLoginIdleTimeout 覆盖整个握手期(PoWChallengeReq → PoWChallenge → LoginReq →
+// LoginResp)的空闲上限。attacker 完成传输层握手后挂着不发帧、或故意慢慢解 PoW 拖时间,
+// 是廉价 DoS;这个 deadline 是那道闸。做成包级 var(而非函数内 const)只为让
+// login_adversarial_test.go 能注入一个短超时验证它真的会踢人 —— 生产永远是 30s。
+var preLoginIdleTimeout = 30 * time.Second
+
 // handleVPNLink 首帧必须为 LoginReq；成功后下发 ConvSaltLite，再在同连接上转发 IP 包（类型 5）
 //
 // 智能模式 takeover：当 LoginReq.Purpose == "takeover" 时分流到 handleTakeoverLogin,
@@ -2834,12 +2840,12 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	// P2#16(2026-05-24):pre-login idle deadline。
 	//
 	// 覆盖整个握手期(PoWChallengeReq → PoWChallenge → LoginReq → LoginResp 完成)。
-	// attacker 完成 WS 握手后挂着不发任何帧 / 解 PoW 拖时间是廉价 DoS,这里设 30s 上限。
-	// LoginReq 走完后正常进入数据面,后续 keepalive 由 wssPingInterval / DataPlanePing 接管。
+	// attacker 完成 WS 握手后挂着不发任何帧 / 解 PoW 拖时间是廉价 DoS,这里设上限
+	// (preLoginIdleTimeout,生产 30s)。LoginReq 走完后正常进入数据面,后续 keepalive
+	// 由 wssPingInterval / DataPlanePing 接管。
 	//
 	// SetDeadline 影响 read+write,登录成功路径下游会清理(reset 为 zero / WSS 路径自有
 	// keepalive 心跳);异常路径 defer raw.Close() 兜底。
-	const preLoginIdleTimeout = 30 * time.Second
 	preLoginDeadline := time.Now().Add(preLoginIdleTimeout)
 	if errDl := raw.SetDeadline(preLoginDeadline); errDl != nil {
 		logrus.WithField("remote", remote).WithError(errDl).Debug("[login] 设 pre-login deadline 失败,继续(底层 conn 可能不支持)")
