@@ -226,7 +226,7 @@ var catZH = map[string]string{
 	"userCreated.fullCredUrl":        "完整 nanotun-cred:// URL",
 	"userCreated.noticePre":          "注意:这个 QR 与 ",
 	"userCreated.profileQr":          "profile QR(nanotun://)",
-	"userCreated.noticePost":         " 不是同一个 — profile 只含服务器配置可公开,凭证 QR 含 PSK 仅本地传递。",
+	"userCreated.noticePost":         " 不是同一个 — profile 含服务器配置与一张客户端证书,凭证 QR 含 PSK;两个都只发给本人,别公开贴。",
 	"userCreated.viewDetail":         "查看详情",
 	"userCreated.backToList":         "回到列表",
 

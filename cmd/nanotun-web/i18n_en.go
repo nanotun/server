@@ -224,7 +224,7 @@ var catEN = map[string]string{
 	"userCreated.fullCredUrl":        "Full nanotun-cred:// URL",
 	"userCreated.noticePre":          "Note: this QR is not the same as the ",
 	"userCreated.profileQr":          "profile QR (nanotun://)",
-	"userCreated.noticePost":         " — the profile only contains public server config; the credential QR contains the PSK and is transferred locally only.",
+	"userCreated.noticePost":         " — the profile carries server config plus a client certificate; the credential QR carries the PSK. Hand both to the user personally; neither is safe to post publicly.",
 	"userCreated.viewDetail":         "View details",
 	"userCreated.backToList":         "Back to list",
 

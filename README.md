@@ -265,12 +265,13 @@ Binary + 自定义链路帧(见 `util/link_frame.go`)。生产客户端(iOS/Andr
 
 | QR 类型 | URL prefix | 内容 | 安全级别 |
 | --- | --- | --- | --- |
-| profile QR | `nanotun://v1` | server host / transport(WS, Hysteria, REALITY)/ nodes 配置 | **可公开** — 不含 PSK,泄露无法登录 |
+| profile QR | `nanotun://v1` | server host / transport(WS, Hysteria, REALITY)/ nodes 配置;hy2 mTLS 开着时还含一张客户端证书与私钥 | **发给本人** — 不含 PSK,拿到也登不进来;但那张证书是进 QUIC 那道门的钥匙,公开等于把挡扫描的一层拆了 |
 | credentials QR | `nanotun-cred://v1` | `credential_id`(UUID v4)+ `username` + `psk` + `created_at` | **机密** — 仅本地一对一传递,客户端落 Keychain |
 
 工作流:
 - **首次下发**:管理员同时导出两份 QR 给用户。客户端先扫 profile(选服务器),
-  再扫 credentials(注入凭证)。profile 可云同步 / 团队群发,credentials 走线下。
+  再扫 credentials(注入凭证)。两份都只发给本人:profile 不含 PSK、可以走云同步给同一个人的
+  多台设备,但它内嵌的客户端证书不适合公开张贴或群发;credentials 走线下。
 - **多设备**:同一用户在新设备扫**同一份** credentials QR 即可登录;`credential_id`
   保持不变,`nanotun-admin device list` 会按 device_uuid 单独统计。
 - **凭证轮换**:`nanotun-admin user reset-psk <user>` 或 `credentials show <user> --rotate-psk`
@@ -283,7 +284,7 @@ Binary + 自定义链路帧(见 `util/link_frame.go`)。生产客户端(iOS/Andr
 
 CLI 命令速查:
 ```bash
-# Profile QR(server 配置,可公开)
+# Profile QR(server 配置 + 客户端证书,发给本人)
 nanotun-admin profile show <user> --format qr      # 终端二维码
 nanotun-admin profile show <user> --format qr-png --output profile.png
 

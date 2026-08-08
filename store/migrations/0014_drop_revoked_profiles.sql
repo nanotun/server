@@ -3,7 +3,7 @@
 -- 0004 历史上引入了 per-profile pid 黑名单(profile QR 含 PSK 时,被截屏 / 抄走需要
 -- 远程让单张 profile 失效)。0013 credentials 解耦后:
 --
---   * profile QR 不再含 PSK,可以公开传阅;
+--   * profile QR 不再含 PSK(仍应发给本人:hy2 mTLS 开着时它内嵌客户端证书);
 --   * 服务端登录路径已经不读 revoked_profiles(0014 cleanup,Go 代码层面);
 --   * `nanotun-admin profile revoke / unrevoke / revocations` 已移除。
 --

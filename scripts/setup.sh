@@ -8,7 +8,7 @@
 #
 #   1. 客户端该往哪个地址拨(server_dial_host)—— 安装脚本猜不到你的域名;
 #   2. Web 后台的第一个管理员 —— 只能在浏览器上创建,而且跟 VPN 的 PSK 是两套账号;
-#   3. 给用户的两个二维码 —— profile(服务器配置,可公开)+ credentials(凭证,机密)。
+#   3. 给用户的两个二维码 —— profile(服务器配置 + 客户端证书)+ credentials(凭证,机密)。
 #
 # 这三件事以前全靠读文档,这个脚本把它们串起来。
 #
@@ -694,13 +694,13 @@ $create_out"
 
       mkdir -p "$QR_DIR"; chmod 0700 "$QR_DIR"
 
-      # profile QR:不含 PSK,公开也无所谓。
+      # profile QR:不含 PSK,但内嵌客户端证书和私钥(见上面那段注释),照样只发给本人。
       # --dial-host 必须显式传 —— CLI 不会去读刚写进库的那个 setting。
       #
       # 先用 --format json 探一次:profile 要从 config.toml 读 REALITY 私钥、hy2 口令、
       # mTLS CA,任何一项不对都生成不出来。直接跑 qr 的话报错会混在二维码输出里,
       # 而失败原因(比如私钥还是 REPLACE_WITH_* 占位)恰恰是唯一有用的信息。
-      printf '\n%s── profile 二维码(服务器配置,可公开)──%s\n\n' "$C_STEP" "$C_OFF"
+      printf '\n%s── profile 二维码(服务器配置 + 客户端证书,发给本人)──%s\n\n' "$C_STEP" "$C_OFF"
       if prof_err="$(admin profile show "$username" --dial-host "$current_dial" --format json 2>&1 >/dev/null)"; then
         prof_png="$QR_DIR/${username}-profile.png"
         # PNG 先出:profile 的终端二维码基本上一定超宽,PNG 才是真正能用的那份
