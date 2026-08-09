@@ -78,6 +78,102 @@ func TestStartEmbeddedHysteria_PortUnionBindsPrimary(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 }
 
+// TestStartEmbeddedHysteria_SweepsOrphanRulesWhenNotHopping 复现并锁死一个线上残留缺口:
+//
+// 把 listen_addr 从 ":443,20000-20010" 改回 ":443" 再 systemctl restart 后,旧的
+// `nanotun_hy2_porthop` REDIRECT 规则一直躺在 PREROUTING —— 因为 setup 路径里那次「装之前先
+// sweep」只在「本次也装跳跃」时才跑,撤掉范围后 setup 整个不被调用,残留没人认领。修复是在
+// 「本次不装跳跃」的两条路(hy2 关掉 / 还开着但只监听单口)上都主动收一次残留。
+//
+// 三个子用例分别钉死:装跳跃只走 setup、不误扫;单口只 sweep、不装规则;hy2 关掉仍 sweep。
+// 跳跃安装 / 残留清理都从接缝(setupHy2PortHopFn / sweepHy2PortHopFn)桩掉:真动作要写 iptables,
+// 非 root / 非 Linux 上不可用,这里只验「哪条路被走了」。
+func TestStartEmbeddedHysteria_SweepsOrphanRulesWhenNotHopping(t *testing.T) {
+	dir := t.TempDir()
+	cert, key := writeTestHy2ServerTLS(t, dir)
+
+	stubSeams := func(t *testing.T) (setupCalls, sweepCalls *int) {
+		t.Helper()
+		var sc, wc int
+		prevSetup, prevSweep := setupHy2PortHopFn, sweepHy2PortHopFn
+		setupHy2PortHopFn = func(uint16, string, string) (func(), error) { sc++; return func() {}, nil }
+		sweepHy2PortHopFn = func() int { wc++; return 2 }
+		t.Cleanup(func() { setupHy2PortHopFn, sweepHy2PortHopFn = prevSetup, prevSweep })
+		return &sc, &wc
+	}
+
+	t.Run("装跳跃:只走 setup、不误扫残留", func(t *testing.T) {
+		setupCalls, sweepCalls := stubSeams(t)
+		a := pickFreeUDPPort(t)
+		b := pickFreeUDPPort(t)
+		for b == a {
+			b = pickFreeUDPPort(t)
+		}
+		cfg := testHysteriaConfig(t, fmt.Sprintf("127.0.0.1:%d,%d", a, b), "hop-pw", cert, key)
+		hySrv, _, hopCleanup, err := startEmbeddedHysteria(&cfg, ":0", "ws://127.0.0.1:9/", nil, nil)
+		if err != nil {
+			t.Fatalf("startEmbeddedHysteria: %v", err)
+		}
+		if hopCleanup != nil {
+			defer hopCleanup()
+		}
+		if hySrv != nil {
+			defer hySrv.Close()
+		}
+		if *setupCalls != 1 {
+			t.Errorf("端口并集应装一次跳跃,setupHy2PortHopFn 实际被调用 %d 次(想要 1)", *setupCalls)
+		}
+		if *sweepCalls != 0 {
+			t.Errorf("装跳跃这条路不该再走孤儿 sweep(setup 内部自带 sweep),却调用 %d 次", *sweepCalls)
+		}
+	})
+
+	t.Run("hy2 开着但单口:只 sweep 残留、不装规则", func(t *testing.T) {
+		setupCalls, sweepCalls := stubSeams(t)
+		port := pickFreeUDPPort(t)
+		cfg := testHysteriaConfig(t, fmt.Sprintf("127.0.0.1:%d", port), "single-port-pw", cert, key)
+		hySrv, _, hopCleanup, err := startEmbeddedHysteria(&cfg, ":0", "ws://127.0.0.1:9/", nil, nil)
+		if err != nil {
+			t.Fatalf("startEmbeddedHysteria: %v", err)
+		}
+		if hopCleanup != nil {
+			defer hopCleanup()
+		}
+		if hySrv != nil {
+			defer hySrv.Close()
+		}
+		if *setupCalls != 0 {
+			t.Errorf("单口不该装跳跃规则,setupHy2PortHopFn 却被调用 %d 次", *setupCalls)
+		}
+		if *sweepCalls != 1 {
+			t.Fatalf("单口应收一次残留,sweepHy2PortHopFn 实际被调用 %d 次(想要 1)—— 撤掉端口范围后残留没人清正是这条", *sweepCalls)
+		}
+	})
+
+	t.Run("hy2 关掉:仍 sweep 残留、不返回 server", func(t *testing.T) {
+		setupCalls, sweepCalls := stubSeams(t)
+		// 密码留空 → HysteriaActive()==false,startEmbeddedHysteria 早退但仍要先收残留。
+		cfg := testHysteriaConfig(t, "127.0.0.1:0", "", cert, key)
+		hySrv, _, hopCleanup, err := startEmbeddedHysteria(&cfg, ":0", "ws://127.0.0.1:9/", nil, nil)
+		if err != nil {
+			t.Fatalf("startEmbeddedHysteria: %v", err)
+		}
+		if hopCleanup != nil {
+			hopCleanup()
+		}
+		if hySrv != nil {
+			hySrv.Close()
+			t.Errorf("hy2 关掉时不该返回 server")
+		}
+		if *setupCalls != 0 {
+			t.Errorf("hy2 关掉不该装跳跃规则,却调用 setup %d 次", *setupCalls)
+		}
+		if *sweepCalls != 1 {
+			t.Fatalf("hy2 关掉应收一次残留,sweep 实际 %d 次(想要 1)", *sweepCalls)
+		}
+	})
+}
+
 func rustCommonDir(t *testing.T) string {
 	t.Helper()
 	if v := os.Getenv("RUST_VPN_CLIENT_LIB_COMMON_DIR"); v != "" {

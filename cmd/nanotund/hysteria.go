@@ -254,6 +254,21 @@ func udpPortFromPacketConn(c net.PacketConn) (int, error) {
 // 这件事,而那正是这条路上唯一会留下副作用的失败面。
 var setupHy2PortHopFn = setupHy2UDPPortHopRedirect
 
+// sweepHy2PortHopFn 是端口跳跃**残留清理**那一步的间接层,和 setupHy2PortHopFn 同理只为可测。
+//
+// setupHy2UDPPortHopRedirect 内部「装之前先按 comment sweep 旧规则」只在「本次也要装跳跃」时才触发。
+// 一旦本次启动不再安装(hy2 整个关掉,或还开着但把端口范围撤回单口),那条 setup 路径根本不被调用,
+// 上一次进程装进 PREROUTING 的 `nanotun_hy2_porthop` REDIRECT 就成了没人认领的残留 —— 若上次又是
+// 被 SIGKILL / os.Exit 跳过 defer 收不掉的,它会一直躺在 nat 表里把 UDP 打到主端口。由本接缝按 comment 收掉。
+var sweepHy2PortHopFn = sweepHy2UDPPortHopByComment
+
+// sweepOrphanHy2PortHopRules 收掉「本次不再安装跳跃」时可能残留的 nanotun_hy2_porthop 规则;>0 时 Info。
+func sweepOrphanHy2PortHopRules() {
+	if n := sweepHy2PortHopFn(); n > 0 {
+		logrus.Infof("Hy2 端口跳跃未启用：清理了 %d 条残留 PREROUTING REDIRECT 规则（nanotun_hy2_porthop）", n)
+	}
+}
+
 // startEmbeddedHysteria 当 password、tls_cert_file、tls_key_file 均配置时启动 Hysteria 2；否则返回 nil, 0, nil。
 // smuxPool 非空时 hy2 的 TCP 出口经 smux OpenStream；否则每流 dial 环回 VPN WebSocket（loopbackWSURL）。
 // 第二返回值为实际监听 UDP 端口（用于 node_login 上报；listen_addr 为 :0 时必用此值）。
@@ -261,6 +276,9 @@ var setupHy2PortHopFn = setupHy2UDPPortHopRedirect
 func startEmbeddedHysteria(cfg *config.Config, vpnListenAddr string, loopbackWSURL string, smuxPool *loopbackSmuxPool, loopbackWSTLS *tls.Config) (hyserver.Server, int, func(), error) {
 	hc := &cfg.Hysteria
 	if !hc.HysteriaActive() {
+		// hy2 整个关掉了:上一次若配过端口跳跃,PREROUTING 里那批 REDIRECT 从此没人再装、
+		// 也没人再撤(setup 路径不会跑),必须在这里按 comment 收掉,否则永久残留。
+		sweepOrphanHy2PortHopRules()
 		return nil, 0, nil, nil
 	}
 	if err := validateHysteriaUserConfig(hc); err != nil {
@@ -295,6 +313,10 @@ func startEmbeddedHysteria(cfg *config.Config, vpnListenAddr string, loopbackWSU
 			return nil, 0, nil, fmt.Errorf("hysteria 端口跳跃: %w", hopErr)
 		}
 		hopCleanup = cleanup
+	} else {
+		// hy2 还开着,但这次只监听单口(把上次的端口范围撤回来了):setupHy2PortHopFn 整个不被调用,
+		// 它里头「装之前先 sweep」也就不跑,上次装的 REDIRECT 会一直躺在 PREROUTING。在此收掉残留。
+		sweepOrphanHy2PortHopRules()
 	}
 	udpPortNum, err := udpPortFromPacketConn(packetConn)
 	if err != nil {
