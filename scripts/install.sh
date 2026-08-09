@@ -219,9 +219,21 @@ case "$(uname -m)" in
    其它架构请自行 go build(见仓库 README 的源码构建一节)。" ;;
 esac
 
-# --skip-check 绕过了 preflight,这两条最基本的还是要拦,否则后面直接报错更难懂
-command -v curl >/dev/null 2>&1 || die "缺少 curl(apt install curl / yum install curl)"
-command -v tar  >/dev/null 2>&1 || die "缺少 tar(apt install tar)"
+# --skip-check 绕过了 preflight,这两条最基本的还是要拦,否则后面直接报错更难懂。
+# 装法按本机的包管理器给 —— 原来一律写 apt,在 openSUSE(zypper)/ RHEL(dnf)上就是
+# 一条粘上去必定失败的命令。preflight 那条正路早按发行版给对了命令,这里是 --skip-check
+# 绕开 preflight 后的兜底,不能反而退化成 Debian 专用。
+_pkg_hint() { # _pkg_hint <包名> —— 猜一条能直接粘的安装命令
+  if   command -v apt-get >/dev/null 2>&1; then echo "apt install $1"
+  elif command -v dnf     >/dev/null 2>&1; then echo "dnf install $1"
+  elif command -v zypper  >/dev/null 2>&1; then echo "zypper install $1"
+  elif command -v yum     >/dev/null 2>&1; then echo "yum install $1"
+  elif command -v apk     >/dev/null 2>&1; then echo "apk add $1"
+  elif command -v pacman  >/dev/null 2>&1; then echo "pacman -S $1"
+  else echo "用本机包管理器装上 $1"; fi
+}
+command -v curl >/dev/null 2>&1 || die "缺少 curl($(_pkg_hint curl))"
+command -v tar  >/dev/null 2>&1 || die "缺少 tar($(_pkg_hint tar))"
 if [ "${NANOTUN_NO_INSTALL:-0}" != "1" ] && [ "$(id -u)" != "0" ]; then
   die "安装需要 root。请用 sudo 跑,或设 NANOTUN_NO_INSTALL=1 只下载。"
 fi
