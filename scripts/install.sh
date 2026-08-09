@@ -31,9 +31,14 @@
 #   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
 #   --skip-check   跳过环境检查直接装(不建议;装到一半失败比现在就知道难收拾)
 #   --no-setup     装完不自动进开服向导
+#   --magic-suffix <后缀>  MagicDNS 局域网后缀(客户端解析 *.<后缀> → mesh 虚拟 IP),
+#                  默认 lan;只在首次装机(真写模板 config.toml)时生效。等价于环境变量
+#                  NANOTUN_MAGIC_SUFFIX。改现有机器的后缀用 scripts/set-magic-suffix.sh。
 #   其余参数        原样转交开服向导,例如 --dial-host / --user / --web-admin / --yes
 #
 # 环境变量:
+#   NANOTUN_MAGIC_SUFFIX        同 --magic-suffix(命令行参数优先);走 sudo 时记得写在
+#                       sudo 后面:sudo NANOTUN_MAGIC_SUFFIX=nanotun bash -c "$(curl ...)"
 #   NANOTUN_WEB_ADMIN_PASSWORD  Web 后台管理员密码,配合 --web-admin <名字> 使用。
 #                       走环境变量而不是命令行参数:argv 对同机所有用户可见(ps),
 #                       还会落进 shell history。注意 sudo 默认不传环境变量,得写成
@@ -69,11 +74,22 @@ CURL_SMALL=("${CURL_BASE[@]}" --max-time 30)
 CURL_BIG=("${CURL_BASE[@]}" --speed-limit 1024 --speed-time 30)
 
 CHECK_ONLY=0; SKIP_CHECK=0; NO_SETUP=0; SETUP_ARGS=()
+# MagicDNS 后缀:预置的环境变量作默认,--magic-suffix 覆盖。本脚本不校验(规则单一来源在
+# install-self-hosted.sh 的 apply_magic_suffix),只透传;非法值会在那边写 config.toml 前被拦。
+MAGIC_SUFFIX="${NANOTUN_MAGIC_SUFFIX:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --check-only) CHECK_ONLY=1; shift ;;
     --skip-check) SKIP_CHECK=1; shift ;;
     --no-setup)   NO_SETUP=1; shift ;;
+    # MagicDNS 后缀经环境变量下传给 install-self-hosted.sh(它只吃 env,argv 全归向导)。
+    # 在这里拦下来,别落进 SETUP_ARGS —— 否则会被开服向导当未知参数拒掉(exit 2)。
+    # 不用 die():它在本循环之后才定义(与下面 SETUP_ARGS 冲突检查同一口径,直接 printf+exit)。
+    --magic-suffix)
+      case "${2:-}" in
+        ''|-*) printf 'install.sh: --magic-suffix 后面要跟一个后缀。例:--magic-suffix nanotun\n' >&2; exit 2 ;;
+      esac
+      MAGIC_SUFFIX="$2"; shift 2 ;;
     # 打开头那段注释。不写死行号 —— 改文档时忘了同步行号,--help 就会截半句话。
     # 被 curl | bash 时 $0 不是文件,读不到就退回一个链接。
     -h|--help)
@@ -96,8 +112,11 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
   --skip-check   跳过环境检查直接装(不建议)
   --no-setup     装完不自动进开服向导
+  --magic-suffix <后缀>  MagicDNS 局域网后缀(*.<后缀> → mesh 虚拟 IP),默认 lan;
+                 只在首次装机生效(等价 NANOTUN_MAGIC_SUFFIX)。改现有机器用 set-magic-suffix.sh。
 
 环境变量:
+  NANOTUN_MAGIC_SUFFIX 同 --magic-suffix(命令行优先)
   NANOTUN_VERSION     要装的版本,默认取最新 Release(不含预发布)
   NANOTUN_INSTALL_DIR 解压落点,默认 /opt/nanotun
   NANOTUN_NO_INSTALL  =1 时只下载解压,不安装(不需要 root)
@@ -486,7 +505,10 @@ info "执行安装脚本 ..."
 echo
 # 安装脚本按自身位置推导发布包根目录,不必再传 DEPLOY_DIR。
 # 环境已经在第 1 步验过了,不必再验一遍。
+# NANOTUN_MAGIC_SUFFIX 显式下传:--magic-suffix 已合并进它,空值在 install-self-hosted.sh
+# 里被 apply_magic_suffix 直接跳过(沿用模板默认后缀)。
 NANOTUN_PREFLIGHT_DONE=1 NANOTUN_WIZARD_FOLLOWS="$WIZARD_FOLLOWS" \
+  NANOTUN_MAGIC_SUFFIX="$MAGIC_SUFFIX" \
   "$DEST/scripts/install-self-hosted.sh"
 
 # ── 6. 开服向导 ──────────────────────────────────────────────────────────────

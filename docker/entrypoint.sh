@@ -17,6 +17,9 @@
 #   NANOTUN_SKIP_INIT=0          跳过 nanotun-admin init(数据卷已有库时无副作用,
 #                                init 本身幂等,这个开关只为特殊排查场景保留)
 #   NANOTUN_FORCE_CONFIG=0       用镜像里的模板覆盖已有 config.toml(原文件会备份)
+#   NANOTUN_MAGIC_SUFFIX=        MagicDNS 局域网后缀(客户端解析 *.<后缀> → mesh 虚拟 IP),
+#                                默认模板里的 lan。只在**首次生成 config.toml**时生效(数据卷
+#                                已有配置时不动,改法见下面 apply_magic_suffix 注释)。
 set -euo pipefail
 
 ETC_DIR=/etc/nanotun
@@ -149,6 +152,68 @@ fill_config_secrets() {
   return 0
 }
 
+# apply_magic_suffix:按 NANOTUN_MAGIC_SUFFIX 定制 MagicDNS 的 domain_suffix
+# (客户端解析 *.<后缀> → mesh vIP)。与 scripts/install-self-hosted.sh 的同名函数**同一套**
+# 校验 + 段感知改写(规则单一来源:那边改这边也要跟)。
+#
+# 运行期后缀只取 config.toml 的 [server.magic_dns].domain_suffix,且不在 SIGHUP 热更新
+# 白名单里,须在 nanotund 启动前定好 —— 而 bootstrap 正是唯一会写 config.toml 的地方。
+# 只在**这次真写了模板 config.toml**(CONFIG_FRESH=1:首次生成 / NANOTUN_FORCE_CONFIG=1)时改;
+# 数据卷里已有配置时绝不擅自改它,只告警并给出改法。不给该变量就沿用模板默认,行为不变。
+apply_magic_suffix() {
+  local suf="${NANOTUN_MAGIC_SUFFIX:-}"
+  [[ -n "$suf" ]] || return 0   # 没给:用模板默认后缀,不动 config.toml
+
+  # 合法性:小写 DNS 标签(字母数字 + 连字符,可点分多级)。既防命令注入,也防写坏 TOML。
+  if ! printf '%s' "$suf" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$'; then
+    die "NANOTUN_MAGIC_SUFFIX 不合法(只允许小写字母/数字/连字符,可点分多级):'$suf'"
+  fi
+  case "$suf" in
+    local) die "NANOTUN_MAGIC_SUFFIX 不能用 'local' —— 与 mDNS/Bonjour(mac/iOS)严重冲突。" ;;
+    lan|home|home.arpa|internal|corp)
+      warn "MagicDNS 后缀 '$suf' 可能与家用路由器 / 保留域冲突(想避开这类冲突正是换后缀的理由)。" ;;
+  esac
+
+  # 沿用数据卷里已有的 config.toml 就不改它 —— 升级/重启常态,擅自改后缀会踢乱在用的 mesh 名字。
+  # 镜像里不带 set-magic-suffix.sh,故指路「直接改卷里的配置再重启」或 FORCE_CONFIG(会重签密钥)。
+  if [[ "${CONFIG_FRESH:-0}" != 1 ]]; then
+    warn "沿用了数据卷里已有的 config.toml,未套用 NANOTUN_MAGIC_SUFFIX='$suf'。要改现有后缀:"
+    warn "  改卷里 $CFG 的 [server.magic_dns].domain_suffix 再重启容器;"
+    warn "  或设 NANOTUN_FORCE_CONFIG=1 用模板重来(会重签 REALITY/hy2 密钥,踢掉所有现有客户端)。"
+    return 0
+  fi
+
+  # 空白写 [ \t] 不用 [[:space:]]:兼容不认 POSIX 字符类的 mawk(与 install 脚本同因)。
+  local cur
+  cur="$(awk -F'"' '/^[ \t]*domain_suffix[ \t]*=/{print $2; exit}' "$CFG" || true)"
+  if [[ "$cur" == "$suf" ]]; then
+    ok "MagicDNS 后缀已是 '$suf'"
+    return 0
+  fi
+
+  # 段感知改写:仅动 [server.magic_dns] 段内的 domain_suffix(段内已有则原地替换,含被注释)。
+  awk -v suf="$suf" '
+    /^[ \t]*\[/ {
+      if (insec && !done) { print "domain_suffix = \"" suf "\""; done=1 }
+      insec = ($0 ~ /^[ \t]*\[server\.magic_dns\][ \t]*$/)
+      if (insec) seen=1
+      print; next
+    }
+    {
+      if (insec && !done && $0 ~ /^[ \t]*#?[ \t]*domain_suffix[ \t]*=/) {
+        print "domain_suffix = \"" suf "\""; done=1; next
+      }
+      print
+    }
+    END {
+      if (insec && !done) print "domain_suffix = \"" suf "\""
+      if (!seen) { print ""; print "[server.magic_dns]"; print "domain_suffix = \"" suf "\"" }
+    }
+  ' "$CFG" > "$CFG.new" && mv "$CFG.new" "$CFG" || { rm -f "$CFG.new"; die "写 MagicDNS 后缀失败(config.toml 未改动)"; }
+  chmod 0600 "$CFG"
+  ok "MagicDNS 后缀设为 '$suf'(客户端解析 *.$suf → mesh 虚拟 IP;默认原为 'lan')"
+}
+
 bootstrap() {
   mkdir -p "$ETC_DIR/certs" "$ETC_DIR/masquerade" "$LIB_DIR" "$RUN_DIR"
   chmod 0750 "$LIB_DIR" "$RUN_DIR"
@@ -156,8 +221,12 @@ bootstrap() {
   # 模板始终刷新一份到 .dist,方便升级镜像后 diff 出新增字段(与 install 脚本同款做法)。
   install -m 0600 "$DIST_CFG" "$ETC_DIR/config.toml.dist"
 
+  # CONFIG_FRESH 记「这次是不是真拿模板写了 config.toml」——apply_magic_suffix 靠它决定
+  # 能不能改后缀:沿用数据卷里既有配置时它必须为 0,绝不擅自动别人已生效的 config。
+  local CONFIG_FRESH
   if [[ -f "$CFG" && "${NANOTUN_FORCE_CONFIG:-0}" != "1" ]]; then
     ok "沿用数据卷里已有的 config.toml(模板另存 config.toml.dist 可 diff)"
+    CONFIG_FRESH=0
   else
     if [[ -f "$CFG" ]]; then
       local bak="$ETC_DIR/config.toml.bak.$(date +%Y%m%d-%H%M%S)"
@@ -167,11 +236,15 @@ bootstrap() {
       log "首次启动:从模板生成 config.toml"
     fi
     install -m 0600 "$DIST_CFG" "$CFG"
+    CONFIG_FRESH=1
   fi
   chmod 0600 "$CFG"
   chmod 0600 "$ETC_DIR"/config.toml.bak.* 2>/dev/null || true
 
   fill_config_secrets
+  # MagicDNS 后缀:首次生成 config.toml 时可经 NANOTUN_MAGIC_SUFFIX 定制(默认模板里的 lan)。
+  # 同样须在 nanotund 启动前 —— 它启动时把后缀读进 magicDNSResolved 快照,起来后改要重启。
+  apply_magic_suffix
 
   # 按 config.toml 里配置的路径补齐缺失的 TLS 证书 / mTLS CA / masquerade 占位页。
   # 幂等:已存在的文件不动。

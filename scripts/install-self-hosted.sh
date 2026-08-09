@@ -32,6 +32,9 @@
 #      config.toml 已存在则**原样保留**（模板另存 config.toml.dist 供 diff）；模板里的
 #      REPLACE_WITH_* 占位与示例 short_ids 由 fill_config_secrets 就地换成本机随机值，
 #      否则 [reality].private_key 非法会让 nanotund 起不来（exit 31）。权限 0600。
+#      MagicDNS 后缀（客户端解析 *.<后缀> → mesh vIP）默认模板里的 "lan"，可用
+#      NANOTUN_MAGIC_SUFFIX=<后缀> 在首次装机时定制（只在真写模板时生效；保留既有
+#      config.toml 时不动，改现有后缀用 scripts/set-magic-suffix.sh）。
 #   2. 开启 IP forwarding（v4 + v6）+ unprivileged ICMP ping（nanotun-web
 #      pro-bing 探测 server_dial_host 可达性必备），写 /etc/sysctl.d/99-nanotun.conf
 #   3. ufw active 时自动放行 8443/tcp（REALITY）+ 443/udp（hy2）（装了 web 再加 7443/tcp；
@@ -146,6 +149,68 @@ fill_config_secrets() {
   else
     ok "config.toml 无待填占位,密钥原样保留"
   fi
+}
+
+# 按 NANOTUN_MAGIC_SUFFIX 定制 MagicDNS 的 domain_suffix(客户端解析 *.<后缀> → mesh vIP)。
+#
+# 为什么在装机脚本里做:运行期后缀**只**取 config.toml 的 [server.magic_dns].domain_suffix
+# (magicDNSSuffixForClient / resolveMagicDNSConfig 都读它),且它不在 SIGHUP 热更新白名单里
+# (见 set-magic-suffix.sh 抬头),须在服务启动前定好 —— 而这里正是唯一会写 config.toml 的地方。
+# 模板默认写死 "lan";不给 NANOTUN_MAGIC_SUFFIX 就沿用模板,行为不变。
+#
+# 只在**这次真写了模板 config.toml**(CONFIG_FRESH=1:全新装 / NANOTUN_FORCE_CONFIG=1)时改。
+# 保留既有配置时绝不擅自改它(与「绝不覆盖已有配置」同一口径),只告警并指路 set-magic-suffix.sh。
+# 校验与段感知改写与 set-magic-suffix.sh 同一套(规则单一来源:那边改这边也要跟)。
+apply_magic_suffix() {
+  local suf="${NANOTUN_MAGIC_SUFFIX:-}"
+  [ -n "$suf" ] || return 0   # 没给:用模板默认后缀,不动 config.toml
+
+  # 合法性:小写 DNS 标签(字母数字 + 连字符,可点分多级)。既防命令注入,也防写坏 TOML。
+  if ! printf '%s' "$suf" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$'; then
+    die "NANOTUN_MAGIC_SUFFIX 不合法(只允许小写字母/数字/连字符,可点分多级):'$suf'"
+  fi
+  case "$suf" in
+    local) die "NANOTUN_MAGIC_SUFFIX 不能用 'local' —— 与 mDNS/Bonjour(mac/iOS)严重冲突。" ;;
+    lan|home|home.arpa|internal|corp)
+      warn "MagicDNS 后缀 '$suf' 可能与家用路由器 / 保留域冲突(想避开这类冲突正是换后缀的理由)。" ;;
+  esac
+
+  # 保留了既有 config.toml 就不改它 —— 那是升级路径,擅自改后缀会踢乱已在用的 mesh 名字。
+  if [ "${CONFIG_FRESH:-0}" != 1 ]; then
+    warn "已保留既有 config.toml,未套用 NANOTUN_MAGIC_SUFFIX='$suf'。要改现有后缀:"
+    warn "  scripts/set-magic-suffix.sh $suf   （备份→段感知改写→重启→失败自动回滚）"
+    return 0
+  fi
+
+  local cfg="$ETC_DIR/config.toml" cur
+  # 空白写 [ \t] 不用 [[:space:]]:mawk 1.3.3(老 Ubuntu/Debian 默认 awk)不认 POSIX 字符类。
+  cur="$(awk -F'"' '/^[ \t]*domain_suffix[ \t]*=/{print $2; exit}' "$cfg" || true)"
+  if [ "$cur" = "$suf" ]; then
+    ok "MagicDNS 后缀已是 '$suf'"
+    return 0
+  fi
+
+  # 段感知改写:仅动 [server.magic_dns] 段内的 domain_suffix(段内已有则原地替换,含被注释)。
+  awk -v suf="$suf" '
+    /^[ \t]*\[/ {
+      if (insec && !done) { print "domain_suffix = \"" suf "\""; done=1 }
+      insec = ($0 ~ /^[ \t]*\[server\.magic_dns\][ \t]*$/)
+      if (insec) seen=1
+      print; next
+    }
+    {
+      if (insec && !done && $0 ~ /^[ \t]*#?[ \t]*domain_suffix[ \t]*=/) {
+        print "domain_suffix = \"" suf "\""; done=1; next
+      }
+      print
+    }
+    END {
+      if (insec && !done) print "domain_suffix = \"" suf "\""
+      if (!seen) { print ""; print "[server.magic_dns]"; print "domain_suffix = \"" suf "\"" }
+    }
+  ' "$cfg" > "$cfg.new" && mv "$cfg.new" "$cfg" || { rm -f "$cfg.new"; die "写 MagicDNS 后缀失败(config.toml 未改动)"; }
+  chmod 0600 "$cfg"
+  ok "MagicDNS 后缀设为 '$suf'(客户端解析 *.$suf → mesh 虚拟 IP;默认原为 'lan')"
 }
 
 # 环境自检:先验这台机器能不能跑,再验发布包对不对。
@@ -329,8 +394,11 @@ install -d -m 0750 "$LIB_DIR"
 # 权限一律 0600:填充后的 config.toml 含 hy2 密码 / obfs 密码 / REALITY 私钥,
 # 原来的 0644 等于把它们摊给机器上任何本地用户读(两个 unit 都 User=root,收紧无副作用)。
 install -m 0600 "$EXTRAS_DIR/config.toml" "$ETC_DIR/config.toml.dist"
+# CONFIG_FRESH 记「这次是不是真拿模板写了 config.toml」——apply_magic_suffix 靠它决定
+# 能不能改后缀:保留既有配置(升级路径)时它必须为 0,绝不擅自动别人已生效的 config。
 if [ -f "$ETC_DIR/config.toml" ] && [ "${NANOTUN_FORCE_CONFIG:-0}" != "1" ]; then
   ok "保留已有 config.toml(发布包模板另存 config.toml.dist,可 diff 新增字段)"
+  CONFIG_FRESH=0
 else
   if [ -f "$ETC_DIR/config.toml" ]; then
     CFG_BAK="$ETC_DIR/config.toml.bak.$(date +%Y%m%d-%H%M%S)"
@@ -339,6 +407,7 @@ else
     warn "NANOTUN_FORCE_CONFIG=1:已用模板覆盖 config.toml(原文件 → $CFG_BAK)"
   fi
   install -m 0600 "$EXTRAS_DIR/config.toml" "$ETC_DIR/config.toml"
+  CONFIG_FRESH=1
 fi
 chmod 0600 "$ETC_DIR/config.toml"
 # 顺带收紧历史遗留的 0644 备份:里面同样有 hy2 密码 / REALITY 私钥。
@@ -346,6 +415,9 @@ chmod 0600 "$ETC_DIR"/config.toml.bak.* 2>/dev/null || true
 
 # 占位密钥填充。必须在 ensure-server-assets.sh / systemctl start 之前完成。
 fill_config_secrets
+# MagicDNS 后缀:装机时可经 NANOTUN_MAGIC_SUFFIX 定制(默认沿用模板里的 "lan")。同样须在
+# systemctl start 之前 —— 它在 nanotund 启动时被读进 magicDNSResolved 快照,起来后改要重启。
+apply_magic_suffix
 
 # 证书 / masquerade 页：按 config.toml 里配置的路径**按需自签**(不随包分发)。
 # ensure-server-assets.sh 读 [server] / [hysteria] 的 tls_* 与 masquerade_dir,

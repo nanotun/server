@@ -92,6 +92,11 @@ services:
     environment:
       NANOTUN_WEB_ENABLED: "1"
       NANOTUN_WEB_LISTEN: "0.0.0.0:7443"
+      # MagicDNS 局域网后缀:客户端解析 *.<后缀> → mesh 虚拟 IP,默认 lan。想换成别的
+      # (如 nanotun)在**首次启动前**取消注释——它只在首次生成 config.toml 时生效;卷里
+      # 已有配置后再改这行不起作用(改法:直接改卷里 config.toml 的 domain_suffix 再重启,
+      # 或 NANOTUN_FORCE_CONFIG=1 用模板重来,后者会重签密钥、踢掉所有客户端)。
+      # NANOTUN_MAGIC_SUFFIX: "nanotun"
       # 用域名访问管理面时填上,自签证书会带这个 SAN,浏览器少一层告警。
       # NANOTUN_WEB_EXTRA_SANS: "vpn.example.com"
       # 管理面放在 nginx 后面时必须填,否则按 IP 的登录限流看到的全是反代地址。
