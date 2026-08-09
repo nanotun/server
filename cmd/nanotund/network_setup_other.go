@@ -35,6 +35,10 @@ func GetWAN() (iface, ip string, err error) {
 	return "", "", fmt.Errorf("WAN detection only supported on Linux")
 }
 
+// hasIPv4DefaultRoute 非 Linux 上恒为 false:该平台不进生产数据面(isProductionLinuxRoot
+// 为假,GetWAN 失败只 Warn),返回 false 让调用点走「容忍跳过」那条即可。
+func hasIPv4DefaultRoute() bool { return false }
+
 func GetWANv6() (iface, ip string, err error) {
 	return "", "", fmt.Errorf("IPv6 WAN detection only supported on Linux")
 }

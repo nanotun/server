@@ -410,6 +410,26 @@ func GetWAN() (iface string, ip string, err error) {
 	return iface, ip, nil
 }
 
+// hasIPv4DefaultRoute 报告本机是否存在 IPv4 默认路由。
+//
+// 用来把 GetWAN 失败分成两类,分错了后果完全相反:
+//   - **有** v4 默认路由却探不到出口 → 真故障,必须 fail-closed 硬退(否则监听起得来、
+//     数据面是黑洞)。
+//   - **没有** v4 默认路由 → 纯 IPv6 主机(`ip route get 1.1.1.1` 必然 "Network is
+//     unreachable")。这类机器没有 v4 出口可 MASQUERADE,也就没有 v4 可泄漏,应当容忍并
+//     跳过 v4 iptables、让数据面走 v6,而不是像以前那样崩溃循环起不来。
+//
+// 命令本身失败按「没有」处理:`ip -4 route show default` 是只读查询,正常 v4 主机上
+// GetWAN 早就成功了、根本走不到这里;能走到这里就已经是异常态,此时宁可偏向可用性
+// (当作纯 v6 容忍)也不把机器卡死在崩溃循环 —— 反正真有 v4 WAN 的话 GetWAN 不会先失败。
+func hasIPv4DefaultRoute() bool {
+	out, err := exec.Command("ip", "-4", "route", "show", "default").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
 // GetWANv6 返回默认出站接口名和出口 IPv6 地址（用于 IPv6 NAT/路由）
 func GetWANv6() (iface string, ip string, err error) {
 	out, err := exec.Command("ip", "-6", "route", "get", "2001:4860:4860::8888").CombinedOutput()

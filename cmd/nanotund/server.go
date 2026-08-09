@@ -1257,7 +1257,16 @@ func main() {
 				if err := EnableIPForward(); err != nil {
 					failTUN(err, "开启 ip_forward 失败")
 				} else if wanIface, wanIP, errWan := GetWAN(); errWan != nil {
-					failTUN(errWan, "获取 WAN 失败,跳过 iptables")
+					// GetWAN 失败要分两类,分错方向相反(见 hasIPv4DefaultRoute)。有 v4 默认路由
+					// 却探不到出口 = 真故障,保持 fail-closed 硬退;没有 v4 默认路由 = 纯 IPv6 主机,
+					// 没有 v4 出口可 NAT、也没有 v4 可泄漏,容忍并跳过 v4 iptables,数据面走 v6 ——
+					// 与下方 v6 分支「缺 v6 WAN 仅 Warn」对称。客户端在这类机器上只有 IPv6 出网
+					// (v4-only 目的地够不着,是主机本身没有 v4 出口的固有属性,非本进程可弥补)。
+					if hasIPv4DefaultRoute() {
+						failTUN(errWan, "获取 WAN 失败,跳过 iptables")
+					} else {
+						logrus.WithError(errWan).Warn("未探测到 IPv4 默认路由 —— 本机疑似纯 IPv6 主机,跳过 IPv4 NAT/iptables;客户端将只有 IPv6 出网")
+					}
 				} else if err := SetupIptables(deviceName, wanIface, wanIP, []string{chosenSubnet}, tcpConnlimit, udpConnlimit,
 					cfg.TUN.ForwardBlockBT, cfg.TUN.ForwardBlockTracker6969, cfg.TUN.ForwardBlockSMTP25, cfg.TUN.ResolveExitMode(), cfg.TUN.ExitDNSRedirect,
 					cfg.TUN.ResolveExitDenyPrivate(), magicGwV4, magicPort); err != nil {

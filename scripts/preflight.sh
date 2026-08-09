@@ -252,6 +252,22 @@ RPF="$(cat /proc/sys/net/ipv4/conf/all/rp_filter 2>/dev/null || echo "")"
 [ "$RPF" = "1" ] && soft "net.ipv4.conf.all.rp_filter=1(严格)" \
   "严格反向路由校验会静默丢掉出口回程包,表现为「连上了但上不了网」。建议 sysctl -w net.ipv4.conf.all.rp_filter=2"
 
+# 纯 IPv6 主机(没有 IPv4 默认路由)现在是一等公民:nanotund 探不到 v4 出口时会跳过 v4 NAT、
+# 只装 v6 数据面(不再崩溃循环)。但有个固有属性必须先讲清 —— 客户端经这台机器只能拿到 IPv6
+# 出网,v4-only 的站点在没有 NAT64 时够不着。只在确实缺 v4 默认路由时提示;有 v4 出口的机器
+# 这里什么都不打印。另外这类机器多半上不了 GitHub(github.com 仅 IPv4),一键 install.sh 下不了
+# 发布包,得在能上网的机器上下好再拷进来跑 install-self-hosted.sh。
+if have ip && [ "$OS" = "Linux" ]; then
+  if [ -z "$(ip -4 route show default 2>/dev/null)" ]; then
+    if [ -n "$(ip -6 route show default 2>/dev/null)" ]; then
+      info "纯 IPv6 主机(无 IPv4 默认路由):将跳过 v4 NAT 只走 v6,客户端只有 IPv6 出网(v4-only 站点需 NAT64)"
+      info "GitHub 仅 IPv4,这台多半下不了发布包 —— 在能上网的机器下好 tar 拷进来跑 install-self-hosted.sh"
+    else
+      soft "既无 IPv4 也无 IPv6 默认路由" "这台机器没有默认出口,装完也没法给客户端做出网 —— 先确认网络/路由配置"
+    fi
+  fi
+fi
+
 # ── 端口 ─────────────────────────────────────────────────────────────────────
 section "端口"
 
