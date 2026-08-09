@@ -5,11 +5,12 @@
 #   scripts/testlab/lab.sh install     跑完整安装:curl 真实发布包 → install.sh
 #   scripts/testlab/lab.sh setup       跑开服向导(不带参数即交互式)
 #   scripts/testlab/lab.sh browse      真 Chrome 把 Web 后台点一遍(要 pip3 install playwright)
+#   scripts/testlab/lab.sh browse-2fa  真 Chrome 把后台 2FA 全生命周期走一遍(注册/登录/恢复码/改密)
 #   scripts/testlab/lab.sh drill       灾难恢复演练:备份 → 删库 → 还原 → 逐字对账
 #   scripts/testlab/lab.sh reset       推倒重来,回到刚开机的干净状态
 #
 # 全部命令:
-#   up / status / install / setup / browse / drill / preflight / uninstall / sh / logs / down / reset
+#   up / status / install / setup / browse / browse-2fa / drill / preflight / uninstall / sh / logs / down / reset
 #
 # 选项(跟在命令后面):
 #   --distro ubuntu|debian|rocky|opensuse|alpine   默认 ubuntu(与线上 SRV 的 Ubuntu 26.04 对齐)
@@ -29,6 +30,9 @@
 #
 # `browse` 再往上盖一层:Web 后台的**界面**。e2e 那边的 60-web.sh 打的是 HTTP 接口,
 # 页面渲不渲得出来、按钮点了有没有反应,它一概不知道 —— 那一层归这里。
+# `browse-2fa` 是它的姊妹:把后台 TOTP 的**全生命周期**(注册 → 启用拿恢复码 → 二次因子
+# 登录 → 错码被拒 → 恢复码一次性 → 改密 step-up)在真浏览器里用内置算码走一遍。密码泄露
+# 能不能一键关 2FA、enable 输的码会不会被重放到登录 —— 这类洞 e2e 的 HTTP 断言看不出来。
 #
 # `drill` 补的是另一个洞:真还原。e2e 只敢验 restore 的守卫会拒绝,不敢在共用的真机上
 # 把生产库覆盖掉;这里的机器用完即弃,可以把「停服 → 删库 → 还原 → 对账」整条走完。
@@ -366,12 +370,11 @@ cmd_status() {
   fi
 }
 
-# 真浏览器走一遍 Web 后台。断言都在 browse.py 里,这边只负责把「跑之前该具备的条件」
-# 一次讲清楚 —— 这几条任何一条不满足,Playwright 报出来的都是让人查错方向的错。
-cmd_browse() {
+# browse / browse-2fa 跑之前该具备的条件,一次讲清楚 —— 这几条任何一条不满足,Playwright
+# 报出来的都是让人查错方向的错(ERR_CONNECTION_REFUSED / 找不到 password_confirm 之类)。
+# 两个测试都从抢首位管理员起步,所以 /setup 必须还开着。
+browse_precheck() {
   need_up
-  step "浏览器实操(真 Chrome 把后台点一遍)"
-
   command -v python3 >/dev/null 2>&1 || die "没有 python3"
   python3 -c 'import playwright' 2>/dev/null || die "缺 playwright:pip3 install playwright"
 
@@ -383,15 +386,28 @@ cmd_browse() {
   [ -n "$code" ] && [ "$code" != 000 ] \
     || die "宿主连不上 https://127.0.0.1:${WEB_PORT}/ —— 先 $0 status 看是端口转发还是服务没起"
 
-  # 第一步就是抢首位管理员,所以 /setup 必须还开着。已经有管理员的话那条断言必挂,
-  # 而挂出来的样子是「找不到 password_confirm 输入框」,跟真实原因隔着好几层。
+  # 已经有管理员的话「抢首位」那条断言必挂,而挂出来的样子是「找不到 password_confirm
+  # 输入框」,跟真实原因隔着好几层 —— 在这里先说清楚。
   code="$(docker exec "$NAME" curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
             https://127.0.0.1:7443/setup 2>/dev/null || true)"
   [ "$code" = 200 ] \
     || die "这台已经有 Web 管理员了(/setup 回 ${code},已自动关闭)。这个测试要自己抢首位管理员:
        $0 reset && $0 install --local        # 装的时候别带 --web-admin"
+}
 
+# 真浏览器走一遍 Web 后台。断言都在 browse.py 里。
+cmd_browse() {
+  browse_precheck
+  step "浏览器实操(真 Chrome 把后台点一遍)"
   python3 "$HERE/browse.py" --base "https://127.0.0.1:${WEB_PORT}" ${PASS[@]+"${PASS[@]}"}
+}
+
+# 真浏览器走一遍后台 2FA 全生命周期。断言都在 browse_2fa.py 里。
+# 它内置 RFC6238 算码,跑起来会因「等新的 TOTP 时间步」有几段 30s 的停顿 —— 属正常,不是卡住。
+cmd_browse_2fa() {
+  browse_precheck
+  step "浏览器实操(真 Chrome 把后台 2FA 全生命周期走一遍)"
+  python3 "$HERE/browse_2fa.py" --base "https://127.0.0.1:${WEB_PORT}" ${PASS[@]+"${PASS[@]}"}
 }
 
 # 灾难恢复演练。断言都在 restore-drill.sh 里。
@@ -411,6 +427,7 @@ case "$CMD" in
   install)   cmd_install ;;
   setup)     cmd_setup ;;
   browse)    cmd_browse ;;
+  browse-2fa) cmd_browse_2fa ;;
   drill)     cmd_drill ;;
   preflight) cmd_preflight ;;
   uninstall) cmd_uninstall ;;
