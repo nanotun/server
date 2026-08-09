@@ -1,329 +1,382 @@
-# nanotun 自托管网关
+# nanotun self-hosted gateway
 
-`nanotun` 是一个自托管的「组网工具」服务端:运行在一台具备公网入口的机器上,客户端
-通过用户名 + PSK(预共享密钥)登录后,可在 TUN 虚拟网卡上互通,组成 mesh 子网。
+**English** · [简体中文](README.zh-CN.md)
 
-无需任何外部控制面 / 账号系统,所有用户、设备、ACL 规则都保存在本机 SQLite
-(`[store].db_path`),由 `nanotun-admin` CLI 管理。
+`nanotun` is a self-hosted "mesh networking" server: it runs on a machine with a public
+ingress, and after clients log in with a username + PSK (pre-shared key), they can reach
+each other over a TUN virtual interface, forming a mesh subnet.
 
-## 快速启动
+No external control plane / account system is required; all users, devices, and ACL rules
+live in a local SQLite database (`[store].db_path`), managed by the `nanotun-admin` CLI.
 
-服务端只跑 **Linux**(要 TUN + iptables + systemd),支持 amd64 与 arm64,不需要装 Go 或编译。
+## Quick start
 
-### 一条命令
+The server runs on **Linux only** (needs TUN + iptables + systemd), supports amd64 and
+arm64, and needs neither Go nor a compiler.
+
+### One command
 
 ```bash
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh)"
 ```
 
-[`install.sh`](scripts/install.sh) 按顺序做四件事,任何一步没过都会停下来告诉你原因:
+[`install.sh`](scripts/install.sh) does four things in order; if any step fails it stops and tells you why:
 
-1. **检查环境** —— 这台机器能不能跑(见下);不过就不下载、不安装,不留半个装了一半的系统
-2. **下载** —— 自动挑架构,校验 SHA256,解压到 `/opt/nanotun/`
-3. **安装**([`install-self-hosted.sh`](scripts/install-self-hosted.sh))—— systemd 单元、
-   IP 转发、REALITY / hy2 密钥与自签证书、放行 ufw、第一个 VPN 管理员
-4. **开服向导**([`setup.sh`](scripts/setup.sh))—— 见下
+1. **Check the environment** — whether this machine can run it (see below); if not, it
+   downloads and installs nothing, leaving no half-installed system behind
+2. **Download** — auto-detects the architecture, verifies SHA256, extracts to `/opt/nanotun/`
+3. **Install** ([`install-self-hosted.sh`](scripts/install-self-hosted.sh)) — systemd units,
+   IP forwarding, REALITY / hy2 keys and self-signed certs, opens ufw, the first VPN admin
+4. **Setup wizard** ([`setup.sh`](scripts/setup.sh)) — see below
 
-跑完就能用:向导会问客户端拨号地址、定下 Web 后台的用户名和密码、建第一个 VPN 用户、出两个二维码。
+When it finishes you can use it: the wizard asks for the client dial address, sets the Web
+admin username and password, creates the first VPN user, and prints two QR codes.
 
-> **别写成 `curl … | sudo bash`。** Ubuntu / Debian 的 sudo 默认开着 `use_pty`,会另开一个
-> pty 跑命令;再叠加管道占着 sudo 的 stdin,向导一问话就被作业控制挂起 —— 提示符出来了、
-> 回车却毫无反应(在全新 Ubuntu 26.04 上实测两次两挂)。写成 `bash -c "$(curl …)"`,
-> bash 的 stdin 就是终端本身,不存在这个问题。真用了管道形态也不会挂:`install.sh`
-> 认得出这个组合,会把系统装完、跳过向导,并提示你补一句 `sudo nanotun-setup`。
+> **Don't write it as `curl … | sudo bash`.** Ubuntu / Debian's sudo has `use_pty` on by
+> default, which opens a separate pty for the command; layered with a pipe holding sudo's
+> stdin, the wizard is suspended by job control the moment it asks a question — the prompt
+> shows up but Enter does nothing (reproduced twice, both hanging, on a fresh Ubuntu 26.04).
+> Written as `bash -c "$(curl …)"`, bash's stdin is the terminal itself, so the problem
+> doesn't exist. Even if you do use the pipe form it won't hang: `install.sh` recognizes the
+> combination, finishes installing the system, skips the wizard, and reminds you to run
+> `sudo nanotun-setup`.
 
-**无人值守**(CI / cloud-init):把向导要问的直接给它,一条命令做到底 ——
+**Unattended** (CI / cloud-init): give the wizard everything it would ask up front, in one command —
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh -o nanotun-install.sh \
-  && sudo NANOTUN_WEB_ADMIN_PASSWORD='换成你的密码' bash nanotun-install.sh \
+  && sudo NANOTUN_WEB_ADMIN_PASSWORD='your-password' bash nanotun-install.sh \
       --dial-host vpn.example.com --user alice --web-admin ops --yes
 ```
 
-> **这里要先落盘,不能写成 `curl … | bash`。** 管道形态下,curl 失败时 bash 拿到的是一个
-> 空脚本 —— 它老老实实跑完那零行内容,然后**以 0 退出**。`bash -c "$(curl …)"` 一样。
-> 人在旁边看着无所谓(屏幕上什么都没发生),但 cloud-init / Ansible / CI 只认退出码:
-> 它们会把「一个字节都没下下来」当成装好了,继续往下走,而那台机器上什么都没有。
-> 先落盘再执行,curl 的失败就由 `&&` 如实挡住了。
+> **Here you must write to disk first, not `curl … | bash`.** In the pipe form, when curl
+> fails bash receives an empty script — it dutifully runs those zero lines and then
+> **exits 0**. `bash -c "$(curl …)"` is the same. A human watching won't care (nothing
+> happened on screen), but cloud-init / Ansible / CI only look at the exit code: they treat
+> "not a single byte downloaded" as a successful install and move on, while that machine has
+> nothing on it. Writing to disk first lets `&&` honestly block on curl's failure.
 >
-> 落在当前目录而不是 `/tmp`:`/tmp` 人人可写,下载完到 sudo 执行之间那一瞬,同机器上
-> 的其他用户能把文件换掉 —— 而下一步是 root 在跑它。
+> Land it in the current directory rather than `/tmp`: `/tmp` is world-writable, and in the
+> instant between finishing the download and sudo running it, another user on the machine can
+> swap the file out — and the next step is root running it.
 
-这一条装完之后 Web 后台就能用 `ops` 加那个密码直接登录 —— 不带 `--web-admin` 也能装,
-只是后台账号留着没建,而 `/setup` 在建成之前对全网公开(谁先打开谁是管理员)。
+After this one command the Web admin can log in with `ops` and that password directly — you
+can install without `--web-admin` too, it just leaves the admin account uncreated, while
+`/setup` is open to the whole internet until one exists (whoever opens it first is the admin).
 
-`install.sh` 自己不认得的参数一律原样转交向导,所以 [`setup.sh`](scripts/setup.sh)
-的选项都能这么带。
+Any argument `install.sh` doesn't recognize is passed through verbatim to the wizard, so
+[`setup.sh`](scripts/setup.sh)'s options can all be given this way.
 
-生产建议钉版本:`sudo NANOTUN_VERSION=v0.1.0 bash -c "$(curl -fsSL .../install.sh)"`。
-想自己控制每一步就手动下 [Releases](https://github.com/nanotun/server/releases) 里对应架构的
-tar,解压后跑 `sudo ./scripts/install-self-hosted.sh` —— 那是上面第 3 步,随发布包走,
-不需要联网。`install.sh` 只是把「弄到这台机器上」这段也一并办了。
+For production, pin the version: `sudo NANOTUN_VERSION=v0.1.0 bash -c "$(curl -fsSL .../install.sh)"`.
+To control every step yourself, download the tar for your architecture from
+[Releases](https://github.com/nanotun/server/releases), extract it and run
+`sudo ./scripts/install-self-hosted.sh` — that's step 3 above, ships with the release, and
+needs no network. `install.sh` merely also handles "getting it onto this machine".
 
-### 先看看这台机器行不行
+### Check whether this machine will work first
 
-买完 VPS 想先摸底、或者装完出问题要排查,单独跑环境检查。它是**只读**的,不装、不改任何东西:
+After buying a VPS and wanting to scope it out, or troubleshooting after an install fails,
+run the environment check on its own. It is **read-only** — it installs and changes nothing:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/preflight.sh | bash
 ```
 
-一次把问题全列出来,最后给一条能直接粘的修复命令(按你的发行版给对包名),不用装一样重跑一次。
-装过之后本地也有一份:`nanotun-preflight`。
+It lists every problem at once, ending with a paste-ready fix command (with the right package
+names for your distro), no need to install anything to re-run. After installing, a copy is on
+disk too: `nanotun-preflight`.
 
-查的是 systemd 有没有在跑、`/dev/net/tun` 在不在、`iptables`/`ip6tables`/`ip`/`openssl` 齐不齐、
-`ip_forward` 能不能置 1,以及 8443/tcp、443/udp、7443/tcp 有没有被占。**最常见的两个坑**是
-便宜 VPS 用 OpenVZ / LXC 虚拟化拿不到 TUN 设备(得换 KVM),和 Alpine 这类不用 systemd 的
-发行版(得改走 Docker)。
+It checks whether systemd is running, whether `/dev/net/tun` exists, whether
+`iptables`/`ip6tables`/`ip`/`openssl` are present, whether `ip_forward` can be set to 1, and
+whether 8443/tcp, 443/udp, 7443/tcp are free. **The two most common pitfalls** are cheap
+VPSes using OpenVZ / LXC virtualization that can't get a TUN device (switch to KVM), and
+distros like Alpine that don't use systemd (go the Docker route).
 
-### 支持哪些发行版、最低到什么版本
+### Which distros are supported, and down to which version
 
-**不挑发行版,挑的是上面那几样东西。** 二进制是静态编译的(`CGO_ENABLED=0`),不链接
-glibc 或 musl,所以发行版和版本对程序本身没有意义。
+**It doesn't care about the distro — it cares about the handful of things above.** The binary
+is statically compiled (`CGO_ENABLED=0`), linking neither glibc nor musl, so the distro and
+version are meaningless to the program itself.
 
-**硬门槛是 systemd ≥ 235。** 单元文件里用到 `RuntimeDirectoryPreserve=`,那是 systemd 235
-(2017 年 10 月)才有的指令;更低的版本会把这行当没看见,于是两个服务共享的 `/run/nanotun`
-会在各自重启时被对方清掉,控制 socket 跟着消失 —— 症状是 Web 后台一直说「运行时数据不可用」。
-换算到发行版,就是下面这张表的下限。
+**The hard requirement is systemd ≥ 235.** The unit files use `RuntimeDirectoryPreserve=`, a
+directive that only arrived in systemd 235 (October 2017); lower versions ignore that line,
+so the `/run/nanotun` the two services share gets wiped by the other on each restart, and the
+control socket vanishes with it — the symptom is the Web admin constantly saying "runtime data
+unavailable". Translated to distros, that's the lower bounds in the table below.
 
-每一行都在容器里从空系统装到开服向导跑完,不是照着版本号推的:
+Every row was installed from a bare system to wizard-complete in a container, not inferred
+from version numbers:
 
-| 发行版 | 最低 | 实测过 | 备注 |
+| Distro | Minimum | Tested | Notes |
 | --- | --- | --- | --- |
-| Ubuntu | 18.04 | 18.04 / 20.04 / 26.04 | 18.04 的 systemd 是 237,刚好在门槛之上 |
-| Debian | 10 | 11 / 13 | 10 的软件源已归档、装不动包,没能实测;它与 18.04 同代,组件版本一一对应 |
-| RHEL 系 | 8 | Rocky 8 / 9 | 防火墙是 firewalld,脚本会自动放行 |
-| Alpine | — | 明确挡下 | 用 OpenRC 而非 systemd,改走 Docker |
+| Ubuntu | 18.04 | 18.04 / 20.04 / 26.04 | 18.04's systemd is 237, just above the threshold |
+| Debian | 10 | 11 / 13 | 10's repos are archived and won't install packages, so it wasn't tested live; it's the same generation as 18.04, component versions map one-to-one |
+| RHEL family | 8 | Rocky 8 / 9 | The firewall is firewalld; the script opens it automatically |
+| Alpine | — | Explicitly blocked | Uses OpenRC instead of systemd; go the Docker route |
 
-没列到的发行版不代表不行:Fedora、Alma、openSUSE、Arch 只要 systemd 在跑就是同一条路,
-preflight 也认得它们的包管理器。拿不准就跑上面那条只读的检查命令 —— 它给的是这台机器的
-答案,比任何兼容性列表都准。
+Distros not listed aren't necessarily unsupported: Fedora, Alma, openSUSE, Arch are the same
+path as long as systemd is running, and preflight recognizes their package managers too. When
+in doubt, run that read-only check command above — it gives you the answer for this machine,
+more accurate than any compatibility list.
 
-**但仍然建议用还在收安全更新的版本。** Ubuntu 18.04 和 Debian 10 都已 EOL:nanotun 装得上
-也跑得起来,可那台机器的内核和 OpenSSL 不再有人修,而它是要对公网开端口的。
+**But still prefer a version that receives security updates.** Ubuntu 18.04 and Debian 10 are
+both EOL: nanotun installs and runs on them, but that machine's kernel and OpenSSL are no
+longer patched by anyone — and it's about to open ports to the internet.
 
-老发行版上有三处与新版本不同,装机脚本都已经处理,列在这里只是为了排障时不必重新发现一遍:
-OpenSSL 1.1.1(Ubuntu ≤ 20.04 / Debian 11 / RHEL 8)生成证书时会写出重复的扩展项而 Go 拒收;
-mawk 1.3.3(Ubuntu 18.04 / Debian 10)不认 `[[:space:]]` 这类字符类;老版本默认的 legacy
-iptables 需要写 `/run/xtables.lock`,而 systemd 沙盒把 `/run` 挂成了只读。
+Older distros differ from newer ones in three places, all handled by the install scripts;
+listed here only so you don't have to rediscover them while troubleshooting: OpenSSL 1.1.1
+(Ubuntu ≤ 20.04 / Debian 11 / RHEL 8) writes duplicate extensions when generating certs which
+Go rejects; mawk 1.3.3 (Ubuntu 18.04 / Debian 10) doesn't understand character classes like
+`[[:space:]]`; the legacy iptables that older versions default to needs to write
+`/run/xtables.lock`, while the systemd sandbox mounts `/run` read-only.
 
-Alpine、Devuan 这类不用 systemd 的,以及连 init 都没有的容器环境,走
-[Docker 部署](docs/DOCKER.md):那条路不要求宿主有 systemd,发行版就更无所谓了。
+Alpine, Devuan and the like that don't use systemd, plus container environments without even
+an init, take the [Docker deployment](docs/DOCKER.md) route: that path doesn't require systemd
+on the host, and the distro matters even less.
 
-### 开服向导
+### Setup wizard
 
-**装完不等于客户端能连上** —— 还差三件只有你知道答案的事:客户端该往哪个地址拨、
-Web 后台管理员密码、给用户的二维码。上面那条命令的最后一步就是它;单独跑:
+**Installed doesn't mean clients can connect** — there are still three things only you know the
+answer to: which address the client should dial, the Web admin password, and the QR codes for
+users. The last step of the command above is exactly this; to run it on its own:
 
 ```bash
 sudo nanotun-setup
 ```
 
-它会探测并写入拨号地址(`server_dial_host`)、**当场创建 Web 后台管理员**(用户名和密码
-你现在定,密码两遍隐藏输入)、创建第一个 VPN 用户,并直接在终端打出两个二维码:
+It probes and writes the dial address (`server_dial_host`), **creates the Web admin on the
+spot** (username and password you set now, password entered twice, hidden), creates the first
+VPN user, and prints two QR codes directly in the terminal:
 
-- **profile QR** —— 服务器地址与传输配置,不含 PSK。但开着 hy2 mTLS(装机默认)时它内嵌一张客户端证书 —— 那不是登录凭证,却是进 QUIC 那道门的钥匙,所以发给本人、别公开贴
-- **credentials QR** —— 用户名 + PSK,机密,只能一对一给本人
+- **profile QR** — the server address and transport config, no PSK. But with hy2 mTLS on (the
+  install default) it embeds a client certificate — that's not a login credential, yet it is
+  the key to the QUIC door, so give it to the person themselves and don't post it publicly
+- **credentials QR** — username + PSK, secret, handed one-to-one to the person only
 
-后台账号这一步别跳过:在第一个管理员出现之前,`/setup` 页面对全网公开 —— **谁先打开谁就是
-管理员**。向导把它建掉,这扇门就自动关了(之后访问 `/setup` 会跳到登录页)。
+Don't skip the admin-account step: before the first admin exists, the `/setup` page is open to
+the whole internet — **whoever opens it first becomes the admin**. The wizard creates it, and
+this door closes automatically (afterward visiting `/setup` redirects to the login page).
 
-重复跑是安全的(不重置 PSK、不动配置、已有管理员就跳过),之后加用户、重出二维码都用它。
-自动化部署一条命令做完:
+Re-running is safe (doesn't reset PSKs, doesn't touch config, skips if an admin already
+exists); use it later to add users and re-issue QR codes. Automated deploys do it all in one
+command:
 
 ```bash
 sudo NANOTUN_WEB_ADMIN_PASSWORD='...' nanotun-setup \
      --dial-host vpn.example.com --user alice --web-admin ops --yes
 ```
 
-密码只走环境变量,不做成命令行参数 —— argv 对同机所有用户可见(`ps`),还会落进 shell
-history。`--yes` 下给了 `--web-admin` 却没给密码时,向导会随机生成一个并打在屏幕上(只此一次)。
+The password only comes from the environment variable, not a command-line argument — argv is
+visible to all users on the machine (`ps`) and lands in shell history too. Under `--yes`, if
+`--web-admin` is given but no password, the wizard generates a random one and prints it on
+screen (only once).
 
-VPN 账号和 Web 后台是**两套东西**,最容易混:前者是客户端登录用的用户名 + PSK(PSK 由服务器
-生成,不能自选);后者是浏览器登录后台用的,密码你自己设。后台账号也可以随时用命令行加:
-
-```bash
-sudo nanotun-admin webadmin create <名字>     # 会提示输两遍密码,不回显
-sudo nanotun-admin webadmin list              # 看后台都有谁
-```
-
-忘了后台密码,或者被连续输错锁在门外了,从服务器上救回来:
+The VPN account and the Web admin are **two separate things**, the easiest to confuse: the
+former is the username + PSK for client login (the PSK is generated by the server, not
+chosen); the latter is for logging into the admin panel in a browser, with a password you set.
+Admin accounts can also be added anytime from the CLI:
 
 ```bash
-sudo nanotun-admin webadmin reset-password <名字>   # 改密码,顺带清掉失败锁定
-sudo nanotun-admin webadmin unlock <名字>           # 只解锁,密码不动
+sudo nanotun-admin webadmin create <name>     # prompts for the password twice, no echo
+sudo nanotun-admin webadmin list              # see who the admins are
 ```
 
-客户端扫完两个码就能连。剩下的用户管理走 Web 后台或下面的命令行。
+Forgot the admin password, or got locked out by too many wrong attempts? Recover from the server:
 
-### 用 Docker 跑
+```bash
+sudo nanotun-admin webadmin reset-password <name>   # change the password, also clears the failure lock
+sudo nanotun-admin webadmin unlock <name>           # unlock only, password untouched
+```
 
-已经熟悉容器的话也可以走这条:
+Once the client scans both codes it can connect. The rest of user management goes through the
+Web admin or the CLI below.
+
+### Run with Docker
+
+If you're already comfortable with containers, this route works too:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/nanotun/server/main/docker/docker-compose.yml
-docker compose up -d && docker compose logs -f     # 首次启动的 PSK 会打在日志里
+docker compose up -d && docker compose logs -f     # the first-boot PSK is printed in the logs
 ```
 
-镜像是 `ghcr.io/nanotun/server`(amd64 + arm64 多架构)。它是个 VPN 网关,对
-`/dev/net/tun`、`CAP_NET_ADMIN`、宿主 `sysctl` 和防火墙有硬性要求,宿主那几个内核参数
-容器改不了得你自己设 —— **上面两行跑完不等于客户端就能连上**,逐条踩坑说明见
-[`docs/DOCKER.md`](docs/DOCKER.md)。容器里没有 `nanotun-setup`,拨号地址和用户在
-Web 后台里设,或 `docker compose exec nanotun nanotun-admin ...`。
+The image is `ghcr.io/nanotun/server` (amd64 + arm64 multi-arch). It's a VPN gateway with hard
+requirements on `/dev/net/tun`, `CAP_NET_ADMIN`, host `sysctl`, and the firewall; those host
+kernel params can't be set from inside the container, you must set them yourself — **the two
+lines above finishing doesn't mean clients can connect**; see [`docs/DOCKER.md`](docs/DOCKER.md)
+for the step-by-step gotchas. There's no `nanotun-setup` in the container; set the dial address
+and users in the Web admin, or `docker compose exec nanotun nanotun-admin ...`.
 
-### 从源码构建(开发用)
+### Build from source (for development)
 
 ```bash
 git clone https://github.com/nanotun/server.git && cd server
 go build ./...
 
-# 本地非 root 试跑:config.toml 里 [store].db_path 钉的是生产绝对路径
-# /var/lib/nanotun/nanotun.db,用 config_no_tun.toml 那份(db_path 为
-# data/nanotun.db,且不需要 root / TUN)。
+# Local non-root test run: config.toml pins [store].db_path to the production
+# absolute path /var/lib/nanotun/nanotun.db; use the config_no_tun.toml one
+# (db_path is data/nanotun.db, and it needs neither root nor TUN).
 cd cmd/nanotund && go build -o nanotund . && ./nanotund -config config_no_tun.toml
 
-# 容器里验证自己改的代码:
+# Verify your own changes in a container:
 cd docker && docker compose -f docker-compose.dev.yml up --build
 ```
 
-## 用 admin CLI 创建用户和设备
+## Create users and devices with the admin CLI
 
-`nanotun-setup` 做的就是下面这几步,想手工控制或写脚本时直接用 CLI。详细命令见
-[`cmd/nanotun-admin/README.md`](cmd/nanotun-admin/README.md);最常用的工作流(0013
-credentials 解耦后**双 QR**:profile 不含 PSK + credentials 独立下发):
+`nanotun-setup` does exactly the steps below; use the CLI directly when you want manual control
+or to script it. Full commands are in [`cmd/nanotun-admin/README.md`](cmd/nanotun-admin/README.md);
+the most common workflow (after the 0013 credentials split, **dual QR**: profile without PSK +
+credentials issued separately):
 
 ```bash
-# 装过 nanotun 的机器上不带 --db-path 也行:找不到当前目录下的 data/nanotun.db 时,
-# 会自动用 /var/lib/nanotun/nanotun.db 并说一声。想固定下来就设 NANOTUN_DB ——
-# 写进文档、脚本、工单里的命令不该依赖「在哪个目录跑」。
+# On a machine with nanotun installed you can omit --db-path: when it can't find
+# data/nanotun.db in the current directory it auto-uses /var/lib/nanotun/nanotun.db
+# and says so. To pin it, set NANOTUN_DB — commands in docs, scripts, and tickets
+# shouldn't depend on "which directory you run from".
 export NANOTUN_DB=/var/lib/nanotun/nanotun.db
 
-# 1) 创建用户:PSK 仅在这一次以明文回显,同时分配 credential_id (UUID v4)。
+# 1) Create a user: the PSK is echoed in plaintext only this once, and a credential_id (UUID v4) is assigned.
 nanotun-admin user create alice --admin --exit-allowed=true
 
-# 2) 客户端 profile QR(服务器节点 / 路由,不含 PSK;开着 hy2 mTLS 时内嵌一张客户端证书,
-#    所以是「发给本人」而不是「随便贴」)。--dial-host 不给就用库里存的 server_dial_host。
+# 2) Client profile QR (server node / routes, no PSK; with hy2 mTLS on it embeds a client cert,
+#    so it's "for the person" not "post anywhere"). --dial-host, if omitted, uses the stored server_dial_host.
 nanotun-admin profile show alice --dial-host vpn.example.com --format qr
 
-# 3) 客户端 credentials QR(用 PSK 明文 + UUID 生成,**仅这一次能拿到明文**)。
-#    用户用 nanotun-cred://v1?d=... 二维码扫入 Apple 客户端 Keychain,Profile 列表
-#    再走「绑定凭证」选这把 UUID。后续 reset-psk 重新出新 QR,客户端按 UUID 自动覆盖。
-nanotun-admin credentials show alice --psk '<刚才创建时回显的明文>' \
+# 3) Client credentials QR (generated from the PSK plaintext + UUID, **plaintext obtainable only this once**).
+#    The user scans the nanotun-cred://v1?d=... QR into the Apple client Keychain; the Profile list
+#    then goes "bind credentials" and picks this UUID. Later reset-psk re-issues a new QR, and the
+#    client overwrites automatically by UUID.
+nanotun-admin credentials show alice --psk '<the plaintext echoed at create time>' \
     --format qr-png --output alice-cred.png
 
-# PSK 丢了不是死局,但轮换会把该用户在线的会话踢下去:
+# The PSK being lost isn't fatal, but rotating it kicks that user's online sessions:
 nanotun-admin --yes credentials show alice --rotate-psk --format qr
 ```
 
-Docker 部署统一加前缀 `docker compose exec nanotun`(镜像里 `NANOTUN_DB` 已经钉好了)。
+For Docker deployments prefix everything with `docker compose exec nanotun` (the image has
+`NANOTUN_DB` already pinned).
 
-## 服务端进程与端口
+## Server processes and ports
 
-装完后服务由 systemd 管(`systemctl status nanotun` / `nanotun-web`);Docker 部署则
-是容器自身。想手工前台跑(排障):`sudo nanotund -config /etc/nanotun/config.toml`。
+After install, systemd manages the services (`systemctl status nanotun` / `nanotun-web`); for
+Docker it's the container itself. To run in the foreground by hand (troubleshooting):
+`sudo nanotund -config /etc/nanotun/config.toml`.
 
-VPN 数据面监听 `[server].listen_addr`(默认 `127.0.0.1:8080`,仅回环),走 WebSocket
-Binary + 自定义链路帧(见 `util/link_frame.go`)。生产客户端(iOS/Android)经 Hysteria 2
-(`[hysteria]`,:443/udp)或 Xray REALITY(`[reality]`,:8443/tcp)入站,服务端在握手后
-把它们环回桥接到数据面端口,客户端不直连 8080。仅当你要让客户端直接 wss:// 拨数据面时,
-才把 `listen_addr` 改成 `:8080`(所有网卡)并放行防火墙。
+The VPN data plane listens on `[server].listen_addr` (default `127.0.0.1:8080`, loopback only),
+speaking WebSocket Binary + custom link frames (see `util/link_frame.go`). Production clients
+(iOS/Android) enter via Hysteria 2 (`[hysteria]`, :443/udp) or Xray REALITY (`[reality]`,
+:8443/tcp); after the handshake the server loopback-bridges them to the data-plane port, and
+clients never connect to 8080 directly. Only if you want clients to dial the data plane
+directly via wss:// do you change `listen_addr` to `:8080` (all interfaces) and open the firewall.
 
-## 协议与会话语义
+## Protocol and session semantics
 
-- 客户端首帧发 `LinkTypeLoginReq`,字段见 `util/protocol.go`。`Token` 字段承载
-  PSK 明文,服务端用 argon2id 校验。
-- 登录成功后服务端下发 `LinkTypeLoginResp(code=0, session_id, takeover_secret)`
-  + `LinkTypeConvSaltMsg`(含虚拟 IP / DNS)。
-- 每条会话拥有唯一 `connIDStr`(16B 十六进制),用于「热切换接管」:客户端可在另
-  一条传输上发 `Purpose=takeover` 的 LoginReq 接管原会话,服务端校验 PSK + secret
-  通过后无缝过户 vIP / TunChan。
-- `Code*` 错误码(`util/login_codes.go`)定义在 `util` 包,客户端按 `Code` +
-  `clientLoginMessageForCode` 做 UI 提示。
+- The client's first frame sends `LinkTypeLoginReq`, fields in `util/protocol.go`. The `Token`
+  field carries the PSK plaintext, which the server verifies with argon2id.
+- On success the server sends `LinkTypeLoginResp(code=0, session_id, takeover_secret)` +
+  `LinkTypeConvSaltMsg` (with virtual IP / DNS).
+- Each session has a unique `connIDStr` (16B hex), used for "hot-swap takeover": the client can
+  send a `Purpose=takeover` LoginReq over another transport to take over the original session;
+  after the server verifies PSK + secret it seamlessly transfers the vIP / TunChan.
+- `Code*` error codes (`util/login_codes.go`) are defined in the `util` package; the client
+  shows UI hints by `Code` + `clientLoginMessageForCode`.
 
-## 安全相关默认
+## Security defaults
 
-- PSK 用 `argon2id`(t=3 / m=64MB / p=2)散列;`auth.argon2Sema` 限制并发,防止
-  DoS 撑爆内存。
-- 并发会话数默认**不限制**;可配全局上限 `[server].max_sessions_per_user`(>0 生效),
-  或按账号覆盖 `user set-max-sessions <username> <n>`(>0 覆盖全局、-1 该账号不限、
-  0 跟随全局);超过则按 `createdAt` 踢最老,改动仅对未来登录生效。
-- `[server].jump_host_firewall=true` 时按 `[server].jump_host_allowed_ips` 在
-  Linux 上挂 ipset + iptables,只允许列表内的源 IPv4 接入(自动加入 127.0.0.1)。
-- 所有登录失败 / kick / 配置 reload / ACL drop 都写入 `audit_logs`,30 天自动
-  prune(见 `cmd/nanotund/audit_gc.go`)。
-- 撤销维度有两层:`user disable <user>` 全设备封、`user reset-psk <user>`(也可
-  走 `credentials show <user> --rotate-psk`)让旧 credential 失效;两者都会让在线
-  会话在 ≤ `[server].user_invalidate_interval_sec`(默认 10s)内被 server 主动踢
-  掉(close code = 905)。
-  历史的 per-profile `pid` 黑名单(P2#14)在 0014(2026-05-25)随 credentials 解耦
-  一并移除——profile QR 已不含 PSK,泄露也无法登录,per-QR 吊销冗余。
+- PSKs are hashed with `argon2id` (t=3 / m=64MB / p=2); `auth.argon2Sema` caps concurrency to
+  prevent a DoS from blowing up memory.
+- The concurrent session count is **unlimited** by default; you can set a global cap
+  `[server].max_sessions_per_user` (>0 takes effect), or override per account with
+  `user set-max-sessions <username> <n>` (>0 overrides global, -1 unlimited for that account,
+  0 follows global); exceeding it kicks the oldest by `createdAt`, and changes apply to future
+  logins only.
+- With `[server].jump_host_firewall=true`, it attaches ipset + iptables on Linux per
+  `[server].jump_host_allowed_ips`, allowing only source IPv4 addresses in the list to connect
+  (127.0.0.1 is added automatically).
+- All login failures / kicks / config reloads / ACL drops are written to `audit_logs`,
+  auto-pruned after 30 days (see `cmd/nanotund/audit_gc.go`).
+- Revocation has two layers: `user disable <user>` seals all devices, `user reset-psk <user>`
+  (also via `credentials show <user> --rotate-psk`) invalidates the old credential; both cause
+  online sessions to be actively kicked by the server within
+  ≤ `[server].user_invalidate_interval_sec` (default 10s) (close code = 905).
+  The historical per-profile `pid` blacklist (P2#14) was removed in 0014 (2026-05-25) along
+  with the credentials split — the profile QR no longer contains the PSK, so leaking it can't
+  log in, making per-QR revocation redundant.
 
-## Profile QR vs Credentials QR — 双 QR 设计(0013 起)
+## Profile QR vs Credentials QR — the dual-QR design (since 0013)
 
-0013(2026-05-25)起 nanotun 把客户端导入二维码**拆成两份**,杜绝把 PSK 跟服务器
-配置塞在同一个可分享的 URL 里:
+Since 0013 (2026-05-25) nanotun splits the client import QR **into two**, to stop putting the
+PSK and server config into the same shareable URL:
 
-| QR 类型 | URL prefix | 内容 | 安全级别 |
+| QR type | URL prefix | Content | Security level |
 | --- | --- | --- | --- |
-| profile QR | `nanotun://v1` | server host / transport(WS, Hysteria, REALITY)/ nodes 配置;hy2 mTLS 开着时还含一张客户端证书与私钥 | **发给本人** — 不含 PSK,拿到也登不进来;但那张证书是进 QUIC 那道门的钥匙,公开等于把挡扫描的一层拆了 |
-| credentials QR | `nanotun-cred://v1` | `credential_id`(UUID v4)+ `username` + `psk` + `created_at` | **机密** — 仅本地一对一传递,客户端落 Keychain |
+| profile QR | `nanotun://v1` | server host / transport (WS, Hysteria, REALITY) / nodes config; with hy2 mTLS on it also contains a client cert and private key | **for the person** — no PSK, useless for login on its own; but that cert is the key to the QUIC door, and making it public strips a layer that blocks scanning |
+| credentials QR | `nanotun-cred://v1` | `credential_id` (UUID v4) + `username` + `psk` + `created_at` | **secret** — passed locally one-to-one only, the client stores it in the Keychain |
 
-工作流:
-- **首次下发**:管理员同时导出两份 QR 给用户。客户端先扫 profile(选服务器),
-  再扫 credentials(注入凭证)。两份都只发给本人:profile 不含 PSK、可以走云同步给同一个人的
-  多台设备,但它内嵌的客户端证书不适合公开张贴或群发;credentials 走线下。
-- **多设备**:同一用户在新设备扫**同一份** credentials QR 即可登录;`credential_id`
-  保持不变,`nanotun-admin device list` 会按 device_uuid 单独统计。
-- **凭证轮换**:`nanotun-admin user reset-psk <user>` 或 `credentials show <user> --rotate-psk`
-  生成新 PSK,**保持** `credential_id` 不变。客户端再扫一次新的 credentials QR,
-  按 `credential_id` 索引自动覆盖本地旧 PSK,无需手动删旧条目;旧 PSK 上的会话
-  在 ≤ 10s 内被 server 以 Close(905) 踢下。
-- **运维清单**:`nanotun-admin credentials list [--json]` 打印所有「已发过凭证」
-  的用户(含 disabled),`credential_id` + 上次 rotate 时间;`user show --json` 在
-  user 视角同步暴露 `credential_id` / `credential_created_at`。
+Workflow:
+- **First issuance**: the admin exports both QRs for the user. The client scans profile first
+  (pick server), then credentials (inject the credential). Both go only to the person: the
+  profile has no PSK and can sync via cloud to the same person's multiple devices, but the
+  client cert it embeds isn't suitable for public posting or mass distribution; credentials go offline.
+- **Multiple devices**: the same user logs in on a new device by scanning the **same**
+  credentials QR; the `credential_id` stays the same, and `nanotun-admin device list` counts
+  each device_uuid separately.
+- **Credential rotation**: `nanotun-admin user reset-psk <user>` or
+  `credentials show <user> --rotate-psk` generates a new PSK while **keeping** `credential_id`
+  unchanged. The client scans the new credentials QR once more and, indexed by `credential_id`,
+  overwrites the local old PSK automatically — no need to delete the old entry by hand; sessions
+  on the old PSK are kicked by the server with Close(905) within ≤ 10s.
+- **Ops list**: `nanotun-admin credentials list [--json]` prints all users who have been issued
+  credentials (including disabled ones), with `credential_id` + last rotate time;
+  `user show --json` exposes `credential_id` / `credential_created_at` from the user's perspective.
 
-CLI 命令速查:
+CLI quick reference:
 ```bash
-# Profile QR(server 配置 + 客户端证书,发给本人)
-nanotun-admin profile show <user> --format qr      # 终端二维码
+# Profile QR (server config + client cert, for the person)
+nanotun-admin profile show <user> --format qr      # terminal QR
 nanotun-admin profile show <user> --format qr-png --output profile.png
 
-# Credentials QR(机密凭证;rotate 路径与 user reset-psk 等价)
+# Credentials QR (secret credential; the rotate path equals user reset-psk)
 nanotun-admin credentials show <user> --psk PLAIN  --format qr
 nanotun-admin credentials show <user> --rotate-psk --format qr
 nanotun-admin credentials list [--json]
 ```
 
-Web 后台同款:`/users` 列表展示 `credential_id` 前 8 位;新建用户 / 重置 PSK 都
-走 PRG 重定向到 `/users/{id}/created` 或 `/users/{id}/reset-psk-result`,token
-失效或刷新即视为已展示一次,避免误触发重复 rotate。
+Same in the Web admin: the `/users` list shows the first 8 chars of `credential_id`; creating a
+user / resetting the PSK both go via a PRG redirect to `/users/{id}/created` or
+`/users/{id}/reset-psk-result`, and a stale or refreshed token counts as already shown once,
+avoiding an accidental repeat rotate.
 
-## 可选模块
+## Optional modules
 
-- **Magic DNS**(P2#11)`[server.magic_dns].enabled=true` 时,server 在 TUN
-  gateway IP 的 :53 上跑内置 stub DNS,把 `<device>.<user>.<suffix>` 解析为 vIP。
-  `listen_port` 必须 = 53,否则 server 会跳过给客户端 prepend gateway DNS
-  (避免把客户端 DNS 指到查不到的端口)。配置范例见 `cmd/nanotund/config.toml` 注释。
-  后缀 `<suffix>` 默认 `lan`,**装机时**可定制:`--magic-suffix nanotun`
-  或环境变量 `NANOTUN_MAGIC_SUFFIX=nanotun`(一键装 `install.sh` / 离线
-  `install-self-hosted.sh` / Docker 同名变量,只在首次写 `config.toml` 时生效)。
-  改**已装好**机器的后缀用 `sudo nanotun-set-suffix <后缀>`(装机时随包装成命令;发布包里
-  对应 `scripts/set-magic-suffix.sh`)——备份→改→重启→失败自动回滚;`nanotun-setup` 向导里
-  也有一步可选改。运行期后缀只从 `config.toml` 读,`nanotun-admin setting set magic_suffix`
-  不是入口(已硬拒并指路)。
-- **Subnet route advertise**(P2#12,**数据面已落地 SR-M1**)客户端可声明本地子网,
-  管理员通过 `nanotun-admin route approve <device_id> <cidr>` 审批。审批后,只要宣告方
-  device 在线、且请求方→宣告方的 ACL 放行,发往该 CIDR 的流量就会由 server 真正投递到
-  宣告方会话,再由宣告方本机转发 / NAT 进其 LAN(需宣告方客户端支持 SR-M2 的 LAN 转发)。
-  详见 `docs/DESIGN_SUBNET_ROUTES.md`。
+- **Magic DNS** (P2#11) with `[server.magic_dns].enabled=true`, the server runs a built-in stub
+  DNS on the TUN gateway IP's :53, resolving `<device>.<user>.<suffix>` to a vIP. `listen_port`
+  must = 53, otherwise the server skips prepending the gateway DNS to the client (to avoid
+  pointing the client's DNS at an unreachable port). See the `cmd/nanotund/config.toml`
+  comments for a config example. The suffix `<suffix>` defaults to `lan` and can be customized
+  **at install time**: `--magic-suffix nanotun` or the env var `NANOTUN_MAGIC_SUFFIX=nanotun`
+  (one-shot install `install.sh` / offline `install-self-hosted.sh` / same var for Docker;
+  only takes effect when `config.toml` is first written). To change the suffix on an
+  **already-installed** machine use `sudo nanotun-set-suffix <suffix>` (installed as a command
+  with the package; in the release it's `scripts/set-magic-suffix.sh`) — backup → rewrite →
+  restart → auto-rollback on failure; the `nanotun-setup` wizard also has an optional step for
+  it. At runtime the suffix is read only from `config.toml`; `nanotun-admin setting set
+  magic_suffix` is not the entry point (hard-blocked with guidance).
+- **Subnet route advertise** (P2#12, **data plane landed SR-M1**) clients can advertise a local
+  subnet, which the admin approves via `nanotun-admin route approve <device_id> <cidr>`. After
+  approval, as long as the advertising device is online and the requester→advertiser ACL allows
+  it, traffic to that CIDR is really delivered by the server to the advertiser's session, then
+  forwarded / NAT'd into its LAN by the advertiser's host (requires the advertiser client to
+  support SR-M2 LAN forwarding). See `docs/DESIGN_SUBNET_ROUTES.md`.
 
-## 可观测性 / 监控
+## Observability / monitoring
 
-- **`/health`**(默认 `127.0.0.1:8081`)JSON 探活,k8s liveness/readiness 直接用。
-- **`/metrics`**(同上端口)Prometheus 文本格式(OpenMetrics 0.0.4 兼容),
-  暴露:活跃会话数、ACL 丢包(分 kind)、lease GC 次数、Magic DNS 出口分布、
-  subnet route 接受/拒绝数、登录 rate-limit 触顶次数等。
-  scrape 范例:
+- **`/health`** (default `127.0.0.1:8081`) JSON liveness probe, usable directly by k8s
+  liveness/readiness.
+- **`/metrics`** (same port) Prometheus text format (OpenMetrics 0.0.4 compatible), exposing:
+  active sessions, ACL drops (by kind), lease GC counts, Magic DNS egress distribution, subnet
+  route accept/reject counts, login rate-limit hits, etc. Scrape example:
   ```yaml
   scrape_configs:
     - job_name: nanotun
@@ -331,81 +384,90 @@ Web 后台同款:`/users` 列表展示 `credential_id` 前 8 位;新建用户 / 
       metrics_path: /metrics
   ```
 
-## systemd 集成
+## systemd integration
 
-`cmd/nanotund/nanotun.service` 使用 `Type=notify` + `WatchdogSec=30s`:
-- 启动:server 调 `sd_notify READY=1` 后 systemd 才标记 `active`,依赖 unit 能正确排序;
-- 心跳:server 每 15s 发 `WATCHDOG=1`,卡死 30s 后 systemd 自动 SIGTERM 重启;
-- shutdown:`sd_notify STOPPING=1` 让 `systemctl status` 显示 `deactivating`。
+`cmd/nanotund/nanotun.service` uses `Type=notify` + `WatchdogSec=30s`:
+- Startup: systemd marks it `active` only after the server calls `sd_notify READY=1`, letting
+  dependent units order correctly;
+- Heartbeat: the server sends `WATCHDOG=1` every 15s; if stuck for 30s systemd auto-SIGTERMs
+  and restarts;
+- Shutdown: `sd_notify STOPPING=1` makes `systemctl status` show `deactivating`.
 
-非 systemd 部署(直接 `./nanotund`):`NOTIFY_SOCKET` 为空 → 全部 no-op,
-不影响 dev / 容器场景。
+Non-systemd deployments (running `./nanotund` directly): with `NOTIFY_SOCKET` empty → all
+no-ops, not affecting dev / container scenarios.
 
-## 配置校验
+## Config validation
 
 ```bash
-# 默认 lenient:未知字段只 WARN,server 继续启动(向后兼容)。
+# Default lenient: unknown fields only WARN, the server keeps starting (backward compat).
 ./nanotund -config config.toml
 
-# strict:任何未知字段直接 fatal 退出(适合 CI / 升级流程)。
+# strict: any unknown field is a fatal exit (good for CI / upgrade flows).
 NANOTUN_CONFIG_STRICT=1 ./nanotund -config config.toml
 
-# 不启动 server,只校验:
+# Don't start the server, just validate:
 nanotun-admin config lint config.toml
-# 退出码: 0=OK / 3=未知字段 / 4=TOML 语法错 / 1=I/O 错
+# Exit codes: 0=OK / 3=unknown field / 4=TOML syntax error / 1=I/O error
 ```
 
-## 测试
+## Testing
 
 ```bash
-# 单元 + 集成测试(完全本地,不依赖任何外部服务)
+# Unit + integration tests (fully local, no external services)
 go test -count=1 ./...
 
-# 仅 server 包,带详细输出
+# Server package only, verbose
 go test -v -count=1 -timeout 120s ./cmd/nanotund/
 
 # Benchmarks
 go test -bench="BenchmarkLoginFlow" -benchtime=10s -count=1 ./cmd/nanotund/
 ```
 
-三机行为回归与**发版门禁**见 [`docs/RELEASE.md`](docs/RELEASE.md)。
-合并绿只过 CI;发版必须走:
+The three-machine behavioral regression and the **release gate** are in
+[`docs/RELEASE.md`](docs/RELEASE.md). A green merge only passes CI; releasing must go through:
 
 ```bash
 ./scripts/e2e/run.sh 00 10 20 30 40 50 60 70
 ./scripts/release/stamp-e2e.sh
 ./scripts/release/cut.sh v0.1.0
-git push origin v0.1.0     # 触发 CI 构建 Release tar + GHCR 镜像
+git push origin v0.1.0     # triggers CI to build the Release tar + GHCR image
 ```
 
-三机 e2e 跑不进 GitHub Actions,所以门禁留在本地:`cut.sh` 把 e2e 戳写进 annotated
-tag,workflow 只认这种 tag —— 手工 `git tag` 推上去发不出版本。
+The three-machine e2e can't run in GitHub Actions, so the gate stays local: `cut.sh` writes
+the e2e stamp into an annotated tag, and the workflow only accepts that kind of tag — a
+hand-made `git tag` push can't ship a release.
 
-## 升级 / 部署
+## Upgrade / deploy
 
-**Docker**:`docker compose pull && docker compose up -d`。配置不会被覆盖,
-模板变更另存 `config.toml.dist` 供 diff。
+**Docker**: `docker compose pull && docker compose up -d`. The config isn't overwritten;
+template changes are saved to `config.toml.dist` for diffing.
 
-**裸机**:重跑一遍 `install.sh`(或下新版本 tar 后跑 `install-self-hosted.sh`)。
-脚本幂等,**不会动**已生效的 `config.toml` 和密钥 —— 重签密钥等于踢掉全部现有客户端。
-详见脚本头部注释与 [`docs/UPGRADE_M0.md`](docs/UPGRADE_M0.md)。
+**Bare metal**: re-run `install.sh` (or download the new tar and run `install-self-hosted.sh`).
+The scripts are idempotent and **won't touch** an already-effective `config.toml` or the keys —
+re-signing keys would kick off all existing clients. See the script header comments and
+[`docs/UPGRADE_M0.md`](docs/UPGRADE_M0.md).
 
-跨多个版本一次升上来也是这个办法,不用逐版本爬。实测从 v0.1.0 直接升到 v0.1.16:
-`server_id`、REALITY 私钥、两张证书、用户与 ACL 全部原样保留,已经发出去的 profile
-二维码继续有效(逐字段比对只有那张随取随签的客户端证书不同,其余 18 项一致,老证书
-也能被升级后的 CA 验过)。
+Upgrading across several versions at once uses the same method, no need to climb version by
+version. Tested going straight from v0.1.0 to v0.1.16: `server_id`, the REALITY private key,
+the two certs, users and ACLs are all preserved verbatim, and already-issued profile QRs keep
+working (a field-by-field comparison shows only that on-demand-signed client cert differs, the
+other 18 items identical, and the old cert still verifies under the upgraded CA).
 
-**但有一件事升级不会替你做**:profile 里内嵌的那张客户端证书,有效期在**签发那一刻**
-就定死了。默认值后来从 90 天改成了 10 年,改的只是新签发的那批;老版本发出去的二维码
-仍然按当初的 90 天到期,升级不会追溯延长。从早期版本升上来的话,给现有用户重出一次
-`profile show` 才能换到长效证书 —— 否则你以为「现在都是 10 年」,而客户端会在原定的
-日子集体掉线。
+**But one thing the upgrade won't do for you**: the client cert embedded in the profile has its
+validity fixed **at the moment it was signed**. The default was later changed from 90 days to
+10 years, but that only affects newly signed ones; QRs issued by old versions still expire at
+their original 90 days, and upgrading doesn't retroactively extend them. If you're upgrading
+from an early version, re-issue `profile show` for existing users to swap to a long-lived cert —
+otherwise you think "everything's 10 years now" while clients drop offline en masse on the
+originally scheduled day.
 
-**备份**:`nanotun-admin backup <路径>`(热一致,走 `VACUUM INTO`;路径不给就按时间戳命名)拿 SQLite 库,
-再连 `/etc/nanotun` 一起存 —— REALITY 私钥和 hy2 口令都在那儿,丢了客户端要重新接入。
+**Backup**: `nanotun-admin backup <path>` (hot-consistent, via `VACUUM INTO`; without a path it
+names by timestamp) grabs the SQLite DB; also store `/etc/nanotun` alongside it — the REALITY
+private key and hy2 password are in there, and losing them means clients must re-onboard.
 
-**数据库丢了怎么办**:服务不会因为库不见了就停 —— 它会重建一个空库照常启动,
-所以别指望「服务挂了」来提醒你。恢复就是把备份拷回去:
+**What to do if the database is lost**: the service won't stop just because the DB is gone — it
+rebuilds an empty one and starts as usual, so don't count on "the service crashed" to alert
+you. Recovery is copying the backup back:
 
 ```bash
 sudo systemctl stop nanotun nanotun-web
@@ -413,91 +475,106 @@ sudo nanotun-admin --db-path /var/lib/nanotun/nanotun.db restore /path/to/backup
 sudo systemctl start nanotun nanotun-web
 ```
 
-用 `restore` 而不是 `cp`:它会先验源文件是不是一个完整的 nanotun 库(半截下载的备份、
-拿错的 tar.gz、0 字节的 cron 产物都挡在门外),覆盖前把现库留一份
-`.pre-restore-<时间戳>`,并且**在服务还开着时直接拒绝**。
+Use `restore` rather than `cp`: it first verifies the source is a complete nanotun DB (a
+half-downloaded backup, a wrong tar.gz, a 0-byte cron artifact are all kept out), keeps a copy
+of the current DB as `.pre-restore-<timestamp>` before overwriting, and **flatly refuses while
+the service is still running**.
 
-最后这条最要紧。`cp` 是原地覆盖、inode 不变,所以服务端那道「库文件被换掉就重开」的
-兜底照不到它:漏停一个服务再 cp,那个进程会拿着一个从底下被换掉字节的库继续服务,
-一声不吭,而另一个服务从此起不来,日志里只有一句 `database is locked`。
-非交互场景(ssh、脚本)记得加 `--yes` —— 没有 TTY 时它问不到人,会什么都不做并以非 0 退出。
+That last one matters most. `cp` overwrites in place with the inode unchanged, so the server's
+"reopen if the DB file is swapped" fallback misses it: forget to stop one service then cp, and
+that process keeps serving with a DB whose bytes were swapped out from under it, silently,
+while the other service can't start and the log only has a `database is locked`. In
+non-interactive scenarios (ssh, scripts) remember `--yes` — without a TTY it can't ask anyone
+and will do nothing and exit non-zero.
 
-安装向导会往 `/etc/nanotun/web.env` 写一行 `NANOTUN_WEB_ALLOW_SETUP=0`,
-把 /setup 的关闭状态放在数据库之外。否则库一没,/setup 会重新对全网敞开,
-谁先打开谁就是这台机器的管理员。
+The install wizard writes a line `NANOTUN_WEB_ALLOW_SETUP=0` into `/etc/nanotun/web.env`,
+keeping the closed state of /setup outside the database. Otherwise once the DB is gone, /setup
+reopens to the whole internet, and whoever opens it first becomes this machine's admin.
 
-**写这行的只有向导。** 跳过向导装机、后台账号用 `nanotun-admin webadmin create` 建的机器
-没有这一行 —— 那台机器上「已有管理员所以 /setup 关着」这件事只记在库里,库一丢就跟着丢。
-实测:删掉库重启,两个服务都是 active,`/setup` 回 200 并带着建管理员的表单。
-不放心就自己补上那行再重启 `nanotun-web`(`nanotun-web` 每次启动也会就此警告一句)。
+**Only the wizard writes this line.** A machine installed skipping the wizard, with the admin
+account created via `nanotun-admin webadmin create`, doesn't have this line — on that machine
+"there's already an admin so /setup is closed" is only recorded in the DB, and it's gone once
+the DB is lost. Tested: delete the DB and restart, both services are active, and `/setup`
+returns 200 with the create-admin form. If uneasy, add that line yourself and restart
+`nanotun-web` (`nanotun-web` also warns about this on every startup).
 
-真要重新 bootstrap 一个后台账号,用 CLI:
+To really re-bootstrap an admin account, use the CLI:
 
 ```bash
-sudo nanotun-admin webadmin create <名字>
+sudo nanotun-admin webadmin create <name>
 ```
 
-容器部署同理,只是那行写在 compose 的 `environment:` 里(见 `docker/docker-compose.yml`)——
-卷丢失是容器最常见的事故,而 compose 文件跟卷不在一起,那种时候它还活着。
+Same for container deploys, except the line goes in the compose `environment:` (see
+`docker/docker-compose.yml`) — volume loss is the most common container mishap, and the compose
+file, not being with the volume, is still alive at that point.
 
-**整台机器没了怎么办**:上面那几条针对的是「库丢了、机器还在」,那时 `/etc/nanotun`
-原封不动,只补库就够。换一台机器要多一步 —— 把身份也搬过去,否则新机器会给自己生成
-一套全新的 REALITY 私钥和证书,老客户端一个都连不上,而服务端日志一切正常。
+**What to do if the whole machine is gone**: the above is for "DB lost, machine still there",
+when `/etc/nanotun` is intact and just restoring the DB is enough. Moving to a new machine
+needs one more step — bring the identity along, otherwise the new machine generates a fresh set
+of REALITY private key and certs, no old client can connect, and the server log looks perfectly
+normal.
 
 ```bash
-# 1) 新机器上照常装(版本不必与旧机相同,新的即可)
+# 1) Install on the new machine as usual (the version needn't match the old one, newer is fine)
 curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh -o nanotun-install.sh \
-  && sudo bash nanotun-install.sh --yes --dial-host <新地址>
+  && sudo bash nanotun-install.sh --yes --dial-host <new-address>
 
-# 2) 停服务,把备份盖回去 —— 两样都要:/etc/nanotun 是身份,库是用户和设置
-#    库用 restore 而不是 cp,理由见上一节(它会验源、留一份旧库、服务没停就拒绝)
+# 2) Stop the services, put the backup back — both are needed: /etc/nanotun is identity, the DB is users and settings
+#    Restore the DB with restore not cp, reasons in the previous section (it verifies the source, keeps a copy of the old DB, refuses if the service isn't stopped)
 sudo systemctl stop nanotun nanotun-web
 sudo tar -xzf etc-nanotun.tar.gz -C /etc
 sudo nanotun-admin --db-path /var/lib/nanotun/nanotun.db restore backup.db --yes
 sudo systemctl start nanotun nanotun-web
 
-# 3) 新机器 IP 变了的话,拨号地址是从备份里恢复的,还指着旧机器
-sudo nanotun-admin --db-path /var/lib/nanotun/nanotun.db setting set server_dial_host <新地址>
+# 3) If the new machine's IP changed, the dial address restored from backup still points at the old machine
+sudo nanotun-admin --db-path /var/lib/nanotun/nanotun.db setting set server_dial_host <new-address>
 
-# 4) 备份里没有 Web 后台管理员的话,现在建一个(理由见下)
-sudo nanotun-admin --db-path /var/lib/nanotun/nanotun.db webadmin create <名字>
+# 4) If the backup has no Web admin, create one now (reason below)
+sudo nanotun-admin --db-path /var/lib/nanotun/nanotun.db webadmin create <name>
 ```
 
-第 4 步容易漏:新机器装的时候向导写下了 `/etc/nanotun/web.env`(`ALLOW_SETUP=0`),而第 2 步
-解 tar **不会**删掉归档里没有的文件,那一行就留了下来 —— 于是 /setup 关着、库里又没有管理员,
-后台谁也进不去。服务是 active 的、日志干净、页面照常打开,没有一处症状指向原因,所以
-`nanotun-web` 会在启动日志里直说这件事(`journalctl -u nanotun-web`)。
+Step 4 is easy to miss: when the new machine was installed the wizard wrote
+`/etc/nanotun/web.env` (`ALLOW_SETUP=0`), and step 2's tar extraction **won't** delete files
+not in the archive, so that line stays — thus /setup is closed and the DB has no admin, and no
+one can get into the panel. The service is active, the log is clean, the page opens fine, and
+not a single symptom points to the cause, which is why `nanotun-web` says it outright in the
+startup log (`journalctl -u nanotun-web`).
 
-实测跨发行版也成立(源机 Ubuntu 26.04 → 新机 Ubuntu 20.04):恢复后证书指纹、REALITY
-私钥、用户列表与源机逐字相同。
+Tested across distros too (source machine Ubuntu 26.04 → new machine Ubuntu 20.04): after
+restore the cert fingerprint, REALITY private key, and user list are byte-for-byte identical to
+the source.
 
-第 3 步换地址救不了已经发出去的客户端配置 —— 那里面写的是旧地址。**所以拨号地址从一开始
-就该填域名而不是 IP**:换机器时改一条 DNS 记录,客户端什么都不用动。
+Step 3's address change can't save already-issued client configs — they have the old address
+written in. **So the dial address should be a domain, not an IP, from the start**: swapping
+machines then means changing one DNS record and clients touch nothing.
 
-**卸载**:[`scripts/uninstall.sh`](scripts/uninstall.sh)(随发布包走)。
+**Uninstall**: [`scripts/uninstall.sh`](scripts/uninstall.sh) (ships with the release).
 
 ```bash
-sudo ./scripts/uninstall.sh              # 停服务、删程序,保留配置与数据库
-sudo ./scripts/uninstall.sh --purge      # 连配置、证书、数据库一起删
-sudo ./scripts/uninstall.sh --dry-run    # 先看看会动哪些文件
+sudo ./scripts/uninstall.sh              # stop services, remove the program, keep config and DB
+sudo ./scripts/uninstall.sh --purge      # delete config, certs, DB too
+sudo ./scripts/uninstall.sh --dry-run    # see which files it would touch first
 ```
 
-默认保留 `/etc/nanotun` 与数据库,重装一遍就能接着用;`--purge` 会要求你手输 `purge` 再确认,
-因为用户、设备、PSK 和审批过的子网路由是一起没的,已发出去的客户端配置随之作废。
+By default it keeps `/etc/nanotun` and the DB, so a reinstall picks up where it left off;
+`--purge` requires you to type `purge` to confirm, because users, devices, PSKs, and approved
+subnet routes all go together, and already-issued client configs are invalidated with them.
 
-别手动 `rm -rf /etc/nanotun /var/lib/nanotun`:这两个目录**和客户端共用**,
-客户端的设备身份 `/etc/nanotun/device_id` 就在里面。删掉它客户端会以新 UUID 重新注册,
-而 UUID 是审批和出口选择的稳定键 —— 旧设备行还占着固定 vIP,新设备钉不上,
-已经选了这个出口的客户端那边它直接消失。卸载脚本按文件清单删,不碰这些。
+Don't `rm -rf /etc/nanotun /var/lib/nanotun` by hand: these two directories are **shared with
+the client**, and the client's device identity `/etc/nanotun/device_id` is in there. Deleting
+it makes the client re-register with a new UUID, and the UUID is the stable key for approvals
+and egress selection — the old device row still holds the fixed vIP, the new device can't pin
+it, and to clients that already chose this egress it simply disappears. The uninstall script
+deletes by a file manifest and doesn't touch these.
 
-数据库 schema 在启动时自动迁移,没有单独的 migrate 命令。
+The database schema migrates automatically at startup; there's no separate migrate command.
 
-历史版本曾经依赖 一个集中式认证后端(`legacy_backend` 模式),
-当前代码库已经彻底移除该路径,所有部署一律走自托管 PSK。如需查阅历史归因,
-见 `docs/POSTMORTEM-20260521-db-path-migration.md`。
+Historical versions once relied on a centralized auth backend (`legacy_backend` mode); the
+current codebase has removed that path entirely, and all deployments go self-hosted PSK. For
+historical attribution, see `docs/POSTMORTEM-20260521-db-path-migration.md`.
 
-## 许可证
+## License
 
-本项目以 [Apache License 2.0](LICENSE) 开源。
-`third_party/xtls-reality` 为 vendored 第三方代码,保留其自带许可(见该目录内
-`LICENSE` 与 `LICENSE-Go`)。
+This project is open-sourced under [Apache License 2.0](LICENSE). `third_party/xtls-reality`
+is vendored third-party code retaining its own license (see `LICENSE` and `LICENSE-Go` in that
+directory).
