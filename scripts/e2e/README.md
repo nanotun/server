@@ -185,7 +185,14 @@ C 虽然带 `--no-default-route`,但它是出口节点兼靶站,额外负载会�
   恢复码一次性 → 改密 step-up → 旧密码作废)由 `scripts/testlab/lab.sh browse-2fa`
   单独覆盖:它内置 RFC6238 算码,连「enable 输的码被重放到登录」这类时间步共享的坑
   都当场验。两者都不进发版门禁:要装浏览器,而门禁跑在三台不带图形栈的真机上。
-- **不做恶意客户端视角。** 畸形帧、超大帧、PSK 重放、分片绕过端口 ACL 等都不在范围内。
+- **恶意客户端视角:握手层走单测,分片绕 ACL 另有数据面 drill。** 畸形/超大预登录帧、
+  PSK(PoW)重放、伪造 PoW、错 nonce、垃圾 LoginReq、预登录空闲超时,由
+  `cmd/nanotund/login_adversarial_test.go` 用 `net.Pipe` 直打 `handleVPNLink` 覆盖
+  (不需真监听端口)。「端口 deny 不能被分片绕过」除了解析器单测
+  (`acl_eval_guards_test.go`),还有一条按需跑的三机数据面黑盒:
+  `scripts/e2e/frag-acl-drill.sh` —— 从 A 用原始套接字造 IP 分片穿隧道,靠服务端
+  `acl_drops` 增量断言「无端口的非首片也被 fail-closed(增量 6 而非 3)」。它不进
+  发版门禁:要 root 开 `SOCK_RAW`,且共用环境上临时动 ACL 有风险。
 - **本套件的贡献在普通覆盖率里看不见。** 跑的是没插桩的生产二进制,`go test -cover`
   的剖面里一条都不记。想量它到底覆盖了多少代码,得编插桩二进制重跑一遍再与单测剖面
   合并,做法与坑见 [`docs/COVERAGE.md`](../../docs/COVERAGE.md)。2026-07-27 那次测下来,
