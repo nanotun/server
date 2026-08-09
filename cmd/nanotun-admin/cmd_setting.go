@@ -34,6 +34,12 @@ var systemManagedSettingKeys = map[string]string{
 	// 第十八轮深扫 MED:mesh_cidrs 是 server 启动落库的本 mesh 网段快照,供批准子网路由时判交叠。DAL 的
 	// reservedSettingKeys 已兜底,这里在 CLI 入口再拦一层并给出清晰 hint。
 	store.MeshCIDRsKey: "setting.sysHint.meshCidrs", // "mesh_cidrs"
+	// MagicDNS 后缀不是 DB 设置:运行期只从 config.toml 的 [server.magic_dns].domain_suffix 读
+	// (magicDNSSuffixForClient / resolveMagicDNSConfig),app_settings 里的 magic_suffix 没有任何代码会看。
+	// 早先它只是个未知 key —— 原样落库 + 泛泛的「unknown key」告警,运维极易以为改了后缀却零效果
+	// (这正是「怎么又变回 lan 了」那类困惑的来源)。这里升级为硬拒 + 精确指路:config.toml /
+	// scripts/set-magic-suffix.sh / 装机期 NANOTUN_MAGIC_SUFFIX。
+	"magic_suffix": "setting.sysHint.magicSuffix",
 }
 
 // validatedSettingKeys 列出可通过 `setting set` 修改、但**必须先走 schema 校验**的 key。

@@ -77,6 +77,25 @@ func TestCmdSettingSet_RefusesSystemManagedKeys(t *testing.T) {
 	}
 }
 
+// magic_suffix 最容易被误当成「改后缀的开关」——运行期只认 config.toml，DB 写了零效果。
+// 硬拒之外，指路必须点到真正的入口（config.toml / set-magic-suffix.sh），否则运维只会换个拼写再试。
+func TestCmdSettingSet_MagicSuffixBlockedPointsToConfig(t *testing.T) {
+	db := newInitializedDB(t, t.TempDir(), "s.db")
+	code, _, stderr := runCLI(t, db, "", "setting", "set", "magic_suffix", "nanotun")
+	if code == 0 {
+		t.Fatal("magic_suffix 被手改成功了 —— 它是 config.toml 的东西，DB 写了也没用")
+	}
+	// 指路要提到真正的入口（两种语言都含这两个字面量），别让人以为换个拼写就行。
+	if !strings.Contains(stderr, "config.toml") || !strings.Contains(stderr, "set-magic-suffix") {
+		t.Errorf("拒绝信息没指向 config.toml / set-magic-suffix.sh: %q", stderr)
+	}
+	// 拒了就不能落库 —— 留一行没人读的脏值比拒绝失败更误导。
+	if code, out, _ := runCLI(t, db, "", "setting", "get", "magic_suffix"); code == 0 &&
+		strings.Contains(out, "nanotun") {
+		t.Errorf("被拒的 magic_suffix 还是进库了: %q", out)
+	}
+}
+
 // 有校验器的 key 要拒坏值。这几个 key 一旦写进垃圾,数据面读取时的兜底行为
 // 各不相同(有的 fail-open),排查时几乎不会有人想到去看 app_settings。
 func TestCmdSettingSet_ValidatedKeysRejectGarbage(t *testing.T) {

@@ -368,6 +368,12 @@ fi
 [ -f "$SCRIPTS_DIR/preflight.sh" ] && \
   install -m 0755 "$SCRIPTS_DIR/preflight.sh" /usr/local/bin/nanotun-preflight
 
+# 改 MagicDNS 局域网后缀的工具也装成命令:装机时用 NANOTUN_MAGIC_SUFFIX 定一次,之后想换
+# 就 `sudo nanotun-set-suffix <后缀>`(备份→段感知改写→重启→失败自动回滚)。开服向导
+# nanotun-setup 的「MagicDNS 后缀」步也优先调它(同一份逻辑,单一真源)。老包没有不 fatal。
+[ -f "$SCRIPTS_DIR/set-magic-suffix.sh" ] && \
+  install -m 0755 "$SCRIPTS_DIR/set-magic-suffix.sh" /usr/local/bin/nanotun-set-suffix
+
 # 目录权限写死,不跟调用者的 umask 走。
 #
 # 实测 umask 000 装出来:/etc/nanotun 是 0777。里面的密钥文件仍然是 0600(上面全是

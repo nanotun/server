@@ -55,6 +55,8 @@ var catZH = map[string]string{
 		"手改成 1 会让下次升级跳过规范化,残留非规范 VIP → 去重失配 / 双占。请勿手动设置。",
 	"setting.sysHint.meshCidrs": "本 mesh 网段(TUN 网关 CIDR)的快照,由 nanotun server 启动时写入,供 admin/web 在批准子网路由时拒绝与之交叠的网段。" +
 		"手改会让批准期的重叠检查信任一个伪造的网段。每次 server 启动都会刷新,请勿手动设置。",
+	"setting.sysHint.magicSuffix": "MagicDNS 局域网后缀(客户端解析 *.<后缀> → mesh 虚拟 IP)不是数据库设置 —— 运行期只从 config.toml 的 [server.magic_dns].domain_suffix 读,app_settings 里的 magic_suffix 没有任何代码会看,写了也零效果。" +
+		"改现有机器:scripts/set-magic-suffix.sh <后缀>(备份→段感知改写→重启→失败自动回滚);装机时:NANOTUN_MAGIC_SUFFIX=<后缀> 跑 install.sh / install-self-hosted.sh(Docker 用同名环境变量)。",
 	"setting.validateFailed": "%q 校验失败:%s",
 	"setting.unknownKeyWarn": "警告:%q 不是本程序认识的任何设置项 —— 值已原样写入,但**不会有任何效果**。" +
 		"如果你是想改某个已知设置项,多半是 key 拼错了(限速请用 `nanotun-admin setting rate`,它还会热推给在线会话)。",

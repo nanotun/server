@@ -304,6 +304,12 @@ Web 后台同款:`/users` 列表展示 `credential_id` 前 8 位;新建用户 / 
   gateway IP 的 :53 上跑内置 stub DNS,把 `<device>.<user>.<suffix>` 解析为 vIP。
   `listen_port` 必须 = 53,否则 server 会跳过给客户端 prepend gateway DNS
   (避免把客户端 DNS 指到查不到的端口)。配置范例见 `cmd/nanotund/config.toml` 注释。
+  后缀 `<suffix>` 默认 `lan`,**装机时**可定制:`--magic-suffix nanotun`
+  或环境变量 `NANOTUN_MAGIC_SUFFIX=nanotun`(一键装 `install.sh` / 离线
+  `install-self-hosted.sh` / Docker 同名变量,只在首次写 `config.toml` 时生效)。
+  改**已装好**机器的后缀用 `scripts/set-magic-suffix.sh <后缀>`(备份→改→重启→失败自动
+  回滚)。运行期后缀只从 `config.toml` 读,`nanotun-admin setting set magic_suffix` 不是
+  入口(已硬拒并指路)。
 - **Subnet route advertise**(P2#12,**数据面已落地 SR-M1**)客户端可声明本地子网,
   管理员通过 `nanotun-admin route approve <device_id> <cidr>` 审批。审批后,只要宣告方
   device 在线、且请求方→宣告方的 ACL 放行,发往该 CIDR 的流量就会由 server 真正投递到

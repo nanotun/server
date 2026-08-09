@@ -12,13 +12,20 @@
 #
 # 这三件事以前全靠读文档,这个脚本把它们串起来。
 #
-# 幂等:重复跑安全。已设过的值会显示出来让你选择保留,不会重置 PSK、不会动 config.toml、
-# 不会重跑 init。想只加一个用户,重跑一遍在前两步回车跳过即可。
+# 幂等:重复跑安全。已设过的值会显示出来让你选择保留,不会重置 PSK、不会重跑 init。
+# 默认也**不动 config.toml** —— 唯一例外是你在「MagicDNS 后缀」那步显式改了后缀(或带
+# --magic-suffix):那会备份→段感知改写→重启 nanotund(失败自动回滚)。回车保留则纹丝不动。
+# 想只加一个用户,重跑一遍在前几步回车跳过即可。
 #
 # 可脚本化(自动化部署用):
 #   sudo ./scripts/setup.sh --dial-host vpn.example.com --user alice --yes
 #   sudo ./scripts/setup.sh --dial-host 203.0.113.10 --no-user --yes
+#   sudo ./scripts/setup.sh --magic-suffix nanotun --yes      # 只改 MagicDNS 后缀并重启
 set -euo pipefail
+
+# 装成 /usr/local/bin/nanotun-setup 时,同目录就有 nanotun-set-suffix;从发布包/仓库直接
+# 跑时,同目录有 set-magic-suffix.sh。「MagicDNS 后缀」那步据此定位改后缀的工具(见 resolve_suffix_tool)。
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 向导也会落文件(web.env、二维码 PNG),同样不看调用者的 umask —— 它装成
 # /usr/local/bin/nanotun-setup,谁都可能在自己的环境里直接敲。
@@ -37,6 +44,7 @@ OPT_DIAL_HOST=""
 OPT_USER=""
 OPT_NO_USER=0
 OPT_WEB_ADMIN=""
+OPT_MAGIC_SUFFIX=""
 ASSUME_YES=0
 
 # ── 输出 ─────────────────────────────────────────────────────────────────────
@@ -72,6 +80,9 @@ nanotun 开服向导:设置客户端拨号地址、创建 Web 后台管理员、
   --user NAME        创建这个 VPN 用户并出二维码
   --no-user          跳过创建用户那一步
   --web-admin NAME   Web 后台管理员用户名(密码见下面的环境变量)
+  --magic-suffix SFX MagicDNS 局域网后缀(客户端解析 *.<后缀> → mesh 虚拟 IP),默认 lan。
+                     只在与现值不同时才改:备份→段感知改写 config.toml→重启 nanotund
+                     (失败自动回滚)。不给这个参数时,交互模式会显示现值让你选择保留。
   -y, --yes          不再交互,全部走默认值(全新机器必须配合 --dial-host;
                      已配过的机器不给就沿用现有值)
   -h, --help         显示本帮助
@@ -110,6 +121,7 @@ while [ $# -gt 0 ]; do
     # 密码只从环境变量 NANOTUN_WEB_ADMIN_PASSWORD 读,故意**不做** --web-admin-password:
     # 命令行参数会进 argv,同机任何用户 ps 一眼就看见,还会落进 shell history 和 journal。
     --web-admin) OPT_WEB_ADMIN="$(need_val "$1" "${2:-}")"; shift 2 ;;
+    --magic-suffix) OPT_MAGIC_SUFFIX="$(need_val "$1" "${2:-}")"; shift 2 ;;
     -y|--yes)    ASSUME_YES=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     # 点名是谁在说话:install.sh 会把自己不认得的参数原样转交本向导,所以这行
@@ -187,6 +199,27 @@ export NANOTUN_SETUP_WIZARD=1
 # 不传时它也能自己找到装好的库,但那个回退有个前提 —— 当前目录下没有 data/nanotun.db,
 # 有就用那个。向导是 sudo 起来的,cwd 是谁的当前目录不好说,不该把开服这一步押在上面。
 admin() { "$ADMIN" --db-path "$DB" "$@"; }
+
+# 定位改 MagicDNS 后缀的工具。装成命令时它就在 /usr/local/bin/nanotun-set-suffix(install
+# -self-hosted.sh 装的);从发布包/仓库直接跑时是同目录的 set-magic-suffix.sh。找不到就返回非零。
+# 它内部做:校验后缀→读现值(相同则 no-op)→备份→段感知改写 config.toml→重启→轮询,
+# 失败自动回滚。故这里只负责选路,真正的安全保证在那份脚本里(单一真源)。
+resolve_suffix_tool() {
+  local c
+  for c in /usr/local/bin/nanotun-set-suffix "$HERE/set-magic-suffix.sh"; do
+    [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+
+# 读 config.toml 里现有的 MagicDNS 后缀。空白类用 [ \t] 而非 [[:space:]]:mawk 1.3.3
+# (老 Ubuntu/Debian 默认 awk)不认 POSIX 字符类,会永不匹配(与 set-magic-suffix.sh 同口径)。
+# 配置里没写该行 → 运行期兜底为 lan(resolveMagicDNSConfig 的默认),这里也回落 lan。
+current_magic_suffix() {
+  local v
+  v="$(awk -F'"' '/^[ \t]*domain_suffix[ \t]*=/{print $2; exit}' "$ETC_DIR/config.toml" 2>/dev/null || true)"
+  printf '%s' "${v:-lan}"
+}
 
 # 放得下才打二维码。
 #
@@ -420,6 +453,58 @@ while :; do
   dial_host=""
   OPT_DIAL_HOST=""
 done
+
+# ── MagicDNS 局域网后缀(可选)────────────────────────────────────────────────
+# 进阶设置:绝大多数人用默认 lan 就好。放在这里(而非核心编号步骤)是因为它是唯一会**动
+# config.toml + 重启 nanotund** 的一步 —— 只有你显式改了后缀(或带 --magic-suffix)才发生,
+# 回车保留则纹丝不动。运行期后缀只从 config.toml 读,故必须改文件+重启,setting set 不是入口。
+step "MagicDNS 局域网后缀(可选 —— 改它会重启服务)"
+
+if [ ! -f "$ETC_DIR/config.toml" ]; then
+  note "没找到 $ETC_DIR/config.toml,跳过(这台机器可能只跑了 Web 后台)。"
+else
+  cur_suffix="$(current_magic_suffix)"
+  if [ -z "$OPT_MAGIC_SUFFIX" ] && [ "$ASSUME_YES" = 1 ]; then
+    # 无人值守且没显式点名:不擅改(改后缀要重启数据面)。一行交代现值和改法即可。
+    note "MagicDNS 后缀 = $cur_suffix(--yes 不改;要改:--magic-suffix <后缀> 或 sudo nanotun-set-suffix <后缀>)"
+  else
+    note "客户端解析 *.<后缀> → mesh 虚拟 IP。默认 lan;想避开与家用路由器/保留域冲突可换一个。"
+    ok "当前后缀: $cur_suffix"
+
+    # 目标后缀:命令行显式给了(--magic-suffix)就用它;否则交互询问,默认=现值(回车即保留)。
+    want_suffix="${OPT_MAGIC_SUFFIX:-$(ask "MagicDNS 后缀" "$cur_suffix")}"
+
+    if [ "$want_suffix" = "$cur_suffix" ]; then
+      ok "保持不变: $cur_suffix"
+    else
+      suffix_tool="$(resolve_suffix_tool || true)"
+      if [ -z "$suffix_tool" ]; then
+        warn "想把后缀改成 '$want_suffix',但没找到改后缀的工具(nanotun-set-suffix / set-magic-suffix.sh)。"
+        note "手动改:scripts/set-magic-suffix.sh $want_suffix(或改 $ETC_DIR/config.toml 的 domain_suffix 再重启 nanotun)。"
+      else
+        do_change=1
+        # 改后缀要重启 nanotund(SIGTERM graceful drain,客户端会短暂重连)。交互下确认一句;
+        # 带了 --magic-suffix 是命令行显式点名,不再追问(那个问题已经被回答过)。
+        if [ "$ASSUME_YES" = 0 ] && [ -z "$OPT_MAGIC_SUFFIX" ]; then
+          confirm "把后缀从 '$cur_suffix' 改成 '$want_suffix'?这会重启 nanotund(客户端短暂重连)" y \
+            || do_change=0
+        fi
+        if [ "$do_change" = 1 ]; then
+          # 工具自带后缀校验(非法直接退)与「重启后没回 active 就自动回滚」。它非零退出不该
+          # 拖垮整个向导 —— 前面配好的拨号地址/管理员/用户都还在,单独重来即可,故用 if 兜住。
+          if SERVICE=nanotun CONFIG="$ETC_DIR/config.toml" "$suffix_tool" "$want_suffix"; then
+            ok "MagicDNS 后缀已改为 '$want_suffix'。各客户端重连一次即用新后缀。"
+          else
+            warn "改后缀没成功(原因见上;工具会自动回滚到旧后缀 '$cur_suffix')。可稍后单独重试:"
+            note "  sudo nanotun-set-suffix <后缀>"
+          fi
+        else
+          ok "保持不变: $cur_suffix"
+        fi
+      fi
+    fi
+  fi
+fi
 
 # ── 2. Web 后台管理员 ────────────────────────────────────────────────────────
 step "2. Web 后台管理员"
@@ -808,6 +893,7 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
 fi
 printf '    数据库     %s\n' "$DB"
 printf '    配置       %s/config.toml\n' "$ETC_DIR"
+[ -f "$ETC_DIR/config.toml" ] && printf '    MagicDNS   *.%s → mesh 虚拟 IP\n' "$(current_magic_suffix)"
 printf '\n'
 # --db-path 已经不是必须的了:不带它时 nanotun-admin 会自己找到这台机器装好的库
 # (只有当前目录下正好有 data/nanotun.db 时才用那个)。但这里照旧写全 —— 贴进

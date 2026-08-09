@@ -212,6 +212,20 @@ C 虽然带 `--no-default-route`,但它是出口节点兼靶站,额外负载会�
   `scripts/e2e/frag-acl-drill.sh` —— 从 A 用原始套接字造 IP 分片穿隧道,靠服务端
   `acl_drops` 增量断言「无端口的非首片也被 fail-closed(增量 6 而非 3)」。它不进
   发版门禁:要 root 开 `SOCK_RAW`,且共用环境上临时动 ACL 有风险。
+- **MagicDNS 门禁只验默认后缀 lan;非默认后缀另有 drill。** 阶段 1(`10-exit.sh`)只在
+  `domain_suffix=lan` 下验解析。而「后缀可配」整条链(config.toml → nanotund 启动读进
+  快照 → 网关 :53 只答 `*.<该后缀>`)由一条按需 drill 走非默认后缀:
+
+  ```bash
+  ./scripts/e2e/magic-suffix-drill.sh          # 默认改成 nanotun 再还原
+  DRILL_SUFFIX=corp ./scripts/e2e/magic-suffix-drill.sh
+  ```
+
+  它推 `set-magic-suffix.sh` 到 SRV,把后缀改成非默认值(备份→段感知改写→重启→失败
+  自动回滚),等 A 重连后从 A `dig @网关` 断言 `*.<新后缀>` 解析到 C 的 vIP、且**旧后缀
+  转 NXDOMAIN**(证明切换排他),再还原并验还原也真生效。收尾必定还原原后缀(trap 幂等)。
+  不进门禁:要重启服务端两次、其间 A/C 会 graceful 重连,且仅 systemd 形态(docker 形态
+  配置在容器内、写文件要绕 `docker exec`,其后缀语义由单测 + 裸机装机测覆盖)。
 - **传输隐蔽性:REALITY 端口被主动探测时回落到真站,不可区分。** REALITY 的命脉是
   探测者拿普通 TLS ClientHello 打接入端口(默认 8443)时,服务端把连接透明代理到
   `[reality].dest`(默认 `www.microsoft.com:443`),让探测者拿到一张**能过系统 CA 校验

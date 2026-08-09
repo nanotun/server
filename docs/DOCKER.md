@@ -325,7 +325,10 @@ docker compose exec nanotun diff /etc/nanotun/config.toml /etc/nanotun/config.to
 | `NANOTUN_WEB_EXTRA_SANS` | 空 | 自签证书额外 SAN，如 `vpn.example.com` |
 | `NANOTUN_WEB_TRUSTED_PROXIES` | 空 | 可信反代 IP/CIDR。放在 nginx 后面时必须设，否则按 IP 的登录限流看到的全是反代地址 |
 | `NANOTUN_FORCE_CONFIG` | `0` | 用镜像模板覆盖已有配置（会备份原文件） |
+| `NANOTUN_MAGIC_SUFFIX` | 空（模板默认 `lan`） | MagicDNS 局域网后缀，客户端解析 `*.<后缀>` → mesh 虚拟 IP。**只在首次生成 `config.toml` 时生效**；卷里已有配置后再改这行不起作用（改法见下） |
 | `NANOTUN_SKIP_INIT` | `0` | 跳过 `nanotun-admin init`。init 本身幂等，这个开关只为特殊排查保留 |
+
+> `NANOTUN_MAGIC_SUFFIX` 想换成别的（如 `nanotun`），要在**首次 `up -d` 前**设好（`docker-compose.yml` 的 `environment:` 里有注释好的样例）。数据卷里已经有 `config.toml` 之后，这个变量会被 `entrypoint.sh` 忽略并给出告警 —— 此时改后缀有两条路：直接改卷里 `config.toml` 的 `[server.magic_dns].domain_suffix` 再重启容器，或设 `NANOTUN_FORCE_CONFIG=1` 用模板重来（后者会重签密钥、踢掉所有客户端）。注意运行期后缀**只**从 `config.toml` 读，`nanotun-admin setting set magic_suffix` 不是入口（会被硬拒并指路）。
 
 ---
 
