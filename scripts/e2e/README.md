@@ -193,6 +193,34 @@ C 虽然带 `--no-default-route`,但它是出口节点兼靶站,额外负载会�
   `scripts/e2e/frag-acl-drill.sh` —— 从 A 用原始套接字造 IP 分片穿隧道,靠服务端
   `acl_drops` 增量断言「无端口的非首片也被 fail-closed(增量 6 而非 3)」。它不进
   发版门禁:要 root 开 `SOCK_RAW`,且共用环境上临时动 ACL 有风险。
+- **传输隐蔽性:REALITY 端口被主动探测时回落到真站,不可区分。** REALITY 的命脉是
+  探测者拿普通 TLS ClientHello 打接入端口(默认 8443)时,服务端把连接透明代理到
+  `[reality].dest`(默认 `www.microsoft.com:443`),让探测者拿到一张**能过系统 CA 校验
+  的真站证书**,认不出这是 VPN。本地假 VPS 上用同网段另一台带 `openssl` 的容器当探测者
+  即可复现(需服务器容器能出网到 `dest`):
+
+  ```bash
+  # <SRV> = 服务器容器 IP。期望与直连真站逐字一致、Verify 0
+  echo | openssl s_client -connect <SRV>:8443 -servername www.microsoft.com 2>/dev/null \
+    | openssl x509 -noout -issuer -subject
+  echo | openssl s_client -connect www.microsoft.com:443 -servername www.microsoft.com 2>/dev/null \
+    | openssl x509 -noout -issuer -subject           # 对照:issuer/subject 应逐字相同
+  ```
+
+  返回自签证书、连接被 RST、或 `Verify return code` 非 0,就是回落坏了 —— 指纹已泄。
+- **hy2/QUIC 数据面本地可验,但「出真公网」必须上真机。** 隧道建立、QUIC 收发、
+  **隧道内 TCP**(客户端经隧道打**服务器自身**的 HTTP,拿 200 且大响应两端 `md5` 逐字
+  一致)、ICMP 出公网,这些都能在本地 Docker 假 VPS 上验完 —— 用一枚 `nanotun` 客户端
+  `connect ... --transport hy2` 连上 lab 服务器容器即可。但**客户端经隧道出公网的 TCP,
+  在 Docker Desktop for Mac 上会假失败**:它的用户态出网栈把容器入向回程包的 TCP 校验和
+  搞坏(抓包见朝 `tun0` 的 SYN-ACK `cksum (incorrect)`、`mss 65495` 的本地代答特征,且带
+  `CHECKSUM_UNNECESSARY` 标志,连服务端 `iptables -t mangle -A POSTROUTING -o tun0 -j
+  CHECKSUM --checksum-fill` 都救不回),nanotun 忠实转发进隧道,客户端真 TCP 栈校验失败
+  静默丢弃 → SYN 无限重传。ICMP 是软件校验和不受影响,于是表现成「小包 `ping` 出网通、
+  任何 TCP 出网超时」。判据:抓包见 SYN-ACK `cksum incorrect`,即环境伪影而非产品缺陷
+  (服务端 `ip_forward` / SNAT / FORWARD 三样都对;真 Linux VPS 上 reality 的 HTTPS 出口
+  早已实测通)。要验真出口,用真 VPS(reality/hy2 均可),别在 Docker Desktop for Mac 里
+  测客户端出公网 TCP。
 - **本套件的贡献在普通覆盖率里看不见。** 跑的是没插桩的生产二进制,`go test -cover`
   的剖面里一条都不记。想量它到底覆盖了多少代码,得编插桩二进制重跑一遍再与单测剖面
   合并,做法与坑见 [`docs/COVERAGE.md`](../../docs/COVERAGE.md)。2026-07-27 那次测下来,
