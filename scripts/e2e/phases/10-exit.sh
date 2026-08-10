@@ -72,6 +72,28 @@ phase_10_exit() {
   via_resolver="$(a "getent hosts $a_name" | head -1 | awk '{print $1}' | tr -d '[:space:]')"
   check_match "MagicDNS · 经系统解析器可解析（客户端 DNS 接管生效）" '^[0-9a-fA-F:.]+$' "$via_resolver"
 
+  # 同一件事必须在 **C** 上再钉一遍。A 是全隧道、C 带 --no-default-route 走组网(mesh-only),
+  # 两者的客户端 DNS 接管是**两段不同的代码**:全隧道会改写全局 DNS,组网只给 systemd-resolved
+  # 下 per-link split-DNS —— 后者仅当 resolved 真在解析链上才对应用生效。而 Vultr/Ubuntu-cloud
+  # 这类镜像 resolved 在跑却没接进链(nsswitch=files dns、resolv.conf 直写公网 DNS),于是网关
+  # 答得好好的、应用却解析不到,正是本节开头那句「网关能解析但应用解析不了」。
+  #
+  # 2026-08-10 在 C 上实测就是这个状态(getent 空、dig @10.201.0.1 同名字正常返回),而当时整轮
+  # 门禁全绿 —— 因为这条断言只在 A 上做过,组网那条分支从来没人验。故这里补 C 侧同款。
+  # 用 ahostsv4 而不是 hosts:强制走 v4 得到确定值,可以直接对 A 的 vIP4,不必像 A 侧那样
+  # 因 v4/v6 返回顺序不定而只能松散地断言「像个 IP」。
+  local via_resolver_c
+  via_resolver_c="$(c "getent ahostsv4 $a_name" | head -1 | awk '{print $1}' | tr -d '[:space:]')"
+  if [ "$via_resolver_c" = "$E2E_A_VIP4" ]; then
+    _pass "MagicDNS · 组网(mesh-only)下经系统解析器可解析"
+  elif [ -z "$via_resolver_c" ]; then
+    _fail "MagicDNS · 组网(mesh-only)下经系统解析器可解析" \
+      "C 上 getent 解析不到 $a_name(但 dig @10.201.0.1 正常)—— 组网分支的 DNS 接管没对应用生效;常见成因是该主机 systemd-resolved 不在解析链上、而客户端版本尚无 resolv.conf 兜底(blackhorse-windows 的 11425ea)"
+  else
+    _fail "MagicDNS · 组网(mesh-only)下经系统解析器可解析" \
+      "期望 A 的 vIP4 $E2E_A_VIP4,实测 [$via_resolver_c]"
+  fi
+
   check "MagicDNS · 未知名字返回 NXDOMAIN（空结果）" "" \
     "$(a "dig +short +time=4 +tries=1 @10.201.0.1 nosuch.$E2E_C_USER.$E2E_MAGIC_SUFFIX" | tr -d '[:space:]')"
   check_match "MagicDNS · 非 magic 域名转发上游" '^[0-9]+\.[0-9]+\.' \
