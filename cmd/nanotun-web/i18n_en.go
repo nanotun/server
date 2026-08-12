@@ -1088,7 +1088,7 @@ var catEN = map[string]string{
 	"acl.thPort":               "Ports",
 	"acl.thKind":               "Dst type",
 	"aclNew.backToList":        "Back to ACL list",
-	"aclNew.intro":             "Rule semantics: allow / deny devices of the source user to reach devices of the destination user (or the public exit). Default policy: devices of the same user can always reach each other; cross-user access requires an explicit allow.",
+	"aclNew.intro":             "Rule semantics: allow / deny devices of the source user to reach devices of the destination user (or the public exit). Devices of the same user can always reach each other; cross-user traffic that matches no rule falls back to acl_default_action, which ships as allow — so cross-user access is permitted by default. Set it to deny first if you want \"anything not explicitly allowed is refused\".",
 	"aclNew.actionLabel":       "Action",
 	"aclNew.actionAllowSuffix": " (allow)",
 	"aclNew.actionDenySuffix":  " (deny)",

@@ -148,12 +148,23 @@ nanotun-admin lease set 7 --v4 100.64.0.50 --manual    # 钉死，不被自动�
 > `journalctl -u nanotun` 会看到 `[reload] acl 规则集已刷新 rule_count=N`；
 > 同时 `audit_logs` 写入一条 `config.reload applied=[acl_rules]` 便于追溯。
 
-`acl_pairs` 表里没规则时 nanotun 默认全网放行；一旦添加规则即转为「白名单」语义：
+`acl_pairs` 表里没规则时 nanotun 默认全网放行。**加规则并不会自动转成白名单** —— 没命中的
+流量一律按 `acl_default_action` 处理，而该设置的出厂值是 `allow`：
 
 - 同 userID 间永远放行（同账号多设备 mesh 互通）
-- 显式 `allow` 规则放行（src=0 或 dst=0 表示通配）
 - 显式 `deny` 规则拒绝（同优先级下 deny 胜 allow）
-- 有任何规则但本对 src→dst 没命中 → 默认 deny（白名单语义）
+- 显式 `allow` 规则放行（src=0 或 dst=0 表示通配）
+- 本对 src→dst 没命中任何规则 → 按 `acl_default_action` 裁决，出厂即放行
+
+> **要白名单语义必须显式打开**：
+>
+> ```bash
+> nanotun-admin setting set acl_default_action deny
+> kill -HUP $(pidof nanotund)
+> ```
+>
+> 在此之前写一条 `allow alice bob` 只是给这一对单独记了笔账，**其余流量并没有因此被挡住**。
+> 想确认当前处于哪种语义，看 `nanotun-admin setting get acl_default_action`。
 
 > **规则是单向且无状态的**：`deny alice bob` 只匹配 `src=alice, dst=bob` 的包，不会自动
 > 匹配 `bob → alice`。但**双向协议照样会整体不通** —— `bob ping alice` 的 echo request

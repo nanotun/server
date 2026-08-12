@@ -1093,7 +1093,7 @@ var catZH = map[string]string{
 	"acl.thPort":               "端口",
 	"acl.thKind":               "目标类型",
 	"aclNew.backToList":        "返回 ACL 列表",
-	"aclNew.intro":             "规则语义:允许 / 拒绝「源用户」的设备访问「目标用户」的设备(或公网出口)。默认策略:同用户设备互通,跨用户互访需显式 allow。",
+	"aclNew.intro":             "规则语义:允许 / 拒绝「源用户」的设备访问「目标用户」的设备(或公网出口)。同用户设备始终互通;跨用户若没命中任何规则,则按 acl_default_action 裁决 —— 出厂值是 allow,也就是默认互通。要让「未显式允许即拒绝」生效,需先把它改成 deny。",
 	"aclNew.actionLabel":       "动作",
 	"aclNew.actionAllowSuffix": "(允许)",
 	"aclNew.actionDenySuffix":  "(拒绝)",
