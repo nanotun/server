@@ -57,6 +57,32 @@ var sessionSupersedeCount atomic.Uint64
 // 客户端据 code=CodeSessionLimit(406)提示并退避,避免与其它设备来回争抢配额的重连震荡。
 const sessionLimitEvictClientMsg = "账号同时在线会话数已达上限，本连接被较新的登录挤下线"
 
+// CloseCodeDeviceReplaced(906):同一 device_uuid 的另一条连接登录,把本连接顶替下线。
+// 放 9xx 段(与 902 CloseCodeShutdown / 905 CloseCodeUserInvalidated 同段),语义为
+// 「**终态,不要自动重连**」——客户端 onServerCloseReceived 对非 0 且非 902 的 code 一律
+// 当终态处理,收到即停止自动重连并展示文案。
+//
+// 背景(为什么 supersede 现在要发帧):
+//
+//   findSupersededByDeviceLocked 此前把旧 conn **静默 Close、不发帧**,前提假设是
+//   「同一台设备重登(旧的是自己 crash / 切网络留下的僵尸连接)」——这种情况下旧链路
+//   客户端侧早已关闭,发不发帧都无所谓。
+//
+//   但当**两台物理机**因加密备份恢复 / Quick Start 迁移共用了同一个 device_uuid 时,
+//   被顶下线的一方是**活着的独立客户端**:它收到裸 TCP 断开,无法与普通网络抖动区分,
+//   于是自动重连 → 重连又成为新 primary → 反过来把对面顶下线 → 对面再自动重连……
+//   两台无限互相挤断(ping-pong)。
+//
+//   补发一帧带 906 的 Close,让**活着的被顶方**明确「已在别处登录」,进入终态、停止
+//   自动重连并提示用户(通常成因是设备身份被备份带到了第二台,需在其中一台重置身份)。
+//   同机重登场景旧链路客户端侧已关,收不到此帧,行为不变——即「只有真正需要停的那一方
+//   (活着的被顶方)会收到帧」。
+const CloseCodeDeviceReplaced = 906
+
+// deviceSupersedeClientMsg 是同 device_uuid 顶替下线时发给受害端 LinkTypeClose 帧的 reason 文案。
+// 客户端据 code=CloseCodeDeviceReplaced(906)停止重连并提示,打破两处共用同一设备身份的互踢震荡。
+const deviceSupersedeClientMsg = "该设备身份已在另一处登录，本连接已断开（不会自动重连，避免两处反复互相挤断）"
+
 // supersedeWaitTimeout:supersede victim cleanup 的最大等待时间。
 //
 // 选 5s 的理由:

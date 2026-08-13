@@ -3222,18 +3222,25 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		forceCancelTunnel(victim)
 		victim.linkWrMu.Lock()
 		if victim.linkConn != nil {
-			// M3:会话超限踢除(evict,非同 device supersede)是被动踢线——给受害端先发一帧带码
-			// Close(CodeSessionLimit),让客户端明确「账号会话数超限」并据此退避 / 提示,而不是收到
-			// 裸 TCP 断开盲目重连(两台设备来回踢的震荡)。best-effort:带 1s 写超时,写失败也照常 Close。
-			// supersede(同 device_uuid 重登)受害者是同一设备刚建立的新连接在接管,老连接静默关闭即可,
-			// 不发帧(与既有行为一致,避免客户端对自己的重登误报"被超限踢下线")。
-			if !isSupersede {
-				if body, mErr := util.MarshalCloseJSON(util.CodeSessionLimit, sessionLimitEvictClientMsg); mErr == nil {
-					if dl, ok := victim.linkConn.(interface{ SetWriteDeadline(time.Time) error }); ok {
-						_ = dl.SetWriteDeadline(time.Now().Add(1 * time.Second))
-					}
-					_ = util.WriteLinkFrame(victim.linkConn, util.LinkTypeClose, body)
+			// 被踢受害端都先发一帧带码 Close,让客户端明确断开原因、据码决定是否重连,而不是收到裸 TCP
+			// 断开盲目重连(两台设备来回挤断的震荡)。best-effort:带 1s 写超时,写失败也照常 Close。
+			//   - evict(账号会话数超限,被动踢线):发 CodeSessionLimit(406),客户端提示并退避;
+			//   - supersede(同 device_uuid 重登被顶替):发 CloseCodeDeviceReplaced(906),客户端进终态、停止重连。
+			//     历史上 supersede 静默不发帧,前提假设「同机重登(旧的是自己的僵尸连接)」;但两台机因备份/迁移
+			//     共用同一 device_uuid 时,被顶的一方是**活着**的独立客户端,静默断开会被当网络抖动自动重连 →
+			//     反顶对方 → 无限互踢。同机重登场景客户端是「先关旧链路再建新链路」,旧链路 socket 早关、收不到
+			//     此帧,故补发无副作用(仅活着的被顶方会收到)。详见 supersede.go: CloseCodeDeviceReplaced。
+			closeCode := util.CodeSessionLimit
+			closeReason := sessionLimitEvictClientMsg
+			if isSupersede {
+				closeCode = CloseCodeDeviceReplaced
+				closeReason = deviceSupersedeClientMsg
+			}
+			if body, mErr := util.MarshalCloseJSON(closeCode, closeReason); mErr == nil {
+				if dl, ok := victim.linkConn.(interface{ SetWriteDeadline(time.Time) error }); ok {
+					_ = dl.SetWriteDeadline(time.Now().Add(1 * time.Second))
 				}
+				_ = util.WriteLinkFrame(victim.linkConn, util.LinkTypeClose, body)
 			}
 			_ = victim.linkConn.Close()
 		}
