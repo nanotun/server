@@ -64,11 +64,9 @@ func TestTakeover_PutsTheMagicDNSGatewayFirstInTheDNSList(t *testing.T) {
 	if salt.MagicDNSSuffix != "lan" {
 		t.Errorf("接管下发的 domain_suffix = %q,期望 lan", salt.MagicDNSSuffix)
 	}
-	// 配了 v6 网关就必须一起下发 v6 解析器:漏了的话客户端热切换之后 v6 侧的解析全黑,
-	// 而它自己看不出跟这次重连有关。
-	if len(salt.DNSServersV6) == 0 {
-		t.Error("配了 v6 网关,接管却没下发 v6 解析器 —— 热切换之后客户端 v6 解析整体失效")
-	}
+	// 配了 v6 网关就必须把 **v6 magic 网关** 顶到 v6 解析器列表头：iOS meshOnly split-DNS
+	// 的 AAAA 只问 v6 DNS；漏了或只下发公网 v6，4via6 / 设备名 AAAA 会 NXDOMAIN。
+	assertMagicDNSFirst(t, salt.DNSServersV6, "fd00:109::1", []string{"fd00:109::53"})
 }
 
 // TestLogin_LeavesTheDNSListAloneWhenMagicDNSListensOffPort53 非 53 端口时**不能** prepend。

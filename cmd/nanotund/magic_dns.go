@@ -184,6 +184,7 @@ type magicDNSResolved struct {
 	suffix   string // 不带前缀点,小写
 	port     uint16
 	upstream []string
+	ecs      bool // 上游转发附带 EDNS Client Subnet(见 config.MagicDNSConfig.ECSForward)
 }
 
 func resolveMagicDNSConfig(c config.MagicDNSConfig) magicDNSResolved {
@@ -221,7 +222,7 @@ func resolveMagicDNSConfig(c config.MagicDNSConfig) magicDNSResolved {
 			up = append(up, s)
 		}
 	}
-	return magicDNSResolved{suffix: suf, port: port, upstream: up}
+	return magicDNSResolved{suffix: suf, port: port, upstream: up, ecs: c.ECSForward}
 }
 
 // startMagicDNS 在 listenAddr 上启动 UDP DNS server。
@@ -927,6 +928,10 @@ func writeMagicDNSStatus(conn *net.UDPConn, peer *net.UDPAddr, qid uint16, rcode
 // 超时 800ms;失败 → SERVFAIL。会话早期窗口内的应答 TTL 被钳短（见 magicDNSEarlyClampWindow 注释）。
 func forwardMagicDNSToUpstream(ctx context.Context, conn *net.UDPConn, peer *net.UDPAddr, query []byte, r magicDNSResolved) {
 	clamp := magicDNSInEarlyClampWindow(peer)
+	if r.ecs {
+		// ECS 注入失败/不适用(私网对端、已带 ECS、解包失败)时 maybeInjectECS 原样返回,转发不受影响。
+		query = maybeInjectECS(query, peer)
+	}
 	for _, up := range r.upstream {
 		resp, err := dialAndQueryUDP(ctx, up, query, 800*time.Millisecond)
 		if err != nil {

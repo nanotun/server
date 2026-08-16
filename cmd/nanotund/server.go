@@ -368,6 +368,12 @@ type Connection struct {
 	cleanupOnce sync.Once
 	createdAt   time.Time // primary login 注册到 connIDMap 的时刻;per-user 会话上限做「踢最老」时按这个排序
 
+	// remoteIPHost:本会话底层链路的对端 IP(host 部分,不含 port)。magic DNS 上游转发的 ECS
+	//(EDNS Client Subnet,RFC 7871)用它给公网查询附带客户端真实位置,纠正「解析视角 = server
+	// 所在地」的 CDN 调度偏差(真机 e2e:新加坡 server 把 baidu 解析到香港 45.113.192.x,带 ECS
+	// 后恢复国内 180.101.x)。struct literal 一次性写入,进 map 后只读(见上方 U2 invariant)。
+	remoteIPHost string
+
 	// G_wss_ping:服务端主动 Ping 后,客户端最近一次回 Pong 的时刻(UnixNano)。
 	// 0 = 尚未收到任何 Pong;读写都走 atomic 以避免与 keepalive goroutine 抢锁。
 	lastPongAtNano atomic.Int64
@@ -1679,8 +1685,11 @@ func main() {
 	defer aclDropAuditCleanup()
 
 	// P2#11(2026-05-22):Magic DNS。仅在 [server].magic_dns.enabled = true 时启动;
-	// listen 在 TUN gateway IP 上(从 sharedTUNGateway CIDR 解出地址)。
-	magicDNSCleanup := startMagicDNS(gw, gatewayAddrFromCIDR(sharedTUNGateway))
+	// listen 在 TUN gateway v4 **和** v6 上(从 sharedTUNGateway / V6 CIDR 解出地址)。
+	// iOS 18 meshOnly split-DNS 只把 AAAA 发给列表里的 v6 解析器；只听 v4 :53 时 4via6 / 设备名 AAAA 全挂。
+	magicDNSv4 := startMagicDNS(gw, gatewayAddrFromCIDR(sharedTUNGateway))
+	magicDNSv6 := startMagicDNS(gw, gatewayAddrFromCIDR(sharedTUNGatewayV6))
+	magicDNSCleanup := func() { magicDNSv4(); magicDNSv6() }
 	defer magicDNSCleanup()
 
 	// subnet route(SR-M1):数据面已接入。启动时构建一次「已批准子网路由表」(per-packet 最长前缀匹配的数据源);
@@ -3106,10 +3115,11 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		// 第四轮深扫 LOW:不再把 LoginReq.Token(= **PSK 明文**)存进 Connection —— 它此前仅作「调试记录」
 		// 从不被读取,却让明文 PSK 在整条会话生命周期内驻留内存(core dump / 内存取证泄密面)。身份校验一直
 		// 走 takeoverSecret,与 PSK 明文无关,删除无任何功能影响。
-		tunnelDone:  make(chan struct{}),
-		cleanupDone: make(chan struct{}),
-		createdAt:   time.Now(),
-		exitAllowed: true,
+		tunnelDone:   make(chan struct{}),
+		cleanupDone:  make(chan struct{}),
+		createdAt:    time.Now(),
+		remoteIPHost: ipHost, // magic DNS ECS 用(见字段注释)
+		exitAllowed:  true,
 		// 平台白名单踢线用快照;此刻 AllowsPlatform 已放行过,快照必然合规,
 		// 只有 admin 之后改白名单才可能让它变不合规(user_invalidate 扫到即踢)。
 		platformAtLogin: loginReq.Platform,
@@ -3516,6 +3526,9 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	if extra := magicDNSExtraDNS(gw, gatewayAddrFromCIDR(sharedTUNGateway)); extra != "" {
 		dnsV4 = append([]string{extra}, dnsV4...)
 	}
+	if extra6 := magicDNSExtraDNS(gw, gatewayAddrFromCIDR(sharedTUNGatewayV6)); extra6 != "" {
+		dnsV6 = append([]string{extra6}, dnsV6...)
+	}
 	saltBody, err := util.MarshalConvSaltLiteJSON(assignmentsForMsg, dnsV4, dnsV6, magicDNSSuffixForClient(gw), c.deviceName)
 	if err != nil {
 		logrus.WithField("remote", remote).WithError(err).Warn("构造 ConvSaltLite 失败")
@@ -3820,6 +3833,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		tunnelDone:     make(chan struct{}),
 		cleanupDone:    make(chan struct{}),
 		createdAt:      time.Now(),
+		remoteIPHost:   hostPartOf(remote), // takeover 换了底层链路,ECS 用**新链路**的对端 IP
 		// P0-4:takeover 继承 oldConn 上已经从 users 表读出来固化的 user-level
 		// 字段,避免再查一次库;user.disable/reset-psk 想生效请通过 P0-1 踢线。
 		exitAllowed:        oldConn.exitAllowed,
@@ -4014,6 +4028,9 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	}
 	if extra := magicDNSExtraDNS(gw, gatewayAddrFromCIDR(sharedTUNGateway)); extra != "" {
 		dnsV4 = append([]string{extra}, dnsV4...)
+	}
+	if extra6 := magicDNSExtraDNS(gw, gatewayAddrFromCIDR(sharedTUNGatewayV6)); extra6 != "" {
+		dnsV6 = append([]string{extra6}, dnsV6...)
 	}
 	// S1(2026-05-26):takeover 路径 newConn.clientIPs 已 Store(line ~2438),Load 必非 nil。
 	saltBody, err := util.MarshalConvSaltLiteJSON(newConn.safeClientIPs(), dnsV4, dnsV6, magicDNSSuffixForClient(gw), newConn.deviceName)
