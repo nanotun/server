@@ -1689,7 +1689,11 @@ func main() {
 	// iOS 18 meshOnly split-DNS 只把 AAAA 发给列表里的 v6 解析器；只听 v4 :53 时 4via6 / 设备名 AAAA 全挂。
 	magicDNSv4 := startMagicDNS(gw, gatewayAddrFromCIDR(sharedTUNGateway))
 	magicDNSv6 := startMagicDNS(gw, gatewayAddrFromCIDR(sharedTUNGatewayV6))
-	magicDNSCleanup := func() { magicDNSv4(); magicDNSv6() }
+	// TCP/53 与 UDP 成对(RFC 7766 要求两者都支持):UDP 侧超出使用方 EDNS 缓冲区的应答会被置 TC=1,
+	// 而使用方唯一的补救就是改用 TCP 重查 —— 只听 UDP 时那些查询会彻底解不出来。
+	magicDNSTCPv4 := startMagicDNSTCP(gw, gatewayAddrFromCIDR(sharedTUNGateway))
+	magicDNSTCPv6 := startMagicDNSTCP(gw, gatewayAddrFromCIDR(sharedTUNGatewayV6))
+	magicDNSCleanup := func() { magicDNSv4(); magicDNSv6(); magicDNSTCPv4(); magicDNSTCPv6() }
 	defer magicDNSCleanup()
 
 	// subnet route(SR-M1):数据面已接入。启动时构建一次「已批准子网路由表」(per-packet 最长前缀匹配的数据源);

@@ -97,7 +97,7 @@ var (
 
 // writeExitDNSServfail 给绑定出口但经出口解析失败的查询回 SERVFAIL（fail-closed，不落缓存）。
 // 客户端 stub resolver 会自然重试；出口恢复后重试即拿到出口地理的答案，OS 缓存不被 server 地理污染。
-func writeExitDNSServfail(conn *net.UDPConn, peer *net.UDPAddr, qid uint16, q dnsmessage.Question) {
+func writeExitDNSServfail(conn magicDNSReplyConn, peer *net.UDPAddr, qid uint16, q dnsmessage.Question) {
 	magicDNSExitServfailCount.Add(1)
 	_ = writeMagicDNSStatus(conn, peer, qid, dnsmessage.RCodeServerFailure, nil, q)
 }
@@ -105,7 +105,7 @@ func writeExitDNSServfail(conn *net.UDPConn, peer *net.UDPAddr, qid uint16, q dn
 // tryResolvePublicViaExit 若查询来自「选了 peer 出口」的会话，则把该公网查询经出口解析并把响应回给使用方，返回
 // true（调用方到此为止）。仅「未选出口」返回 false（调用方走 server 本地上游）；**已绑定出口**的会话若出口不在跑 /
 // 投递失败 / 超时 → 回 SERVFAIL 并返回 true（fail-closed，见文件头注释：绝不用 server 地理答案污染客户端缓存）。
-func tryResolvePublicViaExit(conn *net.UDPConn, peer *net.UDPAddr, query []byte, q dnsmessage.Question, qid uint16) bool {
+func tryResolvePublicViaExit(conn magicDNSReplyConn, peer *net.UDPAddr, query []byte, q dnsmessage.Question, qid uint16) bool {
 	if conn == nil || peer == nil || len(query) == 0 {
 		return false
 	}
@@ -213,7 +213,7 @@ func resolveExitDNSAddrsCached(key string, exitConn *Connection, query []byte) (
 // 返回 true = 已中继并回应答（调用方到此为止）；仅「未选出口」返回 false（调用方走 server 本地上游）。**已绑定
 // 出口**的会话若出口不在跑 / 投递失败 / 超时 → 回 SERVFAIL 并返回 true（fail-closed，防 HTTPS RR 的 ipv4hint/
 // ipv6hint 被 server 地理答案污染——hint 与 A/AAAA 同病，只堵 A/AAAA 不堵 HTTPS 等于没堵）。
-func tryRelayPublicViaExit(conn *net.UDPConn, peer *net.UDPAddr, query []byte, q dnsmessage.Question, qid uint16) bool {
+func tryRelayPublicViaExit(conn magicDNSReplyConn, peer *net.UDPAddr, query []byte, q dnsmessage.Question, qid uint16) bool {
 	if conn == nil || peer == nil || len(query) == 0 {
 		return false
 	}

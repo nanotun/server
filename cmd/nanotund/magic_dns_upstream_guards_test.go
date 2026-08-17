@@ -97,6 +97,9 @@ func TestForwardMagicDNSToUpstream_ClampsTTLOnlyInTheEarlyWindow(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			resetConnByDeviceForTest(t)
+			// 两个子测试用同一个 (cdn.example.com, A)：不清上游应答缓存，第二个子测试会命中第一个留下的条目
+			// → 不再回源、且 TTL 被钳到「缓存剩余寿命」，本测想验的「新鲜应答是否原样透传」就测不到了。
+			resetUpstreamDNSCacheForTest(t)
 			up, _ := startFakeUpstream(t, func(query []byte) [][]byte {
 				return [][]byte{buildDNSResponseATTL(t, dnsQueryName(t, query), upstreamTTL, "93.184.216.34")}
 			})

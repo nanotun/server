@@ -89,6 +89,11 @@ func runOneMagicDNSQuery(t *testing.T, gw *gatewayState, r magicDNSResolved, que
 
 func newMagicDNSGateway(t *testing.T) *gatewayState {
 	t.Helper()
+	// 上游应答缓存是**进程级全局**的，而本包大量上游转发测试都用同一组 (example.com, A) 造查询：不在夹具里
+	// 清掉，后跑的测试会命中前一个测试留下的条目 → 断言「上游被查了几次 / 是否 SERVFAIL」全部失真，且失真与
+	// 执行顺序相关（-run 单跑通过、全量跑失败）。放在共用夹具里而非各测试自己调，是为了让**将来新增**的测试
+	// 也默认隔离，不必记得加这一行。
+	resetUpstreamDNSCacheForTest(t)
 	ctx := t.Context()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "magic.db"), store.Options{})
 	if err != nil {

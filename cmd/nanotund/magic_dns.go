@@ -142,6 +142,9 @@ type MagicDNSStats struct {
 	AAAAStripServer uint64 `json:"aaaa_strip_server"`
 	// ExitCacheHits：经出口结果缓存命中的查询数（免掉一次经出口往返，见 magic_dns_cache.go）。
 	ExitCacheHits uint64 `json:"exit_cache_hits"`
+	// UpstreamCacheHits：server 本地上游应答缓存命中的查询数（免掉一次上游往返，见
+	// magic_dns_upstream_cache.go）。与 Upstream 一起看即命中率：hits/(hits+upstream)。
+	UpstreamCacheHits uint64 `json:"upstream_cache_hits"`
 	// ExitServfail：绑定出口的会话经出口解析失败（离线/超时）→ 回 SERVFAIL 的次数（fail-closed，不再回退
 	// server 本地上游）。持续增长 = 出口链路不健康。
 	ExitServfail uint64 `json:"exit_servfail"`
@@ -154,28 +157,42 @@ type MagicDNSStats struct {
 	MeshOffNX uint64 `json:"mesh_off_nxdomain"`
 	// ACLNX(第七轮深扫 MED):mesh ON 但用户 ACL 判定查询方→目标不可达而被就地 NXDOMAIN 的跨用户 magic 名查询数。
 	ACLNX uint64 `json:"acl_nxdomain"`
+	// TCPAccepted / TCPRejected / TCPConns:TCP/53(magic_dns_tcp.go)累计接受数、因超并发上限被立即关闭数、
+	// 当前在处理连接数。TCPRejected 持续增长 = 上限被打满(要么真有滥用,要么 magicDNSTCPMaxConns 该调大);
+	// TCPAccepted 明显增长 = UDP 侧在大量置 TC(应答普遍超使用方缓冲区),值得回头看 EDNS 缓冲区协商。
+	TCPAccepted uint64 `json:"tcp_accepted"`
+	TCPRejected uint64 `json:"tcp_rejected"`
+	TCPConns    int64  `json:"tcp_conns"`
+	// UpstreamTCPRetry:上游回 TC=1 后改走 TCP 重查的次数。持续增长通常意味着某个域名的应答确实很大
+	// (多 A 记录 / DNSSEC),或上游的 EDNS 缓冲区偏小。
+	UpstreamTCPRetry uint64 `json:"upstream_tcp_retry"`
 }
 
 func snapshotMagicDNSStats() MagicDNSStats {
 	return MagicDNSStats{
-		Queries:         magicDNSQueryCount.Load(),
-		MagicHit:        magicDNSMagicHitCount.Load(),
-		Upstream:        magicDNSUpstreamCount.Load(),
-		Servfail:        magicDNSServfailCount.Load(),
-		UnknownName:     magicDNSUnknownNameCount.Load(),
-		Malformed:       magicDNSMalformedCount.Load(),
-		InflightDrops:   magicDNSInflightDropCount.Load(),
-		PerClientDrops:  magicDNSPerClientDropCount.Load(),
-		ViaExit:         magicDNSViaExitCount.Load(),
-		ViaExitRelay:    magicDNSViaExitRelayCount.Load(),
-		AAAAStrip:       magicDNSAAAAStripCount.Load(),
-		AAAAStripServer: magicDNSServerAAAAStripCount.Load(),
-		ExitCacheHits:   magicDNSExitCacheHitCount.Load(),
-		ExitServfail:    magicDNSExitServfailCount.Load(),
-		EarlyTTLClamp:   magicDNSEarlyClampCount.Load(),
-		InterceptDNS:    magicDNSInterceptCount.Load(),
-		MeshOffNX:       magicDNSMeshOffNXCount.Load(),
-		ACLNX:           magicDNSACLNXCount.Load(),
+		Queries:           magicDNSQueryCount.Load(),
+		MagicHit:          magicDNSMagicHitCount.Load(),
+		Upstream:          magicDNSUpstreamCount.Load(),
+		Servfail:          magicDNSServfailCount.Load(),
+		UnknownName:       magicDNSUnknownNameCount.Load(),
+		Malformed:         magicDNSMalformedCount.Load(),
+		InflightDrops:     magicDNSInflightDropCount.Load(),
+		PerClientDrops:    magicDNSPerClientDropCount.Load(),
+		ViaExit:           magicDNSViaExitCount.Load(),
+		ViaExitRelay:      magicDNSViaExitRelayCount.Load(),
+		AAAAStrip:         magicDNSAAAAStripCount.Load(),
+		AAAAStripServer:   magicDNSServerAAAAStripCount.Load(),
+		ExitCacheHits:     magicDNSExitCacheHitCount.Load(),
+		UpstreamCacheHits: magicDNSUpstreamCacheHitCount.Load(),
+		ExitServfail:      magicDNSExitServfailCount.Load(),
+		EarlyTTLClamp:     magicDNSEarlyClampCount.Load(),
+		InterceptDNS:      magicDNSInterceptCount.Load(),
+		MeshOffNX:         magicDNSMeshOffNXCount.Load(),
+		ACLNX:             magicDNSACLNXCount.Load(),
+		TCPAccepted:       magicDNSTCPAcceptedCount.Load(),
+		TCPRejected:       magicDNSTCPRejectedCount.Load(),
+		TCPConns:          magicDNSTCPConnCount.Load(),
+		UpstreamTCPRetry:  magicDNSUpstreamTCPRetryCount.Load(),
 	}
 }
 
@@ -306,7 +323,10 @@ func runMagicDNSLoop(ctx context.Context, gw *gatewayState, conn *net.UDPConn, r
 		// 的不变量。release 放在内层 defer,panic 时也先归还在途配额再被 safeGoroutine recover。
 		go safeGoroutine("magic_dns_handle", func() {
 			defer release()
-			handleMagicDNSPacket(ctx, gw, conn, peer, query, r)
+			// 包一层长度约束写入器：超过使用方 EDNS 缓冲区的应答换成「空应答 + TC=1」,让它改走
+			// TCP/53 重查,而不是收到一帧会被路径丢弃的超长报文然后一路超时(见 magic_dns_truncate.go)。
+			// 每包一个实例:limit 取决于**这条查询**声明的缓冲区,且惰性求值(应答 ≤512B 时零成本)。
+			handleMagicDNSPacket(ctx, gw, &udpDNSReplyConn{conn: conn, query: query}, peer, query, r)
 		})
 	}
 }
@@ -362,7 +382,7 @@ func tryAcquireMagicDNSSlot(clientKey netip.Addr, haveKey bool) (release func(),
 //  3. Question.Name 拆 host.user.<suffix>;
 //  4. magic 命中 → 查 store → 拼 RR;否则 → upstream forward;
 //  5. 写响应。
-func handleMagicDNSPacket(ctx context.Context, gw *gatewayState, conn *net.UDPConn, peer *net.UDPAddr, query []byte, r magicDNSResolved) {
+func handleMagicDNSPacket(ctx context.Context, gw *gatewayState, conn magicDNSReplyConn, peer *net.UDPAddr, query []byte, r magicDNSResolved) {
 	magicDNSQueryCount.Add(1)
 
 	var p dnsmessage.Parser
@@ -915,7 +935,7 @@ func buildMagicDNSStatusBytes(qid uint16, rcode dnsmessage.RCode, q dnsmessage.Q
 }
 
 // writeMagicDNSStatus 写一帧只有 header(无 answer)的响应,用于错误码。
-func writeMagicDNSStatus(conn *net.UDPConn, peer *net.UDPAddr, qid uint16, rcode dnsmessage.RCode, _ []netip.Addr, q dnsmessage.Question) error {
+func writeMagicDNSStatus(conn magicDNSReplyConn, peer *net.UDPAddr, qid uint16, rcode dnsmessage.RCode, _ []netip.Addr, q dnsmessage.Question) error {
 	raw := buildMagicDNSStatusBytes(qid, rcode, q)
 	if raw == nil {
 		return errors.New("build dns status failed")
@@ -926,33 +946,119 @@ func writeMagicDNSStatus(conn *net.UDPConn, peer *net.UDPAddr, qid uint16, rcode
 
 // forwardMagicDNSToUpstream 简单串行尝试每个 upstream,首个收到响应即转回。
 // 超时 800ms;失败 → SERVFAIL。会话早期窗口内的应答 TTL 被钳短（见 magicDNSEarlyClampWindow 注释）。
-func forwardMagicDNSToUpstream(ctx context.Context, conn *net.UDPConn, peer *net.UDPAddr, query []byte, r magicDNSResolved) {
+//
+// 前置一层「按 ECS 网段隔离的应答缓存 + 单飞」（magic_dns_upstream_cache.go）：全隧道客户端会把全部公网
+// 域名压到这条路径上，每条都回源一次太慢（实测 ~480ms）。不可缓存的查询（解不开 / 无 question / 自带 ECS）
+// 走原路径，行为与加缓存前完全一致。
+func forwardMagicDNSToUpstream(ctx context.Context, conn magicDNSReplyConn, peer *net.UDPAddr, clientQuery []byte, r magicDNSResolved) {
 	clamp := magicDNSInEarlyClampWindow(peer)
+	// key 用**原始查询** + 本使用方的 ECS 网段来算：注入后的报文里已含 ECS 选项，不适合做 key；
+	// 而 scope 必须与实际注入同源（ecsClientIPForPeer），否则缓存会把地理答案发错人。
+	scope := ""
+	if r.ecs {
+		scope = ecsScopeForPeer(peer)
+	}
+	cacheKey, cacheable := upstreamDNSCacheKeyFor(clientQuery, scope)
+	if cacheable {
+		if e, ok := upstreamDNSCacheGet(cacheKey); ok {
+			magicDNSUpstreamCacheHitCount.Add(1)
+			serveUpstreamDNSFromCache(conn, peer, clientQuery, e, clamp)
+			return
+		}
+	}
+
+	upQuery := clientQuery
 	if r.ecs {
 		// ECS 注入失败/不适用(私网对端、已带 ECS、解包失败)时 maybeInjectECS 原样返回,转发不受影响。
-		query = maybeInjectECS(query, peer)
+		upQuery = maybeInjectECS(clientQuery, peer)
 	}
+
+	var resp []byte
+	if cacheable {
+		// 单飞：缓存冷时同一 key 的并发查询（含丢包重发风暴、苹果端 A+AAAA 齐发）只回源一条，其余共享结果。
+		// 不可缓存的查询**不进单飞** —— 它们的 key 为空，合并会把不同 question 的查询错误地共享同一份应答。
+		v, err, _ := upstreamDNSGroup.Do(cacheKey, func() (any, error) {
+			raw, ok := queryUpstreamOnce(ctx, upQuery, r)
+			if !ok {
+				return nil, errUpstreamDNSFailed
+			}
+			if e, okEntry := buildUpstreamDNSCacheEntry(raw); okEntry {
+				upstreamDNSCachePut(cacheKey, e)
+			}
+			return raw, nil
+		})
+		if err == nil {
+			raw, _ := v.([]byte)
+			// 经单飞拿到的可能是**别人那条查询**的应答（qid / question 大小写均属于它）→ 必须用本查询的
+			// qid + question 就地改写，否则使用方会按 txn id 不符 / 0x20 校验失败丢弃。
+			if out := buildRawDNSResponseFor(clientQuery, dnsQueryID(clientQuery), raw); out != nil {
+				resp = out
+			}
+		}
+	} else {
+		resp, _ = queryUpstreamOnce(ctx, upQuery, r)
+	}
+
+	if resp == nil {
+		magicDNSServfailCount.Add(1)
+		var p dnsmessage.Parser
+		hdr, err := p.Start(clientQuery)
+		if err == nil {
+			_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeServerFailure, nil, dnsmessage.Question{})
+		}
+		return
+	}
+	if clamp {
+		if clamped, changed := clampDNSResponseTTLs(resp, magicDNSEarlyClampTTL); changed {
+			resp = clamped
+			magicDNSEarlyClampCount.Add(1)
+		}
+	}
+	_, _ = conn.WriteToUDP(resp, peer)
+}
+
+// errUpstreamDNSFailed 是「所有 upstream 都没回」的哨兵错误，经 singleflight 传给全部等待者 → 一起回
+// SERVFAIL。**不**进缓存（上游抖动不该被放大成一段时间的假失败）。
+var errUpstreamDNSFailed = errors.New("magic dns upstream failed")
+
+// queryUpstreamOnce 串行尝试每个 upstream，首个收到**与查询匹配**的应答即返回（匹配校验见 dialAndQueryUDP）。
+// 全部失败 → ok=false。
+//
+// 上游回 TC=1（它那边也装不下）时改用 TCP 向**同一个** upstream 重查一次。少了这一步，那份截断应答会被原样
+// 转给使用方：走 TCP 来问我们的使用方（它正是因为 UDP 被截断才改的 TCP）会再拿到一次 TC，陷入无解；而
+// 缓存还会把这份残缺答案存下来喂给后续所有人。重查成功后拿到的是完整答案，UDP 使用方那边再由
+// udpDNSReplyConn 按它自己的缓冲区决定是否置 TC —— 分层各管一段。
+func queryUpstreamOnce(ctx context.Context, upQuery []byte, r magicDNSResolved) ([]byte, bool) {
 	for _, up := range r.upstream {
-		resp, err := dialAndQueryUDP(ctx, up, query, 800*time.Millisecond)
+		resp, err := dialAndQueryUDP(ctx, up, upQuery, 800*time.Millisecond)
 		if err != nil {
 			continue
 		}
-		magicDNSUpstreamCount.Add(1)
-		if clamp {
-			if clamped, changed := clampDNSResponseTTLs(resp, magicDNSEarlyClampTTL); changed {
-				resp = clamped
-				magicDNSEarlyClampCount.Add(1)
+		if dnsReplyTruncated(resp) {
+			if full, terr := dialAndQueryTCP(ctx, up, upQuery, magicDNSUpstreamTCPTimeout); terr == nil {
+				resp = full
+				magicDNSUpstreamTCPRetryCount.Add(1)
 			}
+			// TCP 重查失败 → 仍把那份 TC 应答转出去（fail-open）：残缺答案至少让使用方知道
+			// 「有记录但太大」，比 SERVFAIL（"解析坏了"）更接近事实。
 		}
-		_, _ = conn.WriteToUDP(resp, peer)
-		return
+		magicDNSUpstreamCount.Add(1)
+		return resp, true
 	}
-	magicDNSServfailCount.Add(1)
-	var p dnsmessage.Parser
-	hdr, err := p.Start(query)
-	if err == nil {
-		_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeServerFailure, nil, dnsmessage.Question{})
+	return nil, false
+}
+
+// dnsReplyTruncated 读应答头的 TC 位（第 2 字节的 0x02）。报文短于头部 → false（后续解析会失败并各自处置）。
+func dnsReplyTruncated(resp []byte) bool {
+	return len(resp) >= 3 && resp[2]&0x02 != 0
+}
+
+// dnsQueryID 取查询报文的 txn id；报文短于头部时返回 0（调用方后续的改写/校验会失败并回 SERVFAIL）。
+func dnsQueryID(query []byte) uint16 {
+	if len(query) < 2 {
+		return 0
 	}
+	return uint16(query[0])<<8 | uint16(query[1])
 }
 
 // magicDNSInEarlyClampWindow 判断该查询是否落在其会话的「早期竞速窗口」内（会话注册后 < magicDNSEarlyClampWindow）。
@@ -1029,7 +1135,11 @@ func dialAndQueryUDP(ctx context.Context, addr string, query []byte, timeout tim
 	if _, err := c.Write(query); err != nil {
 		return nil, err
 	}
-	buf := make([]byte, 1500)
+	// 缓冲区必须 ≥ 我们可能收到的最大应答（magicDNSUDPCeiling，也是我们对使用方的上限）。UDP 的 Read 会把
+	// 超出缓冲区的部分**静默丢掉**：缓冲区小于实际报文时，我们会返回一段被砍掉尾巴的字节流，而 header 与
+	// question 都在报文开头、TC 位又没置 —— 于是它能通过下面的匹配校验，最后被当成「正常应答」转给使用方，
+	// 由使用方报 FORMERR。这种坏包只在大应答上出现，最难查。
+	buf := make([]byte, magicDNSUDPCeiling)
 	for {
 		n, err := c.Read(buf)
 		if err != nil {

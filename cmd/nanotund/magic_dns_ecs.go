@@ -103,19 +103,53 @@ func buildECSOptionData(ip netip.Addr) []byte {
 	return data
 }
 
-// maybeInjectECS 是 forwardMagicDNSToUpstream 的注入入口:任何一步不适用(查不到会话、
-// 对端非全球单播、查询已带 ECS、解包失败)都原样返回 query,绝不让 ECS 影响转发本身。
-func maybeInjectECS(query []byte, peer *net.UDPAddr) []byte {
+// ecsClientIPForPeer 返回将作为 ECS 发给上游的客户端公网 IP。ok=false = 不注入(查不到会话、
+// 会话未记录对端、对端非全球单播/私网/CGNAT)。
+//
+// 上游应答缓存(magic_dns_upstream_cache.go)的地理隔离维度**必须**由本函数派生:两处若各自判断
+// 「该用哪个客户端 IP」,口径一旦分歧(例如缓存认为无 ECS、注入却带了 ECS)就会把 A 地区的上游答案
+// 发给 B 地区的使用方 —— 那正是 ECS 要修的病,反而被缓存重新引入。
+func ecsClientIPForPeer(peer *net.UDPAddr) (netip.Addr, bool) {
 	vip, ok := netipAddrFromUDP(peer)
 	if !ok {
-		return query
+		return netip.Addr{}, false
 	}
 	host, found := connRemoteHostForClientVIP(vip)
 	if !found {
-		return query
+		return netip.Addr{}, false
 	}
 	clientIP, err := netip.ParseAddr(host)
 	if err != nil || !ecsEligibleClientIP(clientIP) {
+		return netip.Addr{}, false
+	}
+	return clientIP, true
+}
+
+// ecsScopeForPeer 返回该使用方对应的 ECS 网段字符串(v4 /24、v6 /56),供上游应答缓存做地理隔离。
+// 返回 "" = 本次不注入 ECS —— 此时上游答案只反映 server 自身地理,对所有「同样不带 ECS」的使用方
+// 等价,可安全共享同一条缓存(空串本身就是一个自洽的隔离维度值)。
+func ecsScopeForPeer(peer *net.UDPAddr) string {
+	ip, ok := ecsClientIPForPeer(peer)
+	if !ok {
+		return ""
+	}
+	ip = ip.Unmap()
+	bits := ecsV4PrefixLen
+	if !ip.Is4() {
+		bits = ecsV6PrefixLen
+	}
+	p, err := ip.Prefix(bits)
+	if err != nil {
+		return ""
+	}
+	return p.String()
+}
+
+// maybeInjectECS 是 forwardMagicDNSToUpstream 的注入入口:任何一步不适用(查不到会话、
+// 对端非全球单播、查询已带 ECS、解包失败)都原样返回 query,绝不让 ECS 影响转发本身。
+func maybeInjectECS(query []byte, peer *net.UDPAddr) []byte {
+	clientIP, ok := ecsClientIPForPeer(peer)
+	if !ok {
 		return query
 	}
 	out, injected := injectECS(query, clientIP)

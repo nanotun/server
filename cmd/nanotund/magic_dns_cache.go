@@ -193,7 +193,7 @@ func parseExitDNSResult(resp []byte) (addrs []netip.Addr, rcode dnsmessage.RCode
 
 // serveExitDNSFromCache 用**当前查询的 qid + question** 从缓存结果重建并回写应答（保证 txn id / question 与来包一致）。
 // 成功答复（含 NODATA：Success + 空 addrs）走 buildMagicDNSAnswer；否定答复（NXDOMAIN 等）回对应 rcode 状态帧。
-func serveExitDNSFromCache(conn *net.UDPConn, peer *net.UDPAddr, qid uint16, q dnsmessage.Question, e exitDNSCacheEntry) {
+func serveExitDNSFromCache(conn magicDNSReplyConn, peer *net.UDPAddr, qid uint16, q dnsmessage.Question, e exitDNSCacheEntry) {
 	if e.rcode == dnsmessage.RCodeSuccess {
 		if resp, err := buildMagicDNSAnswer(qid, q, e.addrs); err == nil {
 			_, _ = conn.WriteToUDP(resp, peer)
@@ -324,7 +324,7 @@ func buildRawDNSResponseFor(query []byte, qid uint16, cachedRaw []byte) []byte {
 }
 
 // serveRawExitDNSFromCache 用当前查询的 qid + question 就地改写缓存的原始应答并回写给使用方。改写失败退化成 SERVFAIL。
-func serveRawExitDNSFromCache(conn *net.UDPConn, peer *net.UDPAddr, qid uint16, query []byte, e exitDNSCacheEntry) {
+func serveRawExitDNSFromCache(conn magicDNSReplyConn, peer *net.UDPAddr, qid uint16, query []byte, e exitDNSCacheEntry) {
 	if out := buildRawDNSResponseFor(query, qid, e.raw); out != nil {
 		_, _ = conn.WriteToUDP(out, peer)
 		return
