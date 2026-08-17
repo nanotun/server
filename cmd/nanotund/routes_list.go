@@ -67,6 +67,17 @@ func buildRoutesList(ctx context.Context) []util.SubnetRouteInfo {
 			SiteID: via6Sites[e.deviceID], // 未分配 → 0
 		})
 	}
+	// SR-VIA4：via4 启用且确有子网路由时，追加一条 **server 拥有**的池网段合成条目——客户端把它当普通
+	// 已批准子网路由装进隧道（accept-routes 开着即自动生效，与 4via6 的 fdbc:4a60::/64 前提一致，
+	// 客户端零改动）。DeviceUUID 留空（客户端的「过滤本机自宣告」逻辑对空 UUID 保守放行）；SiteID=0
+	// （omitempty 不下发）。无子网路由时不追加：via 名无处可指，池路由装了也是死路由。
+	if pp, ok := via4PoolPrefix(); ok {
+		out = append(out, util.SubnetRouteInfo{
+			CIDR:       pp.String(),
+			DeviceName: "via4",
+			Online:     true,
+		})
+	}
 	return out
 }
 

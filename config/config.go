@@ -329,7 +329,8 @@ type MagicDNSConfig struct {
 	// 非该 suffix 域名走 Upstream 转发(若未配置 upstream → SERVFAIL)。
 	DomainSuffix string `toml:"domain_suffix,omitempty"`
 
-	// ListenPort 是 DNS UDP 端口。**默认 53**(留空 / 0 时运行期取 53,见 resolveMagicDNSConfig)。
+	// ListenPort 是 DNS 端口,UDP 与 TCP 同号成对监听(RFC 7766;TCP 是截断应答的回落路径,
+	// 见 magic_dns_tcp.go)。**默认 53**(留空 / 0 时运行期取 53,见 resolveMagicDNSConfig)。
 	//
 	// 第四轮深扫 LOW(e_magicdns_doc):此注释原写"默认 5353",与运行期实际默认(53)相悖 ——
 	// P_a1_fix 早已把默认改成 53,因为客户端从 LoginResp 只拿到 DNS server 的**IP 字符串(无端口)**,
@@ -353,7 +354,24 @@ type MagicDNSConfig struct {
 	// 忽略之,无害)。默认 false:向上游暴露客户端 /24 属隐私让渡,由运维显式选择。
 	// 客户端对端 IP 是私网/回环/链路本地/CGNAT(非全球单播)时自动跳过。
 	ECSForward bool `toml:"ecs_forward,omitempty"`
+
+	// Via4Pool:4via6 名字的 **A 记录合成池**(DNS46+NAT46,见 cmd/nanotund/via4.go 设计注释)。
+	// Apple 平台在无 v6 默认路由时不发 AAAA 查询(2026-08-17 iOS 真机定位),AAAA-only 的 via
+	// 名在 iOS 仅组网下解析不出;server 从本池给 via 名再合成一个 v4 地址(A 记录),数据面做
+	// 无状态 SIIT 改写汇入现有 4via6 转发路径 —— 客户端零改动。
+	//   - 留空       → 默认 DefaultVia4Pool(100.100.0.0/16,CGNAT 段,不与常见 LAN 冲突),
+	//                  即 magic_dns 开着就默认启用;
+	//   - "off"      → 显式关闭(via 名维持 AAAA-only 老行为);
+	//   - 其它       → 自定义 IPv4 CIDR(前缀 ≤ /28 保证池够大;不得与 [tun].subnets 重叠,
+	//                  启动时校验失败即 fail-fast)。
+	// 池网段会作为一条合成条目随 routes-list 下发,开着 accept-routes 的客户端自动装路由
+	// (与 4via6 的 fdbc:4a60::/64 前提完全一致)。
+	Via4Pool string `toml:"via4_pool,omitempty"`
 }
+
+// DefaultVia4Pool 是 via4_pool 留空时的默认池。选 CGNAT 100.64.0.0/10 的子段(Tailscale 同哲学):
+// 不会与家庭/企业 RFC1918 LAN 冲突,也不是公网可路由段。
+const DefaultVia4Pool = "100.100.0.0/16"
 
 // ResolveExitMode 把 cfg 上的 ExitMode + ClientIsolate 翻译成最终生效的三档值。
 // 输入**空字符串** → 用 ClientIsolate 退化(向后兼容老配置)。
@@ -830,6 +848,22 @@ func (c *Config) Validate() error {
 	}
 	checkCIDRs("[tun].subnets", c.TUN.Subnets)
 	checkCIDRs("[tun].subnets_v6", c.TUN.SubnetsV6)
+
+	// via4 池:非 ""/"off" 时必须是 IPv4 CIDR、前缀 ≤ /28(至少 14 个可用地址),且不与 mesh v4 网段
+	// 重叠(重叠会让池地址被当 vIP demux,数据面语义直接错乱 → 启动即拦)。默认值属常量,不走此分支。
+	if v := strings.TrimSpace(c.Server.MagicDNS.Via4Pool); v != "" && !strings.EqualFold(v, "off") {
+		if _, pn, err := net.ParseCIDR(v); err != nil || pn.IP.To4() == nil {
+			errs = append(errs, fmt.Sprintf("[server.magic_dns].via4_pool=%q 不是合法 IPv4 CIDR", v))
+		} else if ones, _ := pn.Mask.Size(); ones > 28 {
+			errs = append(errs, fmt.Sprintf("[server.magic_dns].via4_pool=%q 前缀须 ≤ /28(池至少 14 个地址)", v))
+		} else {
+			for _, s := range c.TUN.Subnets {
+				if _, mn, merr := net.ParseCIDR(strings.TrimSpace(s)); merr == nil && (mn.Contains(pn.IP) || pn.Contains(mn.IP)) {
+					errs = append(errs, fmt.Sprintf("[server.magic_dns].via4_pool=%q 与 [tun].subnets 的 %q 重叠", v, s))
+				}
+			}
+		}
+	}
 
 	if la := strings.TrimSpace(c.Server.ListenAddr); la != "" {
 		if err := validateListenAddrFormat(la); err != nil {

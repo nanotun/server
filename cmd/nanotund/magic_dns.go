@@ -166,6 +166,13 @@ type MagicDNSStats struct {
 	// UpstreamTCPRetry:上游回 TC=1 后改走 TCP 重查的次数。持续增长通常意味着某个域名的应答确实很大
 	// (多 A 记录 / DNSSEC),或上游的 EDNS 缓冲区偏小。
 	UpstreamTCPRetry uint64 `json:"upstream_tcp_retry"`
+	// Via4*(SR-VIA4,DNS46+NAT46,见 via4.go):via 名 A 记录合成与数据面翻译的健康度。
+	// Via4Dropped 是四类丢弃(无映射/不可翻译/未投递/返程反译失败)的总和;持续增长时用日志级计数细分。
+	Via4Alloc     uint64 `json:"via4_alloc"`
+	Via4Evict     uint64 `json:"via4_evict"`
+	Via4Forwarded uint64 `json:"via4_forwarded"`
+	Via4Returned  uint64 `json:"via4_returned"`
+	Via4Dropped   uint64 `json:"via4_dropped"`
 }
 
 func snapshotMagicDNSStats() MagicDNSStats {
@@ -193,6 +200,12 @@ func snapshotMagicDNSStats() MagicDNSStats {
 		TCPRejected:       magicDNSTCPRejectedCount.Load(),
 		TCPConns:          magicDNSTCPConnCount.Load(),
 		UpstreamTCPRetry:  magicDNSUpstreamTCPRetryCount.Load(),
+		Via4Alloc:         via4AllocCount.Load(),
+		Via4Evict:         via4EvictCount.Load(),
+		Via4Forwarded:     via4ForwardedCount.Load(),
+		Via4Returned:      via4ReturnedCount.Load(),
+		Via4Dropped: via4DropNoMapping.Load() + via4DropUntranslate.Load() +
+			via4DropUnrouted.Load() + via4DropReturnUnknown.Load(),
 	}
 }
 
@@ -486,8 +499,18 @@ func handleMagicDNSPacket(ctx context.Context, gw *gatewayState, conn magicDNSRe
 				_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeNameError, nil, q)
 				return
 			}
-			// addr 是 4via6(v6)：AAAA 查询返回它；A 查询按类型过滤得空 answer（NOERROR/0，OS 自会转查 AAAA）。
-			resp, err := buildMagicDNSAnswer(hdr.ID, q, []netip.Addr{addr})
+			// addr 是 4via6(v6)：AAAA 查询返回它。A 查询原本按类型过滤得空 answer（寄希望于「OS 自会
+			// 转查 AAAA」），但 Apple 平台在无 v6 默认路由时**根本不发 AAAA**（2026-08-17 iOS 真机定位，
+			// 见 via4.go 设计注释）→ via 名在 iOS 仅组网下是死名字。via4 启用时给 A 查询合成一个池 v4
+			//（DNS46）：分配/复用 (siteID,目标v4)↔池地址 映射，数据面 NAT46 负责把池地址流量改写汇入
+			// 4via6 转发路径。站点存在性/宣告网段/ACL/isolate 都已在上方校验过，此处只管分配。
+			addrs := []netip.Addr{addr}
+			if q.Type == dnsmessage.TypeA {
+				if pool4, okp := via4LookupOrAllocate(siteID, v4); okp {
+					addrs = append(addrs, pool4)
+				}
+			}
+			resp, err := buildMagicDNSAnswer(hdr.ID, q, addrs)
 			if err != nil {
 				magicDNSServfailCount.Add(1)
 				_ = writeMagicDNSStatus(conn, peer, hdr.ID, dnsmessage.RCodeServerFailure, nil, q)

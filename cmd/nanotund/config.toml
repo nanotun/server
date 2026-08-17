@@ -127,6 +127,28 @@ upstream_v6 = ["2001:4860:4860::8888"]
 # 注：客户端侧要真的用上这条，全隧道下公网域名必须确实问到网关（Windows 客户端为此装了 NRPT
 # catch-all；mac/iOS 靠 matchDomains=[""]）。客户端绕开网关直接问公共 DNS 时，本项无从生效。
 ecs_forward = false
+# via4_pool：4via6 名字的 **A 记录合成池**（DNS46+NAT46）。
+#
+# 为什么需要：4via6 名字（如 192-168-1-10via7.lan）原本只有 AAAA 应答，而 Apple 平台在系统没有
+# v6 默认路由时**根本不发 AAAA 查询**（iOS 真机定位，2026-08-17）——iOS「仅组网」模式下 via 名
+# 就是死名字。启用本池后，via 名的 A 查询会从池里分配一个 v4 地址作答（映射 池地址⇔(站点,目标v4)
+# 存服务端内存），数据面把发往池地址的 v4 包无状态改写成 4via6 v6 包、汇入现有子网路由转发路径，
+# 回程再反译回 v4 —— **客户端零改动**，iOS/Android/Windows 全平台受益。
+#
+# 取值：
+#   · 留空/不写 → 默认 "100.100.0.0/16"（CGNAT 段，不与家庭/企业 RFC1918 LAN 冲突），
+#                 即 magic_dns 开着就默认启用；
+#   · "off"     → 显式关闭（via 名维持 AAAA-only 老行为）；
+#   · 自定义    → IPv4 CIDR，前缀 ≤ /28，且不得与 [tun].subnets 重叠（启动时校验，违规拒启）。
+#
+# 行为细节：
+#   · 池网段作为一条 server 拥有的合成条目随 routes-list 下发，客户端开着 accept-routes 即自动
+#     装路由（与 4via6 的 fdbc:4a60::/64 生效前提完全一致）；
+#   · A 应答 TTL 30s；映射闲置 4h 后池满时可被 LRU 回收；server 重启丢映射（进行中的 via4 连接
+#     断开，客户端重查 DNS 即自愈）——与 NAT64 部署常识一致；
+#   · 翻译流 TCP MSS 钳到 1220（保证翻成 v6 后 ≤ 客户端 mesh MTU 1280）；v4 分片与 >1260 字节的
+#     UDP 不翻译（丢弃计数，/status 的 via4_dropped 可见）；ICMP 只翻 echo（ping 可用）。
+#via4_pool = "100.100.0.0/16"
 
 [log]
 level = "info"

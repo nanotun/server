@@ -1718,6 +1718,10 @@ func main() {
 	magicDNSCleanup := func() { magicDNSv4(); magicDNSv6(); magicDNSTCPv4(); magicDNSTCPv6() }
 	defer magicDNSCleanup()
 
+	// SR-VIA4:4via6 名字的 A 记录合成(DNS46+NAT46,见 via4.go)。默认随 magic_dns 启用
+	// (via4_pool="off" 显式关闭);池与 mesh v4 网段重叠时拒绝启用(池地址会被当 vIP demux)。
+	initVia4(gw.cfg.Server.MagicDNS, []string{sharedTUNGateway})
+
 	// subnet route(SR-M1):数据面已接入。启动时构建一次「已批准子网路由表」(per-packet 最长前缀匹配的数据源);
 	// 之后 admin 改路由经 control-socket /reload?what=routes 重建,连接上下线无需重建(在线性由 per-packet
 	// lookupActiveConnByDevice 实时解析)。rebuild 内部会 INFO 打印当前生效路由条数。
@@ -2223,6 +2227,13 @@ readLoop:
 			uid := parseUserIDStr(c.userID)
 			if uid == 0 && c.userID != "" {
 				aclMalformedUserDropCount.Add(1)
+				continue
+			}
+			// SR-VIA4(NAT46):出向「发起方 v4 → via4 池地址」在此改写成 4via6 v6 包再汇入下方子网路由
+			// 路径;返程「宣告方 → 返程标记 v6」在此反译回 v4 投给发起方。放在子网路由之前:池段 dst 不是
+			// vIP 也不在任何宣告网段,不拦截会漏到出口路径把 CGNAT 段包发上公网。与子网路由同理不受
+			// exit_allowed 闸约束(私有组网连通)。头部裸字节快判,非 via4 流量只多几次比较。见 via4.go。
+			if via4DataPlane(c, uid, payload) {
 				continue
 			}
 			// subnet route(SR-M1):dst 命中某「已批准的内网网段」→ 投递给该网段的宣告方会话,由其本机转发进 LAN
