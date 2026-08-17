@@ -95,43 +95,54 @@ func setupExitDNSRedirect(bin, deviceName, dnsIP string) error {
 	return nil
 }
 
-// setupMagicDNSException 在启用 MagicDNS 时,给「客户端 → TUN 网关 IP:<port>」的 DNS 查询开两处例外:
-//  1. nat PREROUTING RETURN:插到链首(-I 1),先于第 6 步出口 DNS 接管的 :53 DNAT。否则发往本机
-//     MagicDNS 的查询会被 DNAT 到上游解析器,MagicDNS(只 listen 在 gateway IP)永远收不到,名字解析失败;
-//  2. filter INPUT ACCEPT:插到链首,放行到本机 gateway:<port> 的入站。很多发行版 -P INPUT DROP
-//     或 ufw 默认拒绝,不放行则 listener 收不到查询(表现为客户端 dig 超时)。
+// setupMagicDNSException 在启用 MagicDNS 时,给「客户端 → TUN 网关 IP:<port>」的 DNS 查询开例外:
+//  1. filter INPUT ACCEPT:插到链首,放行到本机 gateway:<port> 的入站。很多发行版 -P INPUT DROP
+//     或 ufw 默认拒绝,不放行则 listener 收不到查询(表现为客户端 dig 超时)。**两族都要**;
+//  2. nat PREROUTING RETURN:插到链首(-I 1),先于 SetupIptables 第 6 步出口 DNS 接管的 :53 DNAT。
+//     否则发往本机 MagicDNS 的查询会被 DNAT 到上游解析器,MagicDNS(只 listen 在 gateway IP)永远
+//     收不到。**仅 v4**:出口 DNS 接管只在 v4 侧装 DNAT(见 SetupIp6tables 注释——客户端的 v6 查询
+//     没有 v4 解析器可 DNAT 到),v6 上没有 DNAT 要绕过,装了是死规则。
 //
-// 与 exitMode 无关:即便 off 模式没有 DNAT,INPUT 默认 DROP 仍会挡住 MagicDNS 查询,故两条都要装。
+// 与 exitMode 无关:即便 off 模式没有 DNAT,INPUT 默认 DROP 仍会挡住 MagicDNS 查询,故 INPUT 那条照装。
 // 规则携带 mainIptComment,随启动 sweep / 退出 teardown 一并清理;幂等(-C 检查)。
-// gwV4 为空或 port<=0(未启用 MagicDNS)时 no-op。
+// gwAddr 为空或 port<=0(未启用 MagicDNS)时 no-op。
+//
+// bin 决定地址族("iptables" / "ip6tables"),gwAddr 须与之匹配(v4 点分 / v6 冒号,均不带前缀长度)。
+// v6 侧同样必须装:magic DNS 在 v4 与 v6 网关上成对 listen(见 server.go 的 startMagicDNS 调用),
+// 而客户端(iOS 仅组网确定如此)会把 mesh ULA 网关一并写进解析器列表 —— v6 少了这条 ACCEPT,ip6tables
+// 默认 DROP 的机器(ufw 开着即是)上 socket 明明在 LISTEN、查询也确实到了 tun0,却在进 socket 前就被
+// 丢掉:凡是选了 v6 解析器的客户端都静默解不出 AAAA / 4via6,且抓包看着「包已到达」极易误判。
+//(2026-08-17 iOS 18.7.9 实测该端把 AAAA 发给了 v4 网关,故 v6 这条是兜底路径,不是唯一路径。)
 //
 // 仅在 port == 53 时装:与 magicDNSExtraDNS 的 port==53 约束对齐(见 magic_dns.go)。
 // 客户端 OS stub resolver 永远打 :53,非 53 端口时 server 不会给客户端 prepend 网关 DNS,
 // 客户端根本不会查网关:<port>;且出口 DNS 接管的 DNAT 硬编码在 :53,非 53 端口上没有 DNAT
-// 要绕过。故非 53 端口装这两条纯属死规则(无害但多余),直接跳过并 no-op。
-func setupMagicDNSException(bin, deviceName, gwV4 string, port int) error {
-	if gwV4 == "" || port != 53 || deviceName == "" {
+// 要绕过。故非 53 端口装这些纯属死规则(无害但多余),直接跳过并 no-op。
+func setupMagicDNSException(bin, deviceName, gwAddr string, port int) error {
+	if gwAddr == "" || port != 53 || deviceName == "" {
 		return nil
 	}
 	portStr := strconv.Itoa(port)
-	// 1) nat PREROUTING RETURN:必须排在出口 DNS 接管 DNAT 之前 → 用 -I PREROUTING 1。
-	for _, proto := range []string{"udp", "tcp"} {
-		ruleArgs := withMainComment([]string{
-			"-i", deviceName, "-d", gwV4, "-p", proto, "--dport", portStr, "-j", "RETURN",
-		})
-		check := append([]string{"-t", "nat", "-C", "PREROUTING"}, ruleArgs...)
-		if exec.Command(bin, check...).Run() == nil {
-			continue
-		}
-		insert := append([]string{"-t", "nat", "-I", "PREROUTING", "1"}, ruleArgs...)
-		if out, err := exec.Command(bin, insert...).CombinedOutput(); err != nil {
-			return fmt.Errorf("%s nat PREROUTING MagicDNS RETURN: %w (%s)", bin, err, strings.TrimSpace(string(out)))
+	// 1) nat PREROUTING RETURN:必须排在出口 DNS 接管 DNAT 之前 → 用 -I PREROUTING 1。仅 v4 有该 DNAT。
+	if bin != "ip6tables" {
+		for _, proto := range []string{"udp", "tcp"} {
+			ruleArgs := withMainComment([]string{
+				"-i", deviceName, "-d", gwAddr, "-p", proto, "--dport", portStr, "-j", "RETURN",
+			})
+			check := append([]string{"-t", "nat", "-C", "PREROUTING"}, ruleArgs...)
+			if exec.Command(bin, check...).Run() == nil {
+				continue
+			}
+			insert := append([]string{"-t", "nat", "-I", "PREROUTING", "1"}, ruleArgs...)
+			if out, err := exec.Command(bin, insert...).CombinedOutput(); err != nil {
+				return fmt.Errorf("%s nat PREROUTING MagicDNS RETURN: %w (%s)", bin, err, strings.TrimSpace(string(out)))
+			}
 		}
 	}
 	// 2) filter INPUT ACCEPT:放行本机 gateway:<port> 的入站(先于 -P INPUT DROP / ufw)。
 	for _, proto := range []string{"udp", "tcp"} {
 		ruleArgs := withMainComment([]string{
-			"-i", deviceName, "-d", gwV4, "-p", proto, "--dport", portStr, "-j", "ACCEPT",
+			"-i", deviceName, "-d", gwAddr, "-p", proto, "--dport", portStr, "-j", "ACCEPT",
 		})
 		check := append([]string{"-C", "INPUT"}, ruleArgs...)
 		if exec.Command(bin, check...).Run() == nil {
@@ -142,8 +153,12 @@ func setupMagicDNSException(bin, deviceName, gwV4 string, port int) error {
 			return fmt.Errorf("%s filter INPUT MagicDNS ACCEPT: %w (%s)", bin, err, strings.TrimSpace(string(out)))
 		}
 	}
-	logrus.WithFields(logrus.Fields{"bin": bin, "dev": deviceName, "gw": gwV4, "port": port}).Info(
-		"iptables: 已装 MagicDNS 端口例外(nat PREROUTING RETURN + filter INPUT ACCEPT)")
+	installed := "filter INPUT ACCEPT + nat PREROUTING RETURN"
+	if bin == "ip6tables" {
+		installed = "filter INPUT ACCEPT(v6 无出口 DNS DNAT,不需 nat RETURN)"
+	}
+	logrus.WithFields(logrus.Fields{"bin": bin, "dev": deviceName, "gw": gwAddr, "port": port}).Infof(
+		"%s: 已装 MagicDNS 端口例外(%s)", bin, installed)
 	return nil
 }
 
@@ -634,11 +649,11 @@ func iptablesInsertForward(ruleArgs []string) error {
 	return nil
 }
 
-// SetupIp6tables 配置 IPv6 的 FORWARD、connlimit、（可选）隔离、NAT（幂等）。
+// SetupIp6tables 配置 IPv6 的 FORWARD、connlimit、（可选）隔离、NAT、MagicDNS 端口例外（幂等）。
 // 语义见 SetupIptables;exitMode 也是三档 mesh/isolate/off。
 // exitDNSRedirect 参数在 v6 侧暂不使用(DNS 接管走 v4 DNAT 到 v4 解析器,见 SetupIptables 第 6 步;
 // 客户端 v6 DNS 查询无 v4 解析器可 DNAT 到,保持原样转发)。留参数是为调用点两个函数签名对齐。
-func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, blockBT, blockTracker6969, blockSMTP25 bool, exitMode, _, exitDenyPrivate string) error {
+func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, blockBT, blockTracker6969, blockSMTP25 bool, exitMode, _, exitDenyPrivate string, magicDNSGwV6 string, magicDNSPort int) error {
 	if deviceName == "" {
 		deviceName = "tun0"
 	}
@@ -750,7 +765,23 @@ func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpCon
 			return err
 		}
 	}
+
+	// 5) MagicDNS 端口例外(启用时)。对齐 SetupIptables 第 7 步 —— magic DNS 在 v4 / v6 网关上成对
+	// listen,少了 v6 这条 ACCEPT,ip6tables 默认 DROP 的机器上 v6 查询会在进 socket 前被丢掉
+	// (症状:选了 v6 解析器的客户端静默解不出 AAAA / 4via6)。详见 setupMagicDNSException。
+	if err := SetupMagicDNSV6Exception(deviceName, magicDNSGwV6, magicDNSPort); err != nil {
+		return err
+	}
 	return nil
+}
+
+// SetupMagicDNSV6Exception 只装 v6 侧的 MagicDNS 端口例外,不碰 FORWARD/NAT。
+//
+// 单独导出是因为它的**前提比整套 ip6tables 更弱**:magic DNS listen 在 mesh 的 ULA 网关上,客户端
+// 经隧道即可问到,与本机有没有 v6 出网无关。而 SetupIp6tables 整体依赖 GetWANv6(),纯 v4 出网的机器
+// (很常见)上会整块跳过 —— 那条 INPUT ACCEPT 也就跟着丢了。server.go 在那条路径上单独调本函数补装。
+func SetupMagicDNSV6Exception(deviceName, gwV6 string, port int) error {
+	return setupMagicDNSException("ip6tables", deviceName, gwV6, port)
 }
 
 // insertTUNForwardPortDrops 从 TUN 转发、目的端口为常见滥用端口时 DROP（幂等）

@@ -300,15 +300,18 @@ enabled = true
 domain_suffix = "lan"
 listen_port = 53            # 必须 = 53,见下方关键约束
 upstream_v4 = ["223.5.5.5"]
+ecs_forward = false         # 跨国部署建议 true,见下方第 4 点
 ```
 
-**关键约束**(三点 deployment 陷阱):
+**关键约束**(四点 deployment 陷阱):
 
 1. **`listen_port` 必须 = 53**。客户端拿到的 DNS server 列表只是 IP 字符串,OS stub resolver 永远打 :53。非标端口下 server 会跳过 prepend(`Warn` 一次),客户端 DNS 维持 `[tun].dns_servers_v4`。
 2. **与系统 DNS 服务冲突**:
    - `systemd-resolved` 默认 listen `127.0.0.53:53`(具体 IP),与 server 的 `100.x.x.x:53` IP 不同,**不冲突**。
    - `dnsmasq` / Pi-hole listen `0.0.0.0:53`(全 IP)会和 server 冲突 → bind 失败 → magic_dns 模块不起(主进程继续跑)。修法:dnsmasq 改 `bind-interfaces` + `listen-address=127.0.0.1`,或换非标端口 + 自做 53→5353 转发。
+   - **udp/53 与 tcp/53 都要通**(RFC 7766 要求成对;大应答置 TC=1 后使用方只能改走 TCP)。server 自装的 iptables 例外两者都放行,自带防火墙的部署需自行放行网关 IP 的两个协议。
 3. **权限**:server 已 root 启动(TUN 需要),:53 没成本;rootless 容器需 `cap_net_bind_service`。
+4. **`ecs_forward`:跨国部署几乎必开**。转发上游时附带客户端 /24(EDNS Client Subnet),让 CDN 按**客户端所在地**调度。不开时上游只看到 server 的位置——实测新加坡 server 会把 `www.baidu.com` 给成港/海外节点,国内客户端每个请求绕远,而且解析本身是成功的,极易被误判成「隧道慢」。默认 `false` 是因为它向上游暴露客户端 /24(隐私让渡),须运维显式选择;私网/CGNAT 客户端自动跳过。
 
 ### 备份 / 恢复 / 压缩(P1#10)
 

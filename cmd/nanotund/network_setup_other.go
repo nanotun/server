@@ -47,6 +47,10 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 	return fmt.Errorf("iptables only supported on Linux")
 }
 
-func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, _, _, _ bool, _, _, _ string) error {
+func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpConnlimit, udpConnlimit int, _, _, _ bool, _, _, _ string, _ string, _ int) error {
+	return fmt.Errorf("ip6tables only supported on Linux")
+}
+
+func SetupMagicDNSV6Exception(deviceName, gwV6 string, port int) error {
 	return fmt.Errorf("ip6tables only supported on Linux")
 }

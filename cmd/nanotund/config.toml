@@ -68,11 +68,21 @@ login_rate_limit_per_min = 0
 #   - 客户端登录会收到 TUN gateway IP 作为头号 DNS server,系统全局 DNS 先打这里;
 #   - 没配 upstream_v4/v6 时非 magic 域名查询会回 SERVFAIL —— "magic-only" 模式;
 #   - DNS server 只在 TUN gateway IP 上 listen,不暴露 WAN。
+#   - **UDP 与 TCP 都听**(RFC 7766 要求成对):应答超出使用方 EDNS 缓冲区时置 TC=1,使用方唯一的
+#     补救就是改用 TCP 重查,只听 UDP 会让大应答彻底解不出来。自带防火墙的部署要放行网关 IP 的
+#     udp/53 **和** tcp/53(server 自己装的 iptables 例外已两者都放)。TCP listener 起不来只记日志、
+#     不影响 UDP(丢的是截断回落);UDP bind 失败才会让 magic_dns 模块整体不起。
 #   - 与出口 DNS 接管(exit_dns_redirect,默认 auto)共存已自动处理:enabled=true 时
 #     server 在 nat PREROUTING 给「网关 IP:53」加一条 RETURN(排在出口接管的 :53 DNAT
 #     之前),并在 filter INPUT 放行「网关 IP:53」(绕开 -P INPUT DROP / ufw)。否则发往
 #     magic DNS 的查询会被出口接管 DNAT 劫持走 / 被默认 INPUT 策略丢弃。仅 listen_port=53
 #     生效(非标端口客户端 stub 不会查网关,见上文陷阱 1)。
+#     **v4 与 v6 都放行**:magic DNS 在两族网关上成对 listen,而客户端(iOS 仅组网确定如此)会把
+#     mesh ULA 网关一并写进解析器列表 —— v6 少了那条 ACCEPT,`ip6tables -P INPUT DROP` 的机器
+#     (开着 ufw 即是)上 socket 明明在 LISTEN、查询也确实到了 tun0,却在进 socket 前被丢掉:凡是
+#     选了 v6 解析器的客户端都静默解不出 AAAA / 4via6。(2026-08-17 iOS 18.7.9 实测走的是 v4
+#     网关,AAAA 亦然,故 v6 这条属兜底;但兜底缺位的症状极难排查,别省。)
+#     v6 侧只装 INPUT ACCEPT,不装 nat RETURN:出口 DNS 接管的 DNAT 只在 v4,v6 没有要绕的。
 #
 # Magic 域名命名规则(去掉尾部 .<suffix> 后按段数 / 首段区分,均严格匹配):
 #   A) 设备名   <device>.<user>.<suffix>              → 该设备的 mesh 虚拟 IP(A/AAAA)
@@ -100,6 +110,23 @@ listen_port = 53
 # 转发上游，magic 名字本地解析、公网名字照常（应答含 A/AAAA）。选就近可达的上游（本机为非中国节点时建议把中性的排前）。
 upstream_v4 = ["223.5.5.5", "8.8.8.8"]
 upstream_v6 = ["2001:4860:4860::8888"]
+# ecs_forward：转发非 magic 域名到上游时，附带 EDNS Client Subnet（RFC 7871，客户端会话对端 IP 的
+# /24(v4) / /56(v6)），让上游按**客户端所在地**而不是**本机所在地**做 CDN 调度。
+#
+# 不开会怎样（真机实测：重庆客户端 → 新加坡 server，全隧道）：上游只看到 server 的地址，于是
+# www.baidu.com 被调度到 45.113.192.x / 103.235.46.x（港/海外节点），客户端本地视角本该是
+# 153.3.238.x。域名解析得出来、能访问，但每个 CDN 请求都绕远一趟——症状隐蔽，容易被当成「隧道慢」。
+# 开启后同一查询回国内节点。跨国部署（server 与用户不同地区）几乎一定要开。
+#
+# 代价与前提：
+#   · 隐私让渡——向上游暴露客户端所在的 /24。故默认 false，必须运维显式选择；
+#   · 上游要支持 ECS（223.5.5.5 / 8.8.8.8 支持；运营商内网 DNS 多半忽略之，无害不报错）；
+#   · 客户端对端 IP 是私网 / 回环 / 链路本地 / CGNAT（非全球单播）时自动跳过——同机房或
+#     NAT 后的客户端没有可用的地理信息，不会瞎附一个。
+#
+# 注：客户端侧要真的用上这条，全隧道下公网域名必须确实问到网关（Windows 客户端为此装了 NRPT
+# catch-all；mac/iOS 靠 matchDomains=[""]）。客户端绕开网关直接问公共 DNS 时，本项无从生效。
+ecs_forward = false
 
 [log]
 level = "info"

@@ -181,10 +181,12 @@ func callSetupIptables(exitMode, denyPrivate string) error {
 		exitMode, "off", denyPrivate, "", 0)
 }
 
+// callSetupIp6tables 带上 MagicDNS 网关 + :53,让 v6 的 MagicDNS 例外那一步也进各故障用例的覆盖面
+// (v4 侧的 callSetupIptables 传 "",0 关掉它,是因为 v4 例外另有专门用例)。
 func callSetupIp6tables(exitMode, denyPrivate string) error {
 	dev, wan, _, _ := setupIptablesArgs()
 	return SetupIp6tables(dev, wan, "2001:db8::1", []string{"fd00::/64"}, 40, 20,
-		true, true, true, exitMode, "", denyPrivate)
+		true, true, true, exitMode, "", denyPrivate, "fd00::1", 53)
 }
 
 // TestSetupIptables_RuleInstallFailureAbortsStartup 装规则失败必须中止,且指明是哪一步。
@@ -419,6 +421,77 @@ func TestMagicDNSException_InstallFailureAbortsStartup(t *testing.T) {
 				t.Errorf("错误应含 %q,实得:%v", tc.wantSub, err)
 			}
 		})
+	}
+}
+
+// TestMagicDNSException_V6InstallsInputAcceptForBothProtocols v6 侧必须放行网关的 udp/53 与 tcp/53。
+//
+// 钉这条的由来(实测 2026-08-17,lab 服务器):magic DNS 在 v4 / v6 网关上成对 listen,但例外只装了 v4。
+// 那台机器 `ip6tables -P INPUT DROP`(ufw 开着),于是 `[fd00:200::1]:53` socket 明明在 LISTEN、
+// 客户端的查询也确实到了 tun0(抓包可见),却在进 socket 之前就被策略丢掉 —— 三条查询零个回包。
+// 受害面是「选了 v6 解析器的客户端」:客户端(iOS 仅组网确定如此)会把 mesh ULA 网关一并写进解析器
+// 列表,真去问它就一个字也拿不回来。(同日 iOS 18.7.9 实测把 AAAA 发给了 v4 网关,故 v6 是兜底路径。)
+func TestMagicDNSException_V6InstallsInputAcceptForBothProtocols(t *testing.T) {
+	f := newFakeNetTools(t)
+	if err := SetupMagicDNSV6Exception("tun0", "fd00:200::1", 53); err != nil {
+		t.Fatal(err)
+	}
+	for _, proto := range []string{"udp", "tcp"} {
+		want := "-I INPUT 1 -i tun0 -d fd00:200::1 -p " + proto + " --dport 53 -j ACCEPT"
+		if n := f.countMatching(t, "ip6tables", want); n != 1 {
+			t.Errorf("v6 应装恰好 1 条 %s 的 INPUT ACCEPT,实得 %d 条", proto, n)
+		}
+	}
+	if n := f.countMatching(t, "iptables ", "-I INPUT"); n != 0 {
+		t.Errorf("v6 例外调用了 v4 的 iptables %d 次 —— 两族串了", n)
+	}
+}
+
+// TestMagicDNSException_V6SkipsNatReturn v6 上不装 nat PREROUTING RETURN。
+//
+// 那条 RETURN 的唯一作用是让查询躲开出口 DNS 接管的 :53 DNAT,而 DNAT 只在 v4 侧装
+// (客户端的 v6 查询没有 v4 解析器可 DNAT 到,见 SetupIp6tables 注释)。v6 上装了就是死规则:
+// 白占规则槽、还让人以为 v6 也有 DNAT 要绕。
+func TestMagicDNSException_V6SkipsNatReturn(t *testing.T) {
+	f := newFakeNetTools(t)
+	if err := SetupMagicDNSV6Exception("tun0", "fd00:200::1", 53); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.countMatching(t, "-t nat"); n != 0 {
+		t.Errorf("v6 例外碰了 nat 表 %d 次 —— v6 侧没有 DNAT 要绕过", n)
+	}
+
+	// 对照:v4 侧那条 RETURN 一定还在(别把 v6 的裁剪误伤到 v4)。
+	f4 := newFakeNetTools(t)
+	if err := setupMagicDNSException("iptables", "tun0", "10.200.0.1", 53); err != nil {
+		t.Fatal(err)
+	}
+	if n := f4.countMatching(t, "-t nat -I PREROUTING 1"); n != 2 {
+		t.Errorf("v4 应保留 udp/tcp 各一条 nat PREROUTING RETURN,实得 %d 条", n)
+	}
+}
+
+// TestSetupIp6tables_InstallsMagicDNSExceptionAsAStep 例外要真的接在 SetupIp6tables 里,
+// 而不是只有 server.go 那条补装路径调得到 —— 后者只在「无 v6 出网」时才跑。
+func TestSetupIp6tables_InstallsMagicDNSExceptionAsAStep(t *testing.T) {
+	f := newFakeNetTools(t)
+	if err := callSetupIp6tables(config.TUNExitModeMesh, config.TUNExitDenyPrivateOff); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.countMatching(t, "ip6tables", "-I INPUT 1 -i tun0 -d fd00::1 -p udp --dport 53 -j ACCEPT"); n != 1 {
+		t.Errorf("SetupIp6tables 没装 v6 MagicDNS 的 INPUT ACCEPT(实得 %d 条)", n)
+	}
+}
+
+// TestSetupIp6tables_MagicDNSExceptionFailureAbortsStartup 这一步失败必须中止,不能只 Warn。
+// 悄悄降级成 Warn 的后果就是「magic DNS 显示已启用,v6 名字全解不出」这种最难查的形态。
+func TestSetupIp6tables_MagicDNSExceptionFailureAbortsStartup(t *testing.T) {
+	f := newFakeNetTools(t)
+	f.failOn(t, "-I INPUT 1 -i tun0 -d fd00::1")
+	if err := callSetupIp6tables(config.TUNExitModeMesh, config.TUNExitDenyPrivateOff); err == nil {
+		t.Fatal("v6 MagicDNS 例外装失败却返回 nil")
+	} else if !strings.Contains(err.Error(), "INPUT") {
+		t.Errorf("错误没指明是 INPUT 那步:%v", err)
 	}
 }
 
@@ -788,11 +861,19 @@ func TestSetupIptables_EmptyDeviceNameFallsBackToTun0(t *testing.T) {
 
 	f6 := newFakeNetTools(t)
 	if err := SetupIp6tables("", "eth0", "2001:db8::1", []string{"fd00::/64"}, 40, 20,
-		false, false, false, config.TUNExitModeMesh, "", config.TUNExitDenyPrivateOff); err != nil {
+		false, false, false, config.TUNExitModeMesh, "", config.TUNExitDenyPrivateOff, "fd00::1", 53); err != nil {
 		t.Fatal(err)
 	}
 	if n := f6.countMatching(t, "ip6tables", "-I FORWARD 1 -i tun0 -o tun0"); n == 0 {
 		t.Error("v6 侧设备名为空时也应退到 tun0")
+	}
+	// MagicDNS 例外也必须吃到这个兜底 —— 空 `-i` 会把「放行 tun0 上的 :53」变成「放行任何接口的 :53」,
+	// 那就等于把网关 DNS 对所有入接口开放了。
+	if n := f6.countMatching(t, "ip6tables", "-I INPUT 1 -i tun0 -d fd00::1"); n == 0 {
+		t.Error("v6 MagicDNS 例外在设备名为空时没退到 tun0")
+	}
+	if n := f6.countMatching(t, "-i  "); n != 0 {
+		t.Errorf("v6 侧出现了 -i 后跟空值的规则 %d 条", n)
 	}
 }
 

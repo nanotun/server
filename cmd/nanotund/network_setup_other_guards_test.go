@@ -23,7 +23,10 @@ func TestNonLinuxNetworkStubs_FailClosedWithAReasonInTheMessage(t *testing.T) {
 		{"SetupIptables", SetupIptables("nanotun0", "eth0", "203.0.113.9",
 			[]string{"10.202.0.0/16"}, 100, 100, false, false, false, "", "", "", "", 0)},
 		{"SetupIp6tables", SetupIp6tables("nanotun0", "eth0", "2001:db8::1",
-			[]string{"fd00:202::/64"}, 100, 100, false, false, false, "", "", "")},
+			[]string{"fd00:202::/64"}, 100, 100, false, false, false, "", "", "", "", 0)},
+		// v6 MagicDNS 例外的桩同样不能静默成功:server.go 在「无 v6 出网」那条路径上单独调它,
+		// 返回 nil 会让日志显示「已装」,而实际一条规则都没有。
+		{"SetupMagicDNSV6Exception", SetupMagicDNSV6Exception("nanotun0", "fd00:202::1", 53)},
 	}
 	for _, c := range cases {
 		if c.err == nil {

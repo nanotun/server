@@ -1284,6 +1284,13 @@ func main() {
 			// IPv6 转发 + ip6tables（仅当有 IPv6 网段时;v6 缺失保持 Warn —— v6 在多数云厂商是可选项）
 			v6SetupRetryArmed := false
 			if gatewayCIDRv6 != "" {
+				// 与上面 v4 同口径(见 :1257):未启用 MagicDNS 时留空 → 各调用点内 no-op。
+				magicGwV6 := ""
+				magicPortV6 := 0
+				if cfg.Server.MagicDNS.Enabled {
+					magicGwV6 = gatewayAddrFromCIDR(gatewayCIDRv6)
+					magicPortV6 = int(resolveMagicDNSConfig(cfg.Server.MagicDNS).port)
+				}
 				installV6Rules := func() bool {
 					if err := EnableIPv6Forward(); err != nil {
 						logrus.WithError(err).Warn("开启 IPv6 转发失败")
@@ -1296,7 +1303,7 @@ func main() {
 					}
 					if err := SetupIp6tables(deviceName, wanIfaceV6, wanIPv6, []string{chosenSubnetV6}, tcpConnlimit, udpConnlimit,
 						cfg.TUN.ForwardBlockBT, cfg.TUN.ForwardBlockTracker6969, cfg.TUN.ForwardBlockSMTP25, cfg.TUN.ResolveExitMode(), cfg.TUN.ExitDNSRedirect,
-						cfg.TUN.ResolveExitDenyPrivate()); err != nil {
+						cfg.TUN.ResolveExitDenyPrivate(), magicGwV6, magicPortV6); err != nil {
 						logrus.WithError(err).Warn("配置 ip6tables 失败")
 						return false
 					}
@@ -1305,6 +1312,19 @@ func main() {
 				if installV6Rules() {
 					iptablesInstalled = true
 				} else if isProductionLinuxRoot() {
+					// v6 WAN 缺失(纯 v4 出网的机器,很常见)会让上面整块 ip6tables 都跳过 —— 但 magic DNS
+					// **不依赖 v6 出网**:它 listen 在 mesh 的 ULA 网关上,客户端经隧道就能问。少了那条 INPUT
+					// ACCEPT,ip6tables 默认 DROP 的机器上 v6 查询直接被丢:socket 在 LISTEN、包也到了 tun0,
+					// 却在进 socket 前没了,表现为「选了 v6 解析器的客户端静默解不出 AAAA / 4via6」。
+					// 故这里单独补装一次;若稍后 v6 出网探明、installV6Rules 重跑,其内部 sweep 会先清掉本条,
+					// 再由 SetupIp6tables 第 5 步以同样内容装回,不会重复堆叠。
+					if err := SetupMagicDNSV6Exception(deviceName, magicGwV6, magicPortV6); err != nil {
+						logrus.WithError(err).Warn("单独补装 v6 MagicDNS 端口例外失败(v6 magic 名字可能解析不到)")
+					} else if magicGwV6 != "" {
+						// 下面的 v6SetupRetryArmed 其实已经足以让 teardown 注册;这里仍显式置位,
+						// 是为了不把「规则已落地」的清理责任寄托在另一段逻辑的副作用上。
+						iptablesInstalled = true
+					}
 					// 启动装失败常见于「server 的 v6(RA/DHCPv6)晚于进程就绪」:若不补装,60s 出网探测转"有 v6"后
 					// 数据面照转公网 v6,但 MASQUERADE 没装 → ULA 源出网被上游丢弃(探测/NAT 脱节黑洞)。注册补装
 					// 钩子,由探测 goroutine 在探明有 v6 出网时重试,成功即撤钩(见 egress_select.go)。
@@ -1686,7 +1706,9 @@ func main() {
 
 	// P2#11(2026-05-22):Magic DNS。仅在 [server].magic_dns.enabled = true 时启动;
 	// listen 在 TUN gateway v4 **和** v6 上(从 sharedTUNGateway / V6 CIDR 解出地址)。
-	// iOS 18 meshOnly split-DNS 只把 AAAA 发给列表里的 v6 解析器；只听 v4 :53 时 4via6 / 设备名 AAAA 全挂。
+	// 为什么 v6 也要听:客户端(至少 iOS 仅组网)会把 mesh ULA 网关一并写进解析器列表,凡是**真去选它**
+	// 的查询只有这里能应答。注:2026-08-17 iOS 18.7.9 真机实测走的是 v4 网关(AAAA 亦然),故 v6 这份
+	// 是兜底而非唯一路径 —— 但兜底缺位时症状是「AAAA / 4via6 静默解不出」,极难排查,不省。
 	magicDNSv4 := startMagicDNS(gw, gatewayAddrFromCIDR(sharedTUNGateway))
 	magicDNSv6 := startMagicDNS(gw, gatewayAddrFromCIDR(sharedTUNGatewayV6))
 	// TCP/53 与 UDP 成对(RFC 7766 要求两者都支持):UDP 侧超出使用方 EDNS 缓冲区的应答会被置 TC=1,
