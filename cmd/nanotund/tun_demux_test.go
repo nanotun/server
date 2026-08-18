@@ -85,7 +85,9 @@ func TestTunDemuxToLink_SetsDeadlinePerWrite(t *testing.T) {
 		tunDemuxToLink(ch, w, mu, ctx)
 	}()
 
-	pkt := &util.TunPacket{Buf: []byte{0x45, 0, 0, 20, 0, 0, 0, 0, 64, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2}, N: 20}
+	// Buf 必须池子同形(poolShapedTunPacket):demux 消费后会把 Buf 归还 tunReadBufPool,
+	// 塞字面量短切片进去会毒化全局池,截断毫无关系的后续用例的包(via4 端到端实测中过招)。
+	pkt := poolShapedTunPacket([]byte{0x45, 0, 0, 20, 0, 0, 0, 0, 64, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2})
 	ch <- pkt
 	time.Sleep(50 * time.Millisecond)
 	close(w.released)
@@ -137,7 +139,8 @@ func TestTunDemuxToLink_CtxCancelInterruptsStuckWrite(t *testing.T) {
 		exited.Store(1)
 	}()
 
-	pkt := &util.TunPacket{Buf: []byte{0x45, 0, 0, 20, 0, 0, 0, 0, 64, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2}, N: 20}
+	// 同上:Buf 池子同形,防止归还时毒化 tunReadBufPool。
+	pkt := poolShapedTunPacket([]byte{0x45, 0, 0, 20, 0, 0, 0, 0, 64, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2})
 	ch <- pkt
 	time.Sleep(50 * time.Millisecond)
 

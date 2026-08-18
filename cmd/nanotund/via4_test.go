@@ -392,6 +392,12 @@ func TestVia4DataPlaneEndToEnd(t *testing.T) {
 	default:
 		t.Fatal("翻译后的 v6 包未投递到宣告方会话")
 	}
+	// 截断守卫:收到的必须是完整 v6 翻译(≥40B 头)。历史事故:别的用例把字面量短切片
+	// 当 Buf 归还进 tunReadBufPool,毒化后 deliverIPPacketToConn 的 copy 把 52B 翻译截成
+	// 池里旧 len —— 在这里表现为收到自己包的前 20 字节,直接 slice panic,毫无线索。
+	if len(v6pkt) < 48 {
+		t.Fatalf("收到截断包(len=%d hex=%x):怀疑 tunReadBufPool 被短 Buf 毒化,见 poolShapedTunPacket 注释", len(v6pkt), v6pkt)
+	}
 	wantDst, _ := encode4via6(sid, target)
 	if gotDst, _ := netip.AddrFromSlice(v6pkt[24:40]); gotDst != wantDst {
 		t.Fatalf("v6 dst = %s, want %s", gotDst, wantDst)
