@@ -112,7 +112,7 @@ func setupExitDNSRedirect(bin, deviceName, dnsIP string) error {
 // 而客户端(iOS 仅组网确定如此)会把 mesh ULA 网关一并写进解析器列表 —— v6 少了这条 ACCEPT,ip6tables
 // 默认 DROP 的机器(ufw 开着即是)上 socket 明明在 LISTEN、查询也确实到了 tun0,却在进 socket 前就被
 // 丢掉:凡是选了 v6 解析器的客户端都静默解不出 AAAA / 4via6,且抓包看着「包已到达」极易误判。
-//(2026-08-17 iOS 18.7.9 实测该端把 AAAA 发给了 v4 网关,故 v6 这条是兜底路径,不是唯一路径。)
+// (2026-08-17 iOS 18.7.9 实测该端把 AAAA 发给了 v4 网关,故 v6 这条是兜底路径,不是唯一路径。)
 //
 // 仅在 port == 53 时装:与 magicDNSExtraDNS 的 port==53 约束对齐(见 magic_dns.go)。
 // 客户端 OS stub resolver 永远打 :53,非 53 端口时 server 不会给客户端 prepend 网关 DNS,

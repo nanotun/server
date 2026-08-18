@@ -102,7 +102,7 @@ func buildTruncatedDNSReply(resp []byte, limit int) []byte {
 	m.Additionals = opt
 
 	for _, degrade := range []func(){
-		func() {},                    // question + OPT
+		func() {},                      // question + OPT
 		func() { m.Additionals = nil }, // 只留 question
 		func() { m.Questions = nil },   // 只留 header
 	} {

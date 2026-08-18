@@ -121,8 +121,8 @@ type via4Mapping struct {
 
 // via4Table：池 + 双向映射。mu 只保护 map 结构（分配/驱逐低频）；数据面查询走 RLock + atomic touch。
 type via4Table struct {
-	pool netip.Prefix
-	mu   sync.RWMutex
+	pool   netip.Prefix
+	mu     sync.RWMutex
 	byKey  map[via4Key]*via4Mapping
 	byPool map[netip.Addr]*via4Mapping
 	cursor netip.Addr // 顺序分配游标（回绕扫描）
