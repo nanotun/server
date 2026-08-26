@@ -104,6 +104,50 @@ else
   ok "sqlite3 已在"
 fi
 
+# ufw 的**转发**策略必须是 ACCEPT。
+#
+# 2026-08-26 换机重建时踩到:Vultr 的 Ubuntu 26.04 镜像出厂就开着 ufw,而
+# /etc/default/ufw 里 DEFAULT_FORWARD_POLICY="DROP"。nanotun 自己那套规则(出口
+# masquerade、子网转发)一条不少,但 ufw 在 forward 钩子上另挂一条 policy drop ——
+# nftables 里两张表各自裁决、取交集,于是 C 作为出口节点一个包也转不出去。
+#
+# 真正难办的不是那几条红(「基线 · A 可达公网」「出口 · 2MB 下载完整」「DF 包通过」),
+# 而是它同时制造**假绿**:「撤销出口资格后 A 公网流量被阻断(fail-closed)」照样 PASS ——
+# 流量本来就出不去,撤不撤销都一样,那条断言什么也没验到。一层与被测系统无关的防火墙
+# 会把所有「应该被挡」的断言变成恒真,而恒真的断言不会有人来查。
+#
+# 为什么是放开 routed 而不是干脆 ufw disable:phases/50-ops.sh 有两处刻意拿 C 的 22 端口
+# 当靶子,写明理由是「C 的 ufw 只放行了 22」—— 那层 input 语义是被断言依赖的,拆了它
+# 那两条会从「验到了」退化成「碰巧通」。所以这里只动**过路**流量的默认动作,
+# input 放行名单一个字不碰。
+for who in s a c; do
+  "$who" "command -v ufw" >/dev/null 2>&1 || continue
+  ufw_pol="$("$who" "grep '^DEFAULT_FORWARD_POLICY=' /etc/default/ufw | cut -d= -f2 | tr -d '\"'" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$ufw_pol" = "ACCEPT" ]; then
+    ok "$who 的 ufw 转发策略已是 ACCEPT"
+  elif would "$who 的 ufw 转发策略 ${ufw_pol:-未知} → ACCEPT(否则出口/子网转发被 ufw 静默挡掉)"; then
+    "$who" "ufw default allow routed >/dev/null 2>&1; ufw reload >/dev/null 2>&1" >/dev/null 2>&1
+    ufw_pol="$("$who" "grep '^DEFAULT_FORWARD_POLICY=' /etc/default/ufw | cut -d= -f2 | tr -d '\"'" 2>/dev/null | tr -d '[:space:]')"
+    [ "$ufw_pol" = "ACCEPT" ] \
+      && ok "$who 的 ufw 转发策略已改为 ACCEPT" \
+      || warn "$who 的 ufw 转发策略仍是 ${ufw_pol:-未知},出口类断言会红(且 fail-closed 那几条会假绿)"
+  fi
+done
+
+# 靶站端口必须在 C 的 ufw 放行名单里。README 和 lib/fixtures.sh 都记着这条前置,
+# 但此前没有任何脚本落实它 —— 老 C 上那条放行规则是手工加的,机器一换就跟着没了,
+# 而缺了它「A→C 靶站 200」的红看起来像 mesh 坏了。
+if c "command -v ufw" >/dev/null 2>&1; then
+  if c "ufw status 2>/dev/null | grep -q '^${E2E_TARGET_PORT}/tcp'" >/dev/null 2>&1; then
+    ok "C 已放行靶站端口 ${E2E_TARGET_PORT}/tcp"
+  elif would "C 放行靶站端口 ${E2E_TARGET_PORT}/tcp"; then
+    c "ufw allow ${E2E_TARGET_PORT}/tcp >/dev/null 2>&1" >/dev/null 2>&1
+    c "ufw status 2>/dev/null | grep -q '^${E2E_TARGET_PORT}/tcp'" >/dev/null 2>&1 \
+      && ok "C 的 ${E2E_TARGET_PORT}/tcp 已放行" \
+      || warn "C 的 ${E2E_TARGET_PORT}/tcp 放行失败,靶站类断言会红"
+  fi
+fi
+
 # ── 1. A:防失联回程规则 ─────────────────────────────────────────────────────
 # 必须在 A 建立隧道**之前**就位。A 不带 --no-default-route,连上之后
 # `default dev nanotun0` 的 metric 是 0,压过 WAN 默认路由,公网 SSH 的**回包**
