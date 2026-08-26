@@ -454,12 +454,17 @@ working (a field-by-field comparison shows only that on-demand-signed client cer
 other 18 items identical, and the old cert still verifies under the upgraded CA).
 
 **But one thing the upgrade won't do for you**: the client cert embedded in the profile has its
-validity fixed **at the moment it was signed**. The default was later changed from 90 days to
-10 years, but that only affects newly signed ones; QRs issued by old versions still expire at
-their original 90 days, and upgrading doesn't retroactively extend them. If you're upgrading
+validity fixed **at the moment it was signed**. The default went 90 days → 10 years → 100 years,
+but each change only affects newly signed ones; QRs issued by old versions still expire on their
+original schedule, and upgrading doesn't retroactively extend them. If you're upgrading
 from an early version, re-issue `profile show` for existing users to swap to a long-lived cert —
-otherwise you think "everything's 10 years now" while clients drop offline en masse on the
+otherwise you think "everything's a hundred years now" while clients drop offline en masse on the
 originally scheduled day.
+
+The same applies to the **client CA** on disk: it's only minted when missing, so a machine
+installed before the 100-year change still carries the older, shorter CA — and the issuer clamps
+every leaf to the CA's `NotAfter`, so freshly issued client certs silently inherit that shorter
+expiry. `profile show` says so when the remaining life drops under 180 days.
 
 **Backup**: `nanotun-admin backup <path>` (hot-consistent, via `VACUUM INTO`; without a path it
 names by timestamp) grabs the SQLite DB; also store `/etc/nanotun` alongside it — the REALITY

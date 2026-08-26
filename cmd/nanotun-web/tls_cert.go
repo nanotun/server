@@ -26,7 +26,7 @@ import (
 // 启动顺序:
 //   1) Validate(c.CertDir) → 必须能写;
 //   2) 若 cert.pem + key.pem 都存在 → 读出来作为 TLS 起服务;
-//   3) 否则生成一对 P-256 ECDSA 证书(10 年),SAN 包含
+//   3) 否则生成一对 P-256 ECDSA 证书(100 年,见 certValidYears),SAN 包含
 //      ["localhost", "127.0.0.1", "::1", hostname, 公网 IP(若能拿到)] ∪ ExtraSANs;
 //   4) 落盘 cert.pem 0600 + key.pem 0600(目录 0700)。
 //
@@ -49,7 +49,17 @@ const (
 	keyFileMode  os.FileMode = 0o600
 	certDirMode  os.FileMode = 0o700
 
-	certValidYears = 10
+	// certValidYears 与装机脚本签的那几张对齐(一百年,见 scripts/ensure-server-assets.sh
+	// 的 SELF_SIGNED_DAYS)。
+	//
+	// 这张证书没有任何续期机制:ensureTLSCert 只在两个文件都不在时才重签,而重签会换掉
+	// 身份 —— 浏览器那边此前手工点过的例外、或导进信任库的那份,全部作废,得挨个重来一遍。
+	// 十年是个会到的日子,到那天 TLS 直接连不上,而症状(浏览器报证书无效)离原因(装机
+	// 脚本十年前定的默认值)隔得足够远,没人会往这儿想。
+	//
+	// 长有效期不影响浏览器接受度:Apple / Chrome 那条 398 天上限只管**公共信任根**签出
+	// 的证书,手工加信任的自签叶子不在其列。
+	certValidYears = 100
 )
 
 // ensureTLSCert 返回 cert / key 的绝对路径,需要时自动生成。
@@ -105,7 +115,9 @@ func ensureTLSCert(certDir string, extraSANs []string) (certPath, keyPath string
 			certDir, describeCertFile(certPath), describeCertFile(keyPath), certPath, keyPath)
 	}
 
-	logrus.WithField("cert_dir", certDir).Info("[tls] 未发现证书,自动生成 self-signed(10 年有效)")
+	// 年数从常量取,别写死在文案里:上次把有效期从 10 年改成 100 年时,这句话是全仓
+	// 唯一漏掉的地方,而日志正是运维用来确认「到底签了多久」的东西。
+	logrus.WithField("cert_dir", certDir).Infof("[tls] 未发现证书,自动生成 self-signed(%d 年有效)", certValidYears)
 
 	sans := collectSANs(extraSANs)
 	if err := generateSelfSignedCert(certPath, keyPath, sans); err != nil {

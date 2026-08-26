@@ -16,6 +16,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -610,6 +612,50 @@ func TestAttachIssuedHy2ClientCert_FailuresAreFatal(t *testing.T) {
 			t.Fatal("随机数取不到却照样签了证书 —— CN 后缀会退化成固定值,吊销时分不清该吊哪张")
 		}
 	})
+}
+
+// 装机脚本签出的自签证书,有效期必须 ≥ defaultHy2ClientCertDays。
+//
+// 这是一条跨文件的不变量,而在此之前它只靠两边的注释互相提醒。certs.IssueClientCert 会把
+// 叶子夹到 CA 的 NotAfter 以内,所以 scripts/ensure-server-assets.sh 里的 -days 一旦小于这里
+// 的默认值,profile 里的客户端证书就被静默截短 —— 签发照常成功、二维码照常能扫,只是寿命悄悄
+// 变成了 CA 的剩余寿命。
+//
+// 加这条的直接起因:客户端证书的默认值一路放到了一百年,而同一个脚本里 [server] / [hysteria]
+// 的服务端自签证书一直停在 3650 天,期间没有任何测试碰过它 —— shell 那侧本来就没有单测,
+// 从 Go 这边读一遍脚本是唯一能把这条约束变成断言的办法。
+func TestEnsureServerAssetsScript_SelfSignedDaysCoversClientCertDefault(t *testing.T) {
+	const script = "../../scripts/ensure-server-assets.sh"
+	raw, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("读 %s: %v", script, err)
+	}
+	body := string(raw)
+
+	m := regexp.MustCompile(`(?m)^SELF_SIGNED_DAYS=(\d+)$`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("%s 里找不到 SELF_SIGNED_DAYS=<天数> —— 要么改名了,要么有效期又被写回各个 openssl "+
+			"调用里。后者会让几处 -days 各自漂移,而漂移的那处只在到期那天现形", script)
+	}
+	got, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("SELF_SIGNED_DAYS=%q 不是数字", m[1])
+	}
+	if got < defaultHy2ClientCertDays {
+		t.Errorf("SELF_SIGNED_DAYS=%d < defaultHy2ClientCertDays=%d —— 客户端 CA 比叶子短,"+
+			"profile 里的证书会被静默夹到 CA 的到期日", got, defaultHy2ClientCertDays)
+	}
+
+	// 每个 openssl 的 -days 都得走这个变量。留一处写死的数字就等于留一处不受本测试保护的
+	// 有效期,而它恰好是上次漏掉的那种。
+	for i, ln := range strings.Split(body, "\n") {
+		if !strings.Contains(ln, "-days") || strings.HasPrefix(strings.TrimSpace(ln), "#") {
+			continue
+		}
+		if !strings.Contains(ln, `-days "$SELF_SIGNED_DAYS"`) {
+			t.Errorf("%s:%d 的 -days 没走 SELF_SIGNED_DAYS:%s", script, i+1, strings.TrimSpace(ln))
+		}
+	}
 }
 
 func TestResolvePathRelativeToConfig(t *testing.T) {

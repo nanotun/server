@@ -8,15 +8,19 @@ package main
 //   - 任何一步失败都不能留下半成品。留下一把没有对应证书的私钥,下次启动会撞上
 //     「半残目录」直接拒绝起服务;更糟的是那把私钥就此躺在盘上无人知晓;
 //   - 目录建不出来 / 参数为空要如实报错,不能悄悄用别的路径;
-//   - SAN 集合里的空白项要被丢掉(空 DNS 名会让部分客户端直接判证书非法)。
+//   - SAN 集合里的空白项要被丢掉(空 DNS 名会让部分客户端直接判证书非法);
+//   - 有效期要签满一百年 —— 这条不是失败侧,但它的回归同样只在到期那天才现形。
 
 import (
 	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // failingReader 在读了 okReads 次之后开始报错,用来把「随机数在第几步失效」
@@ -207,5 +211,46 @@ func TestCollectSANs_DropsBlanksAndDedupes(t *testing.T) {
 		if seen[want] == 0 {
 			t.Errorf("SAN 里缺 %q(实际 %v)", want, got)
 		}
+	}
+}
+
+// 自签证书必须签满一百年,与装机脚本(scripts/ensure-server-assets.sh 的
+// SELF_SIGNED_DAYS)对齐。
+//
+// 锁这条是因为它的回归无声无息:改小了当天照样签得出来、测试照样绿、浏览器照样连得上,
+// 要到期那天才炸,而那时候没人还记得动过这个常量。
+//
+// 下界写死成天数,**不能**从 certValidYears 算出来。拿被测常量去算期望值,改小常量时
+// 两边一起变小,断言恒真 —— 这条测试就从「锁住一百年」退化成「证书的有效期等于它自己的
+// 有效期」,而恒真的断言不会有人来查。写死 99 年是给闰年和 NotBefore 那一小时留余量。
+func TestGenerateSelfSignedCert_LastsAHundredYears(t *testing.T) {
+	const minDays = 99 * 365
+	dir := t.TempDir()
+	certPath, _, err := ensureTLSCert(dir, nil)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	pemBytes, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blk, _ := pem.Decode(pemBytes)
+	if blk == nil {
+		t.Fatal("证书不是合法 PEM")
+	}
+	leaf, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	gotDays := time.Until(leaf.NotAfter).Hours() / 24
+	if gotDays < minDays {
+		t.Errorf("自签证书只剩 %.0f 天,期望 ≥%d 天(约一百年)—— 这张证书没有续期机制,"+
+			"重签会换掉身份、浏览器那边点过的例外全部作废,缩短有效期等于给自己埋一个到期日",
+			gotDays, minDays)
+	}
+	// NotBefore 往前挪一小时兜时钟漂移,别把它一起改没了:新装的机器时间常常慢几秒,
+	// 而「证书还没生效」的报错和「证书已过期」长得很像。
+	if !leaf.NotBefore.Before(time.Now()) {
+		t.Errorf("NotBefore=%s 不在当下之前,时钟漂移的余量丢了", leaf.NotBefore)
 	}
 }

@@ -17,7 +17,9 @@
   撤销其所有 session。
 - **CSRF**:double-submit cookie 模式;所有 POST 均强制 token 校验。
 - **TLS**:监听 `0.0.0.0:7443`,启动时若 `cert-dir` 中没有 `cert.pem` + `key.pem`,
-  自动生成 ECDSA P-256 自签证书(10 年有效,SAN 含 hostname + 所有非 loopback 网卡 IP)。
+  自动生成 ECDSA P-256 自签证书(100 年有效,SAN 含 hostname + 所有非 loopback 网卡 IP)。
+  签这么长是因为重签会换掉身份 —— 浏览器上点过的例外、导进信任库的那份全部作废;
+  而这张证书没有任何续期机制,短有效期只是把「换身份 + 挨个重新信任」推到某个没人记得的日子。
 - **审计**:每个写操作都过 `store.Audit`,actor = `web:<username>`。
 - **观测**:`/healthz` + `/metrics`(Prometheus 文本格式)。
 

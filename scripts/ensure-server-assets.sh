@@ -11,6 +11,27 @@ set -euo pipefail
 # 谁都能把它换掉,而服务以 root 加载。
 umask 022
 
+# 本脚本签出的所有自签证书都用这一个有效期(一百年),包括 [server] 的 WSS TLS、
+# [hysteria] 的 Hy2 TLS,以及 hy2 mTLS 的客户端 CA。
+#
+# 为什么不是十年:这几张证书的到期日是**一次性、不可续期**的。脚本本身是幂等的、
+# 只在文件缺失时才签,而重签会换掉服务器身份 —— 已经发出去的客户端配置全部作废
+# (gen_self_signed 和 check_pem_or_die 的注释都写着这条)。也就是说十年后的那一天,
+# 管理员被迫做一次「换身份 + 给所有用户重发配置」的动作,而那天没人还记得这是装机
+# 脚本在十年前定下的日子。
+#
+# 到期的表现还偏偏是不显眼的那种:客户端 profile 里带 tls_insecure_hint=true 的照旧
+# 能连(它压根不验有效期),而手工把证书装进信任库的那批人集体握不上手;Hy2 这边则是
+# 悄悄退到别的传输,只表现为变慢。同一个原因,两种互相矛盾的现象。
+#
+# 有效期长不构成额外的暴露:泄了私钥,要紧的是换钥匙,不是等证书自己过期;而这套里
+# 既没有 CRL 也没有 OCSP,「过期即吊销」的那套道理在这里本来就不成立。
+#
+# 客户端 CA 还有一条硬约束:必须 ≥ nanotun-admin 的 defaultHy2ClientCertDays。签发端会
+# 把叶子夹到 CA 的 NotAfter 以内(certs.IssueClientCert),CA 短了的话 profile 里的客户端
+# 证书会被静默截到 CA 的到期日。两边共用这一个常量,就不会各自漂移。
+SELF_SIGNED_DAYS=36500
+
 ARG="${1:-/etc/nanotun}"
 if [[ -f "$ARG" ]]; then
   CFG="$ARG"
@@ -102,13 +123,13 @@ gen_self_signed() {
   # 证书目录写死 0700:里面是私钥,而它常常正好是新建的那次(全新装机)。
   install -d -m 0700 "$(dirname "$cert_path")" "$(dirname "$key_path")"
   if openssl req -x509 -newkey rsa:2048 \
-    -keyout "$key_path" -out "$cert_path" -days 3650 -nodes \
+    -keyout "$key_path" -out "$cert_path" -days "$SELF_SIGNED_DAYS" -nodes \
     -subj "$subj" \
     -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null; then
     :
   else
     openssl req -x509 -newkey rsa:2048 \
-      -keyout "$key_path" -out "$cert_path" -days 3650 -nodes \
+      -keyout "$key_path" -out "$cert_path" -days "$SELF_SIGNED_DAYS" -nodes \
       -subj "$subj"
   fi
   chmod 600 "$key_path" 2>/dev/null || true
@@ -203,11 +224,11 @@ basicConstraints = critical,CA:TRUE
 keyUsage = critical,keyCertSign,cRLSign
 subjectKeyIdentifier = hash
 CACNF
-    # -days 必须 ≥ nanotun-admin 的 defaultHy2ClientCertDays(一百年)。签发端会把叶子夹到
-    # CA 的 NotAfter 以内,CA 短了的话 profile 里的客户端证书会被静默截到 CA 到期日 ——
+    # 有效期见文件头 SELF_SIGNED_DAYS 的注释:这张 CA 必须 ≥ nanotun-admin 的
+    # defaultHy2ClientCertDays,否则 profile 里的客户端证书会被静默截到 CA 到期日 ——
     # 那天客户端的 Hy2 悄悄退到别的传输,只表现为变慢,没人会联想到是这张 CA 到点了。
     openssl req -x509 -newkey rsa:2048 -nodes \
-      -keyout "$client_ca_key_path" -out "$client_ca_path" -days 36500 \
+      -keyout "$client_ca_key_path" -out "$client_ca_path" -days "$SELF_SIGNED_DAYS" \
       -config "$ca_cnf" -extensions v3_nanotun_ca
     rm -f "$ca_cnf"
     chmod 600 "$client_ca_key_path" 2>/dev/null || true

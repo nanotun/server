@@ -543,12 +543,14 @@ func TestProfileShow_ClientCertMatchesCALifetime(t *testing.T) {
 	}
 	notAfter := certNotAfter(t, p.Hy2.ClientCertPEM)
 	days := time.Until(notAfter).Hours() / 24
-	// 绑常量取九成做下界,能同时挡住两类回归:默认值被改回 90 天 / 十年,以及装机脚本里
-	// 客户端 CA 的 -days 没跟上默认值 —— 后者会让叶子被静默夹到 CA 的到期日,签出来的
-	// 二维码悄悄只剩十年寿命,而两者报出来都只是个对不上的天数。
-	if want := float64(defaultHy2ClientCertDays); days < want*0.9 {
-		t.Errorf("默认应当接近一百年(受 CA 夹制),期望 ≥%.0f 天,got %.0f 天 —— 短效默认没有续期机制,"+
-			"到期那天客户端只会「变慢」,而管理员要给每个用户重发二维码", want*0.9, days)
+	// 下界写死,**不能**写成 defaultHy2ClientCertDays*0.9。拿被测常量去算期望值,默认值被改回
+	// 90 天时叶子和期望一起缩到 81 天,断言照样绿 —— 这里要挡的头一类回归恰好是它挡不住的。
+	// 写死 99 年后两类都挡得住:默认值被改小,以及装机脚本里客户端 CA 的 -days 没跟上默认值
+	// (后者会让叶子被静默夹到 CA 的到期日,签出来的二维码悄悄只剩十年寿命)。
+	const minDays = 99 * 365
+	if days < minDays {
+		t.Errorf("默认应当接近一百年(受 CA 夹制),期望 ≥%d 天,got %.0f 天 —— 短效默认没有续期机制,"+
+			"到期那天客户端只会「变慢」,而管理员要给每个用户重发二维码", minDays, days)
 	}
 }
 
