@@ -17,9 +17,13 @@ import (
 	"time"
 )
 
-// maxClientCertValidDays 客户端 mTLS 证书有效期上限(天)。10 年:覆盖任何合理自托管用法,
-// 又远离 time.Duration(int64 ns ≈ 292 年)的溢出边界(见 IssueClientCert 的 NotAfter 计算)。
-const maxClientCertValidDays = 3650
+// maxClientCertValidDays 客户端 mTLS 证书有效期上限(天)。100 年:这层挡的不是「谁能用」
+// (见 defaultHy2ClientCertDays 的说明),而这套又没有任何续期机制,所以有效期按「与部署同寿」
+// 定 —— 上限存在只为兜住溢出,不为约束运维。
+//
+// 100 年仍远离 time.Duration(int64 ns ≈ 292 年)的溢出边界:36500 天 ≈ 3.15e18 ns,
+// 约为 int64 上限 9.22e18 的三分之一(见 IssueClientCert 的 NotAfter 计算)。
+const maxClientCertValidDays = 36500
 
 // IssuedClientCert 为 PEM 编码的客户端证书与私钥（供 profile.hy2 下发）。
 type IssuedClientCert struct {
@@ -42,7 +46,8 @@ func ClientCAKeyPath(caCertPath string) string {
 // 强制要求实现 Ed25519 签名验证，crypto/tls 与 rustls/ring 都原生支持，profile 装得进 QR。
 // CA 算法不强制 Ed25519：现有 RSA-2048 CA 可继续给 Ed25519 客户端证书签名，X.509 标准允许混合。
 //
-// validDays 须 > 0；典型自托管 profile 导出用 90 天，到期后重新 `profile show` 即可。
+// validDays 须 > 0，上限 maxClientCertValidDays；自托管 profile 导出默认签满一百年（调用方的
+// defaultHy2ClientCertDays），因为这套没有续期机制，短效证书到期只会让客户端悄悄退到别的传输。
 func IssueClientCert(caCertPEM, caKeyPEM, commonName string, validDays int) (*IssuedClientCert, error) {
 	commonName = strings.TrimSpace(commonName)
 	if commonName == "" {
@@ -53,8 +58,8 @@ func IssueClientCert(caCertPEM, caKeyPEM, commonName string, validDays int) (*Is
 	}
 	// 上限防溢出:NotAfter 用 time.Duration(validDays)*24h,而 time.Duration 是 int64 纳秒
 	// (上限 ~106751 天 ≈ 292 年)。--hy2-client-cert-days 是无符号 flag,运维误传超大值会让
-	// 乘法溢出成负 / 小 duration → NotAfter 落到过去,签出「刚签发即过期」的废证。10 年上限既覆盖
-	// 一切合理用法,又远离溢出边界。
+	// 乘法溢出成负 / 小 duration → NotAfter 落到过去,签出「刚签发即过期」的废证。100 年上限既
+	// 覆盖一切合理用法,又远离溢出边界。
 	if validDays > maxClientCertValidDays {
 		return nil, fmt.Errorf("validDays 过大(%d)，上限 %d 天", validDays, maxClientCertValidDays)
 	}
@@ -186,10 +191,13 @@ func GenerateTestCA(certPath, keyPath string) error {
 		return err
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "nanotun-test-client-ca"},
-		NotBefore:             time.Now().UTC().Add(-time.Hour),
-		NotAfter:              time.Now().UTC().Add(3650 * 24 * time.Hour),
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "nanotun-test-client-ca"},
+		NotBefore:    time.Now().UTC().Add(-time.Hour),
+		// 必须 ≥ maxClientCertValidDays:IssueClientCert 会把叶子夹到 CA 的 NotAfter 以内,
+		// fixture CA 比默认有效期短的话,拿它签出来的叶子会被静默截短 —— 断的是「默认值生效了吗」
+		// 这类断言,报出来却是个对不上的天数,查起来完全指不到这里。
+		NotAfter:              time.Now().UTC().Add(maxClientCertValidDays * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,

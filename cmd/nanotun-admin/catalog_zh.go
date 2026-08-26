@@ -279,7 +279,7 @@ var catZH = map[string]string{
 	"profile.flag.hy2UDPPort":         "覆盖 hy2 UDP 端口；0 = 从 config 推断",
 	"profile.flag.hy2Insecure":        "Hy2 是否信任服务端自签证书；true / false / auto（默认 auto：由 [hysteria].report_tls_insecure_hint 派生）",
 	"profile.flag.noIssueHy2Cert":     "不签发 Hy2 客户端 mTLS 证书（客户端将尝试库内内置 dev-client.pem，仅当与 CA 一致时可用）",
-	"profile.flag.hy2CertDays":        "临场签发的 Hy2 客户端证书有效天数,默认 3650(与装机自签的证书同为十年;不会超过 CA 剩余寿命)。仅 mTLS 启用且未 --no-issue-hy2-client-cert 时有效",
+	"profile.flag.hy2CertDays":        "临场签发的 Hy2 客户端证书有效天数,默认 36500(与装机自签的证书同为一百年;不会超过 CA 剩余寿命)。仅 mTLS 启用且未 --no-issue-hy2-client-cert 时有效",
 	"profile.flag.node":               "v2 入口节点（可重复）；裸 host 或 id=hk,name=名称,host=IP。有此项时导出 version=2（--host 为唯一出口）",
 	"profile.usageTooMany":            "usage: nanotun-admin profile show [<username>] --dial-host HOST [--advertised-host LABEL] [...]\n  (credentials 走 `nanotun-admin credentials show <username>`,profile 不再含 PSK)",
 	"profile.hostDeprecated":          "[warn] --host 是 DEPRECATED 别名,本轮拆字段后建议改用 --dial-host(语义清晰,与 --advertised-host 配套)",

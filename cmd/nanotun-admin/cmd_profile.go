@@ -376,22 +376,24 @@ func cmdProfileShow(ctx context.Context, st *store.Store, opts *globalOpts, args
 	return emitProfile(prof, *format, *output, *forceOverwrite, opts)
 }
 
-// defaultHy2ClientCertDays 是内嵌客户端证书的默认有效期,与装机时自签的那几张对齐(十年)。
+// defaultHy2ClientCertDays 是内嵌客户端证书的默认有效期,与装机时自签的那几张对齐(一百年)。
 //
-// 之前是 90 天。短效证书的道理是「过期即吊销」,但这套里没有任何续期机制:到期那天
-// 客户端的 Hy2/QUIC 通道悄悄握不上手、退到别的传输,人只觉得变慢;要修得管理员手工
-// 给每个用户重发一遍二维码 —— 一个季度一轮,没人会做。做不到的承诺不如不许。
+// 之前是 90 天,后来放到十年,现在按「与部署同寿」定。短效证书的道理是「过期即吊销」,但这套里
+// 没有任何续期机制:到期那天客户端的 Hy2/QUIC 通道悄悄握不上手、退到别的传输,人只觉得变慢;
+// 要修得管理员手工给每个用户重发一遍二维码 —— 一个季度一轮,没人会做。做不到的承诺不如不许。
+// 十年也仍然是个会到的日子,而那天没人还记得是这张码老了。
 //
 // 而它挡的本来就不是「谁能用」:mTLS 这层只验签证书链、不看 CN,也没有 CRL,真正的
 // 门是用户名 + PSK。要停掉某个人,`user disable` 立刻生效,不必等证书过期。
 //
 // 签发端会把叶子夹到 CA 的 NotAfter 以内(certs.IssueClientCert),所以这个值再大也不会
-// 签出比 CA 还长命的废证 —— 装机十年的 CA 用满第九年时,新发的二维码就只剩一年。
-const defaultHy2ClientCertDays = 3650
+// 签出比 CA 还长命的废证 —— 反过来说,装机脚本里客户端 CA 的 -days 必须同步跟上,
+// 否则这里写多少都会被静默截到 CA 的到期日(见 scripts/ensure-server-assets.sh)。
+const defaultHy2ClientCertDays = 36500
 
 // hy2CertShelfLifeNoticeWindow 决定那句「这张码什么时候过期」还值不值得说。
 //
-// 默认十年的话每次都报一句「还剩 3650 天」纯属噪音,而噪音会把真要紧的那次一起淹掉。
+// 默认一百年的话每次都报一句「还剩 36500 天」纯属噪音,而噪音会把真要紧的那次一起淹掉。
 // 只在半年以内才出声:显式要了短效证书的人,和 CA 快用完的机器,都落在这个窗口里 ——
 // 半年也够给所有用户重发一轮二维码。
 const hy2CertShelfLifeNoticeWindow = 180 * 24 * time.Hour

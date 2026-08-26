@@ -203,8 +203,11 @@ basicConstraints = critical,CA:TRUE
 keyUsage = critical,keyCertSign,cRLSign
 subjectKeyIdentifier = hash
 CACNF
+    # -days 必须 ≥ nanotun-admin 的 defaultHy2ClientCertDays(一百年)。签发端会把叶子夹到
+    # CA 的 NotAfter 以内,CA 短了的话 profile 里的客户端证书会被静默截到 CA 到期日 ——
+    # 那天客户端的 Hy2 悄悄退到别的传输,只表现为变慢,没人会联想到是这张 CA 到点了。
     openssl req -x509 -newkey rsa:2048 -nodes \
-      -keyout "$client_ca_key_path" -out "$client_ca_path" -days 3650 \
+      -keyout "$client_ca_key_path" -out "$client_ca_path" -days 36500 \
       -config "$ca_cnf" -extensions v3_nanotun_ca
     rm -f "$ca_cnf"
     chmod 600 "$client_ca_key_path" 2>/dev/null || true

@@ -282,7 +282,7 @@ var catEN = map[string]string{
 	"profile.flag.hy2UDPPort":         "override the hy2 UDP port; 0 = infer from config",
 	"profile.flag.hy2Insecure":        "whether Hy2 trusts the server's self-signed cert; true / false / auto (default auto: derived from [hysteria].report_tls_insecure_hint)",
 	"profile.flag.noIssueHy2Cert":     "don't issue a Hy2 client mTLS cert (the client will try the library's built-in dev-client.pem, usable only if it matches the CA)",
-	"profile.flag.hy2CertDays":        "validity (days) of the on-the-fly Hy2 client cert, default 3650 (ten years, same as the certs generated at install; never outlives the CA). Only when mTLS is enabled and --no-issue-hy2-client-cert is not set",
+	"profile.flag.hy2CertDays":        "validity (days) of the on-the-fly Hy2 client cert, default 36500 (a hundred years, same as the certs generated at install; never outlives the CA). Only when mTLS is enabled and --no-issue-hy2-client-cert is not set",
 	"profile.flag.node":               "v2 entry node (repeatable); bare host or id=hk,name=NAME,host=IP. When present, exports version=2 (--host is the sole exit)",
 	"profile.usageTooMany":            "usage: nanotun-admin profile show [<username>] --dial-host HOST [--advertised-host LABEL] [...]\n  (credentials go through `nanotun-admin credentials show <username>`; profile no longer contains a PSK)",
 	"profile.hostDeprecated":          "[warn] --host is a DEPRECATED alias; prefer --dial-host (clearer semantics, pairs with --advertised-host)",
