@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"testing"
+	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
 
@@ -29,6 +30,21 @@ func setVia4ForTest(t *testing.T, pool string) *via4Table {
 	via4State.Store(tbl)
 	t.Cleanup(func() { via4State.Store(prev) })
 	return tbl
+}
+
+// via4TestMapping 按池地址取出那条映射,供用例直接摆布 lastUsed。
+//
+// 需要它是因为用例要的是**确定的**新旧关系,而 time.Now() 给不了 —— 详见
+// TestVia4PoolExhaustionEvictsOldest 里的说明。
+func via4TestMapping(t *testing.T, tbl *via4Table, pool netip.Addr) *via4Mapping {
+	t.Helper()
+	tbl.mu.RLock()
+	defer tbl.mu.RUnlock()
+	m, ok := tbl.byPool[pool]
+	if !ok {
+		t.Fatalf("池地址 %s 没有对应的映射", pool)
+	}
+	return m
 }
 
 // mkV4UDP 造一个 v4 UDP 包（无选项头 + 8 字节 UDP 头 + payload），校验和按规范算好。
@@ -165,10 +181,32 @@ func TestVia4PoolExhaustionEvictsOldest(t *testing.T) {
 	if a1 == a2 {
 		t.Fatal("两个 key 分到同一地址")
 	}
-	// 触发第二个映射 touch，让 site1 成为最旧。
+
+	// 把 site1 的 lastUsed 明确拨到一个固定的过去时刻,而不是靠「先分配 site1、后 touch site2」
+	// 的调用先后来制造新旧关系。
+	//
+	// lastUsed 存的是 time.Now().UnixNano(),但这个时钟的精度并不保证到纳秒 —— macOS 上实测
+	// 只到微秒,于是「分配两条 + touch 一条」这三次调用有七成落在同一个微秒里,两条映射的
+	// lastUsed 完全相等。evictOldestLocked 用严格小于挑最旧,平局时留下的是**先被 map 迭代到**
+	// 的那条,而 Go 的 map 迭代顺序是随机的 —— 这条用例因此约一成概率驱逐了 site2。
+	//
+	// 它的红尤其费时间:报出来是「应复用 100.100.0.1,得到 100.100.0.2」,看着像池分配算错了
+	// 地址,跟真因(时钟精度)毫无相似之处;而且单跑这一条常常是绿的,只在整包跑时偶发。
+	//
+	// 同包的 TestEvictOldestSessionsLocked_RespectsEffectiveCap 早就是这么写的(createdAt 直接
+	// 给 time.Date 的固定值),这里跟上同一个写法。
+	via4TestMapping(t, tbl, a1).lastUsed.Store(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano())
+
+	// 数据面反查会 touch 租约,把 site2 刷成"现在" —— 这一步本身也是被测行为。
 	if _, ok := tbl.via4PoolToKey(a2); !ok {
 		t.Fatal("touch site2 失败")
 	}
+	// 把前置条件写成断言:哪天 via4PoolToKey 不再 touch 了,该在这里失败,而不是让下面那条
+	// 驱逐断言退化成抛硬币 —— 抛硬币的断言有九成的时候是绿的,不会有人来查。
+	if l1, l2 := via4TestMapping(t, tbl, a1).lastUsed.Load(), via4TestMapping(t, tbl, a2).lastUsed.Load(); l1 >= l2 {
+		t.Fatalf("site1 的 lastUsed(%d) 应严格早于 site2(%d),否则驱逐谁取决于 map 迭代顺序", l1, l2)
+	}
+
 	before := via4EvictCount.Load()
 	a3 := mk(3) // 池满 → 驱逐 site1
 	if via4EvictCount.Load() != before+1 {
