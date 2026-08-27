@@ -479,8 +479,19 @@ else
     else
       suffix_tool="$(resolve_suffix_tool || true)"
       if [ -z "$suffix_tool" ]; then
-        warn "想把后缀改成 '$want_suffix',但没找到改后缀的工具(nanotun-set-suffix / set-magic-suffix.sh)。"
-        note "手动改:scripts/set-magic-suffix.sh $want_suffix(或改 $ETC_DIR/config.toml 的 domain_suffix 再重启 nanotun)。"
+        # 这里**不能**建议去跑 scripts/set-magic-suffix.sh —— 走到这一支恰恰是因为
+        # resolve_suffix_tool 两个候选都没找到,其中一个就是它。指着一条刚刚被证明不存在的
+        # 路径,人只会以为是自己 cd 错了目录,在发布包里翻上一圈。
+        #
+        # 会落到这里的基本是同一批机器:v0.1.24 才把 set-magic-suffix.sh 打进发布包,更早的
+        # 包里压根没有这个文件,于是装出来的机器也就没有 nanotun-set-suffix 这个命令。
+        warn "想把后缀改成 '$want_suffix',但这台机器上没有改后缀的工具:既没有 nanotun-set-suffix"
+        warn "  命令,发布包目录里也没有 set-magic-suffix.sh(v0.1.24 才开始打包它,更早的包没有)。"
+        note "两条路,任选一条 ——"
+        note "  ① 重跑一次安装脚本升到新版,它会把 nanotun-set-suffix 装成命令,再 sudo nanotun-set-suffix $want_suffix"
+        note "  ② 手动改 $ETC_DIR/config.toml 里 [server.magic_dns] 的 domain_suffix,再 systemctl restart nanotun"
+        note "     (domain_suffix 不在 SIGHUP 热更白名单里,不重启不生效;手动这条没有工具自带的"
+        note "      「起不来就自动回滚」,改完记得确认 systemctl is-active nanotun)"
       else
         do_change=1
         # 改后缀要重启 nanotund(SIGTERM graceful drain,客户端会短暂重连)。交互下确认一句;
@@ -812,6 +823,12 @@ else
     note "客户端需要扫**两个**二维码,这是刻意拆开的:"
     note "  · profile     服务器地址与传输配置,不含 PSK;但内嵌一张客户端证书 —— 发给本人,别公开贴"
     note "  · credentials 用户名 + PSK,机密,只能一对一给本人"
+    # 先说清楚它们多半**不会**出现在这块屏幕上,免得下面连着两句「画不下,跳过」读起来
+    # 像是出了故障。profile 那张要 350 列(payload 顶到 QR 上限),没有哪个 SSH 窗口有那么宽,
+    # 所以它实际上永远走 PNG;credentials 那张 142 列,窗口够宽才画得出来。
+    # 这两个数字是量出来的,不是估的 —— 见 qr_if_fits 的注释。
+    note "  这块屏幕多半打不下它们:profile 要 350 列(必然超),credentials 要 142 列(看窗口)。"
+    note "  打不下会自动转成 PNG 或回显 PSK 明文,都能用,下面每一步都会说清楚怎么取。"
     printf '\n'
 
     create_out=""
