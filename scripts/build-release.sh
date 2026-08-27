@@ -85,7 +85,7 @@ for GOARCH in $ARCHES; do
   # 开服向导的「MagicDNS 后缀」那步也只认它。
   cp scripts/ensure-server-assets.sh scripts/install-self-hosted.sh \
      scripts/setup.sh scripts/preflight.sh scripts/uninstall.sh \
-     scripts/set-magic-suffix.sh "${STAGING}/scripts/"
+     scripts/set-magic-suffix.sh scripts/nanotun-ports.sh "${STAGING}/scripts/"
   chmod +x "${STAGING}/scripts/"*.sh
 
   # 打包清单不能和安装脚本的需求各自漂移。

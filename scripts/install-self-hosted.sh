@@ -310,7 +310,8 @@ for f in "$DEPLOY_DIR/nanotund" "$DEPLOY_DIR/nanotun-admin" \
          "$EXTRAS_DIR/config.toml" "$EXTRAS_DIR/nanotun.service" \
          "$SCRIPTS_DIR/tun-setup.sh" \
          "$SCRIPTS_DIR/tun-teardown.sh" "$SCRIPTS_DIR/tun-setup.service" \
-         "$SCRIPTS_DIR/ensure-server-assets.sh"; do
+         "$SCRIPTS_DIR/ensure-server-assets.sh" \
+         "$SCRIPTS_DIR/nanotun-ports.sh"; do
   [ -e "$f" ] || die "缺文件: $f"
 done
 
@@ -483,6 +484,9 @@ apply_magic_suffix
 # ensure-server-assets.sh 读 [server] / [hysteria] 的 tls_* 与 masquerade_dir,
 # 只在文件缺失时生成,幂等;WorkingDirectory 传 $ETC_DIR,相对路径落到 $ETC_DIR/certs 等。
 install -m 0755 "$SCRIPTS_DIR/ensure-server-assets.sh" /usr/local/bin/nanotun-ensure-assets.sh
+# 端口解析器也装成命令旁边的一个文件:卸载脚本和环境自检都要 source 它,而它们装完之后
+# 是从 /usr/local/bin 跑的 —— 发布包目录用完多半就没了。
+install -m 0755 "$SCRIPTS_DIR/nanotun-ports.sh" /usr/local/bin/nanotun-ports.sh
 # 它会逐条播报自己生成了什么(自签证书 / 开发 CA / 占位页),四行裸日志夹在本脚本的 ✓
 # 中间,前缀和标点都是另一套。正常装完这一步的结论由下面那句 ✓ 概括就够了 —— 首次
 # 安装本来就该生成这些。出错时才把它说过的话原样倒出来,那时每一行都是线索。
@@ -537,26 +541,41 @@ sysctl -e --system >/dev/null
 # 一个看着像 bug 的空值。写成 n/a 才说得清「这台机器没有 IPv6」。
 ok "ip_forward = $(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 'n/a'), v6.forwarding = $(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo 'n/a（内核未启用 IPv6，不影响 IPv4）'), ping_group_range = '$(sysctl -n net.ipv4.ping_group_range 2>/dev/null || echo 'n/a')'"
 
+# 三个对外端口一律从**实际配置**里读出来,不写死。
+#
+# 写死过一次,代价是「改了端口就连不上」:REALITY 挪到 9443 的机器上,这一步放行的仍是
+# 8443(没人听),而 9443 关着(客户端要连的正是它),屏幕上却打着「✓ ufw 放行：8443/tcp」——
+# 一切看着都对。而「端口被占就去改 [reality] 的 listen_addr」恰恰是环境自检自己给的建议。
+#
+# 必须放在第 1 步之后:全新机器上 config.toml 是那一步才落地的,更早读只会读到空。
+# shellcheck source=scripts/nanotun-ports.sh
+. "$SCRIPTS_DIR/nanotun-ports.sh"
+nanotun_load_ports "$ETC_DIR/config.toml" "$ETC_DIR/web.env"
+
+# 要放行的 tcp 端口:REALITY 一条;Web 后台装了才放(没装就保持只在 LAN / 隧道内可达)。
+FW_TCP=("$NT_PORT_REALITY")
+[ "$WEB_AVAILABLE" -eq 1 ] && FW_TCP+=("$NT_PORT_WEB")
+
 step "3. 防火墙：放行 nanotun 监听端口（ufw / firewalld active 时）"
 # ufw 默认 INPUT DROP（Ubuntu 全新系统常见配置），不放行端口客户端会全部被静默丢包，
 # 表现为「TCP 三次握手超时」「QUIC 重传无响应」。这里检测 ufw 状态后幂等放行。
 # 如果你用的是 firewalld / iptables / 云厂商安全组，请按各自方式自行放行：
-#   tcp 8443 (REALITY)  udp 443 (hy2 QUIC)
+#   tcp $NT_PORT_REALITY (REALITY)  udp $NT_HY2_SPECS (hy2 QUIC)
 # 数据面 WS(:8080)默认绑 127.0.0.1、不放行:客户端经 hy2/REALITY 接入,服务端在本机
 # 桥接到它。若你把 [server].listen_addr 改回 ":8080" 想让客户端直连,请自行 `ufw allow 8080/tcp`。
 # 2026-07-17:hy2 独立 WSS 保活(:8444)已下线,不再放行,并清理历史规则。
 # 2026-07-20:数据面 WS(:8080)改绑回环,从放行清单移除,并回收历史 8080/tcp 规则。
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  WEB_PORTS=()
-  # nanotun-web 监听 7443/tcp(见 nanotun-web.service),装了才放行;否则保持 LAN/隧道内可达。
-  [ "$WEB_AVAILABLE" -eq 1 ] && WEB_PORTS+=("7443/tcp")
   # 放行失败不 die,与下面 firewalld 分支同口径。
   #
   # 原来这里是裸的 `ufw allow "$rule" >/dev/null`,set -e 下失败即整个安装中断 —— 而
   # firewalld 那边同样的失败只 warn 并把手打命令给出来。同一件事两种严重程度,且严重的
   # 那种给错了:防火墙没放行,服务本身照样跑得好好的,该做的是告诉用户手动补一条,而不是
   # 把一台已经装到第 3 步的机器丢在半路。ufw 规则表损坏、被别的工具锁着的机器上会踩到。
-  UFW_PORTS=("8443/tcp" "443/udp" "${WEB_PORTS[@]}")
+  UFW_PORTS=()
+  for rule in "${FW_TCP[@]}"; do UFW_PORTS+=("$rule/tcp"); done
+  # hy2 开了端口跳跃时是一串,区间在 ufw 里写成 a:b(firewalld 那边是 a-b,所以两边各自渲染)。
+  for rule in $NT_HY2_SPECS; do UFW_PORTS+=("${rule/-/:}/udp"); done
   UFW_BAD=0
   for rule in "${UFW_PORTS[@]}"; do
     ufw allow "$rule" >/dev/null 2>&1 || UFW_BAD=1
@@ -564,21 +583,29 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: 
   ufw delete allow "8444/tcp" >/dev/null 2>&1 || true
   # 历史部署曾放行 8080/tcp(当时数据面 WS 绑 0.0.0.0);现在绑回环,回收这条规则。
   ufw delete allow "8080/tcp" >/dev/null 2>&1 || true
+  # 端口改过之后,默认那条得收回 —— 否则机器上留着一个对公网敞着、却没有任何东西在听的
+  # 端口,而它看起来和一条正当的放行规则毫无区别。
+  if [ "$NT_PORT_REALITY" != "$NT_DEFAULT_REALITY" ]; then
+    ufw delete allow "${NT_DEFAULT_REALITY}/tcp" >/dev/null 2>&1 || true
+  fi
+  if [ "$WEB_AVAILABLE" -eq 1 ] && [ "$NT_PORT_WEB" != "$NT_DEFAULT_WEB" ]; then
+    ufw delete allow "${NT_DEFAULT_WEB}/tcp" >/dev/null 2>&1 || true
+  fi
   if [ "$UFW_BAD" -eq 1 ]; then
     warn "ufw 在跑,但自动放行没成功。请手动执行:"
     warn "  ufw allow$(printf -- ' %s' "${UFW_PORTS[@]}")"
-  elif [ "$WEB_AVAILABLE" -eq 1 ]; then
-    ok "ufw 放行：8443/tcp 443/udp 7443/tcp(web)"
   else
-    ok "ufw 放行：8443/tcp 443/udp"
+    ok "ufw 放行：${UFW_PORTS[*]}"
   fi
 elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null)" = running ]; then
   # RHEL 系(Rocky / Alma / CentOS / Fedora)默认跑的是 firewalld,而它的默认 zone 同样
   # 拒绝入站。原来这里只认 ufw,其余一律 warn 一句「请手动放行」—— 于是 Rocky 用户装完
   # 满屏绿灯,客户端却连不上,而症状(TCP 握手超时 / QUIC 无响应)跟防火墙看不出关系,
   # 那句 warn 早被后面几十行刷走了。既然对 ufw 是自动放行的,没有理由只对它。
-  FW_PORTS=(8443/tcp 443/udp)
-  [ "$WEB_AVAILABLE" -eq 1 ] && FW_PORTS+=(7443/tcp)
+  FW_PORTS=()
+  for rule in "${FW_TCP[@]}"; do FW_PORTS+=("$rule/tcp"); done
+  # firewalld 的区间语法就是 a-b,和 nanotun-ports.sh 里保留的形态一致,原样传即可。
+  for rule in $NT_HY2_SPECS; do FW_PORTS+=("$rule/udp"); done
   FW_BAD=0
   for rule in "${FW_PORTS[@]}"; do
     firewall-cmd --permanent --add-port="$rule" >/dev/null 2>&1 || FW_BAD=1
@@ -586,6 +613,12 @@ elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev
   # 与 ufw 分支同口径:回收历史上放行过、现在不再需要的端口。
   firewall-cmd --permanent --remove-port=8444/tcp >/dev/null 2>&1 || true
   firewall-cmd --permanent --remove-port=8080/tcp >/dev/null 2>&1 || true
+  if [ "$NT_PORT_REALITY" != "$NT_DEFAULT_REALITY" ]; then
+    firewall-cmd --permanent --remove-port="${NT_DEFAULT_REALITY}/tcp" >/dev/null 2>&1 || true
+  fi
+  if [ "$WEB_AVAILABLE" -eq 1 ] && [ "$NT_PORT_WEB" != "$NT_DEFAULT_WEB" ]; then
+    firewall-cmd --permanent --remove-port="${NT_DEFAULT_WEB}/tcp" >/dev/null 2>&1 || true
+  fi
   firewall-cmd --reload >/dev/null 2>&1 || FW_BAD=1
   if [ "$FW_BAD" -eq 0 ]; then
     ok "firewalld 放行：${FW_PORTS[*]}"
@@ -596,7 +629,7 @@ elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev
     warn "  firewall-cmd --permanent$(printf -- ' --add-port=%s' "${FW_PORTS[@]}") && firewall-cmd --reload"
   fi
 else
-  warn "未检测到 ufw / firewalld active；如使用其他防火墙，请手动放行 8443/tcp 与 443/udp（装了 web 再加 7443/tcp）"
+  warn "未检测到 ufw / firewalld active；如使用其他防火墙，请手动放行 ${NT_PORT_REALITY}/tcp 与 $(printf '%s' "$NT_HY2_SPECS" | tr ' ' ',')/udp（装了 web 再加 ${NT_PORT_WEB}/tcp）"
 fi
 
 # 云厂商安全组:这一句必须在**任何一条分支之后**都印出来,包括「ufw 放行成功」那条。
@@ -612,8 +645,9 @@ fi
 # 443/**UDP** 单独点名:云厂商的默认安全组模板几乎都是 22 + 80/443 TCP,UDP 一条没有。
 # 也就是说照着模板走的人,REALITY(8443/tcp)自己加了,hy2 那条最容易漏 —— 而漏了它的
 # 表现不是连不上,是「能连但慢」(客户端悄悄退到别的传输),更难往防火墙上想。
-note_ports="8443/tcp（REALITY）、443/udp（hysteria2）"
-[ "$WEB_AVAILABLE" -eq 1 ] && note_ports="${note_ports}、7443/tcp（Web 后台）"
+# 端口同样取实际值:安全组要放行的是这台机器真正在听的那个,照着默认值去填等于白填。
+note_ports="${NT_PORT_REALITY}/tcp（REALITY）、$(printf '%s' "$NT_HY2_SPECS" | tr ' ' ',')/udp（hysteria2）"
+[ "$WEB_AVAILABLE" -eq 1 ] && note_ports="${note_ports}、${NT_PORT_WEB}/tcp（Web 后台）"
 warn "云服务器还要去厂商控制台的**安全组 / 网络 ACL** 里放行：${note_ports}"
 warn "  这一步脚本做不了。ufw 放了不等于安全组放了；443 是 UDP，而安全组模板通常只给 TCP。"
 
@@ -826,9 +860,13 @@ check_port() { # <tcp|udp> <端口> <标签>
   local pool; [ "$1" = tcp ] && pool="$LISTEN_TCP" || pool="$LISTEN_UDP"
   if printf '%s\n' "$pool" | grep -qE ":$2\$"; then PORTS_UP+=("$3"); else PORTS_DOWN+=("$3"); STATUS_BAD=1; fi
 }
-check_port tcp 8443 "8443/tcp(REALITY)"
-check_port udp 443  "443/udp(hy2)"
-[ "$WEB_AVAILABLE" -eq 1 ] && check_port tcp 7443 "7443/tcp(Web)"
+# 同样看实际端口。写死 8443 时,改过端口的机器每次装完都报一句「! 没听上:8443/tcp(REALITY)」
+# 并跟一大段诊断 —— 而服务正好好地在新端口上跑着。那句话把人指向「服务没起来」,
+# 离真相(自检看错了地方)很远。
+check_port tcp "$NT_PORT_REALITY" "${NT_PORT_REALITY}/tcp(REALITY)"
+# hy2 开端口跳跃时只有首端口真的 listen,其余靠 iptables REDIRECT 过来,所以这里只看首端口。
+check_port udp "$NT_PORT_HY2"     "${NT_PORT_HY2}/udp(hy2)"
+[ "$WEB_AVAILABLE" -eq 1 ] && check_port tcp "$NT_PORT_WEB" "${NT_PORT_WEB}/tcp(Web)"
 [ ${#PORTS_UP[@]}   -gt 0 ] && ok   "监听中:${PORTS_UP[*]}"
 [ ${#PORTS_DOWN[@]} -gt 0 ] && warn "没听上:${PORTS_DOWN[*]}"
 

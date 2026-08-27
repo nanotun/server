@@ -70,7 +70,7 @@ UNITS=(nanotun.service nanotun-web.service nanotun-tun-setup.service nanotun-tun
 # 它只会看到「没找到已安装的服务端」。
 BINS=(nanotund nanotun-admin nanotun-web nanotun-setup nanotun-preflight
       nanotun-set-suffix nanotun-uninstall
-      nanotun-ensure-assets.sh
+      nanotun-ensure-assets.sh nanotun-ports.sh
       nanotun-tun-setup.sh nanotun-tun-teardown.sh
       nanotun-tun-isolate.sh nanotun-tun-isolate-teardown.sh)
 
@@ -169,6 +169,23 @@ fi
   && run "删除 TUN 网卡" /usr/local/bin/nanotun-tun-teardown.sh
 
 # ── 3. 删程序与单元 ──────────────────────────────────────────────────────────
+# 端口要在这儿读,不能等到第 4 步用的时候再读:解析器自己就装在 /usr/local/bin,
+# 下面这一步就把它删了。读晚一步就只剩默认值,而那正是要修的 bug。
+#
+# 收回的必须是**当初真的放行了的**那几条,取决于这台机器的实际端口。写死 8443/443/7443 时,
+# 改过端口的机器上收回的是三条不存在的规则,真正开着的那个自定义端口被永久留在防火墙里 ——
+# 卸载报告一路绿灯,机器上却留下一个对公网敞着、后面什么都没有的洞。
+#
+# 配置这会儿还在(第 5 步才删),所以读得到;解析器读不到就回落默认值,那正是没改过端口的情形。
+NT_DEFAULT_REALITY=8443; NT_DEFAULT_HY2=443; NT_DEFAULT_WEB=7443
+NT_PORT_REALITY=$NT_DEFAULT_REALITY; NT_PORT_HY2=$NT_DEFAULT_HY2; NT_PORT_WEB=$NT_DEFAULT_WEB
+NT_HY2_SPECS=$NT_DEFAULT_HY2
+if [ -r /usr/local/bin/nanotun-ports.sh ]; then
+  # shellcheck source=scripts/nanotun-ports.sh
+  . /usr/local/bin/nanotun-ports.sh
+  nanotun_load_ports "$ETC_DIR/config.toml" "$ETC_DIR/web.env"
+fi
+
 step "3. 删除程序与 systemd 单元"
 for b in "${BINS[@]}"; do
   # 不 purge 时把 nanotun-uninstall 自己留下。
@@ -221,17 +238,32 @@ if [ -f /etc/sysctl.d/99-nanotun.conf ]; then
     fi
   fi
 fi
+# 默认端口一并收:老版本(或改端口之前的那次安装)放行的就是它们,不收就是残留。
+# ufw delete 对不存在的规则只是报一句没这条,不影响卸载。
+#
+# 去重:没改过端口的机器上实际值和默认值本来就相等,不去重的话同一条会被收两遍,
+# 屏幕上「✓ ufw 收回 7443/tcp」连着出现两次 —— 功能上无害,但看的人会以为哪里不对。
+_nt_uniq() { printf '%s\n' "$@" | awk 'NF && !seen[$0]++' | tr '\n' ' '; }
+UNINSTALL_TCP="$(_nt_uniq "$NT_PORT_REALITY" "$NT_PORT_WEB" "$NT_DEFAULT_REALITY" "$NT_DEFAULT_WEB")"
+UNINSTALL_UDP="$(_nt_uniq $NT_HY2_SPECS "$NT_DEFAULT_HY2")"
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  for rule in 8443/tcp 443/udp 7443/tcp; do
-    run "ufw 收回 $rule" ufw delete allow "$rule"
+  for rule in $UNINSTALL_TCP; do
+    run "ufw 收回 $rule/tcp" ufw delete allow "$rule/tcp"
+  done
+  for rule in $UNINSTALL_UDP; do
+    run "ufw 收回 $rule/udp" ufw delete allow "${rule/-/:}/udp"
   done
 fi
 # 安装那边对 firewalld 也自动放行(RHEL 系默认防火墙),这里就得对称收回 ——
 # 否则卸干净之后机器上还留着三个对公网敞着的端口,而已经没有东西在听了。
 if command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null)" = running ]; then
-  for rule in 8443/tcp 443/udp 7443/tcp; do
-    firewall-cmd --permanent --remove-port="$rule" >/dev/null 2>&1 \
-      && ok "firewalld 收回 $rule" || true
+  for rule in $UNINSTALL_TCP; do
+    firewall-cmd --permanent --remove-port="$rule/tcp" >/dev/null 2>&1 \
+      && ok "firewalld 收回 $rule/tcp" || true
+  done
+  for rule in $UNINSTALL_UDP; do
+    firewall-cmd --permanent --remove-port="$rule/udp" >/dev/null 2>&1 \
+      && ok "firewalld 收回 $rule/udp" || true
   done
   firewall-cmd --reload >/dev/null 2>&1 || true
 fi

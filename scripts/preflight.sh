@@ -331,18 +331,21 @@ if have ss || have netstat; then
   #
   # 对另外两个也不够用:listen_addr 在这份配置里出现在四个段([server]、[server.magic_dns]、
   # [hysteria]、[reality]),不点名段就等于让人挨个试,而试错的代价是服务起不来。
+  # 比的是解析出来的实际端口,不是字面量 —— 机器上把 REALITY 挪到 9443 之后,拿 8443 去比
+  # 会一路落到兜底分支,给出「改 config.toml」这种没有指名段和键的话,等于白说。
+  # (这两个函数在端口解析之后才被调用,所以引用那几个变量是安全的。)
   port_knob() { # port_knob <端口> -> 这个端口在哪儿改
     case "$1" in
-      8443) echo "/etc/nanotun/config.toml 里 [reality] 的 listen_addr" ;;
-      443)  echo "/etc/nanotun/config.toml 里 [hysteria] 的 listen_addr" ;;
-      7443) echo "/etc/nanotun/web.env 里的 NANOTUN_WEB_LISTEN（config.toml 里没有这一项）" ;;
-      *)    echo "/etc/nanotun/config.toml" ;;
+      "$NT_PORT_REALITY") echo "/etc/nanotun/config.toml 里 [reality] 的 listen_addr" ;;
+      "$NT_PORT_HY2")     echo "/etc/nanotun/config.toml 里 [hysteria] 的 listen_addr" ;;
+      "$NT_PORT_WEB")     echo "/etc/nanotun/web.env 里的 NANOTUN_WEB_LISTEN（config.toml 里没有这一项）" ;;
+      *)                  echo "/etc/nanotun/config.toml" ;;
     esac
   }
   port_svc() { # port_svc <端口> -> 改完要重启哪个服务
     case "$1" in
-      7443) echo "nanotun-web" ;;
-      *)    echo "nanotun" ;;
+      "$NT_PORT_WEB") echo "nanotun-web" ;;
+      *)              echo "nanotun" ;;
     esac
   }
   chk_port() { # chk_port <tcp|udp> <端口> <说明>
@@ -398,9 +401,23 @@ if have ss || have netstat; then
       esac
     fi
   }
-  chk_port tcp 8443 "REALITY"
-  chk_port udp 443  "hysteria2"
-  chk_port tcp 7443 "Web 后台"
+  # 端口取这台机器**实际**配置的那几个,而不是默认值。
+  #
+  # 差别只在已经装过的机器上出现,但那正是升级前跑自检的场景:REALITY 挪到 9443 之后,
+  # 去看 8443 等于既漏检了真正要用的端口(被别人占了也发现不了),又可能对一个早已跟
+  # nanotun 无关的 8443 大惊小怪。
+  #
+  # 解析器装在 /usr/local/bin(装机脚本放的)。全新机器上没有它,也没有 config.toml,
+  # 那时默认值就是对的 —— 所以读不到不是问题,不必因此报错。
+  NT_PORT_REALITY=8443; NT_PORT_HY2=443; NT_PORT_WEB=7443
+  if [ -r /usr/local/bin/nanotun-ports.sh ]; then
+    # shellcheck source=scripts/nanotun-ports.sh
+    . /usr/local/bin/nanotun-ports.sh
+    nanotun_load_ports
+  fi
+  chk_port tcp "$NT_PORT_REALITY" "REALITY"
+  chk_port udp "$NT_PORT_HY2"  "hysteria2"
+  chk_port tcp "$NT_PORT_WEB" "Web 后台"
 else
   info "没有 ss / netstat,跳过端口占用检查"
 fi
@@ -409,15 +426,15 @@ fi
 section "可选项"
 
 if have ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  info "ufw 处于 active —— 安装时会自动放行 8443/tcp、443/udp、7443/tcp"
+  info "ufw 处于 active —— 安装时会自动放行 ${NT_PORT_REALITY:-8443}/tcp、${NT_PORT_HY2:-443}/udp、${NT_PORT_WEB:-7443}/tcp"
 elif have firewall-cmd && [ "$(firewall-cmd --state 2>/dev/null)" = running ]; then
   # RHEL 系默认是 firewalld 而不是 ufw。这句原来一律说成「没装 ufw,记得自己放行」,
   # 在 Rocky/Alma/CentOS 上既没说中用的是哪个防火墙,也没提安装脚本其实会替它放行。
-  info "firewalld 正在运行 —— 安装时会自动放行 8443/tcp、443/udp、7443/tcp"
+  info "firewalld 正在运行 —— 安装时会自动放行 ${NT_PORT_REALITY:-8443}/tcp、${NT_PORT_HY2:-443}/udp、${NT_PORT_WEB:-7443}/tcp"
 elif have ufw; then
   info "装了 ufw 但未启用 —— 放行规则由你自己管"
 else
-  info "没装 ufw / firewalld —— 用别的防火墙 / 云安全组的话,记得放行 8443/tcp 与 443/udp"
+  info "没装 ufw / firewalld —— 用别的防火墙 / 云安全组的话,记得放行 ${NT_PORT_REALITY:-8443}/tcp 与 ${NT_PORT_HY2:-443}/udp"
 fi
 
 have ipset || info "没装 ipset —— 只有开启 jump_host_firewall 才需要"
