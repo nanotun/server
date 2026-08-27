@@ -1821,6 +1821,8 @@ _check_max_sessions_evicts_the_oldest() {
   local since_a
   since_a="$(a "date +%s" | tr -d '[:space:]')"
   adm "user set-max-sessions $E2E_A_USER -1" >/dev/null
+  # A 可能刚在上一条用例里被断开又重连,它的 created_at 会和马上要起的探针撞进同一秒。
+  _ms_settle_age "$u"
   _ms_probe_start 1
   if ! wait_until "max_sessions · 账号级 -1 时同账号第二条会话登录成功" 90 _ms_count_is "$u" 2; then
     _ms_cleanup 1 "" "" "$saved"
@@ -1843,6 +1845,7 @@ _check_max_sessions_evicts_the_oldest() {
 
   # ── 三:账号级 -1 压过全局的 1 ────────────────────────────────────────────
   # 全局明写着「限 1」,而这个账号仍然能开到第三条 —— 两级叠加里「账号级优先」的正面证据。
+  _ms_settle_age "$u"
   _ms_probe_start 2
   if ! wait_until "max_sessions · 账号级 -1 压过全局限 1（第三条会话仍能登录）" 90 _ms_count_is "$u" 3; then
     _ms_cleanup 1 2 "" "$saved"
@@ -1861,20 +1864,43 @@ _check_max_sessions_evicts_the_oldest() {
   # 幸存者不能按 conn_id 认:A 被挤掉会带走隧道默认路由,探针的「换网」检测随即触发重连,
   # conn_id 就换了号 —— 按 conn_id 判会把这次重连误报成「幸存者也被连坐」(首轮如此)。
   # 设备这一层不受影响:被挤下线是 406 终态,客户端不会重连,设备也就不会再出现。
-  local oldest survivor_a survivor_b
-  oldest="$(_ms_sessions "$u" | awk 'NR==1{print $1}')"
-  survivor_a="$(_ms_sessions "$u" | awk 'NR==2{print $3}')"
-  survivor_b="$(_ms_sessions "$u" | awk 'NR==3{print $3}')"
-  if [[ -z "$oldest" || -z "$survivor_b" ]]; then
+  # 一次快照定三个身份。分三次 _ms_sessions 取的话,三次之间局面可能已经变了,
+  # 拼出来的「最老 + 两个幸存者」有可能来自两张不同的快照。
+  local snap oldest oldest_at second_at survivor_a survivor_b a_conn_now
+  snap="$(_ms_sessions "$u")"
+  oldest="$(awk 'NR==1{print $1}' <<<"$snap")"
+  oldest_at="$(awk 'NR==1{print $2}' <<<"$snap")"
+  second_at="$(awk 'NR==2{print $2}' <<<"$snap")"
+  survivor_a="$(awk 'NR==2{print $3}' <<<"$snap")"
+  survivor_b="$(awk 'NR==3{print $3}' <<<"$snap")"
+  if [[ -z "$oldest" || -z "$survivor_a" || -z "$survivor_b" ]]; then
     env_error "取不到三条会话的先后次序,「踢最老」这条测不到"
     _ms_cleanup 1 2 "" "$saved"
     return 0
   fi
+  # 最老与次老同秒时,用例认的「最老」取决于 JSON 里的先后,而服务端按亚秒龄挑 —— 两边未必
+  # 是同一条,后面每条断言都会指错人。_ms_settle_age 就是来避免平局的;真撞上了如实记一条,
+  # 别让它退化成抛硬币(抛硬币的断言多数时候是绿的,不会有人来查)。
+  if [[ "$oldest_at" == "$second_at" ]]; then
+    env_error "最老与次老的 created_at 同为 $oldest_at(秒级精度下的平局),谁是「最老」取决于 JSON 顺序,「踢最老」这条测不到"
+    _ms_cleanup 1 2 "" "$saved"
+    return 0
+  fi
+  # A 是不是最老那条,要拿它**当下**那条连接去比。a_conn 是用例开头取的,而 A 中途可能被断开
+  # 又重连(上面几节就会干这事,阶段 5 的别的用例也会),那之后 a_conn 不再指向任何在册会话,
+  # 拿它比恒得「最老的不是 A」—— 于是 A 被当成幸存者,它自己那条**正当的** 406 反过来把
+  # 幸存者断言判红。2026-08-27 那轮的两条红都出在这里。
+  a_conn_now="$(conn_id_of_device "$adev")"
+  # 两个幸存者的 unit 名要趁它们还在册时翻出来:淘汰之后受害者的会话就查不到了。
+  local unit_a unit_b
+  unit_a="$(_ms_unit_of_device "$survivor_a")"
+  unit_b="$(_ms_unit_of_device "$survivor_b")"
   # 期望里 A 就是最老那条。真不是的话下面的断言仍然成立(它们只认 conn_id 不认身份),
   # 只是 406 那条日志要去别处找 —— 如实记一句,别让读日志的人以为断言写错了。
-  [[ "$oldest" != "$a_conn" ]] && note "最老的一条不是 A（${oldest}），406 那条断言改为只看会话消失"
+  [[ "$oldest" != "$a_conn_now" ]] && note "最老的一条不是 A（${oldest}），406 那条断言改为只看会话消失"
 
   local since_login
+  _ms_settle_age "$u"
   since_login="$(s "date +%s" | tr -d '[:space:]')"
   _ms_probe_start 3
   # 等的是**新会话真的建立**,不是「总数等于 3」。淘汰在登录之后异步关老连接,而登录
@@ -1901,15 +1927,14 @@ _check_max_sessions_evicts_the_oldest() {
   # 上面按设备判「还在线」,这条补上「不是被踢了又回来」:406 是终态、客户端不会重连,
   # 所以幸存者的日志里出现 406 就等于连坐了,哪怕它此刻看起来是在线的。
   #
-  # A 不是最老那条时,它自己就是幸存者之一,得把它的日志也算进来。原来这里只 grep 两条探针,
-  # 而断言名写的是「两个幸存者」—— 那条路上这句话是不成立的:真把 A 连坐了也照样绿。上面那条
-  # 设备断言的有界等待正是靠这一条兜底,兜底的范围漏了谁,谁就没被真正钉住。
-  local surv_units="-u nt-p1 -u nt-p2"
-  [[ "$oldest" != "$a_conn" ]] && surv_units="$surv_units -u $E2E_A_UNIT"
+  # 查的是上面那两个幸存设备各自的 unit,不是写死的探针名 —— 谁幸存查谁,受害者的 406 就
+  # 不会被算进来。上面那两条设备断言的有界等待正是靠这一条兜底:兜底的范围认错了人,
+  # 被钉住的就不是它该钉的那个。
+  local surv_units="-u $unit_a -u $unit_b"
   check "max_sessions · 两个幸存者都没收到过 406（不是被踢了又重连）" "0" \
     "$(a "journalctl $surv_units --since @$since_a --no-pager 2>/dev/null | grep -c 'code=406'" | tr -d '[:space:]')"
 
-  if [[ "$oldest" == "$a_conn" ]]; then
+  if [[ "$oldest" == "$a_conn_now" ]]; then
     check_contains "max_sessions · 被挤掉的一方收到 406 终态关闭" "code=406" \
       "$(client_log a "$E2E_A_UNIT" 180)"
     check_contains "max_sessions · 关闭原因讲清是被较新的登录挤下线" "挤下线" \
@@ -1977,6 +2002,53 @@ _ms_wait_device() {
 }
 # _ms_conn_since <user_id> <时间戳> 该账号有没有一条在这之后建立的会话。
 _ms_conn_since() { [[ -n "$(_ms_sessions "$1" | awk -v t="$2" '$2>=t{print $1; exit}')" ]]; }
+
+# _ms_settle_age <user_id> 等到现有会话的 created_at 全部落进**已经过去的**那一秒。
+#
+# created_at 是秒级的(connection list --json 里就是个 Unix 秒),而这组用例全靠它排出「谁最老」。
+# 两条会话落在同一秒就是平局,_ms_sessions 用的 sort 又是稳定排序 —— 平局时排在前面的是
+# **JSON 里先出现**的那条,跟服务端按亚秒龄挑出来的「最老」并不是同一条。
+#
+# 这不是假想:2026-08-27 那轮里 A 在 06:53:03.99 重连、探针 p1 在 06:53:04.71 接入,同秒平局,
+# 用例认定的最老是 p1 而服务端踢的是 A。红出来的是「次老的那台设备没有被连坐」—— 一条指着
+# 幸存者的断言,而真相是它压根不是幸存者,看着像淘汰挑错了人,跟真因(时间戳精度)毫无相似之处。
+#
+# 起探针前调一次,下一条会话的 created_at 就严格大于在册的每一条,先后关系不再有平局。
+# _ms_unit_of_device <设备号> 把设备号翻回它所属的 systemd unit 名。
+#
+# 「幸存者有没有收到 406」得按幸存者**当时是谁**去查日志。写死成 nt-p1/nt-p2 的话,被踢的
+# 恰好是某条探针时,它那条**正当的** 406 会被当成连坐记红 —— 和 a_conn 过期是同一类错:
+# 拿一个不再成立的身份去解释眼前的现象。
+_ms_unit_of_device() {
+  local dev="$1" uuid n cand
+  uuid="$(srv_status_json 2>/dev/null | python3 -c '
+import json,sys
+d = int(sys.argv[1])
+for s in json.load(sys.stdin).get("sessions", []):
+    if s.get("device_id") == d:
+        print(s.get("device_uuid", "")); break
+else:
+    print("")
+' "$dev" 2>/dev/null)"
+  [[ -z "$uuid" ]] && return 1
+  for n in 1 2 3; do
+    cand="$(a "cat /tmp/nt-p$n/device_id 2>/dev/null" | tr -d '[:space:]')"
+    [[ -n "$cand" && "$cand" == "$uuid" ]] && { echo "nt-p$n"; return 0; }
+  done
+  # 这个账号名下只有 A 和三条探针,都对不上就只能是 A 自己。
+  echo "$E2E_A_UNIT"
+}
+
+_ms_settle_age() {
+  local u="$1" newest now i
+  for i in $(seq 1 5); do
+    newest="$(_ms_sessions "$u" | awk '{print $2}' | sort -n | tail -1)"
+    now="$(s "date +%s" | tr -d '[:space:]')"
+    [[ -n "$newest" && -n "$now" && "$now" -gt "$newest" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
 
 # _ms_wait_settle <user_id> <受害者 conn> <幸存设备> <幸存设备> 等淘汰的余波过去。
 # 不记任何断言:它只是让后面那几条判定跑在一张稳定的快照上。等不到就直接返回,
