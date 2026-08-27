@@ -27,11 +27,21 @@ Group=root
 # 数据库之外。前缀 `-` 表示文件不存在也不影响启动(全新安装、或用户自己拉起服务)。
 EnvironmentFile=-/etc/nanotun/web.env
 
-ExecStart=/usr/local/bin/nanotun-web \
-    -listen=0.0.0.0:7443 \
-    -db=/var/lib/nanotun/nanotun.db \
-    -control-socket=/run/nanotun/control.sock \
-    -cert-dir=/etc/nanotun/certs
+# 这里**不要**把 -listen / -db / -control-socket / -cert-dir 显式写上。
+#
+# 它们的值和 config.go 里的内置默认值逐字相同(0.0.0.0:7443、/var/lib/nanotun/nanotun.db、
+# /run/nanotun/control.sock、/etc/nanotun/certs),写不写运行结果都一样 —— 但写了会多干
+# 一件事:main.go 定的优先级是「显式 flag > env > 默认」(那段逻辑是为了防止 systemd 里的
+# NANOTUN_WEB_LISTEN 把运维手敲的 -listen=127.0.0.1 压回公网),于是这四个 flag 一旦出现,
+# 上面那行 EnvironmentFile 里对应的四个 NANOTUN_WEB_* 就全被压死了。
+#
+# 压死的方式还偏偏是不出声的那种:实测往 web.env 写 NANOTUN_WEB_LISTEN=0.0.0.0:9443、
+# 重启,服务照常起来、日志照打 listen="0.0.0.0:7443",没有一个字提到那行被忽略了。而同一个
+# 文件里的 NANOTUN_WEB_ALLOW_SETUP 是生效的(它不是 flag)—— 装机脚本和向导还专门往这里
+# 写它,等于一路在教人「配置写这儿」。一半管用一半静默无效,从外面看不出任何区别。
+#
+# 端口被占时这条尤其要紧:7443 在 config.toml 里没有任何对应的键,web.env 是唯一的入口。
+ExecStart=/usr/local/bin/nanotun-web
 
 # 优雅退出窗口
 TimeoutStopSec=15

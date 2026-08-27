@@ -322,6 +322,29 @@ if have ss || have netstat; then
       netstat -lnp --"$1" 2>/dev/null | awk -v p=":$2" '$4 ~ p"$" {print; exit}'
     fi
   }
+  # 「换个端口」得说清楚是**哪一个**旋钮 —— 三个端口分别落在三个不同的地方,而这话原来
+  # 三条一律写成「改 /etc/nanotun/config.toml 的端口」。
+  #
+  # 对 7443 那句是错的:config.toml 里根本没有它的键,web 后台的监听地址由 nanotun-web 读
+  # NANOTUN_WEB_LISTEN 决定,web.env 是唯一的入口。照着去 config.toml 里找,翻遍三百多行也
+  # 找不到 —— 而这话恰恰出现在他端口被占、正着急的时候。
+  #
+  # 对另外两个也不够用:listen_addr 在这份配置里出现在四个段([server]、[server.magic_dns]、
+  # [hysteria]、[reality]),不点名段就等于让人挨个试,而试错的代价是服务起不来。
+  port_knob() { # port_knob <端口> -> 这个端口在哪儿改
+    case "$1" in
+      8443) echo "/etc/nanotun/config.toml 里 [reality] 的 listen_addr" ;;
+      443)  echo "/etc/nanotun/config.toml 里 [hysteria] 的 listen_addr" ;;
+      7443) echo "/etc/nanotun/web.env 里的 NANOTUN_WEB_LISTEN（config.toml 里没有这一项）" ;;
+      *)    echo "/etc/nanotun/config.toml" ;;
+    esac
+  }
+  port_svc() { # port_svc <端口> -> 改完要重启哪个服务
+    case "$1" in
+      7443) echo "nanotun-web" ;;
+      *)    echo "nanotun" ;;
+    esac
+  }
   chk_port() { # chk_port <tcp|udp> <端口> <说明>
     local hit; hit="$(port_user "$1" "$2")"
     if [ -z "$hit" ]; then
@@ -348,11 +371,11 @@ if have ss || have netstat; then
             # 照着去找只会扑空 —— 又是一条把人支到空地方的建议。所以分开说。
             local port_fix
             if [ -f /etc/nanotun/config.toml ]; then
-              port_fix="停掉占用它的进程,或在 /etc/nanotun/config.toml 里给 nanotun 换个端口,再重跑安装"
+              port_fix="停掉占用它的进程,或改 $(port_knob "$2") 换个端口,再 systemctl restart $(port_svc "$2")"
             else
               port_fix="停掉占用它的进程再重跑安装。
-       要让 nanotun 改用别的端口的话:配置文件这会儿还不存在(装完才有),
-       先 --skip-check 装上,再改 /etc/nanotun/config.toml 的端口并 systemctl restart nanotun"
+       要让 nanotun 改用别的端口的话:那个文件这会儿还不存在(装完才有),
+       先 --skip-check 装上,再改 $(port_knob "$2") 并 systemctl restart $(port_svc "$2")"
             fi
             fail "$2/$1 被别的进程占着($3)" \
                  "$(printf '%s' "$hit" | tr -s ' ' | cut -c1-100)
@@ -360,7 +383,17 @@ if have ss || have netstat; then
           else
             # 只是检查、不马上装:说清楚就够了,不替人下「这台机器不行」的结论 ——
             # 占用者可能一会儿就停了,或者这次本来就只是问问。
-            soft "$2/$1 已被占用($3)" "$2/$1 被别的进程占着,nanotun 起不来:$(printf '%s' "$hit" | tr -s ' ' | cut -c1-100)"
+            #
+            # 但得点明这一条在**真装的时候会被判死**(上面那支 FOR_INSTALL 就是)。
+            # 不说的话,结论行那句「另有 N 条提醒(不阻塞安装)」就把话说满了 —— 它对
+            # 「没装 ipset」那类提醒是对的,对这一条不是:照着「可以装」去装,迎面撞上
+            # 一条 FATAL。人会觉得两个工具在互相矛盾,而其实是同一个工具的两句话。
+            #
+            # 服务名按端口取:7443 被占时起不来的是 nanotun-web,数据面照常跑 ——
+            # 笼统说「nanotun 起不来」会让人以为整台机器废了。
+            soft "$2/$1 已被占用($3)" "$2/$1 被别的进程占着,$(port_svc "$2") 起不来:$(printf '%s' "$hit" | tr -s ' ' | cut -c1-100)
+       这条在真正安装时会被判为「必须先修复」(现在只是检查,所以不拦你)。
+       改端口的话:$(port_knob "$2")"
           fi ;;
       esac
     fi
