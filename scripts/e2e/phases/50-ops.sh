@@ -1896,12 +1896,18 @@ _check_max_sessions_evicts_the_oldest() {
 
   # 三条断言合起来才把「踢最老」钉死:少了幸存者那两条,「见谁踢谁」也会绿。
   check "max_sessions · 被挤掉的正是最老那条" "no" "$(_ms_has_conn "$u" "$oldest" && echo yes || echo no)"
-  check "max_sessions · 次老的那台设备没有被连坐" "yes" "$(_ms_has_device "$u" "$survivor_a" && echo yes || echo no)"
-  check "max_sessions · 最新的那台设备没有被连坐" "yes" "$(_ms_has_device "$u" "$survivor_b" && echo yes || echo no)"
+  check "max_sessions · 次老的那台设备没有被连坐" "yes" "$(_ms_wait_device "$u" "$survivor_a" 30 && echo yes || echo no)"
+  check "max_sessions · 最新的那台设备没有被连坐" "yes" "$(_ms_wait_device "$u" "$survivor_b" 30 && echo yes || echo no)"
   # 上面按设备判「还在线」,这条补上「不是被踢了又回来」:406 是终态、客户端不会重连,
   # 所以幸存者的日志里出现 406 就等于连坐了,哪怕它此刻看起来是在线的。
+  #
+  # A 不是最老那条时,它自己就是幸存者之一,得把它的日志也算进来。原来这里只 grep 两条探针,
+  # 而断言名写的是「两个幸存者」—— 那条路上这句话是不成立的:真把 A 连坐了也照样绿。上面那条
+  # 设备断言的有界等待正是靠这一条兜底,兜底的范围漏了谁,谁就没被真正钉住。
+  local surv_units="-u nt-p1 -u nt-p2"
+  [[ "$oldest" != "$a_conn" ]] && surv_units="$surv_units -u $E2E_A_UNIT"
   check "max_sessions · 两个幸存者都没收到过 406（不是被踢了又重连）" "0" \
-    "$(a "journalctl -u nt-p1 -u nt-p2 --since @$since_a --no-pager 2>/dev/null | grep -c 'code=406'" | tr -d '[:space:]')"
+    "$(a "journalctl $surv_units --since @$since_a --no-pager 2>/dev/null | grep -c 'code=406'" | tr -d '[:space:]')"
 
   if [[ "$oldest" == "$a_conn" ]]; then
     check_contains "max_sessions · 被挤掉的一方收到 406 终态关闭" "code=406" \
@@ -1948,6 +1954,27 @@ _ms_count()      { _ms_sessions "$1" | grep -c .; }
 _ms_count_is()   { [[ "$(_ms_count "$1")" == "$2" ]]; }
 _ms_has_conn()   { _ms_sessions "$1" | awk '{print $1}' | grep -qx "$2"; }
 _ms_has_device() { _ms_sessions "$1" | awk '{print $3}' | grep -qx "$2"; }
+# _ms_wait_device <user_id> <device_id> [秒] 该设备在这段时间内出现过就算没被连坐。
+#
+# 幸存者**不能**用瞬时快照判。这一整个阶段在反复改路由,A 侧随时可能因「换网」触发一次
+# 重连 —— 重连期间它的会话短暂不在册,设备也就查不到,而这跟「被连坐踢下线」在一张快照上
+# 长得一模一样。
+#
+# 有界等待把两者分得开,并且**不**削弱这条断言:被挤下线是 406 终态,客户端收到就不再重连,
+# 设备再也不会回来(紧跟着那条 406 断言钉的就是这一点)。所以「等一会儿又出现了」只可能是
+# 重连,不可能是连坐。
+#
+# 加这个是因为「A 不是最老那条」的分支实际上一直没被验过:以往全绿的跑走的都是「A 是最老」
+# 那条路(那条路上 A 是受害者,不参与幸存者判定),而这条路上 A 恰好是幸存者。两条路的断言
+# 条数差 2,对着历史日志一数就能认出来 —— 2026-08-27 这轮 340 项、此前那轮 342 项。
+_ms_wait_device() {
+  local u="$1" dev="$2" i
+  for i in $(seq 1 "${3:-30}"); do
+    _ms_has_device "$u" "$dev" && return 0
+    sleep 1
+  done
+  return 1
+}
 # _ms_conn_since <user_id> <时间戳> 该账号有没有一条在这之后建立的会话。
 _ms_conn_since() { [[ -n "$(_ms_sessions "$1" | awk -v t="$2" '$2>=t{print $1; exit}')" ]]; }
 
