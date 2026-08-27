@@ -393,6 +393,43 @@ if command -v flock >/dev/null 2>&1 && { exec 9>"$LOCK_FILE"; } 2>/dev/null; the
 fi
 
 step "1. 安装二进制 / 脚本 / 证书 / 配置 / systemd 单元"
+
+# 动手之前先确认几个落点是真的写得进去、也放得下。
+#
+# 原来这里是一串裸的 install:任何一次写失败都被 set -e 直接带走,屏幕上最后一行是
+# coreutils 自己的英文 —— 换成 uutils 版(有些发行版已经默认它)更糟,吐的是一段 Rust
+# 调试结构:`Os { code: 30, kind: ReadOnlyFilesystem, .. }`。没有 FATAL、没有原因、
+# 没有下一步,而这是第 1 步:失败时 /usr/local/bin 里已经装进去一半,人却看不出
+# 机器现在是什么状态、自己的服务还在不在。实测把 /usr/local/bin 挂成只读就是这个下场。
+#
+# 放在写第一个文件之前,是因为「拦住」比「事后说清楚」值钱:检查不过就一个文件都没动,
+# 机器还是原样,修完重跑即可。只读挂载(加固过的系统会把 /usr 挂 ro)、权限、
+# 空间不足、目录被设了 immutable —— 都在这一关拦下。
+NEED_MB=60   # 二进制 + 脚本实测约 41MB,留出余量
+for d in /usr/local/bin /etc/systemd/system "$ETC_DIR"; do
+  if [ ! -d "$d" ] && ! mkdir -p "$d" 2>/dev/null; then
+    die "建不出目录 $d —— 上层可能是只读挂载,或没有权限。
+   修好之后重跑本脚本(它是幂等的,重跑不会破坏已有配置和密钥)。"
+  fi
+  # 用真写一个文件来判,而不是 [ -w ]:后者对只读挂载是判不出来的 —— root 对目录的
+  # 权限位永远是够的,拦住写入的是挂载选项,而那要等到真正 write 的时候才报出来。
+  if ! touch "$d/.nanotun-write-test" 2>/dev/null; then
+    die "$d 写不进去。
+   常见原因:这个分区是只读挂载(加固过的系统常把 /usr 挂 ro)、被 quota 卡住,
+   或者目录设了 immutable(lsattr $d 看一眼,chattr -i 解开)。
+   只读的话先 mount -o remount,rw $(df -P "$d" 2>/dev/null | awk 'NR==2{print $6}')。
+   一个文件都还没动,机器仍是原样;修好之后重跑本脚本即可。"
+  fi
+  rm -f "$d/.nanotun-write-test"
+done
+AVAIL_MB="$(df -Pm /usr/local/bin 2>/dev/null | awk 'NR==2{print $4}')"
+if [ -n "$AVAIL_MB" ] && [ "$AVAIL_MB" -lt "$NEED_MB" ]; then
+  die "/usr/local/bin 所在分区空间不够:要装的约 ${NEED_MB}MB,当前可用 ${AVAIL_MB}MB。
+   腾出空间后重跑。别让它装到一半 —— 半截的 nanotund 落在盘上,正在跑的服务
+   靠着已打开的旧文件还能撑到下次重启,重启就起不来了,而那时离现在可能隔了很久。
+   一个文件都还没动,机器仍是原样。"
+fi
+
 install -m 0755 "$DEPLOY_DIR/nanotund"  /usr/local/bin/nanotund
 install -m 0755 "$DEPLOY_DIR/nanotun-admin"    /usr/local/bin/nanotun-admin
 install -m 0755 "$SCRIPTS_DIR/tun-setup.sh"     /usr/local/bin/nanotun-tun-setup.sh

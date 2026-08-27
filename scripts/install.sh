@@ -534,6 +534,14 @@ $hint"
 if [ "$SKIP_CHECK" = 0 ]; then
   if ! run_preflight; then
     if [ "$CHECK_ONLY" = 1 ]; then exit 1; fi
+    # 「不是 root」这一条不能顺着往下说 --skip-check:跳过检查并不会让人变成 root,
+    # 装到下一步照样被拦(那句话是对的,只是白跑一趟)。这里按当前身份分岔。
+    if [ "$(id -u)" != 0 ]; then
+      die "环境检查没过(见上面的修复清单)。
+   头一条是「不是 root」,那就得用 sudo 重跑本命令 —— --skip-check 在这一条上帮不了忙,
+   它只跳过检查,不会给你权限,下一步照样会被拦下。
+   只是想先下载不安装的话:NANOTUN_NO_INSTALL=1。"
+    fi
     die "环境检查没过(见上面的修复清单)。修完重跑本命令;
    确认要带着问题硬装可以加 --skip-check。"
   fi
