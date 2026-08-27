@@ -367,7 +367,7 @@ CLI_TUN=""
 if [ -x /usr/local/bin/nanotun ] || [ -e /etc/nanotun/device_id ] || [ -n "$CLI_TUN" ]; then
   soft "这台机器上还装着 nanotun 客户端,它与服务端共用 /etc/nanotun 与 /var/lib/nanotun" \
        "客户端与服务端共用 /etc/nanotun、/var/lib/nanotun、/run/nanotun。
-      · 卸载请用 scripts/uninstall.sh;手动 rm -rf 这些目录会抹掉客户端身份
+      · 卸载请用 sudo nanotun-uninstall;手动 rm -rf 这些目录会抹掉客户端身份
         /etc/nanotun/device_id,它会以新 UUID 重新注册(旧设备还占着固定 vIP)。${CLI_TUN:+
       · [tun].device_name 别配成 \"${CLI_TUN}\"(客户端正在用的网卡)—— 服务端启动时会先
         删掉同名网卡再重建,等于每次启动都打断客户端。默认的 tun0 不冲突。}"

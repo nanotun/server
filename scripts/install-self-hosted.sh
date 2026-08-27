@@ -82,6 +82,55 @@ ok()   { printf '    \033[1;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '    \033[1;33m!\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 
+# 本脚本不接受任何参数,但在此之前它是**默默**不接受的:多传什么都照装不误,装完退 0。
+#
+# 踩点很集中。README 的无人值守示例是给 install.sh 的:
+#   sudo bash nanotun-install.sh --dial-host vpn.example.com --user alice --yes
+# 而离线安装那段(下 tar 自己装)给的是 `sudo ./scripts/install-self-hosted.sh`。
+# 两段隔了几十行,把上面那串参数接到下面这条命令上是很自然的动作 —— 结果是安装成功、
+# 退出码 0、屏幕全绿,而 --dial-host 一个字都没生效,客户端仍然连不上。人会去查网络、
+# 查防火墙、查证书,因为「装成功了」这件事看起来毫无疑问。
+#
+# 本仓库自己也踩了:scripts/testlab/lab.sh 的 --local 路径把用户参数原样传给了这个脚本。
+#
+# 转交给向导是行不通的:本脚本压根不跑向导(它只把 setup.sh 装成命令),转交就得把
+# 「装完自动接向导」这层职责也搬进来,而那正是 install.sh 存在的理由。所以只做一件事:
+# 拒绝,并把该去哪儿说清楚。
+if [ "$#" -gt 0 ]; then
+  case "${1:-}" in
+    -h|--help)
+      cat <<'USAGE'
+用法: sudo ./scripts/install-self-hosted.sh      (不接受参数)
+
+把发布包装成一台在跑的服务:二进制、systemd 单元、IP 转发、REALITY/hy2 密钥与自签证书、
+防火墙放行、第一个 VPN 管理员。**装完还不等于客户端能连** —— 拨号地址、Web 后台管理员、
+第一个用户和二维码在开服向导里,装完跑:
+
+    sudo nanotun-setup
+
+联网一键安装(下载 + 安装 + 向导一条龙)用 install.sh,它认得向导的参数并自动转交:
+    sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh)"
+
+可用的环境变量见本文件头部注释(NANOTUN_MAGIC_SUFFIX / NANOTUN_FORCE_CONFIG 等)。
+USAGE
+      exit 0 ;;
+    *)
+      printf '\033[1;31mFATAL: 本脚本不接受参数,收到:%s\033[0m\n' "$*" >&2
+      printf '\n' >&2
+      printf '  --dial-host / --user / --web-admin / --yes 这些是**开服向导**的参数。\n' >&2
+      printf '  本脚本只负责把系统装起来,装完之后跑:\n' >&2
+      printf '\n' >&2
+      printf '      sudo nanotun-setup %s\n' "$*" >&2
+      printf '\n' >&2
+      printf '  想一条命令做到底(下载 + 安装 + 向导),用 install.sh —— 它认得这些参数并转交:\n' >&2
+      printf '      curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh -o nanotun-install.sh \\\n' >&2
+      printf '        && sudo bash nanotun-install.sh %s\n' "$*" >&2
+      printf '\n' >&2
+      printf '  完整用法:%s --help\n' "$0" >&2
+      exit 2 ;;
+  esac
+fi
+
 # systemctl restart 返回 0 只代表「systemd 接受了这次启动」,不代表服务真的活着。
 #
 # nanotun-web.service 是 Type=simple:进程 exec 出来那一刻就算启动成功。它下一秒
@@ -354,25 +403,30 @@ systemctl disable --quiet --now nanotun-tun-isolate.service 2>/dev/null || true
 rm -f /etc/systemd/system/nanotun-tun-isolate.service \
       /usr/local/bin/nanotun-tun-isolate.sh \
       /usr/local/bin/nanotun-tun-isolate-teardown.sh
-# 开服向导装成 nanotun-setup:它是要反复用的(加用户、重出二维码、改拨号地址),
-# 而解压出来的发布包目录用完多半就删了,只留在包里等于用一次就丢。
-# 老发布包没有这个文件,缺了不 fatal。
-if [ -f "$SCRIPTS_DIR/setup.sh" ]; then
-  install -m 0755 "$SCRIPTS_DIR/setup.sh" /usr/local/bin/nanotun-setup
-  SETUP_AVAILABLE=1
-else
-  SETUP_AVAILABLE=0
-fi
-# 环境检查也装成命令:排查「服务起不来」时第一件该做的事就是重跑它,
-# 而那时候解压出来的发布包目录通常已经不在了。
-[ -f "$SCRIPTS_DIR/preflight.sh" ] && \
-  install -m 0755 "$SCRIPTS_DIR/preflight.sh" /usr/local/bin/nanotun-preflight
-
-# 改 MagicDNS 局域网后缀的工具也装成命令:装机时用 NANOTUN_MAGIC_SUFFIX 定一次,之后想换
-# 就 `sudo nanotun-set-suffix <后缀>`(备份→段感知改写→重启→失败自动回滚)。开服向导
-# nanotun-setup 的「MagicDNS 后缀」步也优先调它(同一份逻辑,单一真源)。老包没有不 fatal。
-[ -f "$SCRIPTS_DIR/set-magic-suffix.sh" ] && \
-  install -m 0755 "$SCRIPTS_DIR/set-magic-suffix.sh" /usr/local/bin/nanotun-set-suffix
+# 下面这几个都装成 /usr/local/bin 里的命令,而不是只留在发布包里。
+#
+# 共同的理由:解压出来的那个目录用完多半就删了(或者用户压根不知道它在
+# /opt/nanotun/<版本>-<架构>/),而这几件事都是**装完之后**才需要、且要反复用的。
+# 留在包里等于用一次就丢。
+#
+# 上面的必需文件自检已经保证它们都在,所以这里不再 `[ -f ] &&` —— 那个守卫的历史见那段注释。
+SETUP_AVAILABLE=1
+# 开服向导:加用户、重出二维码、改拨号地址都靠它。
+install -m 0755 "$SCRIPTS_DIR/setup.sh" /usr/local/bin/nanotun-setup
+# 环境检查:排查「服务起不来」时第一件该做的事就是重跑它。
+install -m 0755 "$SCRIPTS_DIR/preflight.sh" /usr/local/bin/nanotun-preflight
+# 改 MagicDNS 局域网后缀:装机时用 NANOTUN_MAGIC_SUFFIX 定一次,之后想换就
+# `sudo nanotun-set-suffix <后缀>`(备份→段感知改写→重启→失败自动回滚)。开服向导
+# nanotun-setup 的「MagicDNS 后缀」步也优先调它(同一份逻辑,单一真源)。
+install -m 0755 "$SCRIPTS_DIR/set-magic-suffix.sh" /usr/local/bin/nanotun-set-suffix
+# 卸载:原来只躺在发布包里,README 教的是 `sudo ./scripts/uninstall.sh` —— 那条命令对
+# 一键安装的人根本不成立,他们的当前目录没有 scripts/,而真实路径
+# /opt/nanotun/<版本>-<架构>/scripts/uninstall.sh 文档里也没写。于是「怎么卸载」这个
+# 问题的答案藏在一个要先知道版本号和架构才拼得出来的路径里。
+#
+# 装成命令还有一层:卸载脚本删的是一份写死的文件清单,必须和装它的这一版对得上
+# (共用目录里还有客户端的 device_id,不能按目录删)。装进 PATH 的这份天然同版本。
+install -m 0755 "$SCRIPTS_DIR/uninstall.sh" /usr/local/bin/nanotun-uninstall
 
 # 目录权限写死,不跟调用者的 umask 走。
 #
@@ -465,8 +519,23 @@ net.ipv6.conf.all.forwarding = 1
 # 放开为全范围让任意 group 都能跑 unprivileged ping。
 net.ipv4.ping_group_range = 0 2147483647
 SYSCTL
-sysctl --system >/dev/null
-ok "ip_forward = $(sysctl -n net.ipv4.ip_forward), v6.forwarding = $(sysctl -n net.ipv6.conf.all.forwarding), ping_group_range = '$(sysctl -n net.ipv4.ping_group_range 2>/dev/null || echo 'n/a')'"
+# -e:遇到内核里不存在的键只警告,不作为错误。
+#
+# 不加这个的话,IPv6 被内核关掉的机器(`ipv6.disable=1`,一些 VPS 镜像和加固过的系统默认
+# 就这样)上 /proc/sys/net/ipv6/conf/all/forwarding 根本不存在,sysctl 返回 1,而本脚本
+# 开着 set -e —— 安装在第 2 步当场中断。此时二进制和 systemd 单元**已经写进盘里**了,
+# 机器停在装了一半的状态,而用户看到的是 sysctl 那句
+#   sysctl: cannot stat /proc/sys/net/ipv6/conf/all/forwarding: No such file or directory
+# 没有任何一句话把它和「你的内核关了 IPv6,这不影响 IPv4 的使用」联系起来。
+# (2026-08-27 在 Ubuntu + procps-ng 4.0.4 上实测过退出码和中断行为。)
+#
+# 还有一层:--system 读的是 /etc/sysctl.d 下的**所有**文件,不只我们这一份。系统镜像里
+# 任何一个带废弃键的 drop-in 都会连累我们的安装 —— 而那跟 nanotun 毫无关系。
+sysctl -e --system >/dev/null
+# 每个值都带 `|| echo` 兜底,别只兜 ping_group_range 那一个:v6.forwarding 在上面那种
+# 机器上读不出来,而命令替换失败不触发 set -e —— 结果是这行打印成 "v6.forwarding = ",
+# 一个看着像 bug 的空值。写成 n/a 才说得清「这台机器没有 IPv6」。
+ok "ip_forward = $(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 'n/a'), v6.forwarding = $(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo 'n/a（内核未启用 IPv6，不影响 IPv4）'), ping_group_range = '$(sysctl -n net.ipv4.ping_group_range 2>/dev/null || echo 'n/a')'"
 
 step "3. 防火墙：放行 nanotun 监听端口（ufw / firewalld active 时）"
 # ufw 默认 INPUT DROP（Ubuntu 全新系统常见配置），不放行端口客户端会全部被静默丢包，
@@ -481,13 +550,24 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: 
   WEB_PORTS=()
   # nanotun-web 监听 7443/tcp(见 nanotun-web.service),装了才放行;否则保持 LAN/隧道内可达。
   [ "$WEB_AVAILABLE" -eq 1 ] && WEB_PORTS+=("7443/tcp")
-  for rule in "8443/tcp" "443/udp" "${WEB_PORTS[@]}"; do
-    ufw allow "$rule" >/dev/null
+  # 放行失败不 die,与下面 firewalld 分支同口径。
+  #
+  # 原来这里是裸的 `ufw allow "$rule" >/dev/null`,set -e 下失败即整个安装中断 —— 而
+  # firewalld 那边同样的失败只 warn 并把手打命令给出来。同一件事两种严重程度,且严重的
+  # 那种给错了:防火墙没放行,服务本身照样跑得好好的,该做的是告诉用户手动补一条,而不是
+  # 把一台已经装到第 3 步的机器丢在半路。ufw 规则表损坏、被别的工具锁着的机器上会踩到。
+  UFW_PORTS=("8443/tcp" "443/udp" "${WEB_PORTS[@]}")
+  UFW_BAD=0
+  for rule in "${UFW_PORTS[@]}"; do
+    ufw allow "$rule" >/dev/null 2>&1 || UFW_BAD=1
   done
   ufw delete allow "8444/tcp" >/dev/null 2>&1 || true
   # 历史部署曾放行 8080/tcp(当时数据面 WS 绑 0.0.0.0);现在绑回环,回收这条规则。
   ufw delete allow "8080/tcp" >/dev/null 2>&1 || true
-  if [ "$WEB_AVAILABLE" -eq 1 ]; then
+  if [ "$UFW_BAD" -eq 1 ]; then
+    warn "ufw 在跑,但自动放行没成功。请手动执行:"
+    warn "  ufw allow$(printf -- ' %s' "${UFW_PORTS[@]}")"
+  elif [ "$WEB_AVAILABLE" -eq 1 ]; then
     ok "ufw 放行：8443/tcp 443/udp 7443/tcp(web)"
   else
     ok "ufw 放行：8443/tcp 443/udp"
@@ -518,6 +598,24 @@ elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev
 else
   warn "未检测到 ufw / firewalld active；如使用其他防火墙，请手动放行 8443/tcp 与 443/udp（装了 web 再加 7443/tcp）"
 fi
+
+# 云厂商安全组:这一句必须在**任何一条分支之后**都印出来,包括「ufw 放行成功」那条。
+#
+# 原来它只活在上面那段代码注释里,以及开服向导的结尾。于是两类人拿不到它:跳过向导的
+# (无人值守、或者装完就去干别的),和 ufw 装了但没启用因而落进 else 分支的 —— 后者是
+# 全新 Ubuntu 的常态,那句 warn 里也没有「安全组」三个字。
+#
+# 这是自托管 VPN 最贵的一个坑:主机防火墙放行成功、服务全绿、端口在听,客户端就是连不上,
+# 而症状(握手超时 / QUIC 无响应)和「你还没在网页控制台上点放行」之间隔着整个心智模型。
+# ufw 放了不等于安全组放了,而 ufw 那条绿色的 ✓ 恰恰会让人以为防火墙这件事已经办完了。
+#
+# 443/**UDP** 单独点名:云厂商的默认安全组模板几乎都是 22 + 80/443 TCP,UDP 一条没有。
+# 也就是说照着模板走的人,REALITY(8443/tcp)自己加了,hy2 那条最容易漏 —— 而漏了它的
+# 表现不是连不上,是「能连但慢」(客户端悄悄退到别的传输),更难往防火墙上想。
+note_ports="8443/tcp（REALITY）、443/udp（hysteria2）"
+[ "$WEB_AVAILABLE" -eq 1 ] && note_ports="${note_ports}、7443/tcp（Web 后台）"
+warn "云服务器还要去厂商控制台的**安全组 / 网络 ACL** 里放行：${note_ports}"
+warn "  这一步脚本做不了。ufw 放了不等于安全组放了；443 是 UDP，而安全组模板通常只给 TCP。"
 
 step "4. 旧 DB 路径迁移自检（K1：2026-05-21 事故防再发）"
 # 背景:历史上 nanotun 曾用 /root/nanotun/data/nanotun.db 作为 SQLite home,
@@ -860,4 +958,11 @@ if [ "${NANOTUN_WIZARD_FOLLOWS:-0}" != 1 ]; then
     echo "     对全网公开 —— 谁先打开谁就是管理员)"
     echo "    证书: $ETC_DIR/certs/{cert.pem,key.pem}(可作为 root CA 装入信任库)"
   fi
+  echo
+  # 卸载放在这里说一次。它此前唯一的出处是 README 里的 `sudo ./scripts/uninstall.sh`,
+  # 而一键安装的人当前目录并没有 scripts/ —— 想卸载得先知道自己装的是哪个版本、什么架构,
+  # 才拼得出 /opt/nanotun/<版本>-<架构>/scripts/uninstall.sh。现在它装成了命令。
+  echo "  卸载:"
+  echo "    sudo nanotun-uninstall --dry-run   # 先看会动哪些文件"
+  echo "    sudo nanotun-uninstall             # 停服务、删程序,保留配置与数据库"
 fi

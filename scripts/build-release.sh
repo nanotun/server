@@ -81,9 +81,38 @@ for GOARCH in $ARCHES; do
   # 从 tar 装的人就只能退回到那套简化的兜底检查。
   # uninstall.sh 必须跟安装脚本同包:它删的是一份**写死的文件清单**(共用目录里还有客户端的
   # device_id 等文件,不能按目录删),这份清单只有和它同版本的 install-self-hosted.sh 对得上。
+  # set-magic-suffix.sh 同理:install-self-hosted.sh 把它装成 nanotun-set-suffix,
+  # 开服向导的「MagicDNS 后缀」那步也只认它。
   cp scripts/ensure-server-assets.sh scripts/install-self-hosted.sh \
-     scripts/setup.sh scripts/preflight.sh scripts/uninstall.sh "${STAGING}/scripts/"
+     scripts/setup.sh scripts/preflight.sh scripts/uninstall.sh \
+     scripts/set-magic-suffix.sh "${STAGING}/scripts/"
   chmod +x "${STAGING}/scripts/"*.sh
+
+  # 打包清单不能和安装脚本的需求各自漂移。
+  #
+  # 2026-08-27 查出来:上面这份 cp 清单漏了 set-magic-suffix.sh,而 install-self-hosted.sh
+  # 那侧是 `[ -f … ] && install …`,注释写着「老包没有不 fatal」—— 于是**每一个**发布包都
+  # 被当成老包,nanotun-set-suffix 从来没被装上过,装机一路全绿。README 双语却都写着它
+  # 「随包装成命令」。连带 setup.sh 的 resolve_suffix_tool 两个候选全落空,向导里改后缀
+  # 那步也是坏的。一个为向后兼容加的守卫,把打包遗漏变成了静默。
+  #
+  # 这类事在本仓库不是第一次:e2e 的 deploy-srv.sh 有一份同样手工维护的替换清单,
+  # tun-setup.sh 就在那儿漏了很久(见该文件注释)。所以这里不再手工核对,而是直接从
+  # install-self-hosted.sh 里把它引用的文件名抠出来当作真源 —— 清单只有一份,漏不了。
+  #
+  # 放在打包阶段失败而不是留给安装期:装机时才发现缺文件,包已经发出去了。
+  need_missing=""
+  while read -r want; do
+    [ -n "$want" ] || continue
+    [ -e "${STAGING}/scripts/${want}" ] || need_missing="${need_missing} ${want}"
+  done <<EOF
+$(grep -oE '\$SCRIPTS_DIR/[A-Za-z0-9._-]+' scripts/install-self-hosted.sh | sed 's#.*/##' | sort -u)
+EOF
+  if [ -n "$need_missing" ]; then
+    echo "拒绝打包:install-self-hosted.sh 会用到这些文件,但没打进包 ——${need_missing}" >&2
+    echo "  把它们加进上面那条 cp,或者确认安装脚本里对应的引用已经不需要了。" >&2
+    exit 1
+  fi
 
   echo "3. 打包 ${DIR_NAME}.tar.gz ..."
   # COPYFILE_DISABLE=1:macOS 上打包时 bsdtar 默认把 xattr 另存成 AppleDouble(`._foo`)

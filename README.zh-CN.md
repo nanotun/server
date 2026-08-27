@@ -57,7 +57,8 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install
 `install.sh` 自己不认得的参数一律原样转交向导,所以 [`setup.sh`](scripts/setup.sh)
 的选项都能这么带。
 
-生产建议钉版本:`sudo NANOTUN_VERSION=v0.1.0 bash -c "$(curl -fsSL .../install.sh)"`。
+生产建议钉版本:`sudo NANOTUN_VERSION=v0.1.23 bash -c "$(curl -fsSL .../install.sh)"`
+(把版本号换成 [Releases](https://github.com/nanotun/server/releases) 里你想要的那个)。
 想自己控制每一步就手动下 [Releases](https://github.com/nanotun/server/releases) 里对应架构的
 tar,解压后跑 `sudo ./scripts/install-self-hosted.sh` —— 那是上面第 3 步,随发布包走,
 不需要联网。`install.sh` 只是把「弄到这台机器上」这段也一并办了。
@@ -480,13 +481,15 @@ sudo nanotun-admin --db-path /var/lib/nanotun/nanotun.db webadmin create <名字
 第 3 步换地址救不了已经发出去的客户端配置 —— 那里面写的是旧地址。**所以拨号地址从一开始
 就该填域名而不是 IP**:换机器时改一条 DNS 记录,客户端什么都不用动。
 
-**卸载**:[`scripts/uninstall.sh`](scripts/uninstall.sh)(随发布包走)。
+**卸载**:装机时装成了命令,在哪个目录都能敲。
 
 ```bash
-sudo ./scripts/uninstall.sh              # 停服务、删程序,保留配置与数据库
-sudo ./scripts/uninstall.sh --purge      # 连配置、证书、数据库一起删
-sudo ./scripts/uninstall.sh --dry-run    # 先看看会动哪些文件
+sudo nanotun-uninstall --dry-run    # 先看看会动哪些文件
+sudo nanotun-uninstall              # 停服务、删程序,保留配置与数据库
+sudo nanotun-uninstall --purge      # 连配置、证书、数据库一起删
 ```
+
+对应发布包里的 [`scripts/uninstall.sh`](scripts/uninstall.sh);解压目录还在的话直接跑它也一样。
 
 默认保留 `/etc/nanotun` 与数据库,重装一遍就能接着用;`--purge` 会要求你手输 `purge` 再确认,
 因为用户、设备、PSK 和审批过的子网路由是一起没的,已发出去的客户端配置随之作废。

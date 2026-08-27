@@ -56,7 +56,13 @@ UNITS=(nanotun.service nanotun-web.service nanotun-tun-setup.service nanotun-tun
 
 # 服务端装进 /usr/local/bin 的东西。
 # **不含 `nanotun`** —— 那是客户端二进制,跟服务端毫无关系,删了等于顺手把人家的 VPN 也卸了。
+#
+# nanotun-uninstall 是本脚本自己(install-self-hosted.sh 把它装成了命令)。删掉正在跑的
+# 脚本文件是安全的:bash 一直握着那个 fd,unlink 只摘掉目录项,inode 要等 fd 关闭才回收,
+# 剩下的行照读不误。留着它反而更糟 —— 卸载完还杵着一个 nanotun-uninstall,下次有人敲
+# 它只会看到「没找到已安装的服务端」。
 BINS=(nanotund nanotun-admin nanotun-web nanotun-setup nanotun-preflight
+      nanotun-set-suffix nanotun-uninstall
       nanotun-ensure-assets.sh
       nanotun-tun-setup.sh nanotun-tun-teardown.sh
       nanotun-tun-isolate.sh nanotun-tun-isolate-teardown.sh)
@@ -158,6 +164,16 @@ fi
 # ── 3. 删程序与单元 ──────────────────────────────────────────────────────────
 step "3. 删除程序与 systemd 单元"
 for b in "${BINS[@]}"; do
+  # 不 purge 时把 nanotun-uninstall 自己留下。
+  #
+  # 不留的话最后那句「连配置和数据库一起删:<本命令> --purge」指向的是一个刚被自己删掉的
+  # 命令 —— 而那正是这条路径上最可能的下一步:先卸载看看,确认不要了,再回来清数据。
+  # 留一个几 KB 的脚本,比让人去 /opt/nanotun/<版本>-<架构>/scripts/ 里翻要好。
+  #
+  # --purge 时照删:数据都没了,它也没有下一步可指了。
+  if [ "$b" = nanotun-uninstall ] && [ "$PURGE" != 1 ]; then
+    continue
+  fi
   [ -e "/usr/local/bin/$b" ] && run "删 /usr/local/bin/$b" rm -f "/usr/local/bin/$b"
 done
 for u in "${UNITS[@]}"; do

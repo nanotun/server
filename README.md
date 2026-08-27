@@ -67,7 +67,8 @@ can install without `--web-admin` too, it just leaves the admin account uncreate
 Any argument `install.sh` doesn't recognize is passed through verbatim to the wizard, so
 [`setup.sh`](scripts/setup.sh)'s options can all be given this way.
 
-For production, pin the version: `sudo NANOTUN_VERSION=v0.1.0 bash -c "$(curl -fsSL .../install.sh)"`.
+For production, pin the version: `sudo NANOTUN_VERSION=v0.1.23 bash -c "$(curl -fsSL .../install.sh)"`
+(swap in whichever tag you want from [Releases](https://github.com/nanotun/server/releases)).
 To control every step yourself, download the tar for your architecture from
 [Releases](https://github.com/nanotun/server/releases), extract it and run
 `sudo ./scripts/install-self-hosted.sh` — that's step 3 above, ships with the release, and
@@ -553,13 +554,16 @@ Step 3's address change can't save already-issued client configs — they have t
 written in. **So the dial address should be a domain, not an IP, from the start**: swapping
 machines then means changing one DNS record and clients touch nothing.
 
-**Uninstall**: [`scripts/uninstall.sh`](scripts/uninstall.sh) (ships with the release).
+**Uninstall**: installed as a command, so it works from any directory.
 
 ```bash
-sudo ./scripts/uninstall.sh              # stop services, remove the program, keep config and DB
-sudo ./scripts/uninstall.sh --purge      # delete config, certs, DB too
-sudo ./scripts/uninstall.sh --dry-run    # see which files it would touch first
+sudo nanotun-uninstall --dry-run    # see which files it would touch first
+sudo nanotun-uninstall              # stop services, remove the program, keep config and DB
+sudo nanotun-uninstall --purge      # delete config, certs, DB too
 ```
+
+It's [`scripts/uninstall.sh`](scripts/uninstall.sh) from the release; running that directly
+works too if you still have the extracted directory.
 
 By default it keeps `/etc/nanotun` and the DB, so a reinstall picks up where it left off;
 `--purge` requires you to type `purge` to confirm, because users, devices, PSKs, and approved

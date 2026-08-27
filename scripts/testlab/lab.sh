@@ -268,18 +268,22 @@ cmd_install() {
     # 走 install-self-hosted.sh 而不是 install.sh:后者的职责是「把包从网上弄下来」,
     # 包已经在本地了就没它的事。真正动系统的逻辑全在前者,测的也正是它。
     #
-    # 要跑向导时,透传的参数一个都不给安装脚本 —— 这与 install.sh 的分工一致:
-    # 它自己只认 --check-only / --skip-check / --no-setup,其余原样交给向导。
-    local inst_args=""
-    [ "$WIZARD" = 1 ] || inst_args="$(passq)"
+    # 透传的参数**一个都不给安装脚本** —— 它不接受任何参数(向导的活儿它不干)。
+    # 原来这里在非向导模式下传了 $(passq),而当时那个脚本对多余参数是默默忽略的:
+    # `lab.sh install --local --dial-host X` 装完全绿,--dial-host 一个字没生效。
+    # 测试台谎报成功比装不上更糟,而这条恰好骗过的是「参数到底有没有生效」这类验证。
+    # 现在安装脚本会把未知参数顶回来(exit 2),这里也就没有再传的道理。
     dex "$NAME" bash -c "set -e
       mkdir -p /opt/nanotun && tar -xzf /var/tmp/nanotun-pkg.tar.gz -C /opt/nanotun && rm -f /var/tmp/nanotun-pkg.tar.gz
       cd /opt/nanotun/nanotun-${ver}-linux-${arch}
-      ./scripts/install-self-hosted.sh ${inst_args}"
+      ./scripts/install-self-hosted.sh"
     if [ "$WIZARD" = 1 ]; then
       echo
       step "接着跑开服向导(用户那条一行命令的后半段)"
       cmd_setup
+    else
+      # 与远端路径(下面那句 ok)同口径:装完不等于能连,得把下一步说出来。
+      ok "接着跑开服向导:$0 setup       (非交互:$0 setup -y --dial-host 198.51.100.7)"
     fi
   else
     local ver="$VERSION"
