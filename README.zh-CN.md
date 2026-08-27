@@ -57,15 +57,40 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install
 `install.sh` 自己不认得的参数一律原样转交向导,所以 [`setup.sh`](scripts/setup.sh)
 的选项都能这么带。
 
-生产建议钉版本:`sudo NANOTUN_VERSION=v0.1.23 bash -c "$(curl -fsSL .../install.sh)"`
-(把版本号换成 [Releases](https://github.com/nanotun/server/releases) 里你想要的那个)。
+**生产建议钉版本**,别跟着 latest 漂。把 URL 里的 `main` 和 `NANOTUN_VERSION` 都换成同一个
+tag,拿到的就是完全钉死的一次安装 —— 脚本、环境检查、发布包三样都来自那个 tag:
+
+```bash
+sudo NANOTUN_VERSION=v0.1.24 bash -c "$(curl -fsSL \
+  https://raw.githubusercontent.com/nanotun/server/v0.1.24/scripts/install.sh)"
+```
+
+只换 `NANOTUN_VERSION`、URL 仍走 `main` 也可以,发布包一样钉得住;差别在于**脚本本身**跟着
+主干走。`main` 上的改动不经发布门禁,一次 push 就对所有新安装生效 —— 在意这件事就用上面那条。
+
+> 三样全钉住要求 tag ≥ v0.1.25:「`NANOTUN_VERSION` 是 tag 时环境检查也从同一个 tag 取」这条
+> 联动是 v0.1.25 加的。更早的 tag 上那份 `install.sh` 还没有它,环境检查仍从 `main` 取 ——
+> 脚本和发布包钉住了,环境检查没有。要单独指定用 `NANOTUN_BRANCH`。
+
+**github.com 连不上**(被墙 / 出站受限)时不必放弃一键,把两个下载前缀指到镜像即可。给的是
+完整前缀,所以路径型和 ghproxy 那种前缀型镜像都装得下:
+
+```bash
+sudo NANOTUN_GH_BASE=https://<你的镜像>/https://github.com/nanotun/server \
+     NANOTUN_RAW_BASE=https://<你的镜像>/https://raw.githubusercontent.com/nanotun/server/main/scripts \
+     bash -c "$(curl -fsSL https://<你的镜像>/https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh)"
+```
+
+`NANOTUN_GH_BASE` 管发布包,`NANOTUN_RAW_BASE` 管环境检查脚本。下载失败时报错会点名你填的那个
+前缀,而不是笼统说「连不上 github.com」。
+
 想自己控制每一步就手动下 [Releases](https://github.com/nanotun/server/releases) 里对应架构的
 tar,解压后跑 `sudo ./scripts/install-self-hosted.sh` —— 那是上面第 3 步,随发布包走,
 不需要联网。`install.sh` 只是把「弄到这台机器上」这段也一并办了。
 
 ### 先看看这台机器行不行
 
-买完 VPS 想先摸底、或者装完出问题要排查,单独跑环境检查。它是**只读**的,不装、不改任何东西:
+买完 VPS 想先摸底、或者装完出问题要排查,单独跑环境检查。它什么都不装:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/preflight.sh | bash
@@ -73,6 +98,12 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/preflig
 
 一次把问题全列出来,最后给一条能直接粘的修复命令(按你的发行版给对包名),不用装一样重跑一次。
 装过之后本地也有一份:`nanotun-preflight`。
+
+> 唯一会写的一处:它会试着把 `net.ipv4.ip_forward` 置 1 —— 因为要验的正是「这台机器
+> 允不允许改它」,而只读的检查答不了这个问题(答错的代价是装完 nanotund 直接 exit 60)。
+> 装机本来也要设这一条。真想一个字节都不动,加 `--dry-run`:
+> `curl -fsSL .../preflight.sh | bash -s -- --dry-run`。`install.sh --check-only`
+> 走的就是这条只读路径。
 
 查的是 systemd 有没有在跑、`/dev/net/tun` 在不在、`iptables`/`ip6tables`/`ip`/`openssl` 齐不齐、
 `ip_forward` 能不能置 1,以及 8443/tcp、443/udp、7443/tcp 有没有被占。**最常见的两个坑**是

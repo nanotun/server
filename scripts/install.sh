@@ -18,7 +18,14 @@
 #   环境检查也可以单独跑:curl -fsSL .../preflight.sh | bash
 #
 # 装指定版本(生产建议钉版本,别跟着 latest 漂):
-#   sudo NANOTUN_VERSION=v0.1.0 bash -c "$(curl -fsSL .../install.sh)"
+#   sudo NANOTUN_VERSION=v0.1.24 bash -c "$(curl -fsSL .../install.sh)"
+#
+# 要**完全**钉死(连这个脚本和 preflight.sh 一起钉),把 URL 里的 main 也换成同一个 tag:
+#   sudo NANOTUN_VERSION=v0.1.24 bash -c "$(curl -fsSL \
+#     https://raw.githubusercontent.com/nanotun/server/v0.1.24/scripts/install.sh)"
+#   NANOTUN_VERSION 是 tag 时 NANOTUN_BRANCH 默认跟着它走,所以 preflight.sh 也来自同一个 tag。
+#
+# github.com / raw.githubusercontent.com 不通(镜像):见下面 NANOTUN_GH_BASE / NANOTUN_RAW_BASE。
 #
 # 只下载不安装(想先看看包里是什么):
 #   curl -fsSL .../install.sh | NANOTUN_NO_INSTALL=1 bash
@@ -47,7 +54,14 @@
 #   NANOTUN_INSTALL_DIR 解压落点,默认 /opt/nanotun
 #   NANOTUN_NO_INSTALL  =1 时只下载解压,不执行 install-self-hosted.sh
 #   NANOTUN_REPO        换仓库(fork 自用)
-#   NANOTUN_BRANCH      从哪个分支取 preflight.sh,默认 main
+#   NANOTUN_BRANCH      从哪个 ref 取 preflight.sh。默认:NANOTUN_VERSION 是 tag 时跟着它,
+#                       否则 main。显式设了就以它为准
+#   NANOTUN_GH_BASE     发布包的下载前缀,默认 https://github.com/<repo>。给的是**完整前缀**,
+#                       所以路径型和 ghproxy 那种前缀型镜像都装得下:
+#                         NANOTUN_GH_BASE=https://ghproxy.net/https://github.com/nanotun/server
+#   NANOTUN_RAW_BASE    preflight.sh 的下载前缀,默认
+#                       https://raw.githubusercontent.com/<repo>/<ref>/scripts
+#                       (设了它就绕过 NANOTUN_REPO / NANOTUN_BRANCH 的拼装)
 #   NANOTUN_VERBOSE     =1 时安装过程连 systemd 状态和日志一起打出来(默认只给结论)
 #
 # 安装要 root(写 /usr/local/bin、/etc/systemd/system、sysctl)。
@@ -55,9 +69,44 @@
 set -euo pipefail
 
 REPO="${NANOTUN_REPO:-nanotun/server}"
-BRANCH="${NANOTUN_BRANCH:-main}"
 INSTALL_DIR="${NANOTUN_INSTALL_DIR:-/opt/nanotun}"
-RAW_BASE="https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts"
+
+# 没显式指定分支时,钉了版本就跟着那个版本的 tag 走。
+#
+# 之前 BRANCH 恒为 main,于是「钉版本」是残缺的:NANOTUN_VERSION 只钉住**发布包**,而
+# preflight.sh 仍然从 main 取。即便把 URL 换成 tag 路径去拉 install.sh 也一样 —— 脚本
+# 内部不知道自己是从哪个 ref 被取下来的。结果是没有任何一条命令能给出完全钉死的安装:
+# 同一条命令今天和下个月跑出来的东西不一样,而差异来自一个用户没写在命令里的地方。
+#
+# 这件事的另一面更要紧:发布包有 e2e 342 项 + 盖章 + cut 那一整套门禁,而 main 上的
+# 这几个脚本一次 push 就对全世界所有新安装生效,不经任何门 —— 受保护的是被下载的产物,
+# 不受保护的恰恰是**以 root 执行的那段脚本**。钉得住版本,至少让在意的人有办法退出这条路。
+#
+# 所有已发布的 tag 都带 scripts/preflight.sh(逐个 tag 核对过),所以这条联动不会把老版本
+# 的安装弄坏。真遇到取不到的(比如 fork 的老 tag),下面下载失败那条会给出 NANOTUN_BRANCH=main
+# 的退路 —— 宁可报错给退路,也不悄悄回落到 main:悄悄回落等于把「钉死」这件事变成一句空话。
+BRANCH="${NANOTUN_BRANCH:-}"
+if [ -z "$BRANCH" ]; then
+  case "${NANOTUN_VERSION:-}" in
+    v[0-9]*) BRANCH="${NANOTUN_VERSION}" ;;
+    *)       BRANCH=main ;;
+  esac
+fi
+
+# 两个下载源都可以整体换掉,给的是**完整前缀**而不是主机名。
+#
+# 原来这两处主机写死,只有 repo / branch 两段可换 —— 而 raw.githubusercontent.com 与
+# github.com 在不少地区是常年不稳的那种。现有的离线指引(去能上网的机器下 tar,再跑
+# install-self-hosted.sh)写得很好,但那等于放弃一键;能指到镜像的话这台机器本来是装得上的。
+#
+# 之所以是完整前缀:国内两类常见镜像的形状不一样,主机名换不出来。
+#   · 路径型:NANOTUN_RAW_BASE=https://raw.gitmirror.com/nanotun/server/main/scripts
+#   · 前缀型(ghproxy 那类,把整条 URL 挂在后面):
+#       NANOTUN_GH_BASE=https://ghproxy.net/https://github.com/nanotun/server
+#     拼出来正好是它要的 https://ghproxy.net/https://github.com/.../releases/download/...
+# 一个变量两种都装得下,不必为每种镜像各加一个开关。
+RAW_BASE="${NANOTUN_RAW_BASE:-https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts}"
+GH_BASE="${NANOTUN_GH_BASE:-https://github.com/${REPO}}"
 
 # curl 的停滞防护。--retry 只在**失败**时重试,而最难受的一种失败根本不算失败:
 # 连接建好了、数据一个字节都不来。curl 会一直等下去,屏幕停在「下载 …」那一行 ——
@@ -211,9 +260,20 @@ run_preflight() {
   pf="$(mktemp)" || pf=""
   [ -n "$pf" ] || die "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 配额 / 空间不足)。
    换个位置重试,例如:TMPDIR=/var/tmp <刚才那条命令>"
-  curl "${CURL_SMALL[@]}" -o "$pf" "$RAW_BASE/preflight.sh" \
-    || { rm -f "$pf"; die "下载 preflight.sh 失败: $RAW_BASE/preflight.sh
-   网络不通的话可以 --skip-check 跳过检查直接装(风险自负)。"; }
+  # 失败时要分清两种原因,它们的下一步完全不同。
+  #
+  # BRANCH 现在默认跟着 NANOTUN_VERSION 走(见文件开头),所以钉了一个**没有这个文件的
+  # tag**(比如 fork 上的老版本)也会走到这里 —— 那不是网络问题,而 --skip-check 恰好是
+  # 这种情形下最坏的建议:它把一次「取错了地方」升级成一次不做检查的安装。
+  if ! curl "${CURL_SMALL[@]}" -o "$pf" "$RAW_BASE/preflight.sh"; then
+    rm -f "$pf"
+    local hint="   网络不通的话可以 --skip-check 跳过检查直接装(风险自负)。"
+    [ "$BRANCH" != main ] && hint="   取的是 ${BRANCH} 这个 ref —— 该版本的 tag 上可能没有这个文件。
+   加 NANOTUN_BRANCH=main 让脚本走主干(发布包仍按 NANOTUN_VERSION 钉住),或者
+   --skip-check 跳过检查直接装(风险自负)。"
+    die "下载 preflight.sh 失败: $RAW_BASE/preflight.sh
+$hint"
+  fi
   bash "$pf" "${args[@]+"${args[@]}"}"
   local rc=$?
   rm -f "$pf"
@@ -268,17 +328,22 @@ if [ -z "$VERSION" ]; then
   # 发布包走的还是 github.com,照做只会在二十秒后死在同一堵墙上。给不通的建议比不给更糟。
   LATEST_RC=0
   latest_url="$(curl "${CURL_SMALL[@]}" -I -o /dev/null -w '%{url_effective}' \
-    "https://github.com/${REPO}/releases/latest" 2>/dev/null)" || LATEST_RC=$?
+    "${GH_BASE}/releases/latest" 2>/dev/null)" || LATEST_RC=$?
   if [ "$LATEST_RC" != 0 ]; then
     case "$LATEST_RC" in
-      6|7|28) die "查询最新版本失败:连不上 github.com(curl $LATEST_RC:解析不了 / 连不上 / 连上了不给数据)。
+      # 报的是 $GH_BASE 而不是写死的「github.com」:设了镜像时,一句「连不上 github.com」
+      # 会让人去查一个跟这次失败无关的域名 —— 真正没通的是他自己填的那个前缀。
+      6|7|28) die "查询最新版本失败:连不上 ${GH_BASE}(curl $LATEST_RC:解析不了 / 连不上 / 连上了不给数据)。
    先检查网络、DNS、出站防火墙或代理。注意这时候**指定 NANOTUN_VERSION 也没用** ——
-   下一步取发布包走的还是 github.com。
-   这台机器一直上不去的话,绕开它:在能上网的机器上打开
-     https://github.com/${REPO}/releases
-   下 linux-$ARCH 那个包,拷到这台机器上装(装的这一步不联网):
-     tar -xzf nanotun-<版本>-linux-$ARCH.tar.gz
-     sudo ./nanotun-<版本>-linux-$ARCH/scripts/install-self-hosted.sh" ;;
+   下一步取发布包走的是同一个地址。
+   这台机器上不去 github.com 的话,有两条路:
+     一、指到镜像(一键仍然可用):
+       sudo NANOTUN_GH_BASE=<镜像前缀> NANOTUN_RAW_BASE=<镜像前缀>/scripts bash -c \"\$(curl -fsSL …/install.sh)\"
+     二、绕开这台机器的网络:在能上网的机器上打开
+       https://github.com/${REPO}/releases
+     下 linux-$ARCH 那个包,拷到这台机器上装(装的这一步不联网):
+       tar -xzf nanotun-<版本>-linux-$ARCH.tar.gz
+       sudo ./nanotun-<版本>-linux-$ARCH/scripts/install-self-hosted.sh" ;;
       *) die "查询最新版本失败(curl $LATEST_RC)。
    可以用 NANOTUN_VERSION 钉一个版本绕开这次查询,版本号见
      https://github.com/${REPO}/releases" ;;
@@ -296,7 +361,7 @@ if [ -z "$VERSION" ]; then
       # releases.atom 是公开 RSS:含预发布、按时间倒序、不像 API 有 60 次/小时的限速,
       # 也不需要 jq。写死一个示例版本号是会烂的 —— 这里原本举的例子是 rc1,
       # 而 rc2 第二天就把它顶掉了,照着抄只会装到一个过时的版本。
-      newest="$(curl "${CURL_SMALL[@]}" "https://github.com/${REPO}/releases.atom" 2>/dev/null \
+      newest="$(curl "${CURL_SMALL[@]}" "${GH_BASE}/releases.atom" 2>/dev/null \
         | sed -n 's#.*<link[^>]*releases/tag/\([^"]*\)".*#\1#p' | head -1)"
       case "$newest" in
         # URL 要写全。这条命令是给人**原样粘走**的 —— 原来这里是 `.../install.sh`,
@@ -314,7 +379,7 @@ fi
 ok "版本: $VERSION"
 
 TARBALL="nanotun-${VERSION}-linux-${ARCH}.tar.gz"
-BASE="https://github.com/${REPO}/releases/download/${VERSION}"
+BASE="${GH_BASE}/releases/download/${VERSION}"
 
 # ── 3. 下载 + 校验 ───────────────────────────────────────────────────────────
 TMP="$(mktemp -d)" || TMP=""
@@ -335,15 +400,20 @@ if [ "$CURL_RC" != 0 ]; then
     23) die "下载失败:写不进 ${TMPDIR:-/tmp}(curl 23:写目标文件失败)。
    多半是空间不足或只读。腾出空间,或换个位置重试:TMPDIR=/var/tmp <刚才那条命令>
    当前可用:$(df -h "$TMP" 2>/dev/null | awk 'NR==2{print $4}')" ;;
-    6|7)  die "下载失败:连不上 github.com(curl $CURL_RC:DNS 解析不了 / 连接被拒)。
-   检查网络、DNS、出站防火墙或代理。" ;;
+    # 报 $GH_BASE 而不是写死的「github.com」:设了镜像时没通的是那个前缀,而一句
+    # 「连不上 github.com」会把人支到一个跟这次失败无关的域名上去查。
+    6|7)  die "下载失败:连不上 ${GH_BASE}(curl $CURL_RC:DNS 解析不了 / 连接被拒)。
+   检查网络、DNS、出站防火墙或代理。${NANOTUN_GH_BASE:+
+   这是你用 NANOTUN_GH_BASE 指定的镜像 —— 先确认它本身是通的。}" ;;
     # 这里**不能**建议 NANOTUN_NO_INSTALL=1:那条路自己也要先下同一个包,照做只会在
     # 同一步再失败一次。给不通的建议比不给更糟 —— 人会以为是自己哪里做错了,再试一遍。
     # 真正的出路是绕开这台机器的网络:在别处把 tar 下好,拷进来,直接跑包里的安装脚本
     # (那一步不联网)。
     28)   die "下载失败:连上了但数据不来(curl 28:30 秒内速度不到 1KB/s,已重试 3 次)。
    不是「你的网慢」—— 慢但在动的下载不会走到这里,这是彻底停住了。多半是到
-   github.com 的链路被中断或被墙,换个时间 / 换条线路重试。
+   ${GH_BASE} 的链路被中断或被墙,换个时间 / 换条线路重试${NANOTUN_GH_BASE:+
+   (这是你用 NANOTUN_GH_BASE 指定的镜像)}${NANOTUN_GH_BASE:-
+   (被墙的话可以用 NANOTUN_GH_BASE 指到镜像,见 --help)}。
    一直不通的话,在能上网的机器上下好这个包,拷到这台机器上装(装的这一步不联网):
      $BASE/$TARBALL
      tar -xzf $TARBALL && sudo ./${TARBALL%.tar.gz}/scripts/install-self-hosted.sh" ;;

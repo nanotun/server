@@ -67,8 +67,38 @@ can install without `--web-admin` too, it just leaves the admin account uncreate
 Any argument `install.sh` doesn't recognize is passed through verbatim to the wizard, so
 [`setup.sh`](scripts/setup.sh)'s options can all be given this way.
 
-For production, pin the version: `sudo NANOTUN_VERSION=v0.1.23 bash -c "$(curl -fsSL .../install.sh)"`
-(swap in whichever tag you want from [Releases](https://github.com/nanotun/server/releases)).
+**For production, pin the version** rather than drifting with latest. Put the same tag in both
+the URL and `NANOTUN_VERSION` and the whole install is pinned — script, environment check and
+release tarball all come from that tag:
+
+```bash
+sudo NANOTUN_VERSION=v0.1.24 bash -c "$(curl -fsSL \
+  https://raw.githubusercontent.com/nanotun/server/v0.1.24/scripts/install.sh)"
+```
+
+Setting only `NANOTUN_VERSION` and leaving the URL on `main` works too and pins the tarball just
+the same; the difference is that **the script itself** follows the trunk. Changes on `main` don't
+go through the release gate — one push affects every new install — so use the form above if that
+matters to you.
+
+> Pinning all three requires a tag ≥ v0.1.25: the "when `NANOTUN_VERSION` is a tag, take the
+> environment check from that tag too" coupling landed in v0.1.25. On earlier tags that
+> `install.sh` doesn't have it, so the check still comes from `main` — script and tarball pinned,
+> environment check not. Override explicitly with `NANOTUN_BRANCH`.
+
+**If github.com is unreachable** (blocked, restricted egress), you don't have to give up the
+one-liner — point the two download prefixes at a mirror. They're full prefixes, so both
+path-style and ghproxy-style (URL-appending) mirrors fit:
+
+```bash
+sudo NANOTUN_GH_BASE=https://<your-mirror>/https://github.com/nanotun/server \
+     NANOTUN_RAW_BASE=https://<your-mirror>/https://raw.githubusercontent.com/nanotun/server/main/scripts \
+     bash -c "$(curl -fsSL https://<your-mirror>/https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh)"
+```
+
+`NANOTUN_GH_BASE` covers the release tarball, `NANOTUN_RAW_BASE` the environment check. On a
+download failure the error names the prefix you supplied instead of vaguely blaming github.com.
+
 To control every step yourself, download the tar for your architecture from
 [Releases](https://github.com/nanotun/server/releases), extract it and run
 `sudo ./scripts/install-self-hosted.sh` — that's step 3 above, ships with the release, and
@@ -77,7 +107,7 @@ needs no network. `install.sh` merely also handles "getting it onto this machine
 ### Check whether this machine will work first
 
 After buying a VPS and wanting to scope it out, or troubleshooting after an install fails,
-run the environment check on its own. It is **read-only** — it installs and changes nothing:
+run the environment check on its own. It installs nothing:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/preflight.sh | bash
@@ -86,6 +116,13 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/preflig
 It lists every problem at once, ending with a paste-ready fix command (with the right package
 names for your distro), no need to install anything to re-run. After installing, a copy is on
 disk too: `nanotun-preflight`.
+
+> The one thing it does write: it tries to set `net.ipv4.ip_forward` to 1 — because what it needs
+> to establish is precisely whether this machine *lets you* change it, and a read-only check can't
+> answer that (getting it wrong costs you an `exit 60` from nanotund after the install). Installing
+> sets it anyway. If you want it to touch nothing at all, add `--dry-run`:
+> `curl -fsSL .../preflight.sh | bash -s -- --dry-run`. That's the path
+> `install.sh --check-only` takes.
 
 It checks whether systemd is running, whether `/dev/net/tun` exists, whether
 `iptables`/`ip6tables`/`ip`/`openssl` are present, whether `ip_forward` can be set to 1, and
