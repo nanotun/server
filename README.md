@@ -2,6 +2,25 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
+Give a small team secure access to machines you own — and take it back when someone leaves.
+
+You run the gateway on your own server; your teammates get a virtual subnet where they can
+reach your GPU hosts, staging boxes and office LAN, and route egress through an IP that is
+yours alone. Access is granted per user, gated by ACLs, recorded in an audit log, and
+revoking it actually revokes it.
+
+Most teams solve this today by pasting a config link into a group chat. That link can't be
+recalled, keeps working after someone leaves, and tells you nothing about who used what.
+
+Typical users:
+
+- Teams that need to reach self-hosted inference, GPU servers, or data that must stay in one
+  jurisdiction
+- Teams whose shared commercial VPN egress IPs keep getting flagged by upstream APIs
+- Anyone who wants a private network without handing the control plane to a vendor
+
+## How it works
+
 `nanotun` is a self-hosted "mesh networking" server: it runs on a machine with a public
 ingress, and after clients log in with a username + PSK (pre-shared key), they can reach
 each other over a TUN virtual interface, forming a mesh subnet.
