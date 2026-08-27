@@ -762,22 +762,58 @@ step "3. 创建 VPN 用户并生成二维码"
 if [ "$OPT_NO_USER" = 1 ]; then
   note "--no-user,跳过。"
 else
-  # profile 曾被写成「不含密钥,可以公开传」—— 不确切。开了 hy2 mTLS(装机默认就是)时,
-  # 它内嵌一张客户端证书和对应私钥。那不是登录凭证(登录仍要用户名 + PSK),但它是进
-  # QUIC 那道门的钥匙 —— 贴进群里,等于把挡扫描的那层拆了。两个码都发给本人就行。
-  note "客户端需要扫**两个**二维码,这是刻意拆开的:"
-  note "  · profile     服务器地址与传输配置,不含 PSK;但内嵌一张客户端证书 —— 发给本人,别公开贴"
-  note "  · credentials 用户名 + PSK,机密,只能一对一给本人"
-  printf '\n'
+  # 已经有真实用户时,这一步不该再默认建一个。
+  #
+  # 这里的默认是「建」(confirm 默认 y、用户名默认 alice),而 --yes 下 confirm 直接返回默认值,
+  # 连问都不问。于是 README 写的裸机升级办法(「重跑一遍 install.sh」,而它结尾就会进本向导)
+  # 会在一台已经开好服的机器上凭空多出一个 alice —— 带 PSK、EXIT 允许、enabled,二维码还照打
+  # 一遍。2026-08-27 在容器里实测复现过:机器上原本只有 bob,重跑一次向导之后 user list 里
+  # 就多了 alice。多出来的账号没人认领,却是一条能走出口的活账号。
+  #
+  # 上面 Web 管理员那段早就是这么处理的,理由(重跑向导是常事、cloud-init 会重试)一字不差地
+  # 适用于这里,只是当时没一并改。三种情况沿用同一套:点名的那个已经在了 → 跳过(幂等);
+  # 点名了但还没有 → 建(那正是被要求的事);没点名且已有真实用户 → 跳过。
+  #
+  # 计数只数**非管理员**($3=="no"),与 install-self-hosted.sh 的 count_real_users 同一个口径。
+  # 装机脚本自己会建一个管理员账号,把它一起算进来的话,全新机器上这里会直接跳过 —— 首装就
+  # 拿不到任何 VPN 用户和二维码,那比重复建一个严重得多。
+  USER_LIST="$(admin user list 2>/dev/null || true)"
+  REAL_USERS="$(printf '%s\n' "$USER_LIST" | awk 'NR>1 && $3=="no" {n++} END {print n+0}')"
+  USER_NAMED_EXISTS=0
+  if [ -n "$OPT_USER" ] && printf '%s\n' "$USER_LIST" | awk 'NR>1 && NF {print $2}' \
+       | grep -qix -- "$OPT_USER"; then
+    USER_NAMED_EXISTS=1     # 大小写不敏感 —— 与库里的去重口径一致
+  fi
 
-  username="$OPT_USER"
-  if [ -z "$username" ]; then
-    if confirm "现在创建一个 VPN 用户?" y; then
-      username="$(ask "用户名" "alice")"
-    fi
+  username=""
+  USER_SKIPPED=0
+  if [ "$USER_NAMED_EXISTS" = 1 ]; then
+    ok "VPN 用户 $OPT_USER 已存在,跳过创建。"
+    note "要给它重出凭证二维码(会轮换 PSK 并踢掉其在线会话):"
+    note "  nanotun-admin --db-path $DB --yes credentials show $OPT_USER --rotate-psk --format qr"
+    USER_SKIPPED=1
+  elif [ -n "$OPT_USER" ]; then
+    username="$OPT_USER"
+  elif [ "$REAL_USERS" -gt 0 ]; then
+    ok "这台机器已有 $REAL_USERS 个 VPN 用户,跳过创建(升级 / 重跑向导时不该再来一遍)。"
+    note "要加用户:nanotun-admin --db-path $DB user create <名字>"
+    USER_SKIPPED=1
+  elif confirm "现在创建一个 VPN 用户?" y; then
+    username="$(ask "用户名" "alice")"
   fi
 
   if [ -n "$username" ]; then
+    # profile 曾被写成「不含密钥,可以公开传」—— 不确切。开了 hy2 mTLS(装机默认就是)时,
+    # 它内嵌一张客户端证书和对应私钥。那不是登录凭证(登录仍要用户名 + PSK),但它是进
+    # QUIC 那道门的钥匙 —— 贴进群里,等于把挡扫描的那层拆了。两个码都发给本人就行。
+    #
+    # 放在这里而不是本节开头:跳过创建时(升级重跑)屏幕上不该再讲一遍「扫两个码」——
+    # 那一趟根本不会有码出来。
+    note "客户端需要扫**两个**二维码,这是刻意拆开的:"
+    note "  · profile     服务器地址与传输配置,不含 PSK;但内嵌一张客户端证书 —— 发给本人,别公开贴"
+    note "  · credentials 用户名 + PSK,机密,只能一对一给本人"
+    printf '\n'
+
     create_out=""
     if create_out="$(admin --json user create "$username" 2>&1)"; then
       psk="$(printf '%s' "$create_out" | json_field psk)"
@@ -879,7 +915,9 @@ $create_out"
 $create_out" ;;
       esac
     fi
-  else
+  elif [ "$USER_SKIPPED" = 0 ]; then
+    # 只有「问过、人答了不建」才走到这。上面那两条跳过分支各自把话说完了,再补这一句
+    # 等于同一件事讲两遍,而两遍的措辞还不一样。
     note "跳过。之后手动创建:nanotun-admin --db-path $DB user create <名字>"
   fi
 fi

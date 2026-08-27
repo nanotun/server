@@ -234,8 +234,8 @@ Web admin or the CLI below.
 If you're already comfortable with containers, this route works too:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/nanotun/server/main/docker/docker-compose.yml
-docker compose up -d && docker compose logs -f     # the first-boot PSK is printed in the logs
+curl -fsSLO https://raw.githubusercontent.com/nanotun/server/main/docker/docker-compose.yml \
+  && docker compose up -d && docker compose logs -f     # the first-boot PSK is printed in the logs
 ```
 
 The image is `ghcr.io/nanotun/server` (amd64 + arm64 multi-arch). It's a VPN gateway with hard
@@ -480,10 +480,22 @@ hand-made `git tag` push can't ship a release.
 **Docker**: `docker compose pull && docker compose up -d`. The config isn't overwritten;
 template changes are saved to `config.toml.dist` for diffing.
 
-**Bare metal**: re-run `install.sh` (or download the new tar and run `install-self-hosted.sh`).
-The scripts are idempotent and **won't touch** an already-effective `config.toml` or the keys —
-re-signing keys would kick off all existing clients. See the script header comments and
-[`docs/UPGRADE_M0.md`](docs/UPGRADE_M0.md).
+**Bare metal**: re-run `install.sh`, adding `--no-setup` when upgrading — that step is the
+first-run wizard, which a machine that's already serving doesn't need to go through again:
+
+```bash
+sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL \
+  https://raw.githubusercontent.com/nanotun/server/v0.1.25/scripts/install.sh)" --no-setup
+```
+
+You can also download the new tar and run `install-self-hosted.sh` directly (that one never
+enters the wizard). The scripts are idempotent and **won't touch** an already-effective
+`config.toml` or the keys — re-signing keys would kick off all existing clients. See the script
+header comments and [`docs/UPGRADE_M0.md`](docs/UPGRADE_M0.md).
+
+Leaving `--no-setup` off breaks nothing either: the wizard recognizes an already-configured
+machine — it defaults the dial address to the current value, and skips the web admin and the VPN
+user when they already exist. You just walk through the questions for nothing.
 
 Upgrading across several versions at once uses the same method, no need to climb version by
 version. Tested going straight from v0.1.0 to v0.1.16: `server_id`, the REALITY private key,

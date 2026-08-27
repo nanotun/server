@@ -195,8 +195,8 @@ sudo nanotun-admin webadmin unlock <名字>           # 只解锁,密码不动
 已经熟悉容器的话也可以走这条:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/nanotun/server/main/docker/docker-compose.yml
-docker compose up -d && docker compose logs -f     # 首次启动的 PSK 会打在日志里
+curl -fsSLO https://raw.githubusercontent.com/nanotun/server/main/docker/docker-compose.yml \
+  && docker compose up -d && docker compose logs -f     # 首次启动的 PSK 会打在日志里
 ```
 
 镜像是 `ghcr.io/nanotun/server`(amd64 + arm64 多架构)。它是个 VPN 网关,对
@@ -420,9 +420,20 @@ tag,workflow 只认这种 tag —— 手工 `git tag` 推上去发不出版本�
 **Docker**:`docker compose pull && docker compose up -d`。配置不会被覆盖,
 模板变更另存 `config.toml.dist` 供 diff。
 
-**裸机**:重跑一遍 `install.sh`(或下新版本 tar 后跑 `install-self-hosted.sh`)。
-脚本幂等,**不会动**已生效的 `config.toml` 和密钥 —— 重签密钥等于踢掉全部现有客户端。
+**裸机**:重跑一遍 `install.sh`,升级时加 `--no-setup` —— 那一步是开服向导,已经开过服的
+机器不需要再走一遍:
+
+```bash
+sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL \
+  https://raw.githubusercontent.com/nanotun/server/v0.1.25/scripts/install.sh)" --no-setup
+```
+
+也可以下新版本 tar 后直接跑 `install-self-hosted.sh`(那条本来就不进向导)。脚本幂等,
+**不会动**已生效的 `config.toml` 和密钥 —— 重签密钥等于踢掉全部现有客户端。
 详见脚本头部注释与 [`docs/UPGRADE_M0.md`](docs/UPGRADE_M0.md)。
+
+不加 `--no-setup` 也不会弄坏什么:向导认得已经配好的机器,拨号地址拿现值作默认,
+Web 管理员和 VPN 用户都已存在就跳过。只是白走一遍问答。
 
 跨多个版本一次升上来也是这个办法,不用逐版本爬。实测从 v0.1.0 直接升到 v0.1.16:
 `server_id`、REALITY 私钥、两张证书、用户与 ACL 全部原样保留,已经发出去的 profile
