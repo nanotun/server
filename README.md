@@ -72,8 +72,8 @@ the URL and `NANOTUN_VERSION` and the whole install is pinned — script, enviro
 release tarball all come from that tag:
 
 ```bash
-sudo NANOTUN_VERSION=v0.1.24 bash -c "$(curl -fsSL \
-  https://raw.githubusercontent.com/nanotun/server/v0.1.24/scripts/install.sh)"
+sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL \
+  https://raw.githubusercontent.com/nanotun/server/v0.1.25/scripts/install.sh)"
 ```
 
 Setting only `NANOTUN_VERSION` and leaving the URL on `main` works too and pins the tarball just

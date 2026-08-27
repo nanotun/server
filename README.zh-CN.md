@@ -61,8 +61,8 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install
 tag,拿到的就是完全钉死的一次安装 —— 脚本、环境检查、发布包三样都来自那个 tag:
 
 ```bash
-sudo NANOTUN_VERSION=v0.1.24 bash -c "$(curl -fsSL \
-  https://raw.githubusercontent.com/nanotun/server/v0.1.24/scripts/install.sh)"
+sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL \
+  https://raw.githubusercontent.com/nanotun/server/v0.1.25/scripts/install.sh)"
 ```
 
 只换 `NANOTUN_VERSION`、URL 仍走 `main` 也可以,发布包一样钉得住;差别在于**脚本本身**跟着
