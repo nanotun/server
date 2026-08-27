@@ -953,9 +953,29 @@ if [ "${NANOTUN_WIZARD_FOLLOWS:-0}" != 1 ]; then
     echo
     echo "  Web 管理后台(M2):"
     echo "    journalctl -u nanotun-web -f"
-    echo "    建后台账号: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <名字>"
-    echo "    (开服向导 nanotun-setup 会问这一步;在建好之前 https://<server>:7443/setup"
-    echo "     对全网公开 —— 谁先打开谁就是管理员)"
+    # 「/setup 对全网公开」只在这台机器**真的一个后台管理员都没有**时才成立。
+    #
+    # 这段原来是无条件打的,于是升级一台配好的机器时(而升级正是重跑本脚本的头号理由),
+    # 屏幕上会通知你后台正敞着、要去补个管理员 —— 两件事都不成立:实测那台机器
+    # /setup 回 302,web.env 里 NANOTUN_WEB_ALLOW_SETUP=0 早就钉上了。而这条假警报偏偏
+    # 长得和真警报一模一样,见得多了,真敞着的那次也就跟着一起被略过去了。
+    #
+    # 判据与向导同一口径(scripts/setup.sh 的 setup_gate_closed / WEB_ADMIN_COUNT):
+    # 有人 → 报个数并给登录地址;没人但门已关 → 谁也进不去,只能从 CLI 补;
+    # 没人且门开着 → 才是原来那句话。
+    WEB_ADMINS="$({ /usr/local/bin/nanotun-admin --db-path "$LIB_DIR/nanotun.db" \
+      webadmin list 2>/dev/null || true; } | awk 'NR>1 && NF {n++} END {print n+0}')"
+    if [ "${WEB_ADMINS:-0}" -gt 0 ]; then
+      echo "    已有 $WEB_ADMINS 个后台管理员,/setup 已关闭。登录: https://<server>:7443/"
+      echo "    看都有谁: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin list"
+    elif grep -qE '^NANOTUN_WEB_ALLOW_SETUP=(0|false|no)[[:space:]]*$' "$ETC_DIR/web.env" 2>/dev/null; then
+      echo "    这台机器的 /setup 已关闭,而一个后台管理员都没有 —— 网页那条路进不去,只能:"
+      echo "    nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <名字>"
+    else
+      echo "    建后台账号: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <名字>"
+      echo "    (开服向导 nanotun-setup 会问这一步;在建好之前 https://<server>:7443/setup"
+      echo "     对全网公开 —— 谁先打开谁就是管理员)"
+    fi
     echo "    证书: $ETC_DIR/certs/{cert.pem,key.pem}(可作为 root CA 装入信任库)"
   fi
   echo

@@ -801,8 +801,21 @@ NANOTUN_PREFLIGHT_DONE=1 NANOTUN_WIZARD_FOLLOWS="$WIZARD_FOLLOWS" \
 # 把这三件事留给用户自己从输出里读出来 —— 既然是「一条命令开服」,就一路走到底。
 if [ "$NO_SETUP" = 1 ]; then
   echo
-  info "--no-setup:跳过开服向导。想连上客户端还差最后一步:"
-  echo "    sudo nanotun-setup"
+  # 「还差最后一步」只对首装成立。--no-setup 的头号用法恰恰是**升级**(README 就是这么
+  # 推荐的:重跑 install.sh 加 --no-setup),而那台机器早就配好、正跑着 —— 于是屏幕上
+  # 最后一句在通知人「你的部署没配完」,而它上面十五行刚说过「此前已配置过,现有用户与
+  # 密钥都没动」。两句话出自同一次运行,互相拆台,而最后那句最显眼。
+  #
+  # install-self-hosted.sh 早就按 server_dial_host 分岔出了正确的说法(见那边的
+  # DIAL_SET),只是本脚本这条早退路径绕过了它,自己又催了一遍。判据取同一个值。
+  if [ -n "$(/usr/local/bin/nanotun-admin --db-path /var/lib/nanotun/nanotun.db \
+       setting get server_dial_host 2>/dev/null | tail -1 | tr -d '[:space:]')" ]; then
+    info "--no-setup:跳过开服向导(这台机器此前已配置过,现有用户与密钥都没动)。"
+    echo "    要加用户 / 重出二维码 / 改拨号地址:sudo nanotun-setup"
+  else
+    info "--no-setup:跳过开服向导。想连上客户端还差最后一步:"
+    echo "    sudo nanotun-setup"
+  fi
   exit 0
 fi
 
