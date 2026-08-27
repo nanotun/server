@@ -631,8 +631,30 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 	// 客户端配的 DNS(常是下发的 8.8.8.8)若从服务器网络够不着(墙内部署)则域名解析失败;
 	// DNAT 到服务器自己的解析器,使域名从服务器视角解析。off 模式无出口流量,跳过。
 	if allowExitWAN {
-		if err := setupExitDNSRedirect("iptables", deviceName, resolveExitDNSRedirect(exitDNSRedirect)); err != nil {
+		dnsIP := resolveExitDNSRedirect(exitDNSRedirect)
+		if err := setupExitDNSRedirect("iptables", deviceName, dnsIP); err != nil {
 			return err
+		}
+		// 把接管到哪个解析器写出来。
+		//
+		// auto(默认)是**启动那一刻**读一次 /etc/resolv.conf,之后钉死在 DNAT 规则里 ——
+		// 和出口 SNAT 的源地址同一个模子,而且触发得更勤:解析器地址比主机 IP 更容易变
+		// (DHCP 续约换了 DNS 选项、systemd-resolved 重配、机器换了网络)。变过之后规则
+		// 仍把客户端的查询转给那个旧地址,于是客户端连得上、能拿到 IP、域名却全解析不了。
+		//
+		// 症状跟 SNAT 那个第一眼分不开,所以这行要说清钉的是谁、怎么来的、怎么修 ——
+		// 查的人第一件事就是 journalctl。
+		switch {
+		case dnsIP == "":
+			logrus.Info("iptables: 未接管出口 DNS(exit_dns_redirect=off,或 auto 但没探到可用的系统解析器)")
+		default:
+			how := "显式配置"
+			if s := strings.ToLower(strings.TrimSpace(exitDNSRedirect)); s == "" || s == "auto" {
+				how = "auto:启动时读 /etc/resolv.conf 探到的"
+			}
+			logrus.Infof("iptables: 出口 DNS 已接管 → %s:53(%s ——"+
+				"这台机器的系统解析器若换过,这条会把客户端的查询转给一个旧地址,"+
+				"表现是连得上、能拿到 IP、域名却解析不了,重启 nanotun 即可重新探测)", dnsIP, how)
 		}
 	}
 

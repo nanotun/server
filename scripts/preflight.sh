@@ -460,6 +460,31 @@ if [ -x /usr/local/bin/nanotund ]; then
       soft "出口 SNAT 规则的源地址 $snat_src 已经不在本机任何网卡上" \
         "数据面启动时把它钉进了规则,之后这台机器的地址变过。客户端能连上、但出不了网 —— 重启数据面重新探测:systemctl restart nanotun"
     fi
+
+    # 出口 DNS 接管指着的解析器,还是不是这台机器现在用的那个。
+    #
+    # 与上面的 SNAT 同一个模子:exit_dns_redirect=auto(默认)是启动那一刻读一次
+    # /etc/resolv.conf,之后钉死在 DNAT 规则里。解析器地址比主机 IP 更容易变(DHCP 续约
+    # 换了 DNS 选项、systemd-resolved 重配、机器换了网络),变过之后客户端的查询被转给
+    # 一个旧地址 —— 连得上、能拿到 IP、域名却全解析不了。
+    #
+    # 只在 auto / 没写 这两种模式下比:显式配了具体 IP 的人本来就是要钉住某个解析器,
+    # 跟 resolv.conf 不一致是他自己的意图,拿这个报警等于对着正确配置喊。
+    dns_mode="$(awk -F= '/^[ \t]*exit_dns_redirect[ \t]*=/ {gsub(/[" \t]/, "", $2); print tolower($2); exit}' \
+      /etc/nanotun/config.toml 2>/dev/null)"
+    if [ -z "$dns_mode" ] || [ "$dns_mode" = auto ]; then
+      dns_pinned="$(iptables -t nat -S PREROUTING 2>/dev/null \
+        | awk '/nanotun/ && /--to-destination/ { for (i = 1; i < NF; i++) if ($i == "--to-destination") { print $(i+1); exit } }')"
+      dns_pinned="${dns_pinned%%:*}"
+      # 现在的系统解析器:跟 detectSystemDNSv4 一个口径 —— 两个文件依次找,跳过环回
+      # (systemd-resolved 的 127.0.0.53 stub 对转发流量没意义,Go 那边也跳)。
+      dns_now="$(awk '/^[ \t]*nameserver/ && $2 !~ /^127\./ && $2 ~ /^[0-9.]+$/ {print $2; exit}' \
+        /etc/resolv.conf /run/systemd/resolve/resolv.conf 2>/dev/null)"
+      if [ -n "$dns_pinned" ] && [ -n "$dns_now" ] && [ "$dns_pinned" != "$dns_now" ]; then
+        soft "出口 DNS 接管指向 $dns_pinned,而这台机器现在的系统解析器是 $dns_now" \
+          "数据面启动时按 auto 探到 $dns_pinned 并钉进了规则,之后解析器换过。客户端能连上、能拿到 IP,域名却解析不了 —— 重启数据面重新探测:systemctl restart nanotun"
+      fi
+    fi
   fi
 fi
 
