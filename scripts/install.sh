@@ -18,12 +18,14 @@
 #   环境检查也可以单独跑:curl -fsSL .../preflight.sh | bash
 #
 # 装指定版本(生产建议钉版本,别跟着 latest 漂):
-#   sudo NANOTUN_VERSION=v0.1.24 bash -c "$(curl -fsSL .../install.sh)"
+#   sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL .../install.sh)"
 #
 # 要**完全**钉死(连这个脚本和 preflight.sh 一起钉),把 URL 里的 main 也换成同一个 tag:
-#   sudo NANOTUN_VERSION=v0.1.24 bash -c "$(curl -fsSL \
-#     https://raw.githubusercontent.com/nanotun/server/v0.1.24/scripts/install.sh)"
+#   sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL \
+#     https://raw.githubusercontent.com/nanotun/server/v0.1.25/scripts/install.sh)"
 #   NANOTUN_VERSION 是 tag 时 NANOTUN_BRANCH 默认跟着它走,所以 preflight.sh 也来自同一个 tag。
+#   这条联动是 v0.1.25 加的,所以示例里的 tag 不能低于它 —— 更早的 tag 上这个脚本还没有
+#   这段,环境检查仍从 main 取,而紧挨着的这句话会让人以为三样都钉住了。
 #
 # github.com / raw.githubusercontent.com 不通(镜像):见下面 NANOTUN_GH_BASE / NANOTUN_RAW_BASE。
 #
@@ -40,7 +42,8 @@
 #   --no-setup     装完不自动进开服向导
 #   --magic-suffix <后缀>  MagicDNS 局域网后缀(客户端解析 *.<后缀> → mesh 虚拟 IP),
 #                  默认 lan;只在首次装机(真写模板 config.toml)时生效。等价于环境变量
-#                  NANOTUN_MAGIC_SUFFIX。改现有机器的后缀用 scripts/set-magic-suffix.sh。
+#                  NANOTUN_MAGIC_SUFFIX。改现有机器的后缀用 sudo nanotun-set-suffix <后缀>
+#                  (装机时一并装成了命令;发布包里对应 scripts/set-magic-suffix.sh)。
 #   其余参数        原样转交开服向导,例如 --dial-host / --user / --web-admin / --yes
 #
 # 环境变量:
@@ -307,15 +310,34 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
   --skip-check   跳过环境检查直接装(不建议)
   --no-setup     装完不自动进开服向导
   --magic-suffix <后缀>  MagicDNS 局域网后缀(*.<后缀> → mesh 虚拟 IP),默认 lan;
-                 只在首次装机生效(等价 NANOTUN_MAGIC_SUFFIX)。改现有机器用 set-magic-suffix.sh。
+                 只在首次装机生效(等价 NANOTUN_MAGIC_SUFFIX)。
+                 改现有机器:sudo nanotun-set-suffix <后缀>
 
 环境变量:
   NANOTUN_MAGIC_SUFFIX 同 --magic-suffix(命令行优先)
+  NANOTUN_WEB_ADMIN_PASSWORD  Web 后台密码,配合 --web-admin <名字>。走环境变量而不是
+                      参数:argv 对同机所有用户可见(ps),还会落进 shell history
   NANOTUN_VERSION     要装的版本,默认取最新 Release(不含预发布)
   NANOTUN_INSTALL_DIR 解压落点,默认 /opt/nanotun
   NANOTUN_NO_INSTALL  =1 时只下载解压,不安装(不需要 root)
   NANOTUN_REPO        换仓库(fork 自用)
+  NANOTUN_BRANCH      从哪个 ref 取 preflight.sh。默认 NANOTUN_VERSION 是 tag 时跟着它,
+                      否则 main
   NANOTUN_VERBOSE     =1 时连 systemd 状态和日志一起打出来(默认只给结论)
+
+github.com 连不上(被墙 / 出站受限)时,把两个下载前缀指到镜像,一键仍然可用。
+给的是**完整前缀**,路径型和 ghproxy 那种前缀型镜像都装得下:
+  NANOTUN_GH_BASE     发布包的下载前缀,默认 https://github.com/${REPO}
+  NANOTUN_RAW_BASE    preflight.sh 的下载前缀,默认
+                      https://raw.githubusercontent.com/${REPO}/<ref>/scripts
+  例:
+    sudo NANOTUN_GH_BASE=https://<镜像>/https://github.com/${REPO} \\
+         NANOTUN_RAW_BASE=https://<镜像>/https://raw.githubusercontent.com/${REPO}/main/scripts \\
+         bash -c "\$(curl -fsSL https://<镜像>/https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh)"
+
+卸载(装机时一并装成了命令):
+  sudo nanotun-uninstall --dry-run    # 先看会动哪些文件
+  sudo nanotun-uninstall              # 停服务、删程序,保留配置与数据库
 
 完整说明: https://github.com/${REPO}
 EOF

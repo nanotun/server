@@ -32,10 +32,17 @@ while [ $# -gt 0 ]; do
     --purge)   PURGE=1; shift ;;
     --yes|-y)  ASSUME_YES=1; shift ;;
     --dry-run) DRY=1; shift ;;
+    # 用法里的命令名按**实际被调用的名字**写。
+    #
+    # 安装脚本会把本文件装成 /usr/local/bin/nanotun-uninstall,而把它装成命令的理由恰恰是
+    # 「一键安装的人当前目录里没有 scripts/」—— 那时帮助里还写 ./scripts/uninstall.sh,
+    # 等于在人想卸载的那一刻指给他一条不存在的路径。setup.sh 早就这么做了,这里跟上。
     -h|--help)
-      awk 'NR>1 && /^#/ {sub(/^#[ \t]?/,""); print; next} NR>1 {exit}' "$0"
+      me="$(basename "$0")"; case "$me" in uninstall.sh) me="./scripts/uninstall.sh" ;; esac
+      awk 'NR>1 && /^#/ {sub(/^#[ \t]?/,""); print; next} NR>1 {exit}' "$0" \
+        | sed "s#\./scripts/uninstall\.sh#${me}#g"
       exit 0 ;;
-    *) printf 'uninstall.sh: 未知参数 %s(--help 看用法)\n' "$1" >&2; exit 2 ;;
+    *) printf '%s: 未知参数 %s(--help 看用法)\n' "$(basename "$0")" "$1" >&2; exit 2 ;;
   esac
 done
 

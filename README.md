@@ -51,6 +51,16 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
 When it finishes you can use it: the wizard asks for the client dial address, sets the Web
 admin username and password, creates the first VPN user, and prints two QR codes.
 
+> **About the client, up front.** What this repository ships is the **server**. Those two QR
+> codes are meant to be scanned by a nanotun client, and the clients (macOS / Windows /
+> Android / OpenWrt) are **not publicly distributed** — their code isn't here either. So: you
+> can stand the server up right now and administer it from the Web console and the CLI, but
+> without a client in hand there's nothing to scan those QR codes with. Contact the maintainer
+> if you need one.
+>
+> This is stated up front because it's worth knowing *before* you spend time installing —
+> rather than at the moment the wizard hands you a QR code.
+
 > **Don't write it as `curl … | sudo bash`.** Ubuntu / Debian's sudo has `use_pty` on by
 > default, which opens a separate pty for the command; layered with a pipe holding sudo's
 > stdin, the wizard is suspended by job control the moment it asks a question — the prompt

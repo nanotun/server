@@ -35,8 +35,37 @@ while [ $# -gt 0 ]; do
     --dry-run)     DRY_RUN=1; shift ;;
     --quiet)       QUIET=1; shift ;;
     --for-install) FOR_INSTALL=1; shift ;;
-    -h|--help) sed -n '2,30p' "$0" 2>/dev/null || echo "用法: preflight.sh [--offline] [--dry-run] [--quiet] [--for-install]"; exit 0 ;;
-    *) printf 'preflight: 未知参数 %s\n' "$1" >&2; exit 2 ;;
+    # 打开头那段注释,按行内容判起止,**不写死行号**。
+    #
+    # 原来是 sed -n '2,30p':注释早就长过 30 行,于是帮助从中间截断,末尾还把
+    # `set -uo pipefail` 那行源码一并打了出来 —— 看着像脚本自己出了错。行号写死就是这个
+    #下场:改文档的人不会想到有个地方按行号取它。同仓的 install.sh / uninstall.sh 用的
+    # 就是下面这个 awk,顺带把行首的 `#` 去掉(sed 那版原样留着,像没写完)。
+    #
+    # 本脚本最常见的用法恰恰是 `curl … | bash`,那时 $0 是 "bash"、读不到文件,所以退回的
+    # 那份必须自己够用 —— 只回一句「用法:...」等于让人再去开一次浏览器。
+    -h|--help)
+      awk 'NR>1 && /^#/ {sub(/^#[ \t]?/,""); print; next} NR>1 {exit}' "$0" 2>/dev/null || cat <<'EOF'
+nanotun 环境自检 —— 这台机器能不能跑 nanotun 服务端。
+
+它是**只读**的:不装任何东西、不改任何配置。唯一的例外是探测 ip_forward 可写性时会真写
+一次 sysctl(值本来就该是 1,安装时也要设),用 --dry-run 可以连这一次也免掉。
+
+所有问题**一次列全**,最后给一份修复清单 —— 缺三样东西的机器不用来回装三趟。
+
+用法: nanotun-preflight [--offline] [--dry-run] [--quiet] [--for-install]
+  --offline      不检查下载器 / tar(已经有发布包、不需要联网下载时)
+  --dry-run      不尝试写 ip_forward,只读当前值
+  --quiet        只输出结论,不逐项列
+  --for-install  这次跑完紧接着就要装:不是 root 直接判死(由 install.sh 传,人手跑不用带)
+
+退出码:0 = 可以装;1 = 有必须修复的项;2 = 用法错误。
+「提醒」不影响退出码 —— 它们不阻塞安装,只是装完可能有惊喜。
+EOF
+      exit 0 ;;
+    # 名字取自 $0(装成命令后是 nanotun-preflight),并指向 --help —— 只说「未知参数」
+    # 等于让人自己猜有哪些参数,而这条消息出现的时刻恰恰是他已经猜错过一次了。
+    *) printf '%s: 未知参数 %s（--help 看用法）\n' "$(basename "$0")" "$1" >&2; exit 2 ;;
   esac
 done
 

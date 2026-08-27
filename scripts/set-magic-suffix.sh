@@ -25,12 +25,55 @@
 # 可选环境变量：CONFIG（默认 /etc/nanotun/config.toml）、SERVICE（默认 nanotun）。
 set -euo pipefail
 
+# --help 得在取后缀之前拦下。
+#
+# 之前没有这一条,于是 `--help` 直接落进 SUFFIX,被下面那条合法性正则判死,打出
+# 「FATAL: 后缀不合法（只允许小写字母/数字/连字符）：'--help'」—— 装成命令的这几个里
+# 只有它没有帮助,而想确认参数的人第一反应恰恰是敲 --help,收到的却是一句红色的致命错误。
+#
+# 装成 /usr/local/bin/nanotun-set-suffix 之后只剩「就在这台服务器上跑」这一种用法,
+# 头部那段里的 SSH_HOST 远程形态反而会让人以为还要再 SSH 一次,所以两种形态各给各的。
+case "${1:-}" in
+  -h|--help)
+    if [ "$(basename "$0")" = set-magic-suffix.sh ]; then
+      awk 'NR>1 && /^#/ {sub(/^#[ \t]?/,""); print; next} NR>1 {exit}' "$0"
+    else
+      cat <<EOF
+用法: sudo $(basename "$0") <新后缀>        例如: sudo $(basename "$0") nanotun
+
+修改 nanotun 的 MagicDNS 后缀(客户端解析 *.<后缀> → mesh 虚拟 IP)并重启服务。
+domain_suffix 不在 SIGHUP 热更白名单里,只有重启才生效;重启走 graceful drain,
+客户端会自动重连。
+
+先备份 config.toml → 只改 [server.magic_dns].domain_suffix → 重启 → 轮询状态;
+超时内没回到 active 就自动回滚备份并重启,不会把服务器改趴。
+
+后缀只允许小写字母 / 数字 / 连字符,可点分多级。'local' 与 mDNS 冲突,禁用。
+
+可选环境变量:CONFIG(默认 /etc/nanotun/config.toml)、SERVICE(默认 nanotun)。
+EOF
+    fi
+    exit 0 ;;
+  # 别的 -开头参数同样别当后缀。判死的措辞得指向 --help,而不是让人对着一条
+  # 「后缀不合法」去想自己的后缀哪里写错了 —— 他压根没在写后缀。
+  -?*)
+    echo "FATAL: 未知参数 '$1'（本命令只接一个后缀;--help 看用法）" >&2; exit 2 ;;
+esac
+
 SUFFIX="${1:-${SUFFIX:-}}"
 CONFIG="${CONFIG:-/etc/nanotun/config.toml}"
 SERVICE="${SERVICE:-nanotun}"
 
 if [ -z "$SUFFIX" ]; then
-  echo "用法: [SSH_HOST=.. SSH_PASS=..] $0 <新后缀>    例如: $0 nanotun" >&2
+  # 用命令名而不是 $0:装成 /usr/local/bin/nanotun-set-suffix 之后,$0 是一整条绝对路径,
+  # 而这行是给人照着敲的。SSH_HOST 那段只在从仓库直跑时才提 —— 装成命令就意味着人已经
+  # 在这台服务器上了,再提「SSH 到服务器」只会让人以为还差一步。
+  me="$(basename "$0")"
+  if [ "$me" = set-magic-suffix.sh ]; then
+    echo "用法: [SSH_HOST=.. SSH_PASS=..] ./scripts/${me} <新后缀>    例如: ./scripts/${me} nanotun" >&2
+  else
+    echo "用法: sudo ${me} <新后缀>    例如: sudo ${me} nanotun    (--help 看详细说明)" >&2
+  fi
   exit 2
 fi
 

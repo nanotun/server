@@ -45,6 +45,14 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
 
 跑完就能用:向导会问客户端拨号地址、定下 Web 后台的用户名和密码、建第一个 VPN 用户、出两个二维码。
 
+> **先说清楚客户端。** 这个仓库发布的是**服务端**;那两个二维码要用 nanotun 客户端扫,
+> 而客户端(macOS / Windows / Android / OpenWrt)目前**不公开分发**,代码也不在这里。
+> 也就是说:服务端你现在就能装起来、能从 Web 后台和 CLI 管起来,但手上没有客户端的话,
+> 二维码暂时没有东西可扫。要客户端请联系维护者。
+>
+> 把这句写在最前面,是因为它值得你在花时间装之前就知道 —— 而不是装完、拿到二维码那一刻
+> 才发现。
+
 > **别写成 `curl … | sudo bash`。** Ubuntu / Debian 的 sudo 默认开着 `use_pty`,会另开一个
 > pty 跑命令;再叠加管道占着 sudo 的 stdin,向导一问话就被作业控制挂起 —— 提示符出来了、
 > 回车却毫无反应(在全新 Ubuntu 26.04 上实测两次两挂)。写成 `bash -c "$(curl …)"`,
