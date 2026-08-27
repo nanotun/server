@@ -60,10 +60,15 @@ func (s *Store) Migrate(ctx context.Context) (retErr error) {
 	if len(files) > 0 {
 		newest := files[len(files)-1].version
 		if current > newest {
+			// 「从备份恢复」这条出路以前是句空话:产品里没有任何一处会产生那份备份,而这句
+			// 提示出现的时机,恰恰是人已经把机器降级、正着急的时候。现在装机脚本会在每次
+			// 升级前留一份(VACUUM INTO 快照,最近 3 份),所以这里能指出确切位置。
 			return fmt.Errorf(
 				"%w:库的 schema 版本是 %d,本程序只认到 %d。"+
-					"这台机器上装过更新的 nanotun,降级回来不安全 —— 请换回原来的版本,"+
-					"或从降级前的备份恢复数据库",
+					"这台机器上装过更新的 nanotun,降级回来不安全 —— 请换回原来的版本;"+
+					"要留在这个旧版本的话,用升级前的备份把库换回去:"+
+					"/var/lib/nanotun/backups/ 下最近那份 nanotun-<时间戳>.db"+
+					"(停掉 nanotun 服务后覆盖 /var/lib/nanotun/nanotun.db,再启动)",
 				ErrSchemaFromFuture, current, newest)
 		}
 	}

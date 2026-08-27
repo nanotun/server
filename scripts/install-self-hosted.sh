@@ -757,6 +757,40 @@ else
   fi
 fi
 
+# ── 升级前给数据库留一份还原点 ──────────────────────────────────────────────
+#
+# schema 迁移是一路向前的:现有的三十来个迁移里有 DROP COLUMN、有改名,跑过去就回不来。
+# 而降级守卫(ErrSchemaFromFuture)拦下旧二进制时,给的出路正是「从降级前的备份恢复
+# 数据库」—— 在此之前,产品里没有任何一处会产生那份备份。那句话指着一个不存在的东西,
+# 而它出现的时机恰恰是人已经把机器降级、正着急的时候。
+#
+# 位置选在这里:第 1 步已经把新的 nanotun-admin 装好了,而服务要到第 6 步才重启 ——
+# 也就是说库还停在旧 schema,迁移还没发生,这是唯一一个「还能留下迁移前状态」的窗口。
+#
+# 用 nanotun-admin backup(VACUUM INTO):强一致快照,只读,老服务还跑着也能拿,
+# 落盘 0600。它不跑 Migrate,所以拿新 admin 去备份一个尚未迁移的库是安全的。
+#
+# 失败只 warn 不 die:备份是保险,不是安装的前置条件 —— 为了它把一台已经装到第 4 步的
+# 机器丢在半路不划算。但要说清没留成,否则人会以为有。
+DB_FILE="$LIB_DIR/nanotun.db"
+if [ -f "$DB_FILE" ]; then
+  BACKUP_DIR="$LIB_DIR/backups"
+  BACKUP_FILE="$BACKUP_DIR/nanotun-$(date +%Y%m%d-%H%M%S).db"
+  mkdir -p "$BACKUP_DIR" && chmod 0700 "$BACKUP_DIR"
+  if nanotun-admin --db-path "$DB_FILE" backup "$BACKUP_FILE" >/dev/null 2>&1; then
+    ok "升级前已备份数据库 → $BACKUP_FILE"
+    # 只留最近 3 份。不设上限的话,每升一次多一份,而这个目录没人会去看 ——
+    # 直到某天磁盘满了才发现,那时症状是「服务起不来」,跟备份看不出关系。
+    ls -1t "$BACKUP_DIR"/nanotun-*.db 2>/dev/null | tail -n +4 | while read -r old; do
+      rm -f "$old"
+    done
+  else
+    warn "数据库备份没做成(不影响本次安装,继续)。"
+    warn "  想手动留一份:nanotun-admin --db-path $DB_FILE backup <落点>"
+    warn "  在意的话先备份再升级 —— schema 迁移过去就回不来了。"
+  fi
+fi
+
 step "5. 初始化 admin 用户（首次部署生成 PSK；重复部署 noop 保留现有 PSK）"
 # init 默认幂等：setup_completed=1 时再跑只输出 admin 元信息（{"noop":true}），不改 PSK。
 # 想强制重置请手动 `nanotun-admin --json init --reset-psk`，不要让脚本自动做。
