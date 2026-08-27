@@ -435,3 +435,38 @@ func TestCmdSettingProbeDialHost_Verdicts(t *testing.T) {
 		}
 	})
 }
+
+// probe 的软失败判词里**不能**夹带 --skip-icmp 那条建议 —— 它得单独放在 hint 里,由调用处
+// 决定打不打。
+//
+// 起因:向导(scripts/setup.sh)也调 probe,而云厂商默认封 ping,所以这条软失败在全新机器上
+// 几乎每次都出现。它给的却是一条死路 —— nanotun-setup 没有 --skip-icmp 这个参数,照着敲的人
+// 拿到的是 exit 2 加一页用法;而后半句「直接跑 setting set server_dial_host」正是向导下面两行
+// 就要替他做的事。紧接着向导自己还会说「地址没填错的话直接继续即可」,两句话互相拆台。
+//
+// 两条判词合成一个字符串时,调用处就没有余地了 —— 要么连建议一起打,要么连判词一起吞。
+// 所以这里锁的是「拆开」这件事本身:建议只能出现在 hint 键里。
+func TestProbeICMPSoftFail_AdviceLivesInSeparateHint(t *testing.T) {
+	for name, cat := range map[string]map[string]string{"zh": catZH, "en": catEN} {
+		t.Run(name, func(t *testing.T) {
+			body, ok := cat["setting.probe.icmpSoftFail"]
+			if !ok {
+				t.Fatal("找不到 setting.probe.icmpSoftFail")
+			}
+			// 判词本身只说「ICMP 不通」。夹带建议 = 向导里也会照打,而那条建议在向导里不成立。
+			if strings.Contains(body, "--skip-icmp") {
+				t.Errorf("判词里夹带了 --skip-icmp 的建议:%q\n"+
+					"  向导也调 probe,而它没有这个参数(实测 exit 2)。建议要放进 "+
+					"setting.probe.icmpSoftFailHint,由调用处按 NANOTUN_SETUP_WIZARD 决定打不打", body)
+			}
+			hint, ok := cat["setting.probe.icmpSoftFailHint"]
+			if !ok {
+				t.Fatal("找不到 setting.probe.icmpSoftFailHint —— 建议不该凭空消失,只是换了个键")
+			}
+			// 反过来也要成立:hint 空了或者不再提这个参数,等于直接敲 CLI 的人失去了唯一的出路。
+			if !strings.Contains(hint, "--skip-icmp") {
+				t.Errorf("hint 里没提 --skip-icmp:%q —— 直接敲 probe-dial-host 的人就没有出路了", hint)
+			}
+		})
+	}
+}

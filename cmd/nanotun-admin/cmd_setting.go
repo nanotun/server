@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -646,6 +647,17 @@ func cmdSettingProbeDialHost(ctx context.Context, opts *globalOpts, args []strin
 	}
 	if errors.Is(probeErr, store.ErrServerDialHostICMPSoftFail) {
 		fmt.Fprintln(opts.stdout, opts.T("setting.probe.icmpSoftFail", opts.errText(probeErr)))
+		// 那条建议(--skip-icmp / 自己去 setting set)只对**直接敲这个子命令**的人成立。
+		//
+		// 向导也调 probe,而云厂商默认封 ping,所以这条软失败在向导里几乎每次都出现 ——
+		// 出现的却是一条死路:nanotun-setup 没有 --skip-icmp 这个参数(实测 exit 2,打出用法),
+		// 而后半句「直接跑 setting set」正是向导下面两行就要替他做的事。紧接着向导自己还会说
+		// 「地址没填错的话直接继续即可」,两句话互相拆台 —— 而这恰好是新装机器上最常走到的一步。
+		//
+		// 与 cmd_webadmin.go 里那处同一个口径:判词照打,只把不适用的建议收起来。
+		if os.Getenv("NANOTUN_SETUP_WIZARD") != "1" {
+			fmt.Fprintln(opts.stdout, opts.T("setting.probe.icmpSoftFailHint"))
+		}
 		return probeErr
 	}
 	fmt.Fprintln(opts.stdout, opts.T("setting.probe.probeErr", opts.errText(probeErr)))

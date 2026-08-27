@@ -10,8 +10,20 @@
 # 26.04 上实测两次两挂)。把脚本当参数传给 bash 则 bash 的 stdin 就是终端,
 # 不存在这个问题。管道形态仍然能装,只是本脚本会认出这个组合、装完跳过向导让人手动跑。
 #
-# 无人值守(CI / cloud-init)不需要问话,管道形态最省事,不认得的参数一律转交向导 ——
-#   curl -fsSL .../install.sh | sudo bash -s -- --dial-host vpn.example.com --user alice --yes
+# 无人值守(CI / cloud-init)不需要问话,不认得的参数一律转交向导。先落盘再执行 ——
+#   curl -fsSL .../install.sh -o nanotun-install.sh \
+#     && sudo NANOTUN_WEB_ADMIN_PASSWORD='<密码>' bash nanotun-install.sh \
+#          --dial-host vpn.example.com --user alice --web-admin ops --yes
+#
+# 两处都不是可有可无的:
+#  ① **不能**写成 `curl … | sudo bash`。curl 失败时 bash 拿到的是个空脚本,老老实实跑完
+#     那零行内容然后**以 0 退出** —— 人在旁边看着无所谓(屏幕上什么都没发生),但 cloud-init
+#     / Ansible / CI 只认退出码,会把「一个字节都没下下来」当成装好了继续往下走。先落盘,
+#     curl 的失败就由 && 如实挡住了。(落在当前目录而不是 /tmp:/tmp 人人可写,下载完到
+#     sudo 执行之间那一瞬,同机的其他用户能把文件换掉,而下一步是 root 在跑它。)
+#  ② --web-admin 得带上。不带的话向导不会建后台管理员(它不替调用方凭空造账号),而
+#     /setup 在第一个管理员出现之前对全网敞着 —— 谁先打开谁就是这台机器的后台管理员,
+#     偏偏 7443 是上面防火墙那步刚放行的。无人值守下没人会去看那句警告。
 #
 # 只想先看看这台机器行不行(不下载、不安装、不改任何东西):
 #   curl -fsSL .../install.sh | bash -s -- --check-only
@@ -298,12 +310,16 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
   sudo bash -c "\$(curl -fsSL ${RAW_BASE}/install.sh)"
 
   别用 curl … | sudo bash:Ubuntu/Debian 的 sudo 默认 use_pty,向导会被挂死。
-  无人值守(不需要问话)用管道没问题:
-  curl -fsSL ${RAW_BASE}/install.sh | sudo bash -s -- --dial-host <域名> --user <名> --yes
 
-  连 Web 后台账号一起定(不然 /setup 谁先打开谁是管理员):
-  curl -fsSL ${RAW_BASE}/install.sh | sudo NANOTUN_WEB_ADMIN_PASSWORD='<密码>' bash -s -- \\
-    --dial-host <域名> --user <名> --web-admin <后台用户名> --yes
+无人值守(CI / cloud-init)—— 先落盘再执行,而且要带 --web-admin:
+
+  curl -fsSL ${RAW_BASE}/install.sh -o nanotun-install.sh \\
+    && sudo NANOTUN_WEB_ADMIN_PASSWORD='<密码>' bash nanotun-install.sh \\
+         --dial-host <域名> --user <名> --web-admin <后台用户名> --yes
+
+  别写成管道:curl 失败时 bash 拿到空脚本,跑完零行内容后**以 0 退出**,而 CI 只认
+  退出码 —— 它会把「什么都没下下来」当成装好了。先落盘则由 && 如实挡住。
+  漏掉 --web-admin 则不会建后台管理员,/setup 一直敞着,谁先打开谁就是管理员。
 
 选项:
   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
@@ -344,7 +360,8 @@ EOF
       exit 0 ;;
     # 自己不认得的一律转交开服向导。这条是「一条命令装完就能用」的关键:
     #
-    #   curl -fsSL .../install.sh | sudo bash -s -- --dial-host vpn.example.com --user alice --yes
+    #   curl -fsSL .../install.sh -o nanotun-install.sh \
+    #     && sudo bash nanotun-install.sh --dial-host vpn.example.com --user alice --yes
     #
     # 没有它,无人值守就只能拆成两条命令(装完再 sudo nanotun-setup ...),而中间那步
     # 恰恰是最容易被忘掉的 —— 忘了它,服务是起着的,客户端却因为没有 server_dial_host
@@ -812,13 +829,18 @@ if [ -z "$SETUP_STDIN" ] && [ ${#SETUP_ARGS[@]} -eq 0 ]; then
     info "安装完成。这次既没有终端可问话、也没给向导参数,开服向导跳过。手动跑:"
     echo "    sudo nanotun-setup"
   fi
+    # 这段恰好打在最像 CI 的那一刻(没终端、没参数),所以给的必须是**能直接抄进
+    # cloud-init 的那条** —— 而不是眼熟但会骗过退出码的管道形态,也不是漏掉
+    # --web-admin、装完把 /setup 敞给全网的那条。
     echo
-    echo "  无人值守(CI / cloud-init)可以一条命令做完:"
-    echo "    curl -fsSL ${RAW_BASE}/install.sh | sudo bash -s -- --dial-host <域名或IP> --user <用户名> --yes"
+    echo "  无人值守(CI / cloud-init)可以一条命令做完 —— 先落盘,再带上 --web-admin:"
+    echo "    curl -fsSL ${RAW_BASE}/install.sh -o nanotun-install.sh \\"
+    echo "      && sudo NANOTUN_WEB_ADMIN_PASSWORD='<密码>' bash nanotun-install.sh \\"
+    echo "           --dial-host <域名或IP> --user <用户名> --web-admin <后台用户名> --yes"
     echo
-    echo "  想连 Web 后台账号一起定下来(否则 /setup 谁先打开谁是管理员):"
-    echo "    curl -fsSL ${RAW_BASE}/install.sh | sudo NANOTUN_WEB_ADMIN_PASSWORD='<密码>' bash -s -- \\"
-    echo "      --dial-host <域名或IP> --user <用户名> --web-admin <后台用户名> --yes"
+    echo "  别写成 curl … | sudo bash:curl 失败时 bash 拿到空脚本,跑完零行内容以 0 退出,"
+    echo "  CI 只认退出码,会把「什么都没下下来」当成装好了。先落盘则由 && 如实挡住。"
+    echo "  漏掉 --web-admin 则不会建后台管理员,/setup 一直敞着 —— 谁先打开谁就是管理员。"
   exit 0
 fi
 
