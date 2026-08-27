@@ -344,7 +344,22 @@ while :; do
   fi
 
   if [ "$dial_host" = "$current_dial" ]; then
-    ok "保持不变: $dial_host"
+    # 值没变也要核一下 DNS,不能直接打勾。
+    #
+    # 重跑向导是常事(加用户、换后缀),而原来这条路一个字都不查,直接「✓ 保持不变」——
+    # 于是第一次填错(或 DNS 还没指过来)的地址,从第二次起就被一个绿勾背书了,
+    # 而它恰恰是「客户端为什么连不上」的答案。打勾就得是真查过。
+    #
+    # 只查 DNS 不 ping:ICMP 在云上本来就常年不通(安全组默认封),拿它当判据只会天天
+    # 误报;而 -skip-icmp 那条路只解析域名,通常几十毫秒,慢也就 3 秒(DNS 超时)。
+    if admin setting probe-dial-host -skip-icmp "$dial_host" >/dev/null 2>&1; then
+      ok "保持不变: $dial_host"
+    else
+      warn "保持不变: $dial_host —— 但它现在解析不到 IP。"
+      warn "  域名还没指过来,或者当初就填错了。客户端在 DNS 生效前连不上。"
+      DIAL_PROBE_FAILED=1
+      DIAL_PROBE_KIND=hard
+    fi
     break
   fi
 
@@ -426,6 +441,15 @@ while :; do
   # 悄悄写进库 —— DNS/ICMP 放过,语法不放过。
   if [ "$ASSUME_YES" = 1 ]; then
     warn "--yes:按命令行给定的值继续。"
+    # 记下这次是「带着探测失败继续的」,收尾要再说一遍。
+    #
+    # 这句警告出现在第 1 步,后面还有三四十行绿字,最后一屏是「完成」加一份摘要 ——
+    # 摘要里那行 `Web 后台 https://<地址>:7443` 看上去与一切正常时一模一样。于是域名
+    # 敲错(或 DNS 还没指过来)的人,拿到的是一台装得漂漂亮亮、而所有客户端配置和
+    # 二维码都指向一个解析不到的名字的机器,要等到客户端连不上才回头找原因。
+    # 探测本身是对的,继续也是对的(DNS 常常装完才配),漏的只是把这件事带到最后。
+    DIAL_PROBE_FAILED=1
+    DIAL_PROBE_KIND="$(printf '%s' "$probe_out" | grep -q '⚠' && printf 'icmp' || printf 'hard')"
     if admin setting set server_dial_host "$dial_host" >/dev/null; then
       ok "已写入 server_dial_host = $dial_host"
       current_dial="$dial_host"
@@ -942,7 +966,8 @@ fi
 # ── 收尾 ─────────────────────────────────────────────────────────────────────
 step "完成"
 
-printf '    拨号地址   %s\n' "${current_dial:-未设置}"
+printf '    拨号地址   %s%s\n' "${current_dial:-未设置}" \
+  "$([ "${DIAL_PROBE_FAILED:-0}" = 1 ] && [ "${DIAL_PROBE_KIND:-}" = hard ] && printf '   ← 现在还解析不到这台机器')"
 if [ "$WEB_AVAILABLE" = 1 ]; then
   printf '    Web 后台   https://%s:%s\n' "$current_dial" "$WEB_PORT"
 fi
@@ -953,6 +978,17 @@ printf '\n'
 # --db-path 已经不是必须的了:不带它时 nanotun-admin 会自己找到这台机器装好的库
 # (只有当前目录下正好有 data/nanotun.db 时才用那个)。但这里照旧写全 —— 贴进
 # 文档、脚本、工单里的命令,不该依赖「在哪个目录跑」。
+# 第 1 步探测没过就带着继续的,这里必须再说一遍 —— 那句警告早被后面几十行刷走了,
+# 而它决定的是「客户端现在能不能连上」。只对硬失败(DNS / 语法)说:ICMP 不通是云上的
+# 常态,再提一遍只会稀释真正要紧的那条。
+if [ "${DIAL_PROBE_FAILED:-0}" = 1 ] && [ "${DIAL_PROBE_KIND:-}" = hard ]; then
+  warn "拨号地址 $current_dial 在第 1 步没通过探测(域名解析不到这台机器)。"
+  warn "上面生成的客户端配置和二维码全都指向它 —— DNS 生效之前,客户端连不上。"
+  warn "  把域名解析到这台机器的公网 IP,生效后不用重发二维码,客户端会自己解析到新地址。"
+  warn "  地址填错了的话现在改还来得及,改完要把已发出去的配置重新发一遍:"
+  warn "    nanotun-setup --dial-host <正确的地址>"
+  printf '\n'
+fi
 note "常用命令(在这台机器上不带 --db-path 也行,会自动用下面这个库):"
 note "  nanotun-admin --db-path $DB user list"
 note "  nanotun-admin --db-path $DB connection list"

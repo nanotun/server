@@ -82,10 +82,23 @@ if ! printf '%s' "$SUFFIX" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]
   echo "FATAL: 后缀不合法（只允许小写字母/数字/连字符，可用点分多级）：'$SUFFIX'" >&2
   exit 2
 fi
+# 每一级标签不超过 63 字节 —— DNS 的硬上限(RFC 1035)。上面那条正则只管字符集不管长度,
+# 于是 80 个字符的单标签也能过,而它拼出来的名字在任何解析器上都是非法的:改是改成功了,
+# 客户端却谁都解析不动,而症状(某些名字不通)跟「后缀太长」看不出关系。
+if printf '%s' "$SUFFIX" | awk -F. '{ for (i = 1; i <= NF; i++) if (length($i) > 63) exit 0; exit 1 }'; then
+  echo "FATAL: 后缀里有超过 63 个字符的一级（DNS 标签上限）：'$SUFFIX'" >&2
+  exit 2
+fi
 case "$SUFFIX" in
-  local)
-    echo "FATAL: 'local' 与 mDNS/Bonjour 冲突严重（mac/iOS），禁止使用。" >&2; exit 2 ;;
-  lan|home|home.arpa|internal|corp)
+  # *.local 也要拦,不能只拦 local 本身。禁用它的理由是 mac/iOS 和装了 Avahi 的 Linux
+  # 把整个 .local 交给 mDNS 组播解析 —— 那对 lan.local、home.local 一样成立,而这两个
+  # 恰恰是人顺手会写的(想避开 lan 的人写 lan.local,等于从一个坑跳进更深的一个)。
+  # 原来是精确匹配 local,于是 lan.local 一路绿灯装完,客户端在 mac 上永远解析不到。
+  local|*.local)
+    echo "FATAL: '$SUFFIX' 落在 .local 下 —— mac/iOS 与 Avahi 把整个 .local 交给 mDNS 组播," >&2
+    echo "       这些名字到不了 nanotun 的解析器。换一个不带 .local 的后缀。" >&2
+    exit 2 ;;
+  lan|home|home.arpa|internal|corp|*.lan|*.home|*.home.arpa|*.internal|*.corp)
     echo "!! 警告: '$SUFFIX' 可能与家用路由器 / 保留域冲突（这正是要迁移后缀的原因）。3 秒后继续，Ctrl-C 取消。" >&2
     sleep 3 ;;
 esac
