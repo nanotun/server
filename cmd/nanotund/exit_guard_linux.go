@@ -132,9 +132,21 @@ func logExitDenyPrivate(bin, mode string, prefixes []string) {
 	if len(prefixes) == 0 {
 		return
 	}
+	// auto 档这份 prefixes 是**启动那一刻**探出来的(出网网卡地址 + 该网卡的路由表),
+	// 之后钉在规则里不再回头看。跟出口 SNAT 的源地址、出口 DNS 的解析器是同一个模子,
+	// 但失败方向相反:那两个失效是断网(fail-closed,人很快会发现);这个失效是**漏拦**
+	// —— 机器后来接进新的内网(VPC peering、加了一块网卡、子网扩了段),新那一段不在
+	// 这份快照里,客户端就能打到它,而一切照常运行,没有任何异常可看。
+	//
+	// 所以这行把「这是启动快照」写明:哪天内网拓扑变过,拿它跟现在的 `ip route show dev
+	// <出网网卡>` 一比就知道该不该重启。日志里这么一句,比事后追查便宜得多。
+	msg := "[exit-guard] 已拦截出口方向的链路本地/私网目的地(含云元数据地址)"
+	if mode == "auto" {
+		msg += ";这份网段是启动时探的快照,之后这台机器若接入了新的内网(VPC peering / 加网卡 / 子网扩段),新那段不会被自动拦下,重启 nanotun 才会重新探"
+	}
 	logrus.WithFields(logrus.Fields{
 		"bin":      bin,
 		"mode":     mode,
 		"prefixes": strings.Join(prefixes, ","),
-	}).Info("[exit-guard] 已拦截出口方向的链路本地/私网目的地(含云元数据地址)")
+	}).Info(msg)
 }

@@ -439,6 +439,43 @@ fi
 
 have ipset || info "没装 ipset —— 只有开启 jump_host_firewall 才需要"
 
+# REALITY 的 dest 这台机器够不够得着。
+#
+# 这条不是锦上添花:REALITY 的每一条入站连接,进门第一件事就是 dial dest(见
+# third_party/xtls-reality/tls.go 的 Server()),dial 不通就直接关连接 —— 在任何客户端
+# 认证之前。也就是说 dest 不可达时,**所有**客户端都连不上,合法的也一样。
+#
+# 而现场看不出任何异常:端口在听(状态自检照样打「✓ 监听中:8443/tcp(REALITY)」)、
+# 进程健康、配置没错;那条 "failed to dial dest" 是每连接错误,不进日志 —— 实测阻断出站
+# 之后,journalctl 里一个字都没有。更糊的是 hy2(443/udp)不依赖 dest,照常能用,于是
+# 症状变成「有的客户端能连、有的连不上」,取决于它挑了哪条传输。
+#
+# 触发场景都很实在:出站只放行了少数目的地的机器、被上游 IP 段封的机房、dest 站点抽风。
+dest_check() {
+  local dest="$1" src="$2" host port
+  host="${dest%:*}"; port="${dest##*:}"
+  [ -n "$host" ] && [ -n "$port" ] || return 0
+  # 只做 TCP 连通性:能连上就够了(REALITY 要的正是这一步)。整个 TLS 握手交给它自己。
+  if have timeout && have bash && timeout 8 bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null; then
+    # 通了就一行带过 —— 这台机器一切正常时,没必要为它多占一行醒目位置。
+    info "REALITY dest 可达:$dest($src)"
+  else
+    soft "REALITY dest 连不上:$dest($src)" \
+      "REALITY 每条连接进门先 dial 它,连不上就在认证之前关掉 —— 所有客户端都会连不上,而端口照样在听、日志里一个字都没有。先确认这台机器的出站能到 ${host}:${port};到不了就把 [reality] 的 dest 和 server_names 换成一个本机够得着、且支持 TLS1.3 的站点"
+  fi
+}
+if [ -f /etc/nanotun/config.toml ]; then
+  # 段感知地取 [reality] 的 dest —— 顶层和别的段里也可能有同名键。
+  rd="$(awk '/^[ \t]*\[/ { sec = $0; sub(/^[ \t]*/, "", sec); sub(/[ \t]*$/, "", sec) }
+             sec == "[reality]" && /^[ \t]*dest[ \t]*=/ {
+               if (match($0, /"[^"]*"/)) { print substr($0, RSTART+1, RLENGTH-2); exit }
+             }' /etc/nanotun/config.toml 2>/dev/null)"
+  [ -n "$rd" ] && dest_check "$rd" "取自 config.toml"
+else
+  # 还没装:按模板将要写入的默认值先探一次。装完才发现连不上,已经晚了一步。
+  dest_check "www.microsoft.com:443" "装机模板的默认值"
+fi
+
 if [ -x /usr/local/bin/nanotund ]; then
   info "检测到已安装的 nanotun($(/usr/local/bin/nanotund --version 2>/dev/null | head -1 || echo 版本未知))—— 再装一次是升级,不会动现有配置和密钥"
 
