@@ -697,16 +697,51 @@ SHA_RC=0
 SHA_HTTP="$(dl_file_code "$BASE/SHA256SUMS" "$TMP/SHA256SUMS")" || SHA_RC=$?
 if [ "$SHA_RC" = 0 ]; then
   if command -v sha256sum >/dev/null 2>&1; then
-    SHA_CHECK=(sha256sum -c --ignore-missing -)
+    SHA_SUM=(sha256sum); SHA_CHECK=(sha256sum -c --ignore-missing -)
   elif command -v shasum >/dev/null 2>&1; then
-    SHA_CHECK=(shasum -a 256 -c --ignore-missing -)
+    SHA_SUM=(shasum -a 256); SHA_CHECK=(shasum -a 256 -c --ignore-missing -)
   else
-    SHA_CHECK=()
+    SHA_SUM=(); SHA_CHECK=()
   fi
 
   if [ "${#SHA_CHECK[@]}" -gt 0 ]; then
+    # 校验失败之前,先分清「清单本身有问题」和「包真的对不上」——
+    # `sha256sum -c` 对这三件事给的是同一个非零退出码,而它们的处置完全不同:
+    #
+    #   ① 取到的根本不是校验清单(代理 / 门户 / 坏镜像回一页 HTML,状态码还是 200)
+    #   ② 清单是真的,但里面没有本机架构这一条(发布时清单没覆盖全)
+    #   ③ 清单里有这一条,而算出来的哈希对不上 —— 这才是「传输损坏或被人替换」
+    #
+    # 原来三种一律报 ③ 那句「下载的包与官方清单不符,可能是被中间人替换过」。①② 两种
+    # 情形下这句话是假的:包压根没跟任何东西比对过。它既指错了方向(让人去查网络、
+    # 疑心被劫持),又把真正该做的事(换条链路 / 手动核对)藏了起来。
+    #
+    # awk 里不用 {64} 这种区间写法。新一点的 mawk(实测 1.3.4)是支持的,但老 mawk(1.3.3)
+    # 不认,而它还躺在一些老镜像里 —— 真碰上的话后果是这条永不匹配,于是**每一份正常清单**
+    # 都被判成「不是清单」,安装全线中断。用 length() 换个写法就不必赌这件事。
+    if ! awk '$1 ~ /^[0-9a-fA-F]+$/ && length($1) == 64 { ok = 1 } END { exit(ok ? 0 : 1) }' \
+         "$TMP/SHA256SUMS"; then
+      die "取到的 SHA256SUMS 不是一份校验清单 —— 里面没有任何一行是「64 位十六进制 + 文件名」。
+   开头是这样:$(head -c 120 "$TMP/SHA256SUMS" | tr -d '\r' | head -1)
+   多半是这条链路上有东西把响应换掉了:公司代理、酒店 / 机场的登录门户,或者不灵的镜像 ——
+   它们对任何请求都回一页 HTML,而 HTTP 状态码照样是 200。
+   包没有跟任何东西比对过,别装。换条网络或换个镜像重来;
+   $BASE/SHA256SUMS 在浏览器里打开应当是一页纯文本。"
+    fi
+    # 清单里有没有本机这个包。用 awk 逐行比第二列(去掉二进制模式的 * 前缀),
+    # 而不是拿文件名去拼正则 —— 名字里有点号,拼出来的正则会把它当通配符。
+    if ! awk -v want="$TARBALL" '{ f = $2; sub(/^\*/, "", f); if (f == want) found = 1 }
+                                 END { exit(found ? 0 : 1) }' "$TMP/SHA256SUMS"; then
+      die "校验清单里没有 $TARBALL 这一条,没法核对下载的包。
+   清单里有的是:
+$(awk '{ f = $2; sub(/^\*/, "", f); if (f != "") print "     " f }' "$TMP/SHA256SUMS" | head -10)
+   包本身未必有问题 —— 更像是这个版本发布时清单没覆盖全(比如只生成了另一个架构的)。
+   但没核对过就不该装:到 https://github.com/${REPO}/releases 手动核对后再装,或换一个版本。
+   本机算出来的是:$("${SHA_SUM[@]}" "$TMP/$TARBALL" 2>/dev/null | awk '{print $1}')"
+    fi
     # --ignore-missing:清单里同时有 amd64 和 arm64 两条,我们只下了一个。
     # 在 tar 所在目录执行,清单里是裸文件名。
+    # 走到这里,清单是真的、里面也有我们这个文件 —— 再失败就确实是哈希对不上了。
     ( cd "$TMP" && "${SHA_CHECK[@]}" < SHA256SUMS >/dev/null ) \
       || die "SHA256 校验失败 —— 下载的包与官方清单不符,已中止。
    可能是传输损坏,也可能是被中间人替换过。别装,重下一次;还不行就去
