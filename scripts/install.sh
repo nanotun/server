@@ -66,6 +66,20 @@
 #
 # 安装要 root(写 /usr/local/bin、/etc/systemd/system、sysctl)。
 # --check-only 和 NANOTUN_NO_INSTALL=1 不需要 root。
+
+# 整个脚本包在这对花括号里,收尾在文件最后一行。**不是**排版,是防下载被截断。
+#
+# 本脚本的正常用法是 `bash -c "$(curl …)"` / `curl … | bash`,而 bash 读一段执行一段。
+# 连接在中途断掉(移动网络、代理超时、CDN 抽风)时,curl 交出来的是**前半截脚本**,bash
+# 会把这半截老老实实执行到断点为止,然后才在 EOF 处报个语法错 —— 那时候前面那些命令
+# 早跑完了。半个安装脚本跑出来的状态没人定义过,而屏幕上只有一句看不懂的 syntax error。
+#
+# 花括号是复合命令:bash 必须先读到配对的那个 `}` 才能开始执行里面任何一条。截断的话
+# 它在解析阶段就失败,一条都不会跑。代价是两行,换掉的是一整类「装了一半」。
+#
+# 所以这个 `}` 不能删,也不能在它后面再加执行语句。
+{
+
 set -euo pipefail
 
 REPO="${NANOTUN_REPO:-nanotun/server}"
@@ -121,6 +135,137 @@ CURL_BASE=(--fail --silent --show-error --location --retry 3 --connect-timeout 2
 CURL_SMALL=("${CURL_BASE[@]}" --max-time 30)
 # 十几 M 的发布包:30 秒内传不满 1KB/s 就判死,重试 3 次,最坏约 2 分钟收敛。
 CURL_BIG=("${CURL_BASE[@]}" --speed-limit 1024 --speed-time 30)
+
+# 下载器:有 curl 就用 curl,只在它不在时才退到 wget。
+#
+# 要这条退路是因为 Debian netinst 和一部分云厂商的最小镜像**只带 wget**。原来这里硬依赖
+# curl,而缺 curl 的表现特别误导:第一个网络动作是取 preflight.sh,失败后打的是「下载
+# preflight.sh 失败 / 网络不通的话可以 --skip-check」—— 网络明明是通的,而 --skip-check
+# 也救不了,下一步取发布包用的还是 curl。人会照着去查网络,查不出所以然。
+#
+# 为什么不干脆整个换成 wget:下面有两处用到 curl 的 -w('%{url_effective}' 解 latest 的
+# 重定向、'%{http_code}' 区分 SHA256SUMS 的 404),wget 没有对应物,只能去翻
+# --server-response 的响应头。curl 在场时没理由走那条更绕、更容易被输出格式变动咬到的路,
+# 所以 curl 分支一个字都没动,wget 只是缺 curl 时顶上。
+#
+# wget 的等价参数:
+#   --tries=4          对 curl 的 --retry 3(curl 数的是「重试」,wget 数的是「总次数」)
+#   --timeout=20       连接/读取超时;wget 没有分开的 --connect-timeout
+#   --read-timeout=30  停滞防护,对应 --speed-time 30。粒度比 curl 粗:curl 掐的是
+#                      「30 秒内不足 1KB/s」,wget 掐的是「30 秒内一个字节都没有」——
+#                      慢但在动的照样能下完,要区分的那件事仍然区分得开。
+WGET_SMALL=(--quiet --tries=4 --timeout=20)
+WGET_BIG=(--quiet --tries=4 --timeout=20 --read-timeout=30)
+# 探响应头的那两处**不能**带 --quiet:-q 会把 --server-response 打到 stderr 的那些头
+# 一并吞掉,于是 Location / 状态码永远解析成空,而调用方只会看到「解析不出版本号」这种
+# 跟真因毫无关系的报错。
+WGET_PROBE=(--tries=4 --timeout=20 --server-response --spider)
+DL=""
+if command -v curl >/dev/null 2>&1; then DL=curl
+elif command -v wget >/dev/null 2>&1; then DL=wget
+fi
+
+# dl_rc_class <退出码> 把两个工具各自的退出码归到同一组**原因**上。
+#
+# 下面几处报错是按原因分岔的,而分错方向的建议比不给还糟(这个文件里已经栽过一次:磁盘写满
+# 时让人去 GitHub 查有没有这个产物)。两个工具的码不通用,所以先归一,再让报错只认类别。
+#
+#   curl  23 写目标文件失败 → write
+#         6/7 解析不了 / 连不上 → unreachable
+#         28 连上了但数据不来 → stall
+#         22 HTTP 错(404 之类)→ http
+#   wget  3 文件 I/O → write
+#         8 服务器返回错误响应 → http
+#         4/5/7 network failure / SSL 校验失败 / 协议错 → netfail
+#
+# curl 的分辨力一格没丢。wget 单列一个 netfail 而不是硬塞进 unreachable 或 stall:它把
+# DNS 失败、连接被拒、读超时全并进 4,分不出「压根没通」和「连上了不给数据」—— 硬塞进
+# 任一边都会在另一半的情形下断言一件没发生的事。宁可措辞含糊,不可言之凿凿地说错。
+dl_rc_class() {
+  if [ "$DL" = curl ]; then
+    case "$1" in
+      23)  echo write ;;
+      6|7) echo unreachable ;;
+      28)  echo stall ;;
+      22)  echo http ;;
+      *)   echo other ;;
+    esac
+  else
+    case "$1" in
+      3)     echo write ;;
+      8)     echo http ;;
+      4|5|7) echo netfail ;;
+      *)     echo other ;;
+    esac
+  fi
+}
+
+# dl_unreachable <退出码> 这次失败是不是「网络这一层没成」。
+# 从 dl_rc_class 派生,别再列一份码表 —— 两份迟早对不上,而对不上的那天没有任何测试会红。
+dl_unreachable() {
+  case "$(dl_rc_class "$1")" in unreachable|stall|netfail) return 0 ;; esac
+  return 1
+}
+
+# dl_file <url> <落点> <small|big> 下载到文件,返回底层工具的退出码。
+dl_file() {
+  if [ "$DL" = curl ]; then
+    case "$3" in
+      big) curl "${CURL_BIG[@]}" -o "$2" "$1" ;;
+      *)   curl "${CURL_SMALL[@]}" -o "$2" "$1" ;;
+    esac
+  else
+    case "$3" in
+      big) wget "${WGET_BIG[@]}" -O "$2" "$1" ;;
+      *)   wget "${WGET_SMALL[@]}" -O "$2" "$1" ;;
+    esac
+  fi
+}
+
+# dl_stdout <url> 取到标准输出;取不到就是空,由调用方判断。
+dl_stdout() {
+  if [ "$DL" = curl ]; then curl "${CURL_SMALL[@]}" "$1" 2>/dev/null
+  else wget "${WGET_SMALL[@]}" -O - "$1" 2>/dev/null; fi
+}
+
+# dl_final_url <url> 跟完重定向后的最终地址(用来从 /releases/latest 解出 tag)。
+#
+# wget 这边没有 -w '%{url_effective}',只能读 --server-response 打出来的响应头,取最后
+# 一个 Location。取**最后**一个而不是第一个:GitHub 这条会重定向不止一跳,取第一个拿到的
+# 是中间地址,解出来的「版本号」会是个不存在的东西。拿不到 Location 就回显原地址 ——
+# 与 curl 没发生重定向时的行为一致,交给上面那段 v[0-9]* 的校验去判。
+dl_final_url() {
+  if [ "$DL" = curl ]; then
+    curl "${CURL_SMALL[@]}" -I -o /dev/null -w '%{url_effective}' "$1" 2>/dev/null
+  else
+    local rc=0 out loc
+    out="$(wget "${WGET_PROBE[@]}" "$1" 2>&1)" || rc=$?
+    # 失败必须原样把退出码交出去。吞掉的话上面会拿着回显的原地址往下走,把版本号解析成
+    # 字面的 "latest",最后报一句「没能解析出版本号」—— 而真因是网络没通,两者差着十万八千里。
+    [ "$rc" = 0 ] || return "$rc"
+    loc="$(printf '%s\n' "$out" | awk 'tolower($1)=="location:"{print $2}' | tail -1)"
+    printf '%s' "${loc:-$1}"
+  fi
+}
+
+# dl_file_code <url> <落点> 下载并打出 HTTP 状态码(SHA256SUMS 要靠它把 404 和别的错分开)。
+#
+# wget 同样没有 -w '%{http_code}':成功就按 200 报,失败时从响应头里捞状态码,捞不到就报
+# 000(与 curl 连不上时的输出一致)。
+dl_file_code() {
+  if [ "$DL" = curl ]; then
+    curl "${CURL_SMALL[@]}" -o "$2" -w '%{http_code}' "$1" 2>/dev/null
+  else
+    local rc=0 code
+    wget "${WGET_SMALL[@]}" -O "$2" "$1" 2>/dev/null || rc=$?
+    if [ "$rc" = 0 ]; then printf '200'; return 0; fi
+    # 和 curl --fail 一个契约:退出码说明「没取到」,打出来的状态码说明「为什么」。
+    # 调用方靠这两样把「这个版本本来就没有清单(404)」和「这次没取到」分开,少给一样都判不了。
+    code="$(wget "${WGET_PROBE[@]}" "$1" 2>&1 | awk '/^ *HTTP\//{c=$2} END{print c}')"
+    printf '%s' "${code:-000}"
+    return "$rc"
+  fi
+}
 
 CHECK_ONLY=0; SKIP_CHECK=0; NO_SETUP=0; SETUP_ARGS=()
 # MagicDNS 后缀:预置的环境变量作默认,--magic-suffix 覆盖。本脚本不校验(规则单一来源在
@@ -211,6 +356,25 @@ if [ "$CHECK_ONLY" = 1 ] && [ "$SKIP_CHECK" = 1 ]; then
    明知有问题也要硬装:--skip-check"
 fi
 
+# curl 和 wget 一个都没有的话,当场说清楚,别等到第一个网络动作再失败。
+#
+# 早退是为了给对建议。这个脚本第一个碰网络的地方是取 preflight.sh,而那条失败路径给的是
+# 「网络不通的话可以 --skip-check」—— 缺下载器时这句话双重误导:网络是通的,而 --skip-check
+# 也救不了(下一步取发布包同样要下载器)。照着做的人会去查网络,查不出所以然。
+#
+# 包名在三大发行版上都叫 curl,不必按发行版分岔;给两条是因为最小镜像上装哪个都行,而
+# 已经有 wget 的机器上再装 curl 是多余的一步。
+if [ -z "$DL" ]; then
+  die "这台机器上既没有 curl 也没有 wget,下载不了任何东西(网络本身可能是好的)。
+   装其中一个再重跑本命令:
+     apt-get update && apt-get install -y curl      # Debian / Ubuntu
+     dnf install -y curl                            # RHEL / Fedora / Alma / Rocky
+     zypper install -y curl                         # openSUSE
+   实在都装不了,就绕开这台机器的网络:在能上网的机器上打开
+     https://github.com/${REPO}/releases
+   下对应架构的包拷进来,解压后跑 scripts/install-self-hosted.sh(那一步不联网)。"
+fi
+
 # ── 1. 环境自检 ──────────────────────────────────────────────────────────────
 #
 # 判据全在 preflight.sh 里,这里只负责把它弄到手再跑。不在本文件里重写一份 ——
@@ -248,7 +412,8 @@ run_preflight() {
     fi
   fi
 
-  command -v curl >/dev/null 2>&1 || die "缺少 curl,没法取环境检查脚本(apt install curl / yum install curl)"
+  # 下载器的存在性在文件开头统一判过(那里连 wget 的退路一起说清楚了),这里不再重复一份
+  # 口径 —— 两份判据迟早对不上,而对不上的那天,先撞上的那一份说了算。
 
   # mktemp 失败必须当场拦下,不能让一个空变量顺着往下走。
   #
@@ -265,7 +430,7 @@ run_preflight() {
   # BRANCH 现在默认跟着 NANOTUN_VERSION 走(见文件开头),所以钉了一个**没有这个文件的
   # tag**(比如 fork 上的老版本)也会走到这里 —— 那不是网络问题,而 --skip-check 恰好是
   # 这种情形下最坏的建议:它把一次「取错了地方」升级成一次不做检查的安装。
-  if ! curl "${CURL_SMALL[@]}" -o "$pf" "$RAW_BASE/preflight.sh"; then
+  if ! dl_file "$RAW_BASE/preflight.sh" "$pf" small; then
     rm -f "$pf"
     local hint="   网络不通的话可以 --skip-check 跳过检查直接装(风险自负)。"
     [ "$BRANCH" != main ] && hint="   取的是 ${BRANCH} 这个 ref —— 该版本的 tag 上可能没有这个文件。
@@ -311,7 +476,8 @@ _pkg_hint() { # _pkg_hint <包名> —— 猜一条能直接粘的安装命令
   elif command -v pacman  >/dev/null 2>&1; then echo "pacman -S $1"
   else echo "用本机包管理器装上 $1"; fi
 }
-command -v curl >/dev/null 2>&1 || die "缺少 curl($(_pkg_hint curl))"
+# 下载器同上,开头已判(有 curl 用 curl,没有就退到 wget)。这里只留 tar ——
+# 它没有替代品,而且解包这一步在没有网络的手工安装路径上同样要用。
 command -v tar  >/dev/null 2>&1 || die "缺少 tar($(_pkg_hint tar))"
 if [ "${NANOTUN_NO_INSTALL:-0}" != "1" ] && [ "$(id -u)" != "0" ]; then
   die "安装需要 root。请用 sudo 跑,或设 NANOTUN_NO_INSTALL=1 只下载。"
@@ -327,13 +493,12 @@ if [ -z "$VERSION" ]; then
   # 这一步的恰恰是「这台机器连不上 github.com」—— 那种情形下指定版本号救不了:下一步取
   # 发布包走的还是 github.com,照做只会在二十秒后死在同一堵墙上。给不通的建议比不给更糟。
   LATEST_RC=0
-  latest_url="$(curl "${CURL_SMALL[@]}" -I -o /dev/null -w '%{url_effective}' \
-    "${GH_BASE}/releases/latest" 2>/dev/null)" || LATEST_RC=$?
+  latest_url="$(dl_final_url "${GH_BASE}/releases/latest")" || LATEST_RC=$?
   if [ "$LATEST_RC" != 0 ]; then
-    case "$LATEST_RC" in
-      # 报的是 $GH_BASE 而不是写死的「github.com」:设了镜像时,一句「连不上 github.com」
-      # 会让人去查一个跟这次失败无关的域名 —— 真正没通的是他自己填的那个前缀。
-      6|7|28) die "查询最新版本失败:连不上 ${GH_BASE}(curl $LATEST_RC:解析不了 / 连不上 / 连上了不给数据)。
+    # 报的是 $GH_BASE 而不是写死的「github.com」:设了镜像时,一句「连不上 github.com」
+    # 会让人去查一个跟这次失败无关的域名 —— 真正没通的是他自己填的那个前缀。
+    if dl_unreachable "$LATEST_RC"; then
+      die "查询最新版本失败:连不上 ${GH_BASE}($DL $LATEST_RC:解析不了 / 连不上 / 连上了不给数据)。
    先检查网络、DNS、出站防火墙或代理。注意这时候**指定 NANOTUN_VERSION 也没用** ——
    下一步取发布包走的是同一个地址。
    这台机器上不去 github.com 的话,有两条路:
@@ -343,11 +508,12 @@ if [ -z "$VERSION" ]; then
        https://github.com/${REPO}/releases
      下 linux-$ARCH 那个包,拷到这台机器上装(装的这一步不联网):
        tar -xzf nanotun-<版本>-linux-$ARCH.tar.gz
-       sudo ./nanotun-<版本>-linux-$ARCH/scripts/install-self-hosted.sh" ;;
-      *) die "查询最新版本失败(curl $LATEST_RC)。
+       sudo ./nanotun-<版本>-linux-$ARCH/scripts/install-self-hosted.sh"
+    else
+      die "查询最新版本失败($DL $LATEST_RC)。
    可以用 NANOTUN_VERSION 钉一个版本绕开这次查询,版本号见
-     https://github.com/${REPO}/releases" ;;
-    esac
+     https://github.com/${REPO}/releases"
+    fi
   fi
   VERSION="${latest_url##*/}"
   case "$VERSION" in
@@ -361,7 +527,7 @@ if [ -z "$VERSION" ]; then
       # releases.atom 是公开 RSS:含预发布、按时间倒序、不像 API 有 60 次/小时的限速,
       # 也不需要 jq。写死一个示例版本号是会烂的 —— 这里原本举的例子是 rc1,
       # 而 rc2 第二天就把它顶掉了,照着抄只会装到一个过时的版本。
-      newest="$(curl "${CURL_SMALL[@]}" "${GH_BASE}/releases.atom" 2>/dev/null \
+      newest="$(dl_stdout "${GH_BASE}/releases.atom" \
         | sed -n 's#.*<link[^>]*releases/tag/\([^"]*\)".*#\1#p' | head -1)"
       case "$newest" in
         # URL 要写全。这条命令是给人**原样粘走**的 —— 原来这里是 `.../install.sh`,
@@ -394,32 +560,42 @@ info "下载 $TARBALL ..."
 # 屏幕上让人去 GitHub Releases 查有没有这个产物 —— 方向完全错了,而真正要做的是腾地方
 # 或换 TMPDIR。实测在一个只剩 1M 的 TMPDIR 上就是这个下场。
 CURL_RC=0
-curl "${CURL_BIG[@]}" -o "$TMP/$TARBALL" "$BASE/$TARBALL" || CURL_RC=$?
+dl_file "$BASE/$TARBALL" "$TMP/$TARBALL" big || CURL_RC=$?
 if [ "$CURL_RC" != 0 ]; then
-  case "$CURL_RC" in
-    23) die "下载失败:写不进 ${TMPDIR:-/tmp}(curl 23:写目标文件失败)。
+  # 「在别处下好再拷进来」这段在 stall 和 netfail 两条里都要说,提出来免得两份各自漂移。
+  OFFLINE_HINT="   一直不通的话,在能上网的机器上下好这个包,拷到这台机器上装(装的这一步不联网):
+     $BASE/$TARBALL
+     tar -xzf $TARBALL && sudo ./${TARBALL%.tar.gz}/scripts/install-self-hosted.sh"
+  case "$(dl_rc_class "$CURL_RC")" in
+    write) die "下载失败:写不进 ${TMPDIR:-/tmp}($DL $CURL_RC:写目标文件失败)。
    多半是空间不足或只读。腾出空间,或换个位置重试:TMPDIR=/var/tmp <刚才那条命令>
    当前可用:$(df -h "$TMP" 2>/dev/null | awk 'NR==2{print $4}')" ;;
     # 报 $GH_BASE 而不是写死的「github.com」:设了镜像时没通的是那个前缀,而一句
     # 「连不上 github.com」会把人支到一个跟这次失败无关的域名上去查。
-    6|7)  die "下载失败:连不上 ${GH_BASE}(curl $CURL_RC:DNS 解析不了 / 连接被拒)。
+    unreachable) die "下载失败:连不上 ${GH_BASE}($DL $CURL_RC:DNS 解析不了 / 连接被拒)。
    检查网络、DNS、出站防火墙或代理。${NANOTUN_GH_BASE:+
    这是你用 NANOTUN_GH_BASE 指定的镜像 —— 先确认它本身是通的。}" ;;
     # 这里**不能**建议 NANOTUN_NO_INSTALL=1:那条路自己也要先下同一个包,照做只会在
     # 同一步再失败一次。给不通的建议比不给更糟 —— 人会以为是自己哪里做错了,再试一遍。
     # 真正的出路是绕开这台机器的网络:在别处把 tar 下好,拷进来,直接跑包里的安装脚本
     # (那一步不联网)。
-    28)   die "下载失败:连上了但数据不来(curl 28:30 秒内速度不到 1KB/s,已重试 3 次)。
+    stall) die "下载失败:连上了但数据不来($DL $CURL_RC:30 秒内速度不到 1KB/s,已重试 3 次)。
    不是「你的网慢」—— 慢但在动的下载不会走到这里,这是彻底停住了。多半是到
    ${GH_BASE} 的链路被中断或被墙,换个时间 / 换条线路重试${NANOTUN_GH_BASE:+
    (这是你用 NANOTUN_GH_BASE 指定的镜像)}${NANOTUN_GH_BASE:-
    (被墙的话可以用 NANOTUN_GH_BASE 指到镜像,见 --help)}。
-   一直不通的话,在能上网的机器上下好这个包,拷到这台机器上装(装的这一步不联网):
-     $BASE/$TARBALL
-     tar -xzf $TARBALL && sudo ./${TARBALL%.tar.gz}/scripts/install-self-hosted.sh" ;;
-    22)   die "下载失败:服务器返回 404 之类的错(curl 22): $BASE/$TARBALL
+$OFFLINE_HINT" ;;
+    # wget 分不出「压根没通」和「连上了不给数据」,所以这条把两种都覆盖掉,而不去断言
+    # 具体是哪一种 —— 断错了会把人往错的方向支。
+    netfail) die "下载失败:网络这一层没成($DL $CURL_RC:DNS / 连接 / TLS / 读超时,wget 把这几种并成一个码)。
+   先检查网络、DNS、出站防火墙或代理;都正常的话多半是到 ${GH_BASE} 的链路被中断或被墙,
+   换个时间 / 换条线路重试${NANOTUN_GH_BASE:+
+   (这是你用 NANOTUN_GH_BASE 指定的镜像 —— 先确认它本身是通的)}${NANOTUN_GH_BASE:-
+   (被墙的话可以用 NANOTUN_GH_BASE 指到镜像,见 --help)}。
+$OFFLINE_HINT" ;;
+    http) die "下载失败:服务器返回 404 之类的错($DL $CURL_RC): $BASE/$TARBALL
    确认该版本存在且有 linux-$ARCH 产物:https://github.com/${REPO}/releases" ;;
-    *)    die "下载失败(curl $CURL_RC): $BASE/$TARBALL
+    *)    die "下载失败($DL $CURL_RC): $BASE/$TARBALL
    确认该版本存在且有 linux-$ARCH 产物:https://github.com/${REPO}/releases" ;;
   esac
 fi
@@ -432,8 +608,7 @@ info "校验 SHA256 ..."
 # 以 root 解包、跑里面的安装脚本 —— 而管道形态下那行黄字多半没人看见。
 # 404 才是「真没有」(留给将来手工补发的老版本),其余一律当失败处理。
 SHA_RC=0
-SHA_HTTP="$(curl "${CURL_SMALL[@]}" -o "$TMP/SHA256SUMS" -w '%{http_code}' \
-  "$BASE/SHA256SUMS" 2>/dev/null)" || SHA_RC=$?
+SHA_HTTP="$(dl_file_code "$BASE/SHA256SUMS" "$TMP/SHA256SUMS")" || SHA_RC=$?
 if [ "$SHA_RC" = 0 ]; then
   if command -v sha256sum >/dev/null 2>&1; then
     SHA_CHECK=(sha256sum -c --ignore-missing -)
@@ -637,3 +812,5 @@ if [ "$SETUP_STDIN" = /dev/tty ]; then
 else
   exec /usr/local/bin/nanotun-setup ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}
 fi
+
+} # 防截断的花括号收尾于此,理由见文件开头。这一行之后不要再加任何东西。

@@ -99,6 +99,17 @@ sudo NANOTUN_GH_BASE=https://<your-mirror>/https://github.com/nanotun/server \
 `NANOTUN_GH_BASE` covers the release tarball, `NANOTUN_RAW_BASE` the environment check. On a
 download failure the error names the prefix you supplied instead of vaguely blaming github.com.
 
+**If this machine has no `curl`** (minimal images like Debian netinst often ship only `wget`),
+you don't need to install curl first — fetch the script with wget and the script's own downloads
+fall back to wget too:
+
+```bash
+sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh)"
+```
+
+With neither present it says up front which one to install, instead of reporting "network is
+down" on the first network call.
+
 To control every step yourself, download the tar for your architecture from
 [Releases](https://github.com/nanotun/server/releases), extract it and run
 `sudo ./scripts/install-self-hosted.sh` — that's step 3 above, ships with the release, and

@@ -84,6 +84,15 @@ sudo NANOTUN_GH_BASE=https://<你的镜像>/https://github.com/nanotun/server \
 `NANOTUN_GH_BASE` 管发布包,`NANOTUN_RAW_BASE` 管环境检查脚本。下载失败时报错会点名你填的那个
 前缀,而不是笼统说「连不上 github.com」。
 
+**这台机器上没有 `curl`**(Debian netinst 之类的最小镜像常常只带 `wget`)时不用先去装 curl,
+用 wget 取脚本就行 —— 脚本内部的下载也会自动退到 wget:
+
+```bash
+sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh)"
+```
+
+两个都没有的话它会当场说清楚该装哪个,而不是在第一个网络动作上报一句「网络不通」。
+
 想自己控制每一步就手动下 [Releases](https://github.com/nanotun/server/releases) 里对应架构的
 tar,解压后跑 `sudo ./scripts/install-self-hosted.sh` —— 那是上面第 3 步,随发布包走,
 不需要联网。`install.sh` 只是把「弄到这台机器上」这段也一并办了。

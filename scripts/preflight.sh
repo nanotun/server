@@ -203,7 +203,21 @@ chk_cmd openssl   openssl  openssl  openssl  "生成 REALITY 密钥与自签证�
 chk_cmd sysctl    procps   procps-ng procps  "开 IP 转发"
 
 if [ "$OFFLINE" = 0 ]; then
-  chk_cmd curl curl curl curl "下载发布包"
+  # 下载器 curl 或 wget 有一个就行 —— install.sh 有 curl 用 curl,没有就退到 wget。
+  #
+  # 硬点名 curl 会把「只带 wget」的最小镜像(Debian netinst 是典型)判死在一个它其实
+  # 装得上的地方:修复清单让人去装 curl,而这台机器本来就下得动东西。
+  # 缺哪个都提示装 curl:两个都没有时装 curl 是主路径,走的是分辨力更好的那条。
+  if have curl; then
+    pass "curl $C_DIM(下载发布包)$C_OFF"
+  elif have wget; then
+    pass "wget $C_DIM(下载发布包;没有 curl,install.sh 会退到 wget)$C_OFF"
+  else
+    [ "$QUIET" = 1 ] || printf '    %s✗%s curl/wget %s(下载发布包,两个有一个即可)%s\n' \
+      "$C_ERR" "$C_OFF" "$C_DIM" "$C_OFF"
+    MISSING_CMDS+=("curl")
+    MISSING_PKGS+=("$(pkg_for curl curl curl)")
+  fi
   chk_cmd tar  tar  tar  tar  "解包"
 fi
 
