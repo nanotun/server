@@ -602,7 +602,19 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 				return fmt.Errorf("iptables NAT -s %s: %w", subnet, err)
 			}
 		}
-		logrus.Infof("iptables: 已添加 NAT SNAT 共 %d 个网段", len(subnets))
+		// 把出口网卡和被钉住的源地址写出来。
+		//
+		// 这里用的是 SNAT 而不是 MASQUERADE:源地址是**启动那一刻**探到的,之后钉死在规则里。
+		// 机器的 WAN 地址后来变了(DHCP 续约拿到新地址、云上重新分配、双网卡切换)的话,
+		// 规则仍把客户端流量改写成一个本机已经没有的地址 —— 包发不出去,而控制面照常:
+		// 客户端连得上、握手成功、就是上不了网。这是最难查的一类症状之一。
+		//
+		// 原来这行只说「已添加 SNAT 共 N 个网段」,网卡和地址一个都不提。查这种故障的人
+		// 第一件事就是 journalctl,那时最该看见的正是「当初钉的是谁」——
+		// 拿它跟 `ip -4 addr` 一比,五秒钟就能确认是不是这个原因。
+		logrus.Infof("iptables: 已添加 NAT SNAT 共 %d 个网段(出口 %s,源地址钉为 %s ——"+
+			"本机 WAN 地址若变过,这条会指向一个不存在的源,客户端连得上但出不了网,重启 nanotun 即可重新探测)",
+			len(subnets), wanIface, wanIP)
 	} else {
 		logrus.Info("iptables: exit_mode=off,跳过 NAT SNAT(无出口流量)")
 	}

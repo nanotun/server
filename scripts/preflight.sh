@@ -441,6 +441,26 @@ have ipset || info "没装 ipset —— 只有开启 jump_host_firewall 才需�
 
 if [ -x /usr/local/bin/nanotund ]; then
   info "检测到已安装的 nanotun($(/usr/local/bin/nanotund --version 2>/dev/null | head -1 || echo 版本未知))—— 再装一次是升级,不会动现有配置和密钥"
+
+  # 出口 SNAT 的源地址还在不在本机上。
+  #
+  # 数据面用的是 SNAT 而不是 MASQUERADE:源地址是**启动那一刻**探到的,之后钉死在规则里。
+  # 机器的 WAN 地址后来变了(DHCP 续约拿到新地址、云上重新分配、双网卡切换),规则就会把
+  # 客户端流量改写成一个本机已经没有的地址 —— 包发不出去,而控制面照常:客户端连得上、
+  # 握手成功、就是上不了网。实测过:把 eth0 的地址换掉,规则仍指着旧的那个。
+  #
+  # 这种故障几乎没法从症状反推,而它在这里只是一次字符串比对。查出来的话,重启 nanotun
+  # 就重新探测了 —— 难的从来是想到这一层。
+  if have iptables; then
+    snat_src="$(iptables -t nat -S POSTROUTING 2>/dev/null \
+      | awk '/nanotun/ && /--to-source/ { for (i = 1; i < NF; i++) if ($i == "--to-source") { print $(i+1); exit } }')"
+    # --to-source 可能带端口范围(a.b.c.d:1024-65535),只取地址那一段。
+    snat_src="${snat_src%%:*}"
+    if [ -n "$snat_src" ] && ! ip -4 -o addr show 2>/dev/null | grep -q " ${snat_src}/"; then
+      soft "出口 SNAT 规则的源地址 $snat_src 已经不在本机任何网卡上" \
+        "数据面启动时把它钉进了规则,之后这台机器的地址变过。客户端能连上、但出不了网 —— 重启数据面重新探测:systemctl restart nanotun"
+    fi
+  fi
 fi
 
 # 这台机器上是不是还跑着 nanotun **客户端**。
