@@ -472,9 +472,56 @@ run_preflight() {
   if ! dl_file "$RAW_BASE/preflight.sh" "$pf" small; then
     rm -f "$pf"
     local hint="   网络不通的话可以 --skip-check 跳过检查直接装(风险自负)。"
-    [ "$BRANCH" != main ] && hint="   取的是 ${BRANCH} 这个 ref —— 该版本的 tag 上可能没有这个文件。
+    if [ "$BRANCH" != main ]; then
+      # 钉了 ref 却取不到,有两种原因,下一步完全相反 ——
+      #   ① 这个版本根本不存在(版本号敲错、或猜了一个还没发的号)。要做的是改版本号。
+      #   ② tag 在,只是那会儿还没有 scripts/preflight.sh(老版本 / fork)。要做的是走主干。
+      # 原来这里一律按 ② 说,而 ① 才是常见的那个。照 ② 的建议走(NANOTUN_BRANCH=main)会
+      # 顺利跑完一整屏环境检查、打出「✓ 版本: v0.1.99」和「✓ 这台机器可以装 nanotun」,
+      # 二十秒后才在下载发布包时撞上真正的原因 —— 中间每一步都在替那个不存在的版本背书。
+      #
+      # 探针取同目录下的 install.sh:任何真实 tag 上都有它(它就是正在跑的这个脚本),
+      # 而 ref 不存在时 raw 对该 ref 下的任何路径都回 404,两种情形一次请求就分开了。
+      local probe code=000
+      probe="$(mktemp)" || probe=""
+      if [ -n "$probe" ]; then
+        code="$(dl_file_code "$RAW_BASE/install.sh" "$probe" 2>/dev/null || true)"
+        rm -f "$probe"
+      fi
+      # 指了镜像时不下断言:镜像缺这个 tag、或路径形状对不上,同样是 404,而那跟「版本不存在」
+      # 是两回事,照着去改版本号只会越走越远。这一支单独写,别拿哨兵值混进下面的 case ——
+      # 混进去的下场是文案里冒出一句「探 install.sh 得到 mirror」,内部值直接糊到用户脸上。
+      if [ -n "${NANOTUN_RAW_BASE:-}" ]; then
+        hint="   用的是自定义 NANOTUN_RAW_BASE(镜像),从它那儿没取到这个文件。
+   先确认镜像地址本身对不对 —— 它要能拼出 <前缀>/preflight.sh 这个形状:
+     ${RAW_BASE}/preflight.sh
+   镜像不灵就先不设 NANOTUN_RAW_BASE 直连试试,或 --skip-check 跳过检查(风险自负)。"
+      else
+      case "$code" in
+        404)
+          hint="   ${BRANCH} 这个版本不存在 —— 同一个 ref 下连 install.sh 也是 404。
+   核对版本号:${GH_BASE}/releases
+   想装最新版就不要设 NANOTUN_VERSION,不设时脚本会自己解析 latest。" ;;
+        200)
+          hint="   ${BRANCH} 这个 tag 在,但它里面没有 scripts/preflight.sh(老版本 / fork 会这样)。
    加 NANOTUN_BRANCH=main 让脚本走主干(发布包仍按 NANOTUN_VERSION 钉住),或者
-   --skip-check 跳过检查直接装(风险自负)。"
+   --skip-check 跳过检查直接装(风险自负)。" ;;
+        000)
+          # 一个 HTTP 响应都没拿到 —— 网络 / DNS / TLS 那一层就断了,跟版本号无关。
+          # 这时候把「先核对版本号」摆在第一句是把人往错的方向支:版本再对也取不到。
+          hint="   连 ${RAW_BASE%/scripts} 都没连上(探 install.sh 一个 HTTP 响应都没拿到)——
+   先查网络、DNS、出站防火墙或代理。这时候换个 NANOTUN_VERSION 没用,取包走的是同一个地址。
+   上不去 github.com 的话,可以指到镜像(NANOTUN_GH_BASE / NANOTUN_RAW_BASE,见 --help),
+   或 --skip-check 跳过检查直接装(风险自负)。" ;;
+        *)
+          # 服务器答了,但不是 200 也不是 404:多半是 429 / 403 限流,或 5xx。
+          hint="   取的是 ${BRANCH} 这个 ref,没能分清是版本不存在还是这次没取到(探 install.sh 得到 ${code})。
+   ${code} 这种多半是限流(429 / 403)或对面临时故障(5xx)—— 隔几分钟重试常常就好了。
+   一直这样的话先核对版本号:${GH_BASE}/releases
+   版本没错的话,加 NANOTUN_BRANCH=main 走主干,或 --skip-check 跳过检查(风险自负)。" ;;
+      esac
+      fi
+    fi
     die "下载 preflight.sh 失败: $RAW_BASE/preflight.sh
 $hint"
   fi
