@@ -478,10 +478,15 @@ cmd_i18n() {
   # 这个盲区是实打实漏过的:cmd/nanotund/tun-setup.sh / tun-teardown.sh 那五行中文
   # 一直活到 2026-08-28 的全量扫描才被发现,而在此之前这条演练一直是绿的。
   #
-  # 眼下只扫 nanotun-tun-setup。nanotund 与 nanotun-web 的日志还是中文(各 560 / 59 处,
-  # 正在改成纯英文),等它们改完再把那两个单元加进来 —— 现在加进来只会让这条演练常红,
-  # 而常红的守卫等于没有守卫。
-  dex "$NAME" journalctl -u nanotun-tun-setup --no-pager -n 50      >>"$log" 2>&1 || true
+  # 三个单元都扫。nanotund / nanotun-web 的日志已于 2026-08-28 改成纯英文(约 730 处),
+  # 并跑过一轮三机门禁(342/342)确认没打断任何断言,所以它们现在可以进这条演练了。
+  #
+  # 唯一刻意留在中文的是**发给客户端的协议文案**(CloseMsg / LoginResp 的 reason —— 它们
+  # 在五个客户端 App 的界面里渲染,改动等于改客户端行为)。那些不进服务端 journal,所以
+  # 不会在这里误报;真要动它们,得连客户端仓库的 i18n 一起看。
+  for u in nanotun-tun-setup nanotun nanotun-web; do
+    dex "$NAME" journalctl -u "$u" --no-pager -n 200               >>"$log" 2>&1 || true
+  done
 
   eval "$_saved_step"; eval "$_saved_ok"; eval "$_saved_warn"
 
@@ -500,7 +505,7 @@ cmd_i18n() {
      这些是漏译。文案要成对:die_t / ok_t / warn_t / tsel,或 if [ \"\$NT_LANG\" = zh ] 的两个分支。"
   fi
   rm -f "$log"
-  ok "英文安装全程没有中文残留(装机 + 向导 + 卸载预演 + 改后缀帮助)"
+  ok "英文安装全程没有中文残留(装机 + 向导 + 卸载预演 + 改后缀帮助 + 三个单元的 journal)"
 }
 
 # 灾难恢复演练。断言都在 restore-drill.sh 里。
