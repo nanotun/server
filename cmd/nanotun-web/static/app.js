@@ -19,12 +19,50 @@
  *  - [data-select-on-click]       点击时全选该元素文本(textarea/input .select())。
  *  - [data-print]                 点击时 window.print()。
  *  - form[data-progress-form]     提交时禁用按钮 + 改文案 + 可选进度/超时兜底(拨号 host 探测)。
+ *  - body[data-msg-required]      原生表单校验气泡的文案(见下面「校验气泡」一节)。
+ *    body[data-msg-pattern]
  *
  * 页面各自的复制到剪贴板逻辑仍留在**带 nonce 的内联 <script>** 里(涉及 i18n 文案 +
  * 元素特定取值 + alert/prompt 降级),不在此文件。
  */
 (function () {
     "use strict";
+
+    // ---- 原生校验气泡的文案 -------------------------------------------------
+    //
+    // required 字段留空时,浏览器弹的那个气泡(「请填写此字段。」)不是我们打的 —— 它是
+    // 浏览器自带的,语言跟的是**浏览器界面语言**,而不是页面的 lang。于是英文界面上,
+    // 中文版 Chrome 照样弹中文,整页只有这一个气泡不听话。
+    //
+    // 唯一能改它的办法是 setCustomValidity():在 invalid 事件里塞进我们自己的文案。
+    // 文案由模板渲染进 body 的 data-* (与本文件其它约定同一套做法,html/template 按属性
+    // 上下文转义,脚本只读不拼)。
+    //
+    // 两个容易踩的点:
+    //   · invalid 事件**不冒泡**,必须用捕获(第三个参数 true),否则挂在 document 上收不到;
+    //   · 自定义文案一旦设上就会让该字段**一直**被判为非法(哪怕后来填对了),所以要在
+    //     input/change 时清空。少了这一步,填对了也提交不了,而且看不出为什么。
+    var msgRequired = document.body && document.body.getAttribute("data-msg-required");
+    var msgPattern = document.body && document.body.getAttribute("data-msg-pattern");
+
+    document.addEventListener("invalid", function (e) {
+        var el = e.target;
+        if (!el || typeof el.setCustomValidity !== "function" || !el.validity) return;
+        if (el.validity.valueMissing && msgRequired) {
+            el.setCustomValidity(msgRequired);
+        } else if (el.validity.patternMismatch && msgPattern) {
+            // title 是字段自己的说明(比如「6 位数字」),有就优先用,比通用句子具体。
+            el.setCustomValidity(el.getAttribute("title") || msgPattern);
+        }
+    }, true);
+
+    // 清空:否则上面设过的文案会把一个已经填对的字段永久钉死成非法。
+    document.addEventListener("input", clearValidity, true);
+    document.addEventListener("change", clearValidity, true);
+    function clearValidity(e) {
+        var el = e.target;
+        if (el && typeof el.setCustomValidity === "function") el.setCustomValidity("");
+    }
 
     // ---- 点击委托:confirm / select / print ---------------------------------
     document.addEventListener("click", function (e) {

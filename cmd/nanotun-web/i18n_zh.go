@@ -34,6 +34,8 @@ var catZH = map[string]string{
 	"dashboard.webSessions": "Web 会话",
 	"sysmon.uptime":         "运行时长",
 	"sysmon.swap":           "交换分区",
+	"form.required":         "请填写此字段。",
+	"form.pattern":          "这个字段的格式不对。",
 	"common.actions":        "操作",
 	"common.totalPre":       "共 ",
 	"common.totalPost":      " 条",

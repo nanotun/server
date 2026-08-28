@@ -33,6 +33,8 @@ var catEN = map[string]string{
 	"dashboard.webSessions": "Web sessions",
 	"sysmon.uptime":         "server uptime",
 	"sysmon.swap":           "Swap",
+	"form.required":         "Please fill in this field.",
+	"form.pattern":          "The format of this field is not accepted.",
 	"common.actions":        "Actions",
 	"common.totalPre":       "Total: ",
 	"common.totalPost":      "",

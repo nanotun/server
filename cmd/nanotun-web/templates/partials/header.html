@@ -10,7 +10,7 @@
     <link rel="icon" type="image/png" href="/static/appicon.png?v={{.Nav.Version}}">
     <link rel="stylesheet" href="/static/style.css?v={{.Nav.Version}}">
 </head>
-<body>
+<body data-msg-required="{{T "form.required"}}" data-msg-pattern="{{T "form.pattern"}}">
 {{if .Admin}}
 {{/* 2026-07-18 全站改版:顶栏导航 → 左侧固定侧边栏(SECURE.CORE 暗色主题)。
      骨架 .shell = aside.side(品牌/分组导航/组网+账号区) + .content(main + statusbar),
