@@ -48,7 +48,7 @@
 # 现象是「连上了但什么都打不开」,且 iptables 计数器上看不到任何丢弃。详见 docs/DOCKER.md。
 #
 # 还要放行防火墙 —— 容器不该改宿主 ufw,而 host 模式端口就绑在宿主网卡上:
-#   ufw allow 8443/tcp && ufw allow 443/udp && ufw allow 7443/tcp
+#   ufw allow 443/tcp && ufw allow 443/udp && ufw allow 7443/tcp
 
 services:
   nanotun:

@@ -39,8 +39,25 @@ DB="$LIB_DIR/nanotun.db"
 ADMIN=/usr/local/bin/nanotun-admin
 WEB_BIN=/usr/local/bin/nanotun-web
 CONTROL_SOCK=/run/nanotun/control.sock
-WEB_PORT=7443
 QR_DIR="$LIB_DIR/qr"
+
+# 三个对外端口一律从**实际配置**读,不写死。
+#
+# WEB_PORT 原来是写死的 7443,于是改过 Web 端口的机器上,向导打出的登录地址是错的
+# (`https://<host>:7443/` 指向一个没人听的端口)。同一屏还有一句写死的
+# 「REALITY 8443/tcp、hysteria2 443/udp 要能从公网进来」,改过端口的人照着去查防火墙,
+# 查的是三条与自己无关的规则 —— 这正是 nanotun-ports.sh 当初被造出来要消灭的那类错
+# (见该文件头部记录的三种错法),而向导是最后一个还在犯它的地方。
+#
+# 读不到解析器就用回落值,那正是「没改过端口」的情形。
+NT_DEFAULT_REALITY=443; NT_DEFAULT_HY2=443; NT_DEFAULT_WEB=7443
+NT_PORT_REALITY=$NT_DEFAULT_REALITY; NT_PORT_HY2=$NT_DEFAULT_HY2; NT_PORT_WEB=$NT_DEFAULT_WEB
+if [ -r /usr/local/bin/nanotun-ports.sh ]; then
+  # shellcheck source=scripts/nanotun-ports.sh
+  . /usr/local/bin/nanotun-ports.sh
+  nanotun_load_ports "$ETC_DIR/config.toml" "$ETC_DIR/web.env"
+fi
+WEB_PORT="$NT_PORT_WEB"
 
 OPT_DIAL_HOST=""
 OPT_USER=""
@@ -1359,7 +1376,7 @@ if command -v systemctl >/dev/null 2>&1 && ! systemctl is-active --quiet nanotun
   printf '\n'
 fi
 
-note_t "When a client cannot connect, check the firewall first: REALITY 8443/tcp and hysteria2 443/udp have to be reachable from the internet." \
-       "客户端连不上时先确认防火墙:REALITY 8443/tcp、hysteria2 443/udp 要能从公网进来。"
+note_t "When a client cannot connect, check the firewall first: REALITY $NT_PORT_REALITY/tcp and hysteria2 $NT_PORT_HY2/udp have to be reachable from the internet." \
+       "客户端连不上时先确认防火墙:REALITY $NT_PORT_REALITY/tcp、hysteria2 $NT_PORT_HY2/udp 要能从公网进来。"
 note_t "On a cloud server the provider's security group has to allow them too — opening ufw is not the same as opening the security group." \
        "云服务器还要在厂商的安全组里放行 —— ufw 放了不等于安全组放了。"

@@ -31,10 +31,17 @@ var portSensitiveScripts = []string{
 	"scripts/install-self-hosted.sh",
 	"scripts/uninstall.sh",
 	"scripts/preflight.sh",
+	// 2026-08-28 补:开服向导也在说端口 —— 登录地址、以及「客户端连不上时先查防火墙:
+	// REALITY x/tcp、hysteria2 y/udp」。它此前用的是写死的 7443 / 8443,于是改过端口的
+	// 机器上向导打出的登录地址指向一个没人听的端口,而那句防火墙建议让人去查三条与自己
+	// 无关的规则。它是这份清单最初漏掉的那一个,而漏掉的那个正是下一个长歪的。
+	"scripts/setup.sh",
 }
 
 // 形如 8443/tcp、443/udp、7443/tcp 的字面量 —— 放行清单和自检标签都长这样。
-var literalPortSpec = regexp.MustCompile(`\b(8443|7443)/tcp|\b443/udp`)
+// 443/tcp 也算:REALITY 的默认端口 2026-08-28 从 8443 改成 443,于是「写死 443/tcp」
+// 成了同一个 bug 的新形态 —— 只盯 8443 的话,下一次退化会静静地通过。
+var literalPortSpec = regexp.MustCompile(`\b(8443|7443|443)/tcp|\b443/udp`)
 
 // 端口检查函数的裸参数:`chk_port tcp 8443` / `check_port udp 443`。
 // 这一条是补上来的:最初只盯带 /tcp 后缀的写法,而把 chk_port 的端口改回字面量时守卫
@@ -89,6 +96,7 @@ func TestPortsHelper_IsPackagedAndInstalled(t *testing.T) {
 		{"scripts/install-self-hosted.sh", "/usr/local/bin/nanotun-ports.sh", "没装到 /usr/local/bin,卸载和自检 source 不到"},
 		{"scripts/uninstall.sh", "/usr/local/bin/nanotun-ports.sh", "卸载没读实际端口,自定义端口会留在防火墙里"},
 		{"scripts/preflight.sh", "/usr/local/bin/nanotun-ports.sh", "自检会去看默认端口,漏检真正在用的那个"},
+		{"scripts/setup.sh", "/usr/local/bin/nanotun-ports.sh", "向导会打出登录地址和防火墙建议,读不到实际端口就会说错"},
 	} {
 		raw, err := os.ReadFile(filepath.Join("../..", c.file))
 		if err != nil {

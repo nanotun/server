@@ -4,7 +4,7 @@
 
 [server]
 # Loopback only by default. This is the data-plane WS endpoint: production clients (iOS/Android)
-# always come in over hy2 (:443/udp) or REALITY (:8443/tcp), and the server bridges them here on
+# always come in over hy2 (:443/udp) or REALITY (:443/tcp), and the server bridges them here on
 # the local machine (dial 127.0.0.1:<port>). Clients **never** connect to this port directly —
 # so there is no reason to expose it to the internet (exposing it only adds one more attack
 # surface, guarded by nothing but the path token). The install scripts no longer open 8080/tcp
@@ -400,7 +400,19 @@ report_tls_insecure_hint = true
 # frame + TUN. dest must be reachable; at startup a probe dial to dest records the handshake
 # record length.
 [reality]
-listen_addr = ":8443"
+# 443/tcp on purpose. REALITY's whole disguise is "this is an ordinary HTTPS site": a prober
+# sending a plain TLS ClientHello gets transparently proxied to dest below and receives a real,
+# CA-valid certificate for it. That story only holds on the port where HTTPS is expected —
+# on 8443 (the old default) the pair 8443/tcp + 443/udp already said "something custom lives
+# here". With hy2 on 443/udp, this machine now presents exactly the fingerprint of any modern
+# website that serves HTTP/3: 443 on both protocols. TCP and UDP do not collide.
+#
+# The cost: 443/tcp collides with an existing web server (nginx / caddy / certbot) far more
+# often than 8443 did. The installer checks whether the port is free before touching anything
+# and asks you for another one if it is taken — it does not silently move the port, because
+# then the same install command would produce different ports on different machines with no
+# trace of the difference.
+listen_addr = ":443"
 dest = "www.microsoft.com:443"
 type = "tcp"
 xver = 0
@@ -422,7 +434,7 @@ short_ids = [
 ]
 show = false
 max_time_diff_ms = 0
-client_addr = "example.com:8443"
+client_addr = "example.com:443"
 
 # ===========================
 # Self-hosted PSK storage layer

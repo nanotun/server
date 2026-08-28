@@ -98,6 +98,28 @@ can install without `--web-admin` too, it just leaves the admin account uncreate
 Any argument `install.sh` doesn't recognize is passed through verbatim to the wizard, so
 [`setup.sh`](scripts/setup.sh)'s options can all be given this way.
 
+**Ports.** Two of the three are deliberately *not* configurable-by-default, and one is
+deliberately random:
+
+| | Port | Why |
+|---|---|---|
+| REALITY | `443/tcp` | REALITY's disguise is "this is an ordinary HTTPS site" — a prober gets a real, CA-valid certificate for `[reality].dest`. That only holds on the port where HTTPS is expected. |
+| hysteria2 | `443/udp` | 443 is the port that gets through hotel / corporate / carrier networks, and QUIC on 443 is indistinguishable from ordinary HTTP/3. TCP and UDP 443 do not collide, so together they are exactly the fingerprint of any modern website serving HTTP/3. |
+| Web console | **random** | An admin login page has no reason to blend in; it has every reason not to be found. Every deployment sitting on 7443 is a ready-made list for scanners. Picked from 10000–31999 (below Linux's ephemeral range, so it cannot collide with outgoing source ports). |
+
+With a terminal attached the installer shows the randomly picked console port and lets you type
+another one; without one it picks and prints it. `NANOTUN_WEB_PORT=23456` pins it explicitly —
+useful when automation needs a known value. **Reruns never move it**: upgrading is the main
+reason to rerun `install.sh`, and moving a live machine's admin entrance is not what you asked
+for. The port lives in `/etc/nanotun/web.env`, and everything downstream (the environment check,
+the firewall rules, the "listening on" self-check, the wizard's login URL) reads it from there.
+
+> `443/tcp` collides with an existing web server far more often than the old `8443` did. The
+> environment check tells you before anything is installed, and you can put REALITY on another
+> port via `[reality].listen_addr`. It is never moved silently — otherwise the same install
+> command would produce different ports on different machines with nothing recording the
+> difference.
+
 **Language.** Everything the install chain prints — the environment check, the installer, the
 setup wizard, and the `nanotun-*` commands it leaves behind — comes in English or Chinese.
 English is the default. With a terminal attached you are asked once before anything else
@@ -185,7 +207,7 @@ disk too: `nanotun-preflight`.
 
 It checks whether systemd is running, whether `/dev/net/tun` exists, whether
 `iptables`/`ip6tables`/`ip`/`openssl` are present, whether `ip_forward` can be set to 1, and
-whether 8443/tcp, 443/udp, 7443/tcp are free. **The two most common pitfalls** are cheap
+whether 443/tcp, 443/udp and the web console port are free. **The two most common pitfalls** are cheap
 VPSes using OpenVZ / LXC virtualization that can't get a TUN device (switch to KVM), and
 distros like Alpine that don't use systemd (go the Docker route).
 
@@ -363,7 +385,7 @@ Docker it's the container itself. To run in the foreground by hand (troubleshoot
 The VPN data plane listens on `[server].listen_addr` (default `127.0.0.1:8080`, loopback only),
 speaking WebSocket Binary + custom link frames (see `util/link_frame.go`). Production clients
 (iOS/Android) enter via Hysteria 2 (`[hysteria]`, :443/udp) or Xray REALITY (`[reality]`,
-:8443/tcp); after the handshake the server loopback-bridges them to the data-plane port, and
+:443/tcp); after the handshake the server loopback-bridges them to the data-plane port, and
 clients never connect to 8080 directly. Only if you want clients to dial the data plane
 directly via wss:// do you change `listen_addr` to `:8080` (all interfaces) and open the firewall.
 

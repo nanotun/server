@@ -25,7 +25,7 @@ EOF
 sysctl --system
 
 # 防火墙放行（systemd 那条路径由安装脚本自动做，容器这边没人替你做）
-ufw allow 8443/tcp && ufw allow 443/udp && ufw allow 7443/tcp
+ufw allow 443/tcp && ufw allow 443/udp && ufw allow 7443/tcp
 
 # 拿 compose 文件（不需要 clone 仓库，镜像从 GHCR 拉）
 curl -fsSLO https://raw.githubusercontent.com/nanotun/server/main/docker/docker-compose.yml
@@ -120,13 +120,13 @@ sysctl 写入被拒但该项已经是目标值(容器里 /proc/sys 常为只读,
 
 ## 防火墙：容器不会替你开端口
 
-`scripts/install-self-hosted.sh` 检测到 ufw active 时会自动放行 8443/tcp、443/udp、7443/tcp。
+`scripts/install-self-hosted.sh` 检测到 ufw active 时会自动放行 443/tcp、443/udp、以及 Web 管理面那个端口。
 容器这条路径**没有对应动作** —— 容器不该去改宿主的防火墙，而 host 模式下端口就绑在宿主网卡上，
 ufw 的 INPUT 策略照样拦。现象是容器 healthy、日志干净、本机 `curl 127.0.0.1:7443` 也正常，
 唯独从外面连不上。
 
 ```bash
-ufw allow 8443/tcp   # REALITY
+ufw allow 443/tcp   # REALITY
 ufw allow 443/udp    # Hysteria2（用了端口跳跃的话，把整段范围一起放行）
 ufw allow 7443/tcp   # Web 管理面（只想内网访问就别开，改用 SSH 端口转发）
 ```
@@ -173,7 +173,7 @@ NAT 规则挂得没错。排查时对不上号的是容器内那条 SNAT 规则�
 当成平级选项随手拿去跑真网关。
 
 一次实测留个底（Debian 11 + Docker 29.7.2，把官方 compose 的 `network_mode: host` 换成
-`ports` 逐个发布）：容器 healthy，REALITY(TCP 8443) 和 hy2(UDP 443) 都能从公网连进来，
+`ports` 逐个发布）：容器 healthy，REALITY(TCP 443) 和 hy2(UDP 443) 都能从公网连进来，
 出口流量正常、5MB 下载完整，Web 管理面可达。**客户端的真实公网 IP 也没丢** —— Docker 发布
 端口走的是 iptables DNAT 而不是用户态代理，审计日志里记的是客户端的真实地址，不是网关地址。
 另外 `exit-guard` 会自动把 docker 的网段（如 `172.18.0.0/16`）一起拦进私网黑名单，客户端

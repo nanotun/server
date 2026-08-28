@@ -153,6 +153,9 @@ dex() {
   # 语言一并带进去:docker exec 不继承宿主环境,不显式传的话容器里永远是默认语言,
   # 于是 --lang zh 看着生效了(测试台自己打的字是中文的),而被测脚本压根没收到。
   [ -n "$LAB_LANG" ] && flags+=(-e "NANOTUN_LANG=$LAB_LANG")
+  # 同理:Web 后台端口默认是随机的,而「显式钉住」那条路(NANOTUN_WEB_PORT)不透传就
+  # 没法在这儿验 —— 宿主上设了看着像生效,容器里收到的仍是空,于是每次都走随机那一支。
+  [ -n "${NANOTUN_WEB_PORT:-}" ] && flags+=(-e "NANOTUN_WEB_PORT=$NANOTUN_WEB_PORT")
   docker exec "${flags[@]}" "$@"
 }
 
@@ -309,6 +312,7 @@ cmd_install() {
     local no_setup="--no-setup"
     local envs=(-e "NANOTUN_VERSION=${ver}")
     [ -n "$LAB_LANG" ] && envs+=(-e "NANOTUN_LANG=$LAB_LANG")
+    [ -n "${NANOTUN_WEB_PORT:-}" ] && envs+=(-e "NANOTUN_WEB_PORT=$NANOTUN_WEB_PORT")
     if [ "$WIZARD" = 1 ]; then
       no_setup=""
       # 向导那边的密码只走环境变量(setup.sh 故意不收命令行参数,理由见那边注释),

@@ -319,7 +319,13 @@ fi
 # 卸载报告一路绿灯,机器上却留下一个对公网敞着、后面什么都没有的洞。
 #
 # 配置这会儿还在(第 5 步才删),所以读得到;解析器读不到就回落默认值,那正是没改过端口的情形。
-NT_DEFAULT_REALITY=8443; NT_DEFAULT_HY2=443; NT_DEFAULT_WEB=7443
+NT_DEFAULT_REALITY=443; NT_DEFAULT_HY2=443; NT_DEFAULT_WEB=7443
+# 老默认端口:REALITY 曾默认 8443(2026-08-28 改成 443),Web 曾默认 7443 且不写进 web.env。
+# 卸载要收回的是**当初真的放行了的**那几条,而那取决于机器是什么时候装的 —— 所以老值
+# 也得进回收清单。多收一条不存在的规则无害(命令失败即忽略);漏收一条,就是在公网上
+# 留一个对着空气敞开的洞,而卸载报告还是一路绿灯。
+NT_LEGACY_TCP="8443 7443"
+
 NT_PORT_REALITY=$NT_DEFAULT_REALITY; NT_PORT_HY2=$NT_DEFAULT_HY2; NT_PORT_WEB=$NT_DEFAULT_WEB
 NT_HY2_SPECS=$NT_DEFAULT_HY2
 if [ -r /usr/local/bin/nanotun-ports.sh ]; then
@@ -395,7 +401,7 @@ fi
 # 去重:没改过端口的机器上实际值和默认值本来就相等,不去重的话同一条会被收两遍,
 # 屏幕上「✓ ufw 收回 7443/tcp」连着出现两次 —— 功能上无害,但看的人会以为哪里不对。
 _nt_uniq() { printf '%s\n' "$@" | awk 'NF && !seen[$0]++' | tr '\n' ' '; }
-UNINSTALL_TCP="$(_nt_uniq "$NT_PORT_REALITY" "$NT_PORT_WEB" "$NT_DEFAULT_REALITY" "$NT_DEFAULT_WEB")"
+UNINSTALL_TCP="$(_nt_uniq "$NT_PORT_REALITY" "$NT_PORT_WEB" "$NT_DEFAULT_REALITY" "$NT_DEFAULT_WEB" $NT_LEGACY_TCP)"
 UNINSTALL_UDP="$(_nt_uniq $NT_HY2_SPECS "$NT_DEFAULT_HY2")"
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
   for rule in $UNINSTALL_TCP; do

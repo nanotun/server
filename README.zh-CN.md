@@ -83,6 +83,24 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install
 `install.sh` 自己不认得的参数一律原样转交向导,所以 [`setup.sh`](scripts/setup.sh)
 的选项都能这么带。
 
+**端口。** 三个里有两个刻意**不**随机,一个刻意随机:
+
+| | 端口 | 为什么 |
+|---|---|---|
+| REALITY | `443/tcp` | REALITY 的伪装是「这就是个普通 HTTPS 站」—— 探测者会拿到一张 `[reality].dest` 的、能过系统 CA 校验的真证书。这套说法只有在「本来就该是 HTTPS」的端口上才成立。 |
+| hysteria2 | `443/udp` | 443 是能穿过酒店 / 企业 / 运营商网络的那个端口,而 443 上的 QUIC 与普通 HTTP/3 无从区分。TCP 与 UDP 的 443 互不冲突,两者合起来恰恰是任何支持 HTTP/3 的网站的指纹。 |
+| Web 后台 | **随机** | 管理登录页没有「要像正常流量」的需求,却有充分的理由别被找到。所有部署都长在 7443 上,等于给扫描器一份现成的名单。取值 10000–31999(在 Linux 临时端口段以下,不会和对外连接的源端口撞)。 |
+
+有终端时装机会显示随机挑中的后台端口,并让你可以改成别的;没终端就自己挑一个并打出来。
+`NANOTUN_WEB_PORT=23456` 可以显式钉住 —— 自动化需要确定值时用它。**重跑不会挪动它**:
+升级是重跑 `install.sh` 的头号理由,而把一台正在服务的机器的管理入口挪走,不是你要的。
+端口落在 `/etc/nanotun/web.env`,下游全部从那儿读(环境检查、防火墙规则、装完的「监听中」
+自检、向导打的登录地址)。
+
+> `443/tcp` 和已有 Web 服务器撞车的概率远高于原来的 `8443`。环境检查会在动任何东西之前
+> 告诉你,而 REALITY 可以经 `[reality].listen_addr` 换到别的端口。它**不会被静默挪走** ——
+> 否则同一条安装命令在两台机器上会装出不同端口,而差异不留任何痕迹。
+
 **语言。** 整条安装链打出来的东西 —— 环境检查、安装脚本、开服向导,以及它装下的那几个
 `nanotun-*` 命令 —— 都有英文和中文两份,**默认英文**。有终端时会在一切动作之前问你一次;
 没有终端(CI、cloud-init、`curl … | bash`)就不问、直接用英文,所以无人值守永远不会卡在
@@ -155,7 +173,7 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/preflig
 > 走的就是这条只读路径。
 
 查的是 systemd 有没有在跑、`/dev/net/tun` 在不在、`iptables`/`ip6tables`/`ip`/`openssl` 齐不齐、
-`ip_forward` 能不能置 1,以及 8443/tcp、443/udp、7443/tcp 有没有被占。**最常见的两个坑**是
+`ip_forward` 能不能置 1,以及 443/tcp、443/udp 和 Web 管理面那个端口有没有被占。**最常见的两个坑**是
 便宜 VPS 用 OpenVZ / LXC 虚拟化拿不到 TUN 设备(得换 KVM),和 Alpine 这类不用 systemd 的
 发行版(得改走 Docker)。
 
@@ -307,7 +325,7 @@ Docker 部署统一加前缀 `docker compose exec nanotun`(镜像里 `NANOTUN_DB
 
 VPN 数据面监听 `[server].listen_addr`(默认 `127.0.0.1:8080`,仅回环),走 WebSocket
 Binary + 自定义链路帧(见 `util/link_frame.go`)。生产客户端(iOS/Android)经 Hysteria 2
-(`[hysteria]`,:443/udp)或 Xray REALITY(`[reality]`,:8443/tcp)入站,服务端在握手后
+(`[hysteria]`,:443/udp)或 Xray REALITY(`[reality]`,:443/tcp)入站,服务端在握手后
 把它们环回桥接到数据面端口,客户端不直连 8080。仅当你要让客户端直接 wss:// 拨数据面时,
 才把 `listen_addr` 改成 `:8080`(所有网卡)并放行防火墙。
 

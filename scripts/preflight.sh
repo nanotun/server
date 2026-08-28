@@ -585,7 +585,7 @@ if have ss || have netstat; then
   #
   # 解析器装在 /usr/local/bin(装机脚本放的)。全新机器上没有它,也没有 config.toml,
   # 那时默认值就是对的 —— 所以读不到不是问题,不必因此报错。
-  NT_PORT_REALITY=8443; NT_PORT_HY2=443; NT_PORT_WEB=7443
+  NT_PORT_REALITY=443; NT_PORT_HY2=443; NT_PORT_WEB=7443
   if [ -r /usr/local/bin/nanotun-ports.sh ]; then
     # shellcheck source=scripts/nanotun-ports.sh
     . /usr/local/bin/nanotun-ports.sh
@@ -603,19 +603,19 @@ fi
 section_t "Optional" "可选项"
 
 if have ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  info_t "ufw is active — the install will open ${NT_PORT_REALITY:-8443}/tcp, ${NT_PORT_HY2:-443}/udp and ${NT_PORT_WEB:-7443}/tcp for you" \
-         "ufw 处于 active —— 安装时会自动放行 ${NT_PORT_REALITY:-8443}/tcp、${NT_PORT_HY2:-443}/udp、${NT_PORT_WEB:-7443}/tcp"
+  info_t "ufw is active — the install will open ${NT_PORT_REALITY:-443}/tcp, ${NT_PORT_HY2:-443}/udp and ${NT_PORT_WEB:-7443}/tcp for you" \
+         "ufw 处于 active —— 安装时会自动放行 ${NT_PORT_REALITY:-443}/tcp、${NT_PORT_HY2:-443}/udp、${NT_PORT_WEB:-7443}/tcp"
 elif have firewall-cmd && [ "$(firewall-cmd --state 2>/dev/null)" = running ]; then
   # RHEL 系默认是 firewalld 而不是 ufw。这句原来一律说成「没装 ufw,记得自己放行」,
   # 在 Rocky/Alma/CentOS 上既没说中用的是哪个防火墙,也没提安装脚本其实会替它放行。
-  info_t "firewalld is running — the install will open ${NT_PORT_REALITY:-8443}/tcp, ${NT_PORT_HY2:-443}/udp and ${NT_PORT_WEB:-7443}/tcp for you" \
-         "firewalld 正在运行 —— 安装时会自动放行 ${NT_PORT_REALITY:-8443}/tcp、${NT_PORT_HY2:-443}/udp、${NT_PORT_WEB:-7443}/tcp"
+  info_t "firewalld is running — the install will open ${NT_PORT_REALITY:-443}/tcp, ${NT_PORT_HY2:-443}/udp and ${NT_PORT_WEB:-7443}/tcp for you" \
+         "firewalld 正在运行 —— 安装时会自动放行 ${NT_PORT_REALITY:-443}/tcp、${NT_PORT_HY2:-443}/udp、${NT_PORT_WEB:-7443}/tcp"
 elif have ufw; then
   info_t "ufw is installed but not enabled — opening ports is up to you" \
          "装了 ufw 但未启用 —— 放行规则由你自己管"
 else
-  info_t "no ufw / firewalld — if you use another firewall or a cloud security group, remember to open ${NT_PORT_REALITY:-8443}/tcp and ${NT_PORT_HY2:-443}/udp" \
-         "没装 ufw / firewalld —— 用别的防火墙 / 云安全组的话,记得放行 ${NT_PORT_REALITY:-8443}/tcp 与 ${NT_PORT_HY2:-443}/udp"
+  info_t "no ufw / firewalld — if you use another firewall or a cloud security group, remember to open ${NT_PORT_REALITY:-443}/tcp and ${NT_PORT_HY2:-443}/udp" \
+         "没装 ufw / firewalld —— 用别的防火墙 / 云安全组的话,记得放行 ${NT_PORT_REALITY:-443}/tcp 与 ${NT_PORT_HY2:-443}/udp"
 fi
 
 have ipset || info_t "ipset is not installed — only needed with jump_host_firewall turned on" \

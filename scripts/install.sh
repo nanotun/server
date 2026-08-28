@@ -638,6 +638,106 @@ fi
 # 下载、安装、向导全都还没开始。
 nt_ask_lang
 
+# ── Web 后台端口 ─────────────────────────────────────────────────────────────
+#
+# 后台登录页不需要「看起来像正常流量」,它需要的是别被顺手扫到 —— 所有部署都长在 7443 上
+# 等于给扫描器一份现成的名单。所以默认随机,而不是固定。
+#
+# 数据面那两个端口刻意**不**随机:REALITY 在 443/tcp、hy2 在 443/udp,两者合起来正是任何
+# 支持 HTTP/3 的网站的指纹,而随机高位端口在受限网络里更容易被拦、在 DPI 眼里也更显眼。
+# 详见 cmd/nanotund/config.toml 的 [reality] 注释。
+#
+# 端口必须在这儿定:后面 install-self-hosted.sh 要拿它写 web.env、放行防火墙、并做装完的
+# 「监听中」自检,而那都发生在向导之前。
+NT_WEB_PORT_EXPLICIT=0
+[ -n "${NANOTUN_WEB_PORT:-}" ] && NT_WEB_PORT_EXPLICIT=1
+
+# nt_random_port —— 10000..31999 之间取一个。
+#
+# 上界卡在 32000 是为了避开 Linux 默认的临时端口段(32768–60999):在那个区间里 listen,
+# 会和本机对外连接的源端口撞,症状是偶发的绑定失败或连接被重置,而且极难复现。
+#
+# 用 /dev/urandom 而不是 $RANDOM:批量开出来的云主机(同一镜像、同一秒启动)用 $RANDOM
+# 有相当概率挑到同一个端口,而「随机」的全部意义就是别都长在一处。没有 /dev/urandom 时
+# 才退到 $RANDOM —— 端口不是秘密,弱一点的随机源也够用。
+nt_random_port() {
+  local n
+  n="$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
+  case "$n" in ''|*[!0-9]*) n="$RANDOM" ;; esac
+  printf '%s' "$(( 10000 + n % 22000 ))"
+}
+
+# 端口现在有人听着吗。ss 不在就不猜(返回「空闲」)—— 真撞上了环境自检那步会拦下,
+# 而在这里因为查不出来就拒绝往下走,是把一个工具缺失升级成装不上。
+nt_port_taken() {
+  command -v ss >/dev/null 2>&1 || return 1
+  ss -ltnH 2>/dev/null | awk '{print $4}' | sed 's/.*://' | grep -qx -- "$1"
+}
+
+nt_pick_web_port() {
+  local p i=0
+  while [ "$i" -lt 8 ]; do
+    p="$(nt_random_port)"
+    if ! nt_port_taken "$p"; then printf '%s' "$p"; return 0; fi
+    i=$((i + 1))
+  done
+  printf '%s' "$p"   # 八次都撞上,交给环境自检去报,别在这儿死循环
+}
+
+# 已经装过的机器不重新挑,也不问。
+#
+# 升级是重跑本脚本的头号理由(README 就是这么推荐的:加 --no-setup 重跑),而那台机器的
+# 后台端口早就写进 web.env、放行进防火墙、记在运维的书签里了。此刻换一个,等于把一台
+# 正在服务的机器的管理入口挪走 —— 而人只是想升级。
+NT_WEB_PORT_EXISTING=""
+if [ -r /etc/nanotun/web.env ]; then
+  NT_WEB_PORT_EXISTING="$(awk -F= '/^[ \t]*NANOTUN_WEB_LISTEN[ \t]*=/ {sub(/^[^=]*=/, ""); v=$0} END {print v}' \
+    /etc/nanotun/web.env 2>/dev/null | tr -d '[:space:]"'"'"'' | sed 's/.*://')"
+  case "$NT_WEB_PORT_EXISTING" in ''|*[!0-9]*) NT_WEB_PORT_EXISTING="" ;; esac
+fi
+
+if [ "$NT_WEB_PORT_EXPLICIT" = 1 ]; then
+  :                                   # 显式指定,照办,不问
+elif [ -n "$NT_WEB_PORT_EXISTING" ]; then
+  NANOTUN_WEB_PORT="$NT_WEB_PORT_EXISTING"
+  info_t "Web console port: keeping this machine's existing $NANOTUN_WEB_PORT (upgrades do not move it)." \
+         "Web 后台端口:沿用这台机器现有的 $NANOTUN_WEB_PORT(升级不会挪动它)。"
+else
+  NANOTUN_WEB_PORT="$(nt_pick_web_port)"
+  if [ -t 0 ]; then
+    printf '\033[1;36m==>\033[0m %s\n' "$(tsel \
+      "Web console port (randomized so it is not sitting on a well-known port; press Enter to accept)" \
+      "Web 后台端口(随机生成,避免所有部署都长在同一个众所周知的端口上;回车即接受)")"
+    while :; do
+      printf '    %s [%s]: ' "$(tsel 'Port' '端口')" "$NANOTUN_WEB_PORT"
+      _nt_ans=""
+      read -r _nt_ans || _nt_ans=""
+      _nt_ans="$(printf '%s' "$_nt_ans" | tr -d '[:space:]')"
+      [ -z "$_nt_ans" ] && break                       # 回车 = 用随机那个
+      case "$_nt_ans" in
+        ''|*[!0-9]*) ;;
+        *) if [ "$_nt_ans" -ge 1 ] && [ "$_nt_ans" -le 65535 ]; then
+             if nt_port_taken "$_nt_ans"; then
+               warn_t "$_nt_ans is already in use on this machine — pick another one." \
+                      "$_nt_ans 在这台机器上已经有人听着 —— 换一个。"
+               continue
+             fi
+             NANOTUN_WEB_PORT="$_nt_ans"; break
+           fi ;;
+      esac
+      warn_t "A port is a number from 1 to 65535." "端口是 1..65535 的整数。"
+    done
+    unset _nt_ans
+    printf '\n'
+  else
+    # 没有终端(CI / cloud-init / 管道)也照样随机 —— 固定端口才是要修的那件事。要确定性
+    # 就显式给 NANOTUN_WEB_PORT。挑中的号必须打出来,否则无人值守装完没人知道后台在哪。
+    info_t "Web console port: $NANOTUN_WEB_PORT (randomized; set NANOTUN_WEB_PORT to pin it)." \
+           "Web 后台端口:$NANOTUN_WEB_PORT(随机挑的;要固定就设 NANOTUN_WEB_PORT)。"
+  fi
+fi
+export NANOTUN_WEB_PORT
+
 # 定下来之后一路传下去。preflight.sh / install-self-hosted.sh / setup.sh 都认这个变量,
 # nanotun-admin 本来就认(它的默认也是英文)—— 所以整条链只有一处需要决定语言。
 export NANOTUN_LANG="$NT_LANG"

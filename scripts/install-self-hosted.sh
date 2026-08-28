@@ -803,6 +803,70 @@ ok "ip_forward = $(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 'n/a'), v6.
 # 必须放在第 1 步之后:全新机器上 config.toml 是那一步才落地的,更早读只会读到空。
 # shellcheck source=scripts/nanotun-ports.sh
 . "$SCRIPTS_DIR/nanotun-ports.sh"
+
+# ── Web 后台端口:默认随机,并落进 web.env ────────────────────────────────────
+#
+# 后台登录页不需要「看起来像正常流量」,它需要的是别被顺手扫到 —— 所有部署都长在 7443 上
+# 等于给扫描器一份现成的名单。所以默认随机。数据面那两个端口刻意不随机(REALITY 443/tcp
+# + hy2 443/udp 合起来正是任何支持 HTTP/3 的网站的指纹),理由见 config.toml 的 [reality]。
+#
+# 端口从哪来,三种情形:
+#   ① NANOTUN_WEB_PORT 有值 —— install.sh 问过之后 export 下来的,或调用方显式指定;
+#   ② web.env 里已经钉了一个 —— 这台机器装过,**沿用**。升级是重跑本脚本的头号理由,
+#      此刻换端口等于把一台正在服务的机器的管理入口挪走,而人只是想升级;
+#   ③ 都没有 —— 从发布包目录直接跑(没经过 install.sh)。自己挑一个随机的,并打出来。
+#
+# 必须在放行防火墙**之前**定下来:下面 FW_TCP 用的就是它。也必须真的写进 web.env ——
+# nanotun-web 的监听地址只从那儿读(systemd 单元的 EnvironmentFile),不写就还是内置的 7443,
+# 于是会出现「防火墙放行了随机端口、服务却听在 7443」这种三方各自成功的局面。
+nt_ish_random_port() {
+  # 10000..31999:上界避开 Linux 默认临时端口段(32768–60999)——在那个区间 listen 会和
+  # 本机对外连接的源端口撞,症状是偶发绑定失败,极难复现。
+  # 用 /dev/urandom 而非 $RANDOM:同镜像同秒启动的批量云主机用 $RANDOM 有相当概率撞同一个。
+  local n
+  n="$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
+  case "$n" in ''|*[!0-9]*) n="$RANDOM" ;; esac
+  printf '%s' "$(( 10000 + n % 22000 ))"
+}
+
+NT_WEB_PORT_PINNED=""
+if [ -r "$ETC_DIR/web.env" ]; then
+  NT_WEB_PORT_PINNED="$(awk -F= '/^[ \t]*NANOTUN_WEB_LISTEN[ \t]*=/ {sub(/^[^=]*=/, ""); v=$0} END {print v}' \
+    "$ETC_DIR/web.env" 2>/dev/null | tr -d '[:space:]"'"'"'' | sed 's/.*://')"
+  case "$NT_WEB_PORT_PINNED" in ''|*[!0-9]*) NT_WEB_PORT_PINNED="" ;; esac
+fi
+
+if [ "$WEB_AVAILABLE" -eq 1 ]; then
+  if [ -n "${NANOTUN_WEB_PORT:-}" ]; then
+    :                                   # ① 上游定了
+  elif [ -n "$NT_WEB_PORT_PINNED" ]; then
+    NANOTUN_WEB_PORT="$NT_WEB_PORT_PINNED"   # ② 沿用本机现值
+  else
+    NANOTUN_WEB_PORT="$(nt_ish_random_port)" # ③ 自己挑
+    ok_t "Web console port: $NANOTUN_WEB_PORT (randomized; set NANOTUN_WEB_PORT to pin it)" \
+         "Web 后台端口:$NANOTUN_WEB_PORT(随机挑的;要固定就设 NANOTUN_WEB_PORT)"
+  fi
+  export NANOTUN_WEB_PORT
+
+  # 落进 web.env。已经钉着同一个值就什么都不做(幂等,重跑不刷屏也不重启服务)。
+  if [ "$NANOTUN_WEB_PORT" != "$NT_WEB_PORT_PINNED" ]; then
+    install -d -m 0755 "$ETC_DIR"
+    if [ -n "$NT_WEB_PORT_PINNED" ]; then
+      # 原地替换,别追加第二行 —— EnvironmentFile 后者覆盖前者,两行并存时「改了却没生效」
+      # 和「改了生效了」长得一模一样,而排查的人只会看到第一行。
+      tmp_env="$(mktemp)" || tmp_env=""
+      if [ -n "$tmp_env" ]; then
+        sed "s|^[ \t]*NANOTUN_WEB_LISTEN[ \t]*=.*|NANOTUN_WEB_LISTEN=0.0.0.0:${NANOTUN_WEB_PORT}|" \
+          "$ETC_DIR/web.env" > "$tmp_env" && cat "$tmp_env" > "$ETC_DIR/web.env"
+        rm -f "$tmp_env"
+      fi
+    else
+      printf 'NANOTUN_WEB_LISTEN=0.0.0.0:%s\n' "$NANOTUN_WEB_PORT" >> "$ETC_DIR/web.env"
+    fi
+    chmod 600 "$ETC_DIR/web.env" 2>/dev/null || true
+  fi
+fi
+
 nanotun_load_ports "$ETC_DIR/config.toml" "$ETC_DIR/web.env"
 
 # 要放行的 tcp 端口:REALITY 一条;Web 后台装了才放(没装就保持只在 LAN / 隧道内可达)。

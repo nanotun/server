@@ -23,7 +23,10 @@
 #
 # 配置文件不存在时(全新机器,配置装完才有)一律回落到默认值 —— 那时默认就是对的。
 
-NT_DEFAULT_REALITY=8443
+# REALITY 的默认端口 2026-08-28 从 8443 改成 443(理由见 cmd/nanotund/config.toml 的 [reality]:
+# 伪装成普通 HTTPS 站只有在 443 上才成立)。这里只是**读不到配置时的回落值** —— 改过端口的
+# 机器一律以 config.toml 为准,那正是本文件存在的意义。
+NT_DEFAULT_REALITY=443
 NT_DEFAULT_HY2=443
 NT_DEFAULT_WEB=7443
 
@@ -77,6 +80,22 @@ nanotun_load_ports() { # nanotun_load_ports [config.toml] [web.env]
   # 没解析出任何条目(配置不存在 / 写法认不得)时,按默认那一个来。
   [ -n "${NT_HY2_SPECS// /}" ] || NT_HY2_SPECS="$NT_PORT_HY2"
   NT_HY2_SPECS="${NT_HY2_SPECS# }"
+
+  # 装机进行中的覆盖。此刻 web.env 还没写(装机脚本正要写它),但 preflight 的端口占用
+  # 检查、防火墙放行、装完的「监听中」自检都已经要用这个端口了。让覆盖在这里生效,三处
+  # 就自动一致 —— 否则会出现 preflight 查 7443、防火墙放行 7443、而服务听在别的端口上,
+  # 三样各自「成功」的局面。那正是本文件头部记录的那类错,只是换了个触发方式。
+  #
+  # 只在装机链里设(install.sh 问完端口后 export 下来),日常运行用不到它。
+  if [ -n "${NANOTUN_WEB_PORT:-}" ]; then
+    case "$NANOTUN_WEB_PORT" in
+      ''|*[!0-9]*) ;;                # 不是纯数字就当没设,继续按 web.env 走
+      *) if [ "$NANOTUN_WEB_PORT" -ge 1 ] && [ "$NANOTUN_WEB_PORT" -le 65535 ]; then
+           NT_PORT_WEB="$NANOTUN_WEB_PORT"
+           return 0
+         fi ;;
+    esac
+  fi
 
   # Web 后台的监听地址不在 config.toml 里 —— 它由 nanotun-web 读 NANOTUN_WEB_LISTEN
   # 决定(systemd 单元 EnvironmentFile 指向 web.env),没设就是内置默认 0.0.0.0:7443。
