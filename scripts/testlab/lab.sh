@@ -178,6 +178,9 @@ dex() {
   # 同理:Web 后台端口默认是随机的,而「显式钉住」那条路(NANOTUN_WEB_PORT)不透传就
   # 没法在这儿验 —— 宿主上设了看着像生效,容器里收到的仍是空,于是每次都走随机那一支。
   [ -n "${NANOTUN_WEB_PORT:-}" ] && flags+=(-e "NANOTUN_WEB_PORT=$NANOTUN_WEB_PORT")
+  # REALITY 端口同理。漏了它的样子很迷惑:宿主上 NANOTUN_REALITY_PORT=8443 设了、装机却
+  # 仍被「443/tcp 被占」挡下 —— 而那正是你给这个参数要绕开的东西。
+  [ -n "${NANOTUN_REALITY_PORT:-}" ] && flags+=(-e "NANOTUN_REALITY_PORT=$NANOTUN_REALITY_PORT")
   docker exec "${flags[@]}" "$@"
 }
 
@@ -335,6 +338,7 @@ cmd_install() {
     local envs=(-e "NANOTUN_VERSION=${ver}")
     [ -n "$LAB_LANG" ] && envs+=(-e "NANOTUN_LANG=$LAB_LANG")
     [ -n "${NANOTUN_WEB_PORT:-}" ] && envs+=(-e "NANOTUN_WEB_PORT=$NANOTUN_WEB_PORT")
+    [ -n "${NANOTUN_REALITY_PORT:-}" ] && envs+=(-e "NANOTUN_REALITY_PORT=$NANOTUN_REALITY_PORT")
     if [ "$WIZARD" = 1 ]; then
       no_setup=""
       # 向导那边的密码只走环境变量(setup.sh 故意不收命令行参数,理由见那边注释),

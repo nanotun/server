@@ -536,8 +536,19 @@ if have ss || have netstat; then
             # 检查这一步的意义正是在动系统之前把必败的情形挡下来。
             # 「换个端口」这条出路得看配置文件在不在。全新机器上它还不存在(装完才有),
             # 照着去找只会扑空 —— 又是一条把人支到空地方的建议。所以分开说。
+            # REALITY 在全新机器上有一条一步到位的出路:重跑时带 --reality-port。
+            # 这比「--skip-check 装上去 → 改 config.toml → 重启」三步靠谱得多,而后者是
+            # 这个旋钮存在之前唯一的办法。443 上到处是 nginx,这条会常被走到。
             local port_fix
-            if [ -f /etc/nanotun/config.toml ]; then
+            if [ "$2" = "$NT_PORT_REALITY" ] && [ "$1" = tcp ] && [ ! -f /etc/nanotun/config.toml ]; then
+              port_fix="$(tsel \
+                "Stop whatever is holding it, or put nanotun on another port — rerun the install with:
+       --reality-port <port>            (443 is the default because REALITY poses as an ordinary HTTPS site;
+                                         moving it is a trade-off, not a free choice)" \
+                "停掉占用它的进程,或让 nanotun 换个端口 —— 重跑安装时带上:
+       --reality-port <端口>            (默认 443 是因为 REALITY 要伪装成普通 HTTPS 站点;
+                                         挪走是有代价的取舍,不是随便选)")"
+            elif [ -f /etc/nanotun/config.toml ]; then
               port_fix="$(tsel \
                 "Stop whatever is holding it, or move nanotun off it by changing $(port_knob "$2"), then systemctl restart $(port_svc "$2")" \
                 "停掉占用它的进程,或改 $(port_knob "$2") 换个端口,再 systemctl restart $(port_svc "$2")")"
@@ -624,6 +635,17 @@ if have ss || have netstat; then
       ''|*[!0-9]*) ;;
       *) if [ "$NANOTUN_WEB_PORT" -ge 1 ] && [ "$NANOTUN_WEB_PORT" -le 65535 ]; then
            NT_PORT_WEB="$NANOTUN_WEB_PORT"
+         fi ;;
+    esac
+  fi
+  # REALITY 端口的覆盖,理由与上面那段一字不差(全新机器上解析器还不存在)。
+  # 少了它,`--reality-port 8443` 的人会看到检查去查 443 —— 而 443 被占正是他给这个参数的
+  # 原因,于是一条本该放行的安装被自己的参数挡下,报的还是一个他已经绕开的端口。
+  if [ -n "${NANOTUN_REALITY_PORT:-}" ]; then
+    case "$NANOTUN_REALITY_PORT" in
+      ''|*[!0-9]*) ;;
+      *) if [ "$NANOTUN_REALITY_PORT" -ge 1 ] && [ "$NANOTUN_REALITY_PORT" -le 65535 ]; then
+           NT_PORT_REALITY="$NANOTUN_REALITY_PORT"
          fi ;;
     esac
   fi

@@ -50,6 +50,9 @@
 #
 # 选项:
 #   --lang en|zh   界面语言。默认英文;不给且有终端时会在最前面问一次(见下面 NANOTUN_LANG)
+#   --reality-port <口> REALITY 的 TCP 端口,默认 443。443 被 nginx 之类占着时用它换一个;
+#                  等价于环境变量 NANOTUN_REALITY_PORT。只对全新安装生效(已有 config.toml
+#                  的机器不会被改动 —— 挪走会让现有客户端全部连不上)
 #   --web-port <口> Web 后台端口。不给则随机挑一个(有终端时会拿它作默认值问你一次);
 #                  等价于环境变量 NANOTUN_WEB_PORT。数据面那两个端口刻意不随机 ——
 #                  REALITY 在 443/tcp、hy2 在 443/udp,理由见 config.toml 的 [reality]
@@ -429,6 +432,38 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       unset _nt_p; shift ;;
+    # REALITY 的 TCP 端口。同样在这儿吃掉,别落进 SETUP_ARGS。
+    #
+    # 之所以需要它:443 是刻意选的(REALITY 的伪装就靠「HTTPS 本来就该在 443」),但 443
+    # 上到处是 nginx / caddy。没有这个旋钮时,撞了端口的人唯一的出路是 --skip-check 装上
+    # 去、再改 config.toml、再重启 —— 装一半、改文件、重启三步,而他想要的只是「换个端口」。
+    --reality-port)
+      case "${2:-}" in
+        ''|*[!0-9]*) NT_BAD_RPORT=1 ;;
+        *) if [ "$2" -ge 1 ] && [ "$2" -le 65535 ]; then NANOTUN_REALITY_PORT="$2"; NT_BAD_RPORT=0
+           else NT_BAD_RPORT=1; fi ;;
+      esac
+      if [ "${NT_BAD_RPORT:-0}" = 1 ]; then
+        printf '%s\n' "$(tsel \
+          "install.sh: --reality-port takes a number from 1 to 65535 (got '${2:-}')" \
+          "install.sh: --reality-port 只认 1..65535 的整数(收到 '${2:-}')")" >&2
+        exit 2
+      fi
+      shift 2 ;;
+    --reality-port=*)
+      _nt_rp="${1#--reality-port=}"
+      case "$_nt_rp" in
+        ''|*[!0-9]*) NT_BAD_RPORT=1 ;;
+        *) if [ "$_nt_rp" -ge 1 ] && [ "$_nt_rp" -le 65535 ]; then NANOTUN_REALITY_PORT="$_nt_rp"; NT_BAD_RPORT=0
+           else NT_BAD_RPORT=1; fi ;;
+      esac
+      if [ "${NT_BAD_RPORT:-0}" = 1 ]; then
+        printf '%s\n' "$(tsel \
+          "install.sh: --reality-port takes a number from 1 to 65535 (got '$_nt_rp')" \
+          "install.sh: --reality-port 只认 1..65535 的整数(收到 '$_nt_rp')")" >&2
+        exit 2
+      fi
+      unset _nt_rp; shift ;;
     --lang=*)
       if [ -z "$(nt_lang_normalize "${1#--lang=}")" ]; then
         printf '%s\n' "$(tsel \
@@ -477,6 +512,12 @@ Unattended (CI / cloud-init) — write it to disk first, and pass --web-admin:
 Options:
   --lang en|zh   interface language (default: en). Without it, and when a
                  terminal is attached, you are asked once up front.
+  --reality-port <p>
+                 REALITY's TCP port (default: 443). Use it when something else
+                 already holds 443 (nginx and friends); same as
+                 NANOTUN_REALITY_PORT. Fresh installs only — a machine that
+                 already has a config.toml is left alone, because moving this
+                 port cuts off every existing client until profiles are reissued.
   --web-port <p> web console port. Without it a random one is picked (and offered
                  as the default of a single question when a terminal is attached);
                  same as NANOTUN_WEB_PORT. The two data-plane ports are
@@ -495,6 +536,8 @@ Environment:
                       passed on to preflight.sh / install-self-hosted.sh /
                       setup.sh and to nanotun-admin, and is remembered in
                       /etc/nanotun/lang for later nanotun-* commands
+  NANOTUN_REALITY_PORT REALITY's TCP port, same as --reality-port (the flag wins).
+                      Fresh installs only.
   NANOTUN_WEB_PORT    web console port, same as --web-port (the flag wins). Unset
                       means a random one is picked and printed. **Reruns never move
                       an installed machine's port** (the current value in
@@ -556,6 +599,7 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
 
 选项:
   --lang en|zh   界面语言,默认英文;不给且有终端时会在最前面问一次
+  --reality-port <口> REALITY 的 TCP 端口,默认 443(等价 NANOTUN_REALITY_PORT,仅全新安装)
   --web-port <口> Web 后台端口,不给则随机挑(等价 NANOTUN_WEB_PORT)
   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
   --skip-check   跳过环境检查直接装(不建议)
@@ -623,8 +667,8 @@ if [ ${#SETUP_ARGS[@]} -gt 0 ] && { [ "$CHECK_ONLY" = 1 ] || [ "$NO_SETUP" = 1 ]
     "install.sh: these arguments were meant for the setup wizard, but the wizard will not run this time ($why): ${SETUP_ARGS[*]}" \
     "install.sh: 这些参数本该转交开服向导,但这次向导不会跑($why):${SETUP_ARGS[*]}")" >&2
   printf '%s\n' "$(tsel \
-    "   install.sh itself only takes --lang / --web-port / --check-only / --skip-check / --no-setup; everything else goes to the wizard (see --help)." \
-    "   install.sh 自己只认 --lang / --web-port / --check-only / --skip-check / --no-setup,其余一律转交向导(--help 看用法)。")" >&2
+    "   install.sh itself only takes --lang / --web-port / --reality-port / --check-only / --skip-check / --no-setup; everything else goes to the wizard (see --help)." \
+    "   install.sh 自己只认 --lang / --web-port / --reality-port / --check-only / --skip-check / --no-setup,其余一律转交向导(--help 看用法)。")" >&2
   exit 2
 fi
 
@@ -783,6 +827,10 @@ else
   fi
 fi
 export NANOTUN_WEB_PORT
+
+# REALITY 端口只在**显式给了**时才下传。不给就让模板的 443 生效 —— 这里不像 Web 端口那样
+# 「挑一个」:443 是有理由的默认(见 config.toml 的 [reality]),不是随便一个数。
+[ -n "${NANOTUN_REALITY_PORT:-}" ] && export NANOTUN_REALITY_PORT
 
 # 定下来之后一路传下去。preflight.sh / install-self-hosted.sh / setup.sh 都认这个变量,
 # nanotun-admin 本来就认(它的默认也是英文)—— 所以整条链只有一处需要决定语言。

@@ -20,6 +20,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -312,5 +313,74 @@ func TestPreflightPortAdviceChecksConfigExistsInBothBranches(t *testing.T) {
 		t.Errorf("chk_port() 里只有 %d 处判断配置文件在不在,应当是 2 处(硬失败一处、软提醒一处):\n"+
 			"  缺的那处会让人去改一个还不存在的文件 —— 全新机器上 config.toml 要装完才有,\n"+
 			"  而 install.sh --check-only(装机前最常走的那条路)走的正是软提醒那支。", n)
+	}
+}
+
+// install.sh 解析器认的每个 --*-port,两份 --help 里都得查得到。
+//
+// 起因是 --web-port:它的能力早就有了(环境变量 NANOTUN_WEB_PORT),后来补了同名参数,而
+// --help 里一个字都没提 —— 于是「怎么固定 Web 端口」这件事只有读过源码的人知道。
+// 一个查不到的参数等于不存在,而它偏偏又是端口撞了之后唯一的出路。
+//
+// 判据取自解析器本身而不是一张手写清单:新加一个 --xxx-port 忘了写文档,这里就会红。
+func TestInstallHelpDocumentsEveryPortFlag(t *testing.T) {
+	path := filepath.Join("..", "..", "scripts", "install.sh")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读不到 install.sh:%v", err)
+	}
+
+	// 解析器里的分支长这样:    --web-port)  /  --reality-port=*)
+	found := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\s+--([a-z0-9-]+-port)\)`).FindAllStringSubmatch(string(raw), -1) {
+		found["--"+m[1]] = true
+	}
+	if len(found) == 0 {
+		t.Fatal("install.sh 的参数解析里一个 --*-port 都没找到;若分支写法改了,请同步本守卫")
+	}
+
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"英文", []string{path, "--help"}},
+		{"中文", []string{path, "--lang", "zh", "--help"}},
+	} {
+		out, err := exec.Command("bash", c.args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("`install.sh %v` 退出码非 0(%v):\n%s", c.args[1:], err, out)
+		}
+		for flag := range found {
+			if !strings.Contains(string(out), flag) {
+				t.Errorf("%s --help 里查不到 %s,但解析器认它。\n"+
+					"  查不到的参数等于不存在 —— 而端口类参数恰恰是端口撞了之后唯一的出路。",
+					c.name, flag)
+			}
+		}
+	}
+}
+
+// preflight 必须认装机进行中的端口覆盖 —— Web 和 REALITY 两个都要。
+//
+// 全新机器上 /usr/local/bin/nanotun-ports.sh 还不存在(装完才有),所以 nanotun_load_ports
+// 整块被跳过,里面对环境变量的处理压根不会跑。漏一个的后果是检查去查**默认**端口:
+// 显式指定的那个被占着也一路放行(装完 crash-loop),或者反过来,默认端口被别人占着却把
+// 一次本该成功的安装挡下 —— 而报的那个端口正是用户已经绕开的那个。
+func TestPreflightHonorsInstallTimePortOverrides(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "preflight.sh"))
+	if err != nil {
+		t.Fatalf("读不到 preflight.sh:%v", err)
+	}
+	src := string(b)
+	for _, c := range []struct{ env, target string }{
+		{"NANOTUN_WEB_PORT", "NT_PORT_WEB"},
+		{"NANOTUN_REALITY_PORT", "NT_PORT_REALITY"},
+	} {
+		want := c.target + `="$` + c.env + `"`
+		if !strings.Contains(src, want) {
+			t.Errorf("preflight 没把 %s 应用到 %s(缺 %s):\n"+
+				"  全新机器上 nanotun-ports.sh 还不存在,不在这儿认一遍就只能查到默认端口。",
+				c.env, c.target, want)
+		}
 	}
 }

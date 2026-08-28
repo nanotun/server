@@ -115,10 +115,16 @@ for. The port lives in `/etc/nanotun/web.env`, and everything downstream (the en
 the firewall rules, the "listening on" self-check, the wizard's login URL) reads it from there.
 
 > `443/tcp` collides with an existing web server far more often than the old `8443` did. The
-> environment check tells you before anything is installed, and you can put REALITY on another
-> port via `[reality].listen_addr`. It is never moved silently — otherwise the same install
-> command would produce different ports on different machines with nothing recording the
-> difference.
+> environment check tells you before anything is installed, and says how to get past it in one
+> step: rerun with `--reality-port 8443` (or `NANOTUN_REALITY_PORT=8443`). It is never moved
+> silently — otherwise the same install command would produce different ports on different
+> machines with nothing recording the difference.
+>
+> `--reality-port` applies to **fresh installs only**. On a machine that already has a
+> `config.toml` the installer refuses and says so: REALITY's port is baked into every client
+> profile already handed out, so moving it cuts off every existing client — and all they see is
+> "cannot connect", with nothing pointing at the server having changed ports. To do it
+> deliberately, edit `[reality].listen_addr`, restart, and reissue the profiles.
 
 **Language.** Everything the install chain prints — the environment check, the installer, the
 setup wizard, and the `nanotun-*` commands it leaves behind — comes in English or Chinese.

@@ -724,7 +724,70 @@ chmod 0600 "$ETC_DIR"/config.toml.bak.* 2>/dev/null || true
 fill_config_secrets
 # MagicDNS 后缀:装机时可经 NANOTUN_MAGIC_SUFFIX 定制(默认沿用模板里的 "nanotun")。同样须在
 # systemctl start 之前 —— 它在 nanotund 启动时被读进 magicDNSResolved 快照,起来后改要重启。
+# apply_reality_port —— 把 NANOTUN_REALITY_PORT 写进 [reality] 的 listen_addr。
+#
+# 与 apply_magic_suffix 同一口径,包括「只在这次真写了模板才改」这条:已有 config.toml 的
+# 机器一律不动。理由比后缀那边更硬 —— REALITY 的端口印在每一份已经发出去的客户端配置里,
+# 悄悄挪走等于把所有现有客户端一次性踢下线,而他们看到的只是「连不上」,没有任何线索指向
+# 服务端换了端口。所以这里只警告,并把代价和做法一起说清。
+#
+# 默认 443 是有理由的(见 config.toml 的 [reality] 注释:伪装成普通 HTTPS 站点),这个旋钮
+# 是给「443 已经被 nginx 占着」的机器用的,不是鼓励随便挪。
+apply_reality_port() {
+  local port="${NANOTUN_REALITY_PORT:-}"
+  [ -n "$port" ] || return 0   # 没给:用模板默认的 443,不动 config.toml
+
+  case "$port" in
+    ''|*[!0-9]*) die_t "NANOTUN_REALITY_PORT is not a number: '$port'" \
+                       "NANOTUN_REALITY_PORT 不是数字:'$port'" ;;
+  esac
+  if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    die_t "NANOTUN_REALITY_PORT is out of range (1..65535): '$port'" \
+          "NANOTUN_REALITY_PORT 超出范围(1..65535):'$port'"
+  fi
+
+  if [ "${CONFIG_FRESH:-0}" != 1 ]; then
+    warn_t "The existing config.toml was kept, so NANOTUN_REALITY_PORT='$port' was not applied." \
+           "已保留既有 config.toml,未套用 NANOTUN_REALITY_PORT='$port'。"
+    warn_t "  Moving REALITY on a machine that is already serving cuts off every existing client:" \
+           "  在一台已经在服务的机器上挪动 REALITY,会让所有现有客户端连不上:"
+    warn_t "  their profiles carry the old port. To do it deliberately: edit listen_addr under [reality]" \
+           "  他们手上的配置里写的是旧端口。要有意这么做:改 $ETC_DIR/config.toml 里 [reality] 的"
+    warn_t "  in $ETC_DIR/config.toml, systemctl restart nanotun, then reissue every client profile" \
+           "  listen_addr,systemctl restart nanotun,然后给每个客户端重发配置"
+    warn_t "  (nanotun-setup can reissue the QR codes)." \
+           "  (二维码可以用 nanotun-setup 重发)。"
+    return 0
+  fi
+
+  local cfg="$ETC_DIR/config.toml"
+  # 段感知改写:只动 [reality] 段内的 listen_addr。和后缀那边同样的写法 ——
+  # 全局 sed 会把 [server] / [hysteria] 的 listen_addr 一起改掉,那是三个不同的东西。
+  awk -v p="$port" '
+    /^[ \t]*\[/ {
+      insec = ($0 ~ /^[ \t]*\[reality\][ \t]*$/)
+      print; next
+    }
+    {
+      if (insec && $0 ~ /^[ \t]*#?[ \t]*listen_addr[ \t]*=/) {
+        print "listen_addr = \":" p "\""; next
+      }
+      print
+    }
+  ' "$cfg" > "$cfg.tmp" && cat "$cfg.tmp" > "$cfg" && rm -f "$cfg.tmp"
+
+  local now
+  now="$(awk '/^[ \t]*\[reality\][ \t]*$/{insec=1; next} /^[ \t]*\[/{insec=0} insec && /^[ \t]*listen_addr[ \t]*=/{gsub(/.*:|"/, ""); print; exit}' "$cfg")"
+  if [ "$now" != "$port" ]; then
+    die_t "failed to write REALITY's port into $cfg (wanted $port, found '${now:-none}')" \
+          "没能把 REALITY 端口写进 $cfg(想写 $port,读回 '${now:-空}')"
+  fi
+  ok_t "REALITY port: $port (443 is the default; changed because you asked)" \
+       "REALITY 端口:$port(默认是 443,这次按你的要求改了)"
+}
+
 apply_magic_suffix
+apply_reality_port
 
 # 证书 / masquerade 页：按 config.toml 里配置的路径**按需自签**(不随包分发)。
 # ensure-server-assets.sh 读 [server] / [hysteria] 的 tls_* 与 masquerade_dir,
