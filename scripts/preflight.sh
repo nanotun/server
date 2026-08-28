@@ -649,6 +649,29 @@ if have ss || have netstat; then
          fi ;;
     esac
   fi
+  # REALITY 和 Web 后台都是 TCP,落到同一个端口上就是一台必坏的机器 —— 而所有信号都会
+  # 说没事。实测(2026-08-28,两者都要 7443):
+  #   · 这里对同一个端口打两次「✓ 空闲」(两条检查各查各的,谁也不知道对方要什么);
+  #   · 云安全组提示把同一个端口列两遍,矛盾就摆在屏幕上,却当正常说;
+  #   · 装完自检打「✓ 监听中:7443/tcp(REALITY) 7443/tcp(Web)」—— 它只看端口上有没有人
+  #     听,于是 nanotund 替 nanotun-web 背了书;
+  #   · 真实情况是 nanotun-web 拿 EADDRINUSE 在 crash-loop。
+  # 一个端口只能有一个主人,这件事没有任何后续检查能兜住,只能在这儿拦。
+  if [ "$NT_PORT_REALITY" = "$NT_PORT_WEB" ]; then
+    if [ "$FOR_INSTALL" = 1 ]; then
+      fail "$(tsel "REALITY and the web console both want $NT_PORT_REALITY/tcp" \
+                   "REALITY 和 Web 后台都要 $NT_PORT_REALITY/tcp")" \
+           "$(tsel "One TCP port can only have one owner: whichever service starts second gets EADDRINUSE and crash-loops.
+       Give them different ports — the web console is the one that can move freely:  --web-port <port>" \
+                  "一个 TCP 端口只能有一个主人:后启动的那个会拿到 EADDRINUSE 并 crash-loop。
+       给它们不同的端口 —— 能随便挪的是 Web 后台:  --web-port <端口>")"
+    else
+      soft_t "REALITY and the web console both want $NT_PORT_REALITY/tcp" \
+             "REALITY 和 Web 后台都要 $NT_PORT_REALITY/tcp" \
+             "$(tsel "One TCP port can only have one owner; a real install rules this \"must be fixed first\". Move the web console: --web-port <port>" \
+                     "一个 TCP 端口只能有一个主人;真正安装时这条会被判为「必须先修复」。挪 Web 后台:--web-port <端口>")"
+    fi
+  fi
   chk_port tcp "$NT_PORT_REALITY" "REALITY" "REALITY"
   chk_port udp "$NT_PORT_HY2"  "hysteria2" "hysteria2"
   chk_port tcp "$NT_PORT_WEB" "web admin" "Web 后台"

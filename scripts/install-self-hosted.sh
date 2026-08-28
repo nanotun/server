@@ -1337,22 +1337,52 @@ done
 
 # 端口是「客户端到底连不连得上」最直接的证据,比服务 active 更贴近现象,所以即使
 # 在安静模式下也要有一行。hy2 听的是 **UDP** 443,漏掉 -u 就会把它误报成没起来。
-LISTEN_TCP="$(ss -lnt 2>/dev/null | awk 'NR>1{print $4}')"
-LISTEN_UDP="$(ss -lnu 2>/dev/null | awk 'NR>1{print $4}')"
-PORTS_UP=(); PORTS_DOWN=()
-check_port() { # <tcp|udp> <端口> <标签>
-  local pool; [ "$1" = tcp ] && pool="$LISTEN_TCP" || pool="$LISTEN_UDP"
-  if printf '%s\n' "$pool" | grep -qE ":$2\$"; then PORTS_UP+=("$3"); else PORTS_DOWN+=("$3"); STATUS_BAD=1; fi
+# 带上 -p:光看「这个端口上有没有人听」是不够的,还得看是**谁**在听。
+#
+# 少了这一问,任何一次端口被别人占着的安装都会拿到一个假绿灯:占用者满足了「有人在听」,
+# 于是自检替一个根本没起来的服务背书。实测两种(2026-08-28):
+#   · REALITY 和 Web 落到同一个端口 —— nanotund 先起来占住,自检对两者都打勾,而
+#     nanotun-web 正拿着 EADDRINUSE crash-loop;
+#   · --skip-check 装到一台 nginx 占着 443 的机器上 —— 同理。
+# 这两条现在都在环境自检那边被拦下了,但拦不住的还有:装完之后别人抢了端口、或者有人
+# 手改了 config.toml 再重跑。屏幕上打绿灯的代价太高,宁可多问一句。
+LISTEN_TCP="$(ss -lntp 2>/dev/null | awk 'NR>1{print $4" "$NF}')"
+LISTEN_UDP="$(ss -lnup 2>/dev/null | awk 'NR>1{print $4" "$NF}')"
+PORTS_UP=(); PORTS_DOWN=(); PORTS_ALIEN=()
+check_port() { # <tcp|udp> <端口> <标签> <该由谁听>
+  local pool line; [ "$1" = tcp ] && pool="$LISTEN_TCP" || pool="$LISTEN_UDP"
+  # `|| true` 不能省:set -e 下,独立赋值里的 grep 没匹配到会让**整个脚本当场退出**。
+  # 原先的写法把 grep 放在 if 条件里(那是 set -e 豁免的),改成赋值就踩上了。
+  # 2026-08-28 实测:nanotun 起不来时 hy2 那条查不到监听,脚本从第 7 步中间静默断掉 ——
+  # 而「有端口没听上」正是这段检查存在的唯一理由,等于它在最需要的时候消失。
+  line="$(printf '%s\n' "$pool" | grep -E ":$2 " | head -1 || true)"
+  if [ -z "$line" ]; then PORTS_DOWN+=("$3"); STATUS_BAD=1; return; fi
+  # 进程名看不出来时(ss 没有 -p、或者内核不给)不作负面判断 —— 「看不见」不等于「不对」,
+  # 在这上面报错比不报更糟。
+  case "$line" in
+    *users:*)
+      if printf '%s' "$line" | grep -q "\"$4\""; then PORTS_UP+=("$3")
+      else
+        PORTS_ALIEN+=("$3 → $(printf '%s' "$line" | sed 's/.*users:((\"\([^"]*\)\".*/\1/')")
+        STATUS_BAD=1
+      fi ;;
+    *) PORTS_UP+=("$3") ;;
+  esac
 }
 # 同样看实际端口。写死 8443 时,改过端口的机器每次装完都报一句「! 没听上:8443/tcp(REALITY)」
 # 并跟一大段诊断 —— 而服务正好好地在新端口上跑着。那句话把人指向「服务没起来」,
 # 离真相(自检看错了地方)很远。
-check_port tcp "$NT_PORT_REALITY" "${NT_PORT_REALITY}/tcp(REALITY)"
+check_port tcp "$NT_PORT_REALITY" "${NT_PORT_REALITY}/tcp(REALITY)" nanotund
 # hy2 开端口跳跃时只有首端口真的 listen,其余靠 iptables REDIRECT 过来,所以这里只看首端口。
-check_port udp "$NT_PORT_HY2"     "${NT_PORT_HY2}/udp(hy2)"
-[ "$WEB_AVAILABLE" -eq 1 ] && check_port tcp "$NT_PORT_WEB" "${NT_PORT_WEB}/tcp(Web)"
+check_port udp "$NT_PORT_HY2"     "${NT_PORT_HY2}/udp(hy2)" nanotund
+[ "$WEB_AVAILABLE" -eq 1 ] && check_port tcp "$NT_PORT_WEB" "${NT_PORT_WEB}/tcp(Web)" nanotun-web
 [ ${#PORTS_UP[@]}   -gt 0 ] && ok_t   "Listening: ${PORTS_UP[*]}"     "监听中:${PORTS_UP[*]}"
 [ ${#PORTS_DOWN[@]} -gt 0 ] && warn_t "Not listening: ${PORTS_DOWN[*]}" "没听上:${PORTS_DOWN[*]}"
+# 「有人在听,但不是它」必须和「没人听」分开说:两者的修法完全不同 —— 前者要么挪端口、
+# 要么停掉占用者,后者是服务本身没起来。混成一句会把人指向错误的方向。
+[ ${#PORTS_ALIEN[@]} -gt 0 ] && warn_t \
+  "Held by someone else: ${PORTS_ALIEN[*]} — nanotun's own service is not the one listening there, so it did not get the port" \
+  "被别人占着:${PORTS_ALIEN[*]} —— 在那儿听的不是 nanotun 自己的服务,也就是说它没拿到这个端口"
 
 # TUN 到底有没有拿到 IPv4 —— 这一项服务状态和端口都照不出来。
 #

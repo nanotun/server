@@ -828,6 +828,20 @@ else
 fi
 export NANOTUN_WEB_PORT
 
+# 两个 TCP 端口不能是同一个。这里只拦「一眼可判」的那种(两个值都在手上),权威判断在
+# 环境自检那边 —— 它读得到已装机器 config.toml 里的 REALITY 端口,而这里读不到。
+#
+# 早退是为了省掉一次无谓的下载和一次注定失败的安装:这条命令不管怎么走都装不出一台能用
+# 的机器,而失败会拖到 nanotun-web 起不来时才露面,那时屏幕上已经全是绿的了。
+if [ -n "${NANOTUN_REALITY_PORT:-}" ] && [ "$NANOTUN_REALITY_PORT" = "${NANOTUN_WEB_PORT:-}" ]; then
+  die_t "--reality-port and --web-port are both $NANOTUN_WEB_PORT — one TCP port cannot have two owners.
+   Whichever service starts second gets EADDRINUSE and crash-loops. The web console is the one
+   that can move freely, so give it another port (or leave it out and let the installer pick)." \
+        "--reality-port 和 --web-port 都是 $NANOTUN_WEB_PORT —— 一个 TCP 端口不能有两个主人。
+   后启动的那个会拿到 EADDRINUSE 并 crash-loop。能随便挪的是 Web 后台,给它换一个端口
+   (或者干脆别给,让安装器自己挑)。"
+fi
+
 # REALITY 端口只在**显式给了**时才下传。不给就让模板的 443 生效 —— 这里不像 Web 端口那样
 # 「挑一个」:443 是有理由的默认(见 config.toml 的 [reality]),不是随便一个数。
 [ -n "${NANOTUN_REALITY_PORT:-}" ] && export NANOTUN_REALITY_PORT

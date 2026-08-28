@@ -371,7 +371,9 @@ func TestPreflightHonorsInstallTimePortOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读不到 preflight.sh:%v", err)
 	}
-	src := string(b)
+	// 剥掉注释再判:注释里完全可能出现被查的字面量(比如解释「这里要把 X 应用到 Y」),
+	// 那样守卫就会被一句解释满足,而代码里真的删掉了也照样绿。
+	src := stripShellComments(string(b))
 	for _, c := range []struct{ env, target string }{
 		{"NANOTUN_WEB_PORT", "NT_PORT_WEB"},
 		{"NANOTUN_REALITY_PORT", "NT_PORT_REALITY"},
@@ -381,6 +383,74 @@ func TestPreflightHonorsInstallTimePortOverrides(t *testing.T) {
 			t.Errorf("preflight 没把 %s 应用到 %s(缺 %s):\n"+
 				"  全新机器上 nanotun-ports.sh 还不存在,不在这儿认一遍就只能查到默认端口。",
 				c.env, c.target, want)
+		}
+	}
+}
+
+// stripShellComments 去掉整行注释。只处理「整行都是注释」的情况:行尾注释里出现被查的
+// 字面量是极少数,而按 # 粗暴截断会切坏字符串里的 # (比如 URL 的 fragment)。
+func stripShellComments(s string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// 装完的端口自检必须问「是谁在听」,而且不能被 set -e 打断。
+//
+// 两件事都吃过亏(2026-08-28 同一次改动里):
+//
+// 一、只看「端口上有没有人听」会给假绿灯。REALITY 和 Web 落到同一个端口时,nanotund 先
+// 起来占住,自检对两者都打勾,而 nanotun-web 正拿着 EADDRINUSE crash-loop;外人(nginx)
+// 占着 443 时同理 —— 自检替一个根本没起来的服务背书,而这行绿字正是人判断「装好了没」的
+// 依据。
+//
+// 二、改成认进程时把 grep 从 if 条件挪进了独立赋值,而 set -e 下赋值里的 grep 没匹配到会
+// 让整个脚本当场退出。实测:nanotun 起不来时 hy2 那条查不到监听,脚本从第 7 步中间静默
+// 断掉 —— 这段检查在最需要它的那一刻消失了,而屏幕上看不出任何异常。
+func TestInstallerPortSelfCheckNamesTheProcess(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install-self-hosted.sh"))
+	if err != nil {
+		t.Fatalf("读不到 install-self-hosted.sh:%v", err)
+	}
+	src := string(b)
+
+	start := strings.Index(src, "check_port() {")
+	if start < 0 {
+		t.Fatal("找不到 check_port(),若改名请同步本守卫")
+	}
+	body := src[start:]
+	if end := strings.Index(body, "\n}\n"); end > 0 {
+		body = body[:end]
+	}
+	// 先把注释剥掉再判 —— 否则守卫会被**自己要求的那句解释**满足。
+	// 写这条守卫时就踩了:函数里有一行注释写着「`|| true` 不能省」,于是代码里真的删掉
+	// `|| true` 之后,子串匹配照样命中那句注释,守卫一声不吭。一条能被注释满足的守卫,
+	// 给的是虚假的安心,比没有更糟。
+	body = stripShellComments(body)
+
+	code := stripShellComments(src)
+	if !strings.Contains(code, "ss -lntp") || !strings.Contains(code, "ss -lnup") {
+		t.Error("端口自检没带 -p:光看端口有没有人听,占用者会替没起来的服务背书。")
+	}
+	if !strings.Contains(body, "|| true") {
+		t.Error("check_port 里的 grep 赋值缺 `|| true`:set -e 下没匹配到会让整个脚本当场退出,\n" +
+			"  而「有端口没听上」正是这段检查存在的唯一理由 —— 它会在最需要的时候消失。")
+	}
+
+	// 三条调用都要指明「该由谁听」,少一个就退回旧的假绿灯。
+	for _, want := range []string{
+		`"${NT_PORT_REALITY}/tcp(REALITY)" nanotund`,
+		`"${NT_PORT_HY2}/udp(hy2)" nanotund`,
+		`"${NT_PORT_WEB}/tcp(Web)" nanotun-web`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("check_port 调用没指明该由谁听,缺:%s", want)
 		}
 	}
 }
