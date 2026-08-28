@@ -9,7 +9,7 @@
 # 版本:默认 latest。生产建议钉一个具体版本,免得 `docker compose pull` 撞上不想要的升级:
 #   NANOTUN_IMAGE_TAG=0.1.12 docker compose up -d
 #
-# 注意镜像 tag **不带 v**:Release 页面写的是 v0.1.12,镜像那边是 0.1.12。照抄过来
+# 注意镜像 tag **不带 v**:Release 页面写的是 v1.0.0,镜像那边是 1.0.0。照抄过来
 # 会拿到一句 not found —— 那句话看着像没权限或镜像私有,其实只是多了个字母。
 #
 # 为什么只有 host:这是个 VPN 网关,它要在**宿主的网络栈里**做三件 bridge 模式下做不成的事:
@@ -92,6 +92,11 @@ services:
     environment:
       NANOTUN_WEB_ENABLED: "1"
       NANOTUN_WEB_LISTEN: "0.0.0.0:7443"
+      # 日志与 CLI 的语言,en 或 zh。默认英文,取消注释即中文。
+      # 首次启动会把它落盘到卷里的 /etc/nanotun/lang —— 那是为 docker exec 那条路准备的:
+      # 新起的进程不继承这里的 environment,不落盘的话容器日志和 docker exec 会一个中文
+      # 一个英文。
+      # NANOTUN_LANG: "zh"
       # MagicDNS 局域网后缀:客户端解析 *.<后缀> → mesh 虚拟 IP,默认 lan。想换成别的
       # (如 nanotun)在**首次启动前**取消注释——它只在首次生成 config.toml 时生效;卷里
       # 已有配置后再改这行不起作用(改法:直接改卷里 config.toml 的 domain_suffix 再重启,

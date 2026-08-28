@@ -41,6 +41,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
 
 [`install.sh`](scripts/install.sh) does four things in order; if any step fails it stops and tells you why:
 
+0. **Pick a language** — English or Chinese. English is the default; you are asked once, up
+   front, and only when a terminal is attached (see below)
 1. **Check the environment** — whether this machine can run it (see below); if not, it
    downloads and installs nothing, leaving no half-installed system behind
 2. **Download** — auto-detects the architecture, verifies SHA256, extracts to `/opt/nanotun/`
@@ -96,13 +98,30 @@ can install without `--web-admin` too, it just leaves the admin account uncreate
 Any argument `install.sh` doesn't recognize is passed through verbatim to the wizard, so
 [`setup.sh`](scripts/setup.sh)'s options can all be given this way.
 
+**Language.** Everything the install chain prints — the environment check, the installer, the
+setup wizard, and the `nanotun-*` commands it leaves behind — comes in English or Chinese.
+English is the default. With a terminal attached you are asked once before anything else
+happens; without one (CI, cloud-init, `curl … | bash`) nothing is asked and English is used,
+so an unattended install never blocks on the question.
+
+```bash
+sudo bash -c "$(curl -fsSL …/install.sh)" --lang zh      # or: NANOTUN_LANG=zh
+```
+
+`--lang` wins over `NANOTUN_LANG`, which wins over the choice remembered in
+`/etc/nanotun/lang`. The choice is written there at install time, so `nanotun-setup`,
+`nanotun-uninstall` and `nanotun-set-suffix` later default to the same language without being
+told again; either knob still overrides it per run. `nanotun-admin` and the Web console read
+the same `NANOTUN_LANG` (the console also has its own language switcher), so one decision
+covers the whole chain.
+
 **For production, pin the version** rather than drifting with latest. Put the same tag in both
 the URL and `NANOTUN_VERSION` and the whole install is pinned — script, environment check and
 release tarball all come from that tag:
 
 ```bash
-sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL \
-  https://raw.githubusercontent.com/nanotun/server/v0.1.25/scripts/install.sh)"
+sudo NANOTUN_VERSION=v1.0.0 bash -c "$(curl -fsSL \
+  https://raw.githubusercontent.com/nanotun/server/v1.0.0/scripts/install.sh)"
 ```
 
 Setting only `NANOTUN_VERSION` and leaving the URL on `main` works too and pins the tarball just
@@ -524,8 +543,8 @@ template changes are saved to `config.toml.dist` for diffing.
 first-run wizard, which a machine that's already serving doesn't need to go through again:
 
 ```bash
-sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL \
-  https://raw.githubusercontent.com/nanotun/server/v0.1.25/scripts/install.sh)" --no-setup
+sudo NANOTUN_VERSION=v1.0.0 bash -c "$(curl -fsSL \
+  https://raw.githubusercontent.com/nanotun/server/v1.0.0/scripts/install.sh)" --no-setup
 ```
 
 You can also download the new tar and run `install-self-hosted.sh` directly (that one never

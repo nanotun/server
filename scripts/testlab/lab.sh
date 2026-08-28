@@ -7,16 +7,18 @@
 #   scripts/testlab/lab.sh browse      真 Chrome 把 Web 后台点一遍(要 pip3 install playwright)
 #   scripts/testlab/lab.sh browse-2fa  真 Chrome 把后台 2FA 全生命周期走一遍(注册/登录/恢复码/改密)
 #   scripts/testlab/lab.sh drill       灾难恢复演练:备份 → 删库 → 还原 → 逐字对账
+#   scripts/testlab/lab.sh i18n        漏译演练:按英文装一遍,输出里出现中文即失败
 #   scripts/testlab/lab.sh reset       推倒重来,回到刚开机的干净状态
 #
 # 全部命令:
-#   up / status / install / setup / browse / browse-2fa / drill / preflight / uninstall / sh / logs / down / reset
+#   up / status / install / setup / browse / browse-2fa / drill / i18n / preflight / uninstall / sh / logs / down / reset
 #
 # 选项(跟在命令后面):
 #   --distro ubuntu|debian|rocky|opensuse|alpine   默认 ubuntu(与线上 SRV 的 Ubuntu 26.04 对齐)
 #                                         可带版本验最低支持线:ubuntu:20.04 / debian:11 / rocky:8
 #   --local                               装本地 HEAD 构建的包,而不是从 GitHub 下发布包
 #   --version vX.Y.Z                      指定要装的版本;不给就自动取最新(含预发布)
+#   --lang en|zh                          界面语言,透传成容器里的 NANOTUN_LANG(不给就是脚本自己的默认:英文)
 #   其余参数原样透传给里面的脚本,例如:lab.sh install --skip-check
 #
 # 环境变量:
@@ -56,12 +58,15 @@ warn() { printf '    %s!%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
 step() { printf '\n%s==> %s%s\n' "$C_STEP" "$*" "$C_OFF"; }
 die()  { printf '%sFATAL: %s%s\n' "$C_ERR" "$*" "$C_OFF" >&2; exit 1; }
 
-usage() { sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 # ── 参数 ────────────────────────────────────────────────────────────────
 DISTRO=ubuntu
 LOCAL=0
 VERSION=""
+# 界面语言。空 = 不设 NANOTUN_LANG,让脚本走自己的默认(英文)—— 那正是绝大多数用户
+# 拿到的那一屏,所以默认就该测它。要验中文那份就 --lang zh。
+LAB_LANG=""
 NO_TUN=0
 CMD=""
 PASS=()
@@ -70,6 +75,9 @@ while (( $# )); do
     --distro)  DISTRO="${2:?--distro 后面要跟发行版}"; shift 2 ;;
     --local)   LOCAL=1; shift ;;
     --version) VERSION="${2:?--version 后面要跟版本号}"; shift 2 ;;
+    # 不在这儿校验 en|zh:判据在被测脚本里(它们会把不认识的值当场顶回来),
+    # 而那正是要验的行为之一 —— 在测试台上再抄一份判据,只会和它分头演化。
+    --lang)    LAB_LANG="${2:?--lang 后面要跟 en 或 zh}"; shift 2 ;;
     # 便宜的 OpenVZ / 部分 LXC VPS 就是没有 /dev/net/tun,而这类机器恰恰是自托管
     # 用户最常买的。用它验 preflight 能不能在装之前就把话说清楚。
     --no-tun)  NO_TUN=1; shift ;;
@@ -142,6 +150,9 @@ running() { [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || e
 dex() {
   local flags=(-i)
   [ -t 0 ] && flags=(-it)
+  # 语言一并带进去:docker exec 不继承宿主环境,不显式传的话容器里永远是默认语言,
+  # 于是 --lang zh 看着生效了(测试台自己打的字是中文的),而被测脚本压根没收到。
+  [ -n "$LAB_LANG" ] && flags+=(-e "NANOTUN_LANG=$LAB_LANG")
   docker exec "${flags[@]}" "$@"
 }
 
@@ -297,6 +308,7 @@ cmd_install() {
     # --no-setup:交互式向导要人守着,docker exec 这边没有终端。
     local no_setup="--no-setup"
     local envs=(-e "NANOTUN_VERSION=${ver}")
+    [ -n "$LAB_LANG" ] && envs+=(-e "NANOTUN_LANG=$LAB_LANG")
     if [ "$WIZARD" = 1 ]; then
       no_setup=""
       # 向导那边的密码只走环境变量(setup.sh 故意不收命令行参数,理由见那边注释),
@@ -332,7 +344,10 @@ cmd_setup() {
 cmd_preflight() {
   need_up
   step "环境检查(工作区的 scripts/preflight.sh)"
-  docker exec -i "$NAME" bash -s -- ${PASS[@]+"${PASS[@]}"} < "$ROOT/scripts/preflight.sh"
+  local envs=()
+  [ -n "$LAB_LANG" ] && envs=(-e "NANOTUN_LANG=$LAB_LANG")
+  docker exec -i ${envs[@]+"${envs[@]}"} "$NAME" bash -s -- ${PASS[@]+"${PASS[@]}"} \
+    < "$ROOT/scripts/preflight.sh"
 }
 
 cmd_uninstall() {
@@ -414,6 +429,71 @@ cmd_browse_2fa() {
   python3 "$HERE/browse_2fa.py" --base "https://127.0.0.1:${WEB_PORT}" ${PASS[@]+"${PASS[@]}"}
 }
 
+# 漏译演练:装一台**英文**的机器,然后在整屏输出里找中文。
+#
+# 为什么需要它:安装链的文案是双语的,而漏译**只在运行时才看得见**。
+# Go 那侧的守卫(cmd/nanotun-admin/scripts_i18n_guard_test.go)能钉住「默认必须英文」
+# 「不许把默认按回 zh」「--help 两种语言都得有」,但它读的是源码和 --help 那一屏 ——
+# 一句漏在装机第 6 步、或者收尾那段「常用运维 / 卸载」里的中文,它一个字也看不到。
+#
+# 2026-08-28 实测就是这样:install-self-hosted.sh 收尾那两块当时还是裸中文,而
+# `bash -n`、全量 go test、`--help` 双语检查全绿 —— 唯一发现它的办法是真装一遍,
+# 然后盯着屏幕。这条演练把「盯着屏幕」变成一个退出码。
+#
+# 它必然重置容器:要看的正是**全新机器**那条路(首次生成配置、第一次 init 出 PSK、
+# 收尾提示),沿用一台装过的机器会绕开一半文案。
+cmd_i18n() {
+  step "漏译演练:全新机器上按英文装一遍,再在输出里找中文"
+  exists && docker rm -f "$NAME" >/dev/null 2>&1 || true
+  up
+
+  local log; log="$(mktemp)"
+  # 语言留空 = 不设 NANOTUN_LANG,走脚本自己的默认(英文)。那正是绝大多数人拿到的那一屏。
+  #
+  # 这几个是**普通赋值**,不是 `VAR=值 函数` 那种前缀 —— 数组做命令前缀在 bash 里不成立:
+  # `PASS=(-y --x) cmd` 会把字面量 "(-y --x)" 当成一个标量赋给 PASS,于是向导收到一个
+  # 叫 `(-y` 的参数、打出帮助就退了(2026-08-28 写这条演练时当场踩到,而症状是整条演练
+  # 一声不响地结束,连结论都没打)。
+  # 把测试台自己的旁白静音。这条演练要看的是**被测脚本**打了什么,而 lab.sh 自己的
+  # step/ok/warn 一直是中文(它是给维护者看的工具,也应该一直是中文)。
+  #
+  # 靠一份「排除这些中文串」的清单来区分行不通:清单会跟着 lab.sh 的文案漂,漏一条就是
+  # 一次假红 —— 写这条演练时就当场漏了「送进容器并安装」。静音是按**来源**分的,不按内容。
+  local _saved_step _saved_ok _saved_warn
+  _saved_step="$(declare -f step)"; _saved_ok="$(declare -f ok)"; _saved_warn="$(declare -f warn)"
+  step() { :; }; ok() { :; }; warn() { :; }
+
+  LAB_LANG=""
+  LOCAL=1
+  PASS=()
+  cmd_install                                                       >>"$log" 2>&1
+  PASS=(-y --dial-host 198.51.100.7)
+  cmd_setup                                                         >>"$log" 2>&1
+  PASS=()
+  # 装完之后由人单独敲的那两个,同样要看:它们的语言来自落盘的 /etc/nanotun/lang。
+  dex "$NAME" nanotun-uninstall --dry-run                           >>"$log" 2>&1
+  dex "$NAME" nanotun-set-suffix --help                             >>"$log" 2>&1
+
+  eval "$_saved_step"; eval "$_saved_ok"; eval "$_saved_warn"
+
+  # 剩下要排除的只有 build-release.sh:打包是维护者动作,不是装机的一部分,而 cmd_install
+  # 在 --local 模式下会把它的输出一并带进来。它那几行是固定的编号步骤。
+  local hits count
+  hits="$(grep -n '[一-鿿]' "$log" \
+    | grep -vE '(警告:绕过发版门|交叉编译|复制 config|打包 nanotun-|清理临时目录|生成 SHA256SUMS|完成。发布包)' \
+    || true)"
+
+  if [ -n "$hits" ]; then
+    count="$(printf '%s\n' "$hits" | grep -c . || true)"
+    printf '%s\n' "$hits" >&2
+    echo >&2
+    die "英文安装里有 ${count} 行中文输出(上面每行都带行号,完整日志:$log)——
+     这些是漏译。文案要成对:die_t / ok_t / warn_t / tsel,或 if [ \"\$NT_LANG\" = zh ] 的两个分支。"
+  fi
+  rm -f "$log"
+  ok "英文安装全程没有中文残留(装机 + 向导 + 卸载预演 + 改后缀帮助)"
+}
+
 # 灾难恢复演练。断言都在 restore-drill.sh 里。
 #
 # 它会把这台机器的库删掉再还原 —— 这正是要测的东西,所以只让它在 lab 容器上跑。
@@ -433,6 +513,7 @@ case "$CMD" in
   browse)    cmd_browse ;;
   browse-2fa) cmd_browse_2fa ;;
   drill)     cmd_drill ;;
+  i18n)      cmd_i18n ;;
   preflight) cmd_preflight ;;
   uninstall) cmd_uninstall ;;
   sh)        need_up; dex "$NAME" bash ;;

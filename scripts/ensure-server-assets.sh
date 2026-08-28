@@ -32,6 +32,34 @@ umask 022
 # 证书会被静默截到 CA 的到期日。两边共用这一个常量,就不会各自漂移。
 SELF_SIGNED_DAYS=36500
 
+# ── 语言 ─────────────────────────────────────────────────────────────────────
+# 默认英文。优先级:NANOTUN_LANG > /etc/nanotun/lang(装机时落下的)> en。
+#
+# 这个脚本没有 --lang:它唯一的参数是位置参数(BASE 目录 / config.toml 路径),加一个
+# 同名 flag 只会让「路径」和「选项」两种参数混在一起。它的调用方只有两种,两种都够:
+# install-self-hosted.sh 装机时调它(语言经环境变量传进来),以及 systemd 在开机时调
+# (那时没有任何环境变量,读落盘的那份 —— 跟这台机器装机时选的一致)。
+#
+# 为什么这几行日志也要双语:它们打在装机**中途**。漏掉这一个文件,一次英文安装就会在
+# 「生成自签证书」那几行突然掉回中文,而那正是最像出了问题的时刻(屏幕上冒出看不懂的
+# 字,紧接着是一串证书路径)。
+NT_LANG=en
+nt_lang_normalize() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    en|en[-_]*|english)      printf 'en' ;;
+    zh|zh[-_]*|chinese|cn)   printf 'zh' ;;
+    *)                       printf '' ;;
+  esac
+}
+if [[ -n "$(nt_lang_normalize "${NANOTUN_LANG:-}")" ]]; then
+  NT_LANG="$(nt_lang_normalize "$NANOTUN_LANG")"
+elif [[ -r /etc/nanotun/lang ]] && \
+     [[ -n "$(nt_lang_normalize "$(head -1 /etc/nanotun/lang 2>/dev/null)")" ]]; then
+  NT_LANG="$(nt_lang_normalize "$(head -1 /etc/nanotun/lang 2>/dev/null)")"
+fi
+# tsel <英文> <中文> —— 按当前语言选一份。
+tsel() { if [[ "$NT_LANG" == zh ]]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
 ARG="${1:-/etc/nanotun}"
 if [[ -f "$ARG" ]]; then
   CFG="$ARG"
@@ -45,7 +73,7 @@ else
 fi
 
 if [[ ! -f "$CFG" ]]; then
-  echo "[ensure-server-assets] 跳过：不存在 $CFG" >&2
+  echo "[ensure-server-assets] $(tsel "skipped: $CFG does not exist" "跳过：不存在 $CFG")" >&2
   exit 0
 fi
 
@@ -102,9 +130,15 @@ check_pem_or_die() {
   # 必须捕获返回码:脚本开了 errexit,裸调一个返回非 0 的函数会当场把整个脚本打断。
   usable_pem "$p" "$kind" || rc=$?
   case "$rc" in
-    2) echo "[ensure-server-assets] $p 存在但不是合法的 ${kind}(内容损坏?)。
+    2) echo "[ensure-server-assets] $(tsel \
+"$p exists but is not a valid ${kind} (corrupted?).
+    Nothing was regenerated for you — re-signing would change the server's
+    identity, invalidating every client profile already handed out.
+    Check whether you have a backup to restore from first; if you really do want
+    to start over, delete it and run this script again." \
+"$p 存在但不是合法的 ${kind}(内容损坏?)。
     没有替你重新生成 —— 重签会换掉服务器身份,已发出去的客户端配置全部作废。
-    先确认有没有备份可恢复;确实要重来的话删掉它再跑一次本脚本。" >&2
+    先确认有没有备份可恢复;确实要重来的话删掉它再跑一次本脚本。")" >&2
        exit 1 ;;
   esac
 }
@@ -119,7 +153,7 @@ gen_self_signed() {
   fi
   # 走到这里说明至少一边是缺失或 0 字节。两边一起重签:半新半旧的证书/私钥配不上对。
   rm -f "$cert_path" "$key_path"
-  echo "[ensure-server-assets] 未找到 TLS 证书，生成自签 -> $cert_path" >&2
+  echo "[ensure-server-assets] $(tsel "no TLS certificate found, generating a self-signed one" "未找到 TLS 证书，生成自签") -> $cert_path" >&2
   # 证书目录写死 0700:里面是私钥,而它常常正好是新建的那次(全新装机)。
   install -d -m 0700 "$(dirname "$cert_path")" "$(dirname "$key_path")"
   if openssl req -x509 -newkey rsa:2048 \
@@ -187,14 +221,14 @@ if [[ -n "${client_ca_rel// }" ]]; then
     ca_bc_count="$(openssl x509 -in "$client_ca_path" -noout -text 2>/dev/null \
       | grep -c 'X509v3 Basic Constraints' || true)"
     if [[ "${ca_bc_count:-0}" -gt 1 ]]; then
-      echo "[ensure-server-assets] client CA 带重复扩展(OpenSSL 1.1.1 的老毛病,Go 会拒收),重新生成 -> $client_ca_path" >&2
+      echo "[ensure-server-assets] $(tsel "client CA carries duplicate extensions (an old OpenSSL 1.1.1 quirk that Go rejects), regenerating" "client CA 带重复扩展(OpenSSL 1.1.1 的老毛病,Go 会拒收),重新生成") -> $client_ca_path" >&2
       rm -f "$client_ca_path" "$client_ca_key_path"
     fi
   fi
 
   check_pem_or_die "$client_ca_path" cert
   if ! usable_pem "$client_ca_path" cert; then
-    echo "[ensure-server-assets] 未找到 tls_client_ca_file，生成开发用 CA -> $client_ca_path" >&2
+    echo "[ensure-server-assets] $(tsel "no tls_client_ca_file found, generating a development CA" "未找到 tls_client_ca_file，生成开发用 CA") -> $client_ca_path" >&2
     install -d -m 0700 "$(dirname "$client_ca_path")"
     rm -f "$client_ca_path"
     # 这里**不能**用 -addext。
@@ -241,7 +275,7 @@ if [[ -n "${masq_rel// }" ]]; then
   masq_dir=$(resolve_path "$masq_rel")
   idx="${masq_dir}/index.html"
   if [[ ! -f "$idx" ]]; then
-    echo "[ensure-server-assets] 生成 masquerade 占位页 -> $idx" >&2
+    echo "[ensure-server-assets] $(tsel "generating the masquerade placeholder page" "生成 masquerade 占位页") -> $idx" >&2
     install -d -m 0755 "$masq_dir"
     cat >"$idx" <<'HTML'
 <!DOCTYPE html>
@@ -266,4 +300,4 @@ HTML
   chmod 0755 "$masq_dir" 2>/dev/null || true
 fi
 
-echo "[ensure-server-assets] 完成。" >&2
+echo "[ensure-server-assets] $(tsel "done." "完成。")" >&2

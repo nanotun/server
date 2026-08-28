@@ -30,11 +30,11 @@
 #   环境检查也可以单独跑:curl -fsSL .../preflight.sh | bash
 #
 # 装指定版本(生产建议钉版本,别跟着 latest 漂):
-#   sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL .../install.sh)"
+#   sudo NANOTUN_VERSION=v1.0.0 bash -c "$(curl -fsSL .../install.sh)"
 #
 # 要**完全**钉死(连这个脚本和 preflight.sh 一起钉),把 URL 里的 main 也换成同一个 tag:
-#   sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL \
-#     https://raw.githubusercontent.com/nanotun/server/v0.1.25/scripts/install.sh)"
+#   sudo NANOTUN_VERSION=v1.0.0 bash -c "$(curl -fsSL \
+#     https://raw.githubusercontent.com/nanotun/server/v1.0.0/scripts/install.sh)"
 #   NANOTUN_VERSION 是 tag 时 NANOTUN_BRANCH 默认跟着它走,所以 preflight.sh 也来自同一个 tag。
 #   这条联动是 v0.1.25 加的,所以示例里的 tag 不能低于它 —— 更早的 tag 上这个脚本还没有
 #   这段,环境检查仍从 main 取,而紧挨着的这句话会让人以为三样都钉住了。
@@ -49,6 +49,7 @@
 # 里,它随发布包走,也可以从解压好的目录单独跑。
 #
 # 选项:
+#   --lang en|zh   界面语言。默认英文;不给且有终端时会在最前面问一次(见下面 NANOTUN_LANG)
 #   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
 #   --skip-check   跳过环境检查直接装(不建议;装到一半失败比现在就知道难收拾)
 #   --no-setup     装完不自动进开服向导
@@ -59,6 +60,11 @@
 #   其余参数        原样转交开服向导,例如 --dial-host / --user / --web-admin / --yes
 #
 # 环境变量:
+#   NANOTUN_LANG        界面语言 en|zh,默认 en。--lang 优先级最高。
+#                       这一条会一路传下去:preflight.sh / install-self-hosted.sh / setup.sh
+#                       都认它,nanotun-admin 本来就认(它的默认也是英文),所以整条链的语言
+#                       是一致的。装完会落盘到 /etc/nanotun/lang,之后 nanotun-setup /
+#                       nanotun-uninstall / nanotun-set-suffix 默认沿用同一种语言。
 #   NANOTUN_MAGIC_SUFFIX        同 --magic-suffix(命令行参数优先);走 sudo 时记得写在
 #                       sudo 后面:sudo NANOTUN_MAGIC_SUFFIX=nanotun bash -c "$(curl ...)"
 #   NANOTUN_WEB_ADMIN_PASSWORD  Web 后台管理员密码,配合 --web-admin <名字> 使用。
@@ -282,6 +288,92 @@ dl_file_code() {
   fi
 }
 
+# ── 语言 ─────────────────────────────────────────────────────────────────────
+#
+# 默认英文。优先级:--lang > NANOTUN_LANG > /etc/nanotun/lang(这台机器上次选的)>
+# 交互询问 > en。
+#
+# 为什么要在这儿就定下来:下面那个参数循环自己就会说话(--magic-suffix 少给值时报错),
+# 而那时候正常的解析还没轮到。语言比它先定,才不会有「第一句提示永远是中文」这种
+# 独苗。所以这里先扫一遍 argv 把 --lang 摘出来,不动其余参数。
+#
+# 文案的组织方式:两种语言**并排写在调用处**(tsel / info_t / ok_t / die_t),而不是抽成
+# key → 文案的目录(Go 那侧的 catalog_en.go / catalog_zh.go 是目录式)。两边的形状不同是
+# 有理由的:
+#   · 这些提示几乎每一句都在插值 —— ${TMPDIR:-/tmp}、$DL $CURL_RC、$(df -h …)。搬进目录
+#     就得把每一处插值改写成 %s 参数再按顺序传回去,而这类改写是整件事里最容易出错的
+#     一环,错了还不会有任何东西红(文案照样打得出来,只是数字串了位)。并排放着,插值
+#     原样不动。
+#   · 这个文件里几乎每句提示上面都有一段注释解释「为什么这么措辞」(哪种失败该说什么、
+#     哪句建议在什么情形下是错的)。文案搬走之后,注释就和它解释的东西隔了几百行,
+#     下一个改措辞的人看不到那段理由 —— 而这个文件里的措辞恰恰是反复出过事的地方。
+#   · shell 这层每条文案只用一次,没有 Go 那侧「同一个 key 多处复用」的需求。
+NT_LANG=en
+
+# nt_lang_normalize <值> —— 认 en / zh 两族,认不出回空(由调用方决定怎么办)。
+# 收 zh_CN.UTF-8 这类完整 locale 名,是因为下面落盘的那份和人手写的 NANOTUN_LANG
+# 都可能是那种形状。
+nt_lang_normalize() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    en|en[-_]*|english)      printf 'en' ;;
+    zh|zh[-_]*|chinese|cn)   printf 'zh' ;;
+    *)                       printf '' ;;
+  esac
+}
+
+# 显式指定过语言吗?没有才问。问过一次就别再问 —— 重装同一台机器时,上次的选择
+# 已经落在 /etc/nanotun/lang 里了。
+NT_LANG_EXPLICIT=0
+_nt_l=""
+for _nt_a in "$@"; do
+  case "$_nt_a" in
+    --lang=*) _nt_l="$(nt_lang_normalize "${_nt_a#--lang=}")" ;;
+    --lang)   _nt_l=__next__ ;;
+    *)        [ "$_nt_l" = __next__ ] && _nt_l="$(nt_lang_normalize "$_nt_a")" ;;
+  esac
+done
+[ "$_nt_l" = __next__ ] && _nt_l=""
+if [ -n "$_nt_l" ]; then
+  NT_LANG="$_nt_l"; NT_LANG_EXPLICIT=1
+elif [ -n "$(nt_lang_normalize "${NANOTUN_LANG:-}")" ]; then
+  NT_LANG="$(nt_lang_normalize "$NANOTUN_LANG")"; NT_LANG_EXPLICIT=1
+elif [ -r /etc/nanotun/lang ] && \
+     [ -n "$(nt_lang_normalize "$(head -1 /etc/nanotun/lang 2>/dev/null)")" ]; then
+  NT_LANG="$(nt_lang_normalize "$(head -1 /etc/nanotun/lang 2>/dev/null)")"
+  NT_LANG_EXPLICIT=1
+fi
+unset _nt_l _nt_a
+
+# tsel <英文> <中文> —— 按当前语言选一份。
+tsel() { if [ "$NT_LANG" = zh ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
+# 语言选择。只在 stdin 真是终端时问。
+#
+# **不碰 /dev/tty**,哪怕它开得起来。`curl … | sudo bash` 那种形态下 stdin 是管道,而绕
+# /dev/tty 去问话正是本文件末尾那一大段记录过的死锁:Ubuntu/Debian 的 sudo 默认
+# use_pty,我们看到的 /dev/tty 是 sudo 另造的内层 pty,一读就被作业控制挂起,屏幕上
+# 停在提示符处、回车毫无反应。向导那边为此宁可跳过不问;第一屏更不该冒这个险 ——
+# 装机的头一句话就把人挂死,他连「装到哪一步」都无从判断。
+#
+# 没有终端就是英文:非交互场景(CI / cloud-init / 管道)一律走默认,不阻塞。
+nt_ask_lang() {
+  [ "$NT_LANG_EXPLICIT" = 0 ] || return 0
+  [ -t 0 ] || return 0
+
+  printf '\033[1;36m==>\033[0m Language / 语言\n'
+  printf '      1) English (default)\n'
+  printf '      2) 中文\n'
+  printf '    Select / 选择 [1]: '
+  local ans=""
+  # read 失败(EOF)也当默认,别让脚本因为 set -e 在这儿断掉。
+  read -r ans || ans=""
+  case "$(printf '%s' "$ans" | tr -d '[:space:]')" in
+    2|zh|ZH|zh_CN|中文) NT_LANG=zh ;;
+    *)                  NT_LANG=en ;;
+  esac
+  printf '\n'
+}
+
 CHECK_ONLY=0; SKIP_CHECK=0; NO_SETUP=0; SETUP_ARGS=()
 # MagicDNS 后缀:预置的环境变量作默认,--magic-suffix 覆盖。本脚本不校验(规则单一来源在
 # install-self-hosted.sh 的 apply_magic_suffix),只透传;非法值会在那边写 config.toml 前被拦。
@@ -291,17 +383,113 @@ while [ $# -gt 0 ]; do
     --check-only) CHECK_ONLY=1; shift ;;
     --skip-check) SKIP_CHECK=1; shift ;;
     --no-setup)   NO_SETUP=1; shift ;;
+    # 语言在文件上方已经扫过一遍(必须早于任何一句提示),这里只负责把它从 argv 里吃掉、
+    # 顺带校验值 —— 落进 SETUP_ARGS 会被开服向导当未知参数拒掉(exit 2)。
+    # 值不合法要当场说,别默默回落到英文:那样 `--lang fr` 看着像生效了。
+    --lang)
+      if [ -z "$(nt_lang_normalize "${2:-}")" ]; then
+        printf '%s\n' "$(tsel \
+          "install.sh: --lang takes en or zh (got '${2:-}')" \
+          "install.sh: --lang 只认 en 或 zh(收到 '${2:-}')")" >&2
+        exit 2
+      fi
+      shift 2 ;;
+    --lang=*)
+      if [ -z "$(nt_lang_normalize "${1#--lang=}")" ]; then
+        printf '%s\n' "$(tsel \
+          "install.sh: --lang takes en or zh (got '${1#--lang=}')" \
+          "install.sh: --lang 只认 en 或 zh(收到 '${1#--lang=}')")" >&2
+        exit 2
+      fi
+      shift ;;
     # MagicDNS 后缀经环境变量下传给 install-self-hosted.sh(它只吃 env,argv 全归向导)。
     # 在这里拦下来,别落进 SETUP_ARGS —— 否则会被开服向导当未知参数拒掉(exit 2)。
     # 不用 die():它在本循环之后才定义(与下面 SETUP_ARGS 冲突检查同一口径,直接 printf+exit)。
     --magic-suffix)
       case "${2:-}" in
-        ''|-*) printf 'install.sh: --magic-suffix 后面要跟一个后缀。例:--magic-suffix nanotun\n' >&2; exit 2 ;;
+        ''|-*) printf '%s\n' "$(tsel \
+                 "install.sh: --magic-suffix needs a suffix, e.g. --magic-suffix nanotun" \
+                 "install.sh: --magic-suffix 后面要跟一个后缀。例:--magic-suffix nanotun")" >&2
+               exit 2 ;;
       esac
       MAGIC_SUFFIX="$2"; shift 2 ;;
     # 打开头那段注释。不写死行号 —— 改文档时忘了同步行号,--help 就会截半句话。
     # 被 curl | bash 时 $0 不是文件,读不到就退回一个链接。
     -h|--help)
+      if [ "$NT_LANG" != zh ]; then
+        # 英文那份只能是这里手写的:文件头那段注释是给维护者看的,一直是中文。
+        cat <<EOF
+nanotun one-command server setup — check the machine, download the release,
+install it, then run the setup wizard.
+
+  sudo bash -c "\$(curl -fsSL ${RAW_BASE}/install.sh)"
+
+  Do NOT use curl … | sudo bash: on Ubuntu/Debian sudo defaults to use_pty and
+  the wizard deadlocks when it asks its first question.
+
+Unattended (CI / cloud-init) — write it to disk first, and pass --web-admin:
+
+  curl -fsSL ${RAW_BASE}/install.sh -o nanotun-install.sh \\
+    && sudo NANOTUN_WEB_ADMIN_PASSWORD='<password>' bash nanotun-install.sh \\
+         --dial-host <host> --user <name> --web-admin <admin-name> --yes
+
+  Do not pipe it: when curl fails, bash gets an empty script, runs its zero
+  lines and **exits 0** — CI only looks at the exit code, so it treats "nothing
+  was downloaded" as a successful install. Writing to disk first lets && catch it.
+  Without --web-admin no web administrator is created, and /setup stays open to
+  the whole internet — whoever opens it first becomes the administrator.
+
+Options:
+  --lang en|zh   interface language (default: en). Without it, and when a
+                 terminal is attached, you are asked once up front.
+  --check-only   only check the machine, list every problem, then exit (no root)
+  --skip-check   install without checking first (not recommended)
+  --no-setup     do not enter the setup wizard after installing
+  --magic-suffix <suffix>  MagicDNS LAN suffix (*.<suffix> → mesh virtual IP),
+                 default lan; only applied on a first install (same as
+                 NANOTUN_MAGIC_SUFFIX). To change it later:
+                 sudo nanotun-set-suffix <suffix>
+
+Environment:
+  NANOTUN_LANG        interface language en|zh, default en (--lang wins). It is
+                      passed on to preflight.sh / install-self-hosted.sh /
+                      setup.sh and to nanotun-admin, and is remembered in
+                      /etc/nanotun/lang for later nanotun-* commands
+  NANOTUN_MAGIC_SUFFIX same as --magic-suffix (the flag wins)
+  NANOTUN_WEB_ADMIN_PASSWORD  web admin password, together with --web-admin
+                      <name>. An environment variable rather than a flag: argv
+                      is visible to every user on the box (ps) and lands in the
+                      shell history
+  NANOTUN_VERSION     version to install, default: latest Release (no prereleases)
+  NANOTUN_INSTALL_DIR where to extract, default /opt/nanotun
+  NANOTUN_NO_INSTALL  =1 downloads and extracts only, no install (no root)
+  NANOTUN_REPO        use another repository (your own fork)
+  NANOTUN_BRANCH      which ref preflight.sh comes from. Defaults to
+                      NANOTUN_VERSION when that is a tag, otherwise main
+  NANOTUN_VERBOSE     =1 also prints systemd status and logs (default: verdict only)
+
+When github.com is unreachable (blocked / restricted egress), point both
+download prefixes at a mirror and the one-liner still works. These are **full
+prefixes**, so both path-style and ghproxy-style mirrors fit:
+  NANOTUN_GH_BASE     prefix for the release tarball, default https://github.com/${REPO}
+  NANOTUN_RAW_BASE    prefix for preflight.sh, default
+                      https://raw.githubusercontent.com/${REPO}/<ref>/scripts
+  Example:
+    sudo NANOTUN_GH_BASE=https://<mirror>/https://github.com/${REPO} \\
+         NANOTUN_RAW_BASE=https://<mirror>/https://raw.githubusercontent.com/${REPO}/main/scripts \\
+         bash -c "\$(curl -fsSL https://<mirror>/https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh)"
+
+Uninstall (installed as a command alongside):
+  sudo nanotun-uninstall --dry-run    # show which files would be touched
+  sudo nanotun-uninstall              # stop services, remove programs, keep config + database
+
+Full documentation: https://github.com/${REPO}
+EOF
+        exit 0
+      fi
+      # 中文那份打的是文件头那段注释。不写死行号 —— 改文档时忘了同步行号,--help 就会
+      # 截半句话。被 curl | bash 时 $0 不是文件,读不到就退回下面这份。
+      #
       # 退回的那份必须自己够用。--help 最常见的用法恰恰是 curl | bash -s -- --help,
       # 而那时 $0 是 "bash"、读不到文件 —— 只回一个链接等于让人再去开一次浏览器。
       awk 'NR>1 && /^#/ {sub(/^#[ \t]?/,""); print; next} NR>1 {exit}' "$0" 2>/dev/null || cat <<EOF
@@ -322,6 +510,7 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
   漏掉 --web-admin 则不会建后台管理员,/setup 一直敞着,谁先打开谁就是管理员。
 
 选项:
+  --lang en|zh   界面语言,默认英文;不给且有终端时会在最前面问一次
   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
   --skip-check   跳过环境检查直接装(不建议)
   --no-setup     装完不自动进开服向导
@@ -330,6 +519,9 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
                  改现有机器:sudo nanotun-set-suffix <后缀>
 
 环境变量:
+  NANOTUN_LANG        界面语言 en|zh,默认 en(--lang 优先)。会一路传给 preflight.sh /
+                      install-self-hosted.sh / setup.sh 和 nanotun-admin,并落盘到
+                      /etc/nanotun/lang,之后的 nanotun-* 命令默认沿用
   NANOTUN_MAGIC_SUFFIX 同 --magic-suffix(命令行优先)
   NANOTUN_WEB_ADMIN_PASSWORD  Web 后台密码,配合 --web-admin <名字>。走环境变量而不是
                       参数:argv 对同机所有用户可见(ps),还会落进 shell history
@@ -376,9 +568,17 @@ done
 # 但如果向导压根不会跑,这些参数就没人接了 —— 而且此刻大概率是把 install.sh 的
 # flag 敲错了(比如 --skip-chek)。这种要在动系统之前就拦下,不能装完一整套再说。
 if [ ${#SETUP_ARGS[@]} -gt 0 ] && { [ "$CHECK_ONLY" = 1 ] || [ "$NO_SETUP" = 1 ]; }; then
-  if [ "$CHECK_ONLY" = 1 ]; then why="--check-only 只检查不安装"; else why="--no-setup 明说了不跑向导"; fi
-  printf 'install.sh: 这些参数本该转交开服向导,但这次向导不会跑(%s):%s\n' "$why" "${SETUP_ARGS[*]}" >&2
-  printf '   install.sh 自己只认 --check-only / --skip-check / --no-setup,其余一律转交向导(--help 看用法)。\n' >&2
+  if [ "$CHECK_ONLY" = 1 ]; then
+    why="$(tsel "--check-only only checks, it does not install" "--check-only 只检查不安装")"
+  else
+    why="$(tsel "--no-setup explicitly says not to run the wizard" "--no-setup 明说了不跑向导")"
+  fi
+  printf '%s\n' "$(tsel \
+    "install.sh: these arguments were meant for the setup wizard, but the wizard will not run this time ($why): ${SETUP_ARGS[*]}" \
+    "install.sh: 这些参数本该转交开服向导,但这次向导不会跑($why):${SETUP_ARGS[*]}")" >&2
+  printf '%s\n' "$(tsel \
+    "   install.sh itself only takes --lang / --check-only / --skip-check / --no-setup; everything else goes to the wizard (see --help)." \
+    "   install.sh 自己只认 --lang / --check-only / --skip-check / --no-setup,其余一律转交向导(--help 看用法)。")" >&2
   exit 2
 fi
 
@@ -386,11 +586,20 @@ info() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 ok()   { printf '    \033[1;32m✓\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 
+# 双语版本:英文在前、中文在后,与 tsel 同序。并排放着的理由见文件上方「语言」那节。
+info_t() { info "$(tsel "$1" "$2")"; }
+ok_t()   { ok   "$(tsel "$1" "$2")"; }
+die_t()  { die  "$(tsel "$1" "$2")"; }
+warn_t() { printf '    \033[1;33m!\033[0m %s\n' "$(tsel "$1" "$2")"; }
+
 # 这两个一起给是矛盾的,而按原来的写法后果是**静默装上**:--skip-check 会让下面那段
 # `if [ "$SKIP_CHECK" = 0 ]` 整个跳过,而「只检查就退出」正好写在那段里面 ——
 # 于是一条本意是「只看看」的命令,以 root 把整个服务端装了。宁可让它报错。
 if [ "$CHECK_ONLY" = 1 ] && [ "$SKIP_CHECK" = 1 ]; then
-  die "--check-only 和 --skip-check 是矛盾的:一个是只检查不安装,另一个是不检查直接装。
+  die_t "--check-only and --skip-check contradict each other: one only checks without installing, the other installs without checking.
+   Just want to see whether this machine will do:  --check-only
+   Know about the problems and want to install anyway:  --skip-check" \
+        "--check-only 和 --skip-check 是矛盾的:一个是只检查不安装,另一个是不检查直接装。
    只想看看这台机器行不行:--check-only
    明知有问题也要硬装:--skip-check"
 fi
@@ -404,7 +613,17 @@ fi
 # 包名在三大发行版上都叫 curl,不必按发行版分岔;给两条是因为最小镜像上装哪个都行,而
 # 已经有 wget 的机器上再装 curl 是多余的一步。
 if [ -z "$DL" ]; then
-  die "这台机器上既没有 curl 也没有 wget,下载不了任何东西(网络本身可能是好的)。
+  die_t "This machine has neither curl nor wget, so nothing can be downloaded (the network itself may well be fine).
+   Install one of them and rerun this command:
+     apt-get update && apt-get install -y curl      # Debian / Ubuntu
+     dnf install -y curl                            # RHEL / Fedora / Alma / Rocky
+     zypper install -y curl                         # openSUSE
+   If you truly cannot install either, work around this machine's network: on a
+   machine that does have internet access, open
+     https://github.com/${REPO}/releases
+   download the tarball for this architecture, copy it over, extract it and run
+   scripts/install-self-hosted.sh (that step needs no network)." \
+        "这台机器上既没有 curl 也没有 wget,下载不了任何东西(网络本身可能是好的)。
    装其中一个再重跑本命令:
      apt-get update && apt-get install -y curl      # Debian / Ubuntu
      dnf install -y curl                            # RHEL / Fedora / Alma / Rocky
@@ -413,6 +632,15 @@ if [ -z "$DL" ]; then
      https://github.com/${REPO}/releases
    下对应架构的包拷进来,解压后跑 scripts/install-self-hosted.sh(那一步不联网)。"
 fi
+
+# 语言选择摆在这儿:参数已经解析完(--help、--lang 值不合法、参数冲突、连下载器都没有 ——
+# 这些都该立刻报出来,而不是先让人回答一个问题),而它仍然在第一句实质输出之前:环境自检、
+# 下载、安装、向导全都还没开始。
+nt_ask_lang
+
+# 定下来之后一路传下去。preflight.sh / install-self-hosted.sh / setup.sh 都认这个变量,
+# nanotun-admin 本来就认(它的默认也是英文)—— 所以整条链只有一处需要决定语言。
+export NANOTUN_LANG="$NT_LANG"
 
 # ── 1. 环境自检 ──────────────────────────────────────────────────────────────
 #
@@ -462,7 +690,9 @@ run_preflight() {
   # --skip-check」。真实原因是临时目录写不进去:既指错了方向,又建议跳过环境检查。
   # 一台 /tmp 是 0700 root 的机器上,非 root 跑 --check-only 就是这个下场。
   pf="$(mktemp)" || pf=""
-  [ -n "$pf" ] || die "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 配额 / 空间不足)。
+  [ -n "$pf" ] || die_t "Could not create a temporary file — ${TMPDIR:-/tmp} is not writable (permissions / read-only / quota / out of space).
+   Retry with another location, e.g.:  TMPDIR=/var/tmp <the command you just ran>" \
+                        "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 配额 / 空间不足)。
    换个位置重试,例如:TMPDIR=/var/tmp <刚才那条命令>"
   # 失败时要分清两种原因,它们的下一步完全不同。
   #
@@ -471,7 +701,10 @@ run_preflight() {
   # 这种情形下最坏的建议:它把一次「取错了地方」升级成一次不做检查的安装。
   if ! dl_file "$RAW_BASE/preflight.sh" "$pf" small; then
     rm -f "$pf"
-    local hint="   网络不通的话可以 --skip-check 跳过检查直接装(风险自负)。"
+    local hint
+    hint="$(tsel \
+      "   If the network is simply down, --skip-check installs without checking (at your own risk)." \
+      "   网络不通的话可以 --skip-check 跳过检查直接装(风险自负)。")"
     if [ "$BRANCH" != main ]; then
       # 钉了 ref 却取不到,有两种原因,下一步完全相反 ——
       #   ① 这个版本根本不存在(版本号敲错、或猜了一个还没发的号)。要做的是改版本号。
@@ -492,37 +725,69 @@ run_preflight() {
       # 是两回事,照着去改版本号只会越走越远。这一支单独写,别拿哨兵值混进下面的 case ——
       # 混进去的下场是文案里冒出一句「探 install.sh 得到 mirror」,内部值直接糊到用户脸上。
       if [ -n "${NANOTUN_RAW_BASE:-}" ]; then
-        hint="   用的是自定义 NANOTUN_RAW_BASE(镜像),从它那儿没取到这个文件。
+        hint="$(tsel \
+"   You set a custom NANOTUN_RAW_BASE (a mirror), and the file was not there.
+   First make sure the mirror address itself is right — it has to produce the
+   shape <prefix>/preflight.sh:
+     ${RAW_BASE}/preflight.sh
+   If the mirror is broken, try a direct connection without NANOTUN_RAW_BASE, or
+   --skip-check to install without checking (at your own risk)." \
+"   用的是自定义 NANOTUN_RAW_BASE(镜像),从它那儿没取到这个文件。
    先确认镜像地址本身对不对 —— 它要能拼出 <前缀>/preflight.sh 这个形状:
      ${RAW_BASE}/preflight.sh
-   镜像不灵就先不设 NANOTUN_RAW_BASE 直连试试,或 --skip-check 跳过检查(风险自负)。"
+   镜像不灵就先不设 NANOTUN_RAW_BASE 直连试试,或 --skip-check 跳过检查(风险自负)。")"
       else
       case "$code" in
         404)
-          hint="   ${BRANCH} 这个版本不存在 —— 同一个 ref 下连 install.sh 也是 404。
+          hint="$(tsel \
+"   There is no such version as ${BRANCH} — under the same ref even install.sh is a 404.
+   Check the version number: ${GH_BASE}/releases
+   To install the newest one, leave NANOTUN_VERSION unset; the script resolves latest itself." \
+"   ${BRANCH} 这个版本不存在 —— 同一个 ref 下连 install.sh 也是 404。
    核对版本号:${GH_BASE}/releases
-   想装最新版就不要设 NANOTUN_VERSION,不设时脚本会自己解析 latest。" ;;
+   想装最新版就不要设 NANOTUN_VERSION,不设时脚本会自己解析 latest。")" ;;
         200)
-          hint="   ${BRANCH} 这个 tag 在,但它里面没有 scripts/preflight.sh(老版本 / fork 会这样)。
+          hint="$(tsel \
+"   The tag ${BRANCH} does exist, but it does not contain scripts/preflight.sh (old versions / forks look like this).
+   Add NANOTUN_BRANCH=main to take the scripts from the trunk (the release tarball
+   is still pinned by NANOTUN_VERSION), or --skip-check to install without
+   checking (at your own risk)." \
+"   ${BRANCH} 这个 tag 在,但它里面没有 scripts/preflight.sh(老版本 / fork 会这样)。
    加 NANOTUN_BRANCH=main 让脚本走主干(发布包仍按 NANOTUN_VERSION 钉住),或者
-   --skip-check 跳过检查直接装(风险自负)。" ;;
+   --skip-check 跳过检查直接装(风险自负)。")" ;;
         000)
           # 一个 HTTP 响应都没拿到 —— 网络 / DNS / TLS 那一层就断了,跟版本号无关。
           # 这时候把「先核对版本号」摆在第一句是把人往错的方向支:版本再对也取不到。
-          hint="   连 ${RAW_BASE%/scripts} 都没连上(探 install.sh 一个 HTTP 响应都没拿到)——
+          hint="$(tsel \
+"   Could not even reach ${RAW_BASE%/scripts} (probing install.sh got no HTTP response at all) —
+   check the network, DNS, egress firewall or proxy first. Changing NANOTUN_VERSION
+   will not help here: the tarball comes from the same address.
+   If github.com is unreachable from this machine, point at a mirror
+   (NANOTUN_GH_BASE / NANOTUN_RAW_BASE, see --help), or --skip-check to install
+   without checking (at your own risk)." \
+"   连 ${RAW_BASE%/scripts} 都没连上(探 install.sh 一个 HTTP 响应都没拿到)——
    先查网络、DNS、出站防火墙或代理。这时候换个 NANOTUN_VERSION 没用,取包走的是同一个地址。
    上不去 github.com 的话,可以指到镜像(NANOTUN_GH_BASE / NANOTUN_RAW_BASE,见 --help),
-   或 --skip-check 跳过检查直接装(风险自负)。" ;;
+   或 --skip-check 跳过检查直接装(风险自负)。")" ;;
         *)
           # 服务器答了,但不是 200 也不是 404:多半是 429 / 403 限流,或 5xx。
-          hint="   取的是 ${BRANCH} 这个 ref,没能分清是版本不存在还是这次没取到(探 install.sh 得到 ${code})。
+          hint="$(tsel \
+"   The ref requested was ${BRANCH}, and this could not tell whether the version
+   does not exist or the fetch just failed (probing install.sh got ${code}).
+   A ${code} is usually rate limiting (429 / 403) or a temporary fault on their
+   side (5xx) — retrying in a few minutes often just works.
+   If it persists, check the version number first: ${GH_BASE}/releases
+   If the version is right, add NANOTUN_BRANCH=main to use the trunk, or
+   --skip-check to install without checking (at your own risk)." \
+"   取的是 ${BRANCH} 这个 ref,没能分清是版本不存在还是这次没取到(探 install.sh 得到 ${code})。
    ${code} 这种多半是限流(429 / 403)或对面临时故障(5xx)—— 隔几分钟重试常常就好了。
    一直这样的话先核对版本号:${GH_BASE}/releases
-   版本没错的话,加 NANOTUN_BRANCH=main 走主干,或 --skip-check 跳过检查(风险自负)。" ;;
+   版本没错的话,加 NANOTUN_BRANCH=main 走主干,或 --skip-check 跳过检查(风险自负)。")" ;;
       esac
       fi
     fi
-    die "下载 preflight.sh 失败: $RAW_BASE/preflight.sh
+    die "$(tsel "Could not download preflight.sh: $RAW_BASE/preflight.sh" \
+                "下载 preflight.sh 失败: $RAW_BASE/preflight.sh")
 $hint"
   fi
   bash "$pf" "${args[@]+"${args[@]}"}"
@@ -537,23 +802,32 @@ if [ "$SKIP_CHECK" = 0 ]; then
     # 「不是 root」这一条不能顺着往下说 --skip-check:跳过检查并不会让人变成 root,
     # 装到下一步照样被拦(那句话是对的,只是白跑一趟)。这里按当前身份分岔。
     if [ "$(id -u)" != 0 ]; then
-      die "环境检查没过(见上面的修复清单)。
+      die_t "The environment check did not pass (see the fix list above).
+   The first item is \"not root\", so rerun this command with sudo — --skip-check
+   cannot help with that one: it only skips the check, it does not grant you
+   privileges, and the next step will stop you just the same.
+   If you only want to download without installing:  NANOTUN_NO_INSTALL=1." \
+            "环境检查没过(见上面的修复清单)。
    头一条是「不是 root」,那就得用 sudo 重跑本命令 —— --skip-check 在这一条上帮不了忙,
    它只跳过检查,不会给你权限,下一步照样会被拦下。
    只是想先下载不安装的话:NANOTUN_NO_INSTALL=1。"
     fi
-    die "环境检查没过(见上面的修复清单)。修完重跑本命令;
+    die_t "The environment check did not pass (see the fix list above). Fix those and rerun this command;
+   to install anyway, knowing about the problems, add --skip-check." \
+          "环境检查没过(见上面的修复清单)。修完重跑本命令;
    确认要带着问题硬装可以加 --skip-check。"
   fi
   [ "$CHECK_ONLY" = 1 ] && exit 0
 else
-  printf '    \033[1;33m!\033[0m --skip-check:跳过环境检查\n'
+  warn_t "--skip-check: skipping the environment check" "--skip-check:跳过环境检查"
 fi
 
 case "$(uname -m)" in
   x86_64|amd64)  ARCH=amd64 ;;
   aarch64|arm64) ARCH=arm64 ;;
-  *) die "不支持的架构 $(uname -m)。发布包只有 linux-amd64 与 linux-arm64;
+  *) die_t "Unsupported architecture $(uname -m). The release tarballs are only linux-amd64 and linux-arm64;
+   for anything else, build from source with go build (see the build-from-source section of the README)." \
+           "不支持的架构 $(uname -m)。发布包只有 linux-amd64 与 linux-arm64;
    其它架构请自行 go build(见仓库 README 的源码构建一节)。" ;;
 esac
 
@@ -568,19 +842,20 @@ _pkg_hint() { # _pkg_hint <包名> —— 猜一条能直接粘的安装命令
   elif command -v yum     >/dev/null 2>&1; then echo "yum install $1"
   elif command -v apk     >/dev/null 2>&1; then echo "apk add $1"
   elif command -v pacman  >/dev/null 2>&1; then echo "pacman -S $1"
-  else echo "用本机包管理器装上 $1"; fi
+  else tsel "install $1 with this machine's package manager" "用本机包管理器装上 $1"; echo; fi
 }
 # 下载器同上,开头已判(有 curl 用 curl,没有就退到 wget)。这里只留 tar ——
 # 它没有替代品,而且解包这一步在没有网络的手工安装路径上同样要用。
-command -v tar  >/dev/null 2>&1 || die "缺少 tar($(_pkg_hint tar))"
+command -v tar  >/dev/null 2>&1 || die_t "tar is missing ($(_pkg_hint tar))" "缺少 tar($(_pkg_hint tar))"
 if [ "${NANOTUN_NO_INSTALL:-0}" != "1" ] && [ "$(id -u)" != "0" ]; then
-  die "安装需要 root。请用 sudo 跑,或设 NANOTUN_NO_INSTALL=1 只下载。"
+  die_t "Installing needs root. Run it with sudo, or set NANOTUN_NO_INSTALL=1 to only download." \
+        "安装需要 root。请用 sudo 跑,或设 NANOTUN_NO_INSTALL=1 只下载。"
 fi
 
 # ── 2. 定版本 ────────────────────────────────────────────────────────────────
 VERSION="${NANOTUN_VERSION:-}"
 if [ -z "$VERSION" ]; then
-  info "查询最新 Release ..."
+  info_t "Looking up the latest Release ..." "查询最新 Release ..."
   # 不解析 JSON(机器上不一定有 jq),跟着 /releases/latest 的 302 读 Location 里的 tag。
   # 比 grep API 返回体稳:API 有速率限制,未认证时一小时 60 次,CI 或反复重试很容易撞到。
   # 失败原因要分开说。原来一律是「检查网络或用 NANOTUN_VERSION 指定版本」,而最常撞上
@@ -592,7 +867,20 @@ if [ -z "$VERSION" ]; then
     # 报的是 $GH_BASE 而不是写死的「github.com」:设了镜像时,一句「连不上 github.com」
     # 会让人去查一个跟这次失败无关的域名 —— 真正没通的是他自己填的那个前缀。
     if dl_unreachable "$LATEST_RC"; then
-      die "查询最新版本失败:连不上 ${GH_BASE}($DL $LATEST_RC:解析不了 / 连不上 / 连上了不给数据)。
+      die_t "Could not look up the latest version: ${GH_BASE} is unreachable ($DL $LATEST_RC: cannot resolve / cannot connect / connected but no data).
+   Check the network, DNS, egress firewall or proxy first. Note that **setting
+   NANOTUN_VERSION will not help here** — the next step fetches the tarball from
+   the same address.
+   If this machine cannot reach github.com, there are two ways:
+     1. Point at a mirror (the one-liner still works):
+       sudo NANOTUN_GH_BASE=<mirror-prefix> NANOTUN_RAW_BASE=<mirror-prefix>/scripts bash -c \"\$(curl -fsSL …/install.sh)\"
+     2. Work around this machine's network: on a machine with internet access, open
+       https://github.com/${REPO}/releases
+     download the linux-$ARCH tarball, copy it over and install from it (that step
+     needs no network):
+       tar -xzf nanotun-<version>-linux-$ARCH.tar.gz
+       sudo ./nanotun-<version>-linux-$ARCH/scripts/install-self-hosted.sh" \
+            "查询最新版本失败:连不上 ${GH_BASE}($DL $LATEST_RC:解析不了 / 连不上 / 连上了不给数据)。
    先检查网络、DNS、出站防火墙或代理。注意这时候**指定 NANOTUN_VERSION 也没用** ——
    下一步取发布包走的是同一个地址。
    这台机器上不去 github.com 的话,有两条路:
@@ -604,7 +892,10 @@ if [ -z "$VERSION" ]; then
        tar -xzf nanotun-<版本>-linux-$ARCH.tar.gz
        sudo ./nanotun-<版本>-linux-$ARCH/scripts/install-self-hosted.sh"
     else
-      die "查询最新版本失败($DL $LATEST_RC)。
+      die_t "Could not look up the latest version ($DL $LATEST_RC).
+   You can pin a version with NANOTUN_VERSION to skip this lookup; version numbers are at
+     https://github.com/${REPO}/releases" \
+            "查询最新版本失败($DL $LATEST_RC)。
    可以用 NANOTUN_VERSION 钉一个版本绕开这次查询,版本号见
      https://github.com/${REPO}/releases"
     fi
@@ -626,29 +917,38 @@ if [ -z "$VERSION" ]; then
       case "$newest" in
         # URL 要写全。这条命令是给人**原样粘走**的 —— 原来这里是 `.../install.sh`,
         # 省略号粘过去就是一个不存在的地址,等于还得自己回去翻文档拼一遍。
-        v[0-9]*) die "${REPO} 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
+        v[0-9]*) die_t "${REPO} currently only has prereleases (rc), and /releases/latest excludes prereleases.
+   The newest one is ${newest}; copy this line as-is:
+     sudo NANOTUN_VERSION=${newest} bash -c \"\$(curl -fsSL ${RAW_BASE}/install.sh)\"" \
+                       "${REPO} 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
    最新的是 ${newest},照抄这条:
      sudo NANOTUN_VERSION=${newest} bash -c \"\$(curl -fsSL ${RAW_BASE}/install.sh)\"" ;;
-        *) die "${REPO} 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
+        *) die_t "${REPO} currently only has prereleases (rc), and /releases/latest excludes prereleases.
+   Pick one at https://github.com/${REPO}/releases and name it with NANOTUN_VERSION=vX.Y.Z." \
+                 "${REPO} 目前只有预发布版本(rc),而 /releases/latest 不含预发布。
    到 https://github.com/${REPO}/releases 挑一个,再用 NANOTUN_VERSION=vX.Y.Z 指定。" ;;
       esac ;;
-    *) die "没能从 $latest_url 解析出版本号。可能该仓库还没发过 Release;
+    *) die_t "Could not parse a version number out of $latest_url. Possibly this repository has no Release yet;
+   name one explicitly with NANOTUN_VERSION=vX.Y.Z." \
+             "没能从 $latest_url 解析出版本号。可能该仓库还没发过 Release;
    用 NANOTUN_VERSION=vX.Y.Z 显式指定。" ;;
   esac
 fi
-ok "版本: $VERSION"
+ok_t "Version: $VERSION" "版本: $VERSION"
 
 TARBALL="nanotun-${VERSION}-linux-${ARCH}.tar.gz"
 BASE="${GH_BASE}/releases/download/${VERSION}"
 
 # ── 3. 下载 + 校验 ───────────────────────────────────────────────────────────
 TMP="$(mktemp -d)" || TMP=""
-[ -n "$TMP" ] || die "创建临时目录失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 配额 / 空间不足)。
+[ -n "$TMP" ] || die_t "Could not create a temporary directory — ${TMPDIR:-/tmp} is not writable (permissions / read-only / quota / out of space).
+   Retry with another location, e.g.:  TMPDIR=/var/tmp <the command you just ran>" \
+                       "创建临时目录失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 配额 / 空间不足)。
    换个位置重试,例如:TMPDIR=/var/tmp <刚才那条命令>"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
-info "下载 $TARBALL ..."
+info_t "Downloading $TARBALL ..." "下载 $TARBALL ..."
 # curl 的退出码要分开看。原来无论怎么失败都归结成「确认该版本存在且有 linux-xxx 产物」,
 # 于是磁盘写满时(curl 23,它自己已经打了 "Failure writing output to destination")
 # 屏幕上让人去 GitHub Releases 查有没有这个产物 —— 方向完全错了,而真正要做的是腾地方
@@ -657,23 +957,41 @@ CURL_RC=0
 dl_file "$BASE/$TARBALL" "$TMP/$TARBALL" big || CURL_RC=$?
 if [ "$CURL_RC" != 0 ]; then
   # 「在别处下好再拷进来」这段在 stall 和 netfail 两条里都要说,提出来免得两份各自漂移。
-  OFFLINE_HINT="   一直不通的话,在能上网的机器上下好这个包,拷到这台机器上装(装的这一步不联网):
+  OFFLINE_HINT="$(tsel \
+"   If it stays unreachable, download this tarball on a machine that has internet
+   access, copy it over and install from it (that step needs no network):
      $BASE/$TARBALL
-     tar -xzf $TARBALL && sudo ./${TARBALL%.tar.gz}/scripts/install-self-hosted.sh"
+     tar -xzf $TARBALL && sudo ./${TARBALL%.tar.gz}/scripts/install-self-hosted.sh" \
+"   一直不通的话,在能上网的机器上下好这个包,拷到这台机器上装(装的这一步不联网):
+     $BASE/$TARBALL
+     tar -xzf $TARBALL && sudo ./${TARBALL%.tar.gz}/scripts/install-self-hosted.sh")"
   case "$(dl_rc_class "$CURL_RC")" in
-    write) die "下载失败:写不进 ${TMPDIR:-/tmp}($DL $CURL_RC:写目标文件失败)。
+    write) die_t "Download failed: cannot write to ${TMPDIR:-/tmp} ($DL $CURL_RC: writing the output file failed).
+   Usually out of space or read-only. Free some space, or retry elsewhere:  TMPDIR=/var/tmp <the command you just ran>
+   Currently available: $(df -h "$TMP" 2>/dev/null | awk 'NR==2{print $4}')" \
+                  "下载失败:写不进 ${TMPDIR:-/tmp}($DL $CURL_RC:写目标文件失败)。
    多半是空间不足或只读。腾出空间,或换个位置重试:TMPDIR=/var/tmp <刚才那条命令>
    当前可用:$(df -h "$TMP" 2>/dev/null | awk 'NR==2{print $4}')" ;;
     # 报 $GH_BASE 而不是写死的「github.com」:设了镜像时没通的是那个前缀,而一句
     # 「连不上 github.com」会把人支到一个跟这次失败无关的域名上去查。
-    unreachable) die "下载失败:连不上 ${GH_BASE}($DL $CURL_RC:DNS 解析不了 / 连接被拒)。
+    unreachable) die_t "Download failed: ${GH_BASE} is unreachable ($DL $CURL_RC: DNS does not resolve / connection refused).
+   Check the network, DNS, egress firewall or proxy.${NANOTUN_GH_BASE:+
+   This is the mirror you set with NANOTUN_GH_BASE — make sure it is reachable itself.}" \
+                        "下载失败:连不上 ${GH_BASE}($DL $CURL_RC:DNS 解析不了 / 连接被拒)。
    检查网络、DNS、出站防火墙或代理。${NANOTUN_GH_BASE:+
    这是你用 NANOTUN_GH_BASE 指定的镜像 —— 先确认它本身是通的。}" ;;
     # 这里**不能**建议 NANOTUN_NO_INSTALL=1:那条路自己也要先下同一个包,照做只会在
     # 同一步再失败一次。给不通的建议比不给更糟 —— 人会以为是自己哪里做错了,再试一遍。
     # 真正的出路是绕开这台机器的网络:在别处把 tar 下好,拷进来,直接跑包里的安装脚本
     # (那一步不联网)。
-    stall) die "下载失败:连上了但数据不来($DL $CURL_RC:30 秒内速度不到 1KB/s,已重试 3 次)。
+    stall) die_t "Download failed: connected, but no data arrives ($DL $CURL_RC: under 1KB/s for 30 seconds, already retried 3 times).
+   This is not \"your network is slow\" — a slow but moving download never gets here,
+   this one stopped dead. Usually the route to ${GH_BASE} is cut or blocked; retry
+   at another time or over another line${NANOTUN_GH_BASE:+
+   (this is the mirror you set with NANOTUN_GH_BASE)}${NANOTUN_GH_BASE:-
+   (if it is blocked, point NANOTUN_GH_BASE at a mirror, see --help)}.
+$OFFLINE_HINT" \
+                  "下载失败:连上了但数据不来($DL $CURL_RC:30 秒内速度不到 1KB/s,已重试 3 次)。
    不是「你的网慢」—— 慢但在动的下载不会走到这里,这是彻底停住了。多半是到
    ${GH_BASE} 的链路被中断或被墙,换个时间 / 换条线路重试${NANOTUN_GH_BASE:+
    (这是你用 NANOTUN_GH_BASE 指定的镜像)}${NANOTUN_GH_BASE:-
@@ -681,20 +999,31 @@ if [ "$CURL_RC" != 0 ]; then
 $OFFLINE_HINT" ;;
     # wget 分不出「压根没通」和「连上了不给数据」,所以这条把两种都覆盖掉,而不去断言
     # 具体是哪一种 —— 断错了会把人往错的方向支。
-    netfail) die "下载失败:网络这一层没成($DL $CURL_RC:DNS / 连接 / TLS / 读超时,wget 把这几种并成一个码)。
+    netfail) die_t "Download failed at the network layer ($DL $CURL_RC: DNS / connect / TLS / read timeout — wget folds these into one code).
+   Check the network, DNS, egress firewall or proxy first; if those are all fine,
+   the route to ${GH_BASE} is probably cut or blocked, so retry at another time or
+   over another line${NANOTUN_GH_BASE:+
+   (this is the mirror you set with NANOTUN_GH_BASE — make sure it is reachable itself)}${NANOTUN_GH_BASE:-
+   (if it is blocked, point NANOTUN_GH_BASE at a mirror, see --help)}.
+$OFFLINE_HINT" \
+                    "下载失败:网络这一层没成($DL $CURL_RC:DNS / 连接 / TLS / 读超时,wget 把这几种并成一个码)。
    先检查网络、DNS、出站防火墙或代理;都正常的话多半是到 ${GH_BASE} 的链路被中断或被墙,
    换个时间 / 换条线路重试${NANOTUN_GH_BASE:+
    (这是你用 NANOTUN_GH_BASE 指定的镜像 —— 先确认它本身是通的)}${NANOTUN_GH_BASE:-
    (被墙的话可以用 NANOTUN_GH_BASE 指到镜像,见 --help)}。
 $OFFLINE_HINT" ;;
-    http) die "下载失败:服务器返回 404 之类的错($DL $CURL_RC): $BASE/$TARBALL
+    http) die_t "Download failed: the server returned an error such as 404 ($DL $CURL_RC): $BASE/$TARBALL
+   Confirm that this version exists and has a linux-$ARCH artifact: https://github.com/${REPO}/releases" \
+                 "下载失败:服务器返回 404 之类的错($DL $CURL_RC): $BASE/$TARBALL
    确认该版本存在且有 linux-$ARCH 产物:https://github.com/${REPO}/releases" ;;
-    *)    die "下载失败($DL $CURL_RC): $BASE/$TARBALL
+    *)    die_t "Download failed ($DL $CURL_RC): $BASE/$TARBALL
+   Confirm that this version exists and has a linux-$ARCH artifact: https://github.com/${REPO}/releases" \
+                 "下载失败($DL $CURL_RC): $BASE/$TARBALL
    确认该版本存在且有 linux-$ARCH 产物:https://github.com/${REPO}/releases" ;;
   esac
 fi
 
-info "校验 SHA256 ..."
+info_t "Verifying SHA256 ..." "校验 SHA256 ..."
 # 取不到清单要分清是「这个版本本来就没有」还是「这次没取到」。原来一律归成前者,
 # 打一句「该版本没有 SHA256SUMS,跳过校验」就往下走 —— 可眼下每一个已发布版本都带
 # 着 SHA256SUMS,于是这句话真出现的时候,说的必然是假话:真因是取失败(网络被掐、
@@ -729,7 +1058,15 @@ if [ "$SHA_RC" = 0 ]; then
     # 都被判成「不是清单」,安装全线中断。用 length() 换个写法就不必赌这件事。
     if ! awk '$1 ~ /^[0-9a-fA-F]+$/ && length($1) == 64 { ok = 1 } END { exit(ok ? 0 : 1) }' \
          "$TMP/SHA256SUMS"; then
-      die "取到的 SHA256SUMS 不是一份校验清单 —— 里面没有任何一行是「64 位十六进制 + 文件名」。
+      die_t "What came back as SHA256SUMS is not a checksum manifest — not one line in it is \"64 hex digits + filename\".
+   It starts like this: $(head -c 120 "$TMP/SHA256SUMS" | tr -d '\r' | head -1)
+   Usually something on this route replaced the response: a corporate proxy, a
+   hotel / airport captive portal, or a broken mirror — they answer any request
+   with a page of HTML, and the HTTP status code is still 200.
+   The tarball has not been compared against anything, so do not install it.
+   Switch networks or mirrors and try again; $BASE/SHA256SUMS should be a page of
+   plain text when opened in a browser." \
+            "取到的 SHA256SUMS 不是一份校验清单 —— 里面没有任何一行是「64 位十六进制 + 文件名」。
    开头是这样:$(head -c 120 "$TMP/SHA256SUMS" | tr -d '\r' | head -1)
    多半是这条链路上有东西把响应换掉了:公司代理、酒店 / 机场的登录门户,或者不灵的镜像 ——
    它们对任何请求都回一页 HTML,而 HTTP 状态码照样是 200。
@@ -740,7 +1077,16 @@ if [ "$SHA_RC" = 0 ]; then
     # 而不是拿文件名去拼正则 —— 名字里有点号,拼出来的正则会把它当通配符。
     if ! awk -v want="$TARBALL" '{ f = $2; sub(/^\*/, "", f); if (f == want) found = 1 }
                                  END { exit(found ? 0 : 1) }' "$TMP/SHA256SUMS"; then
-      die "校验清单里没有 $TARBALL 这一条,没法核对下载的包。
+      die_t "The manifest has no entry for $TARBALL, so the downloaded tarball cannot be checked against it.
+   What the manifest does contain:
+$(awk '{ f = $2; sub(/^\*/, "", f); if (f != "") print "     " f }' "$TMP/SHA256SUMS" | head -10)
+   The tarball itself is not necessarily bad — this looks more like the manifest
+   not covering everything when this version was released (only the other
+   architecture, for instance).
+   But nothing unverified should be installed: verify it by hand at
+   https://github.com/${REPO}/releases and then install, or use another version.
+   This machine computes: $("${SHA_SUM[@]}" "$TMP/$TARBALL" 2>/dev/null | awk '{print $1}')" \
+            "校验清单里没有 $TARBALL 这一条,没法核对下载的包。
    清单里有的是:
 $(awk '{ f = $2; sub(/^\*/, "", f); if (f != "") print "     " f }' "$TMP/SHA256SUMS" | head -10)
    包本身未必有问题 —— 更像是这个版本发布时清单没覆盖全(比如只生成了另一个架构的)。
@@ -751,17 +1097,30 @@ $(awk '{ f = $2; sub(/^\*/, "", f); if (f != "") print "     " f }' "$TMP/SHA256
     # 在 tar 所在目录执行,清单里是裸文件名。
     # 走到这里,清单是真的、里面也有我们这个文件 —— 再失败就确实是哈希对不上了。
     ( cd "$TMP" && "${SHA_CHECK[@]}" < SHA256SUMS >/dev/null ) \
-      || die "SHA256 校验失败 —— 下载的包与官方清单不符,已中止。
+      || die_t "SHA256 verification failed — the downloaded tarball does not match the official manifest. Aborted.
+   This may be a corrupted transfer, or it may have been replaced in transit. Do
+   not install it; download it again. If that still fails, verify by hand at
+   https://github.com/${REPO}/releases." \
+               "SHA256 校验失败 —— 下载的包与官方清单不符,已中止。
    可能是传输损坏,也可能是被中间人替换过。别装,重下一次;还不行就去
    https://github.com/${REPO}/releases 手动核对。"
-    ok "校验通过"
+    ok_t "Verified" "校验通过"
   else
-    printf '    \033[1;33m!\033[0m 本机既无 sha256sum 也无 shasum,跳过校验\n'
+    warn_t "This machine has neither sha256sum nor shasum, skipping verification" \
+           "本机既无 sha256sum 也无 shasum,跳过校验"
   fi
 elif [ "$SHA_HTTP" = 404 ]; then
-  printf '    \033[1;33m!\033[0m %s 确实没有 SHA256SUMS(404),跳过校验\n' "$VERSION"
+  warn_t "$VERSION genuinely has no SHA256SUMS (404), skipping verification" \
+         "$VERSION 确实没有 SHA256SUMS(404),跳过校验"
 else
-  die "取不到校验清单 SHA256SUMS(curl $SHA_RC,HTTP ${SHA_HTTP:-无响应}): $BASE/SHA256SUMS
+  die_t "Could not fetch the SHA256SUMS manifest (curl $SHA_RC, HTTP ${SHA_HTTP:-no response}): $BASE/SHA256SUMS
+   The tarball is downloaded, but there is no way to check whether it is the
+   official one — and this step must not be skipped before installing, because the
+   next step extracts it as root and runs the install script inside it.
+   Usually a network hiccup or blocked egress, so just run this again; if you are
+   sure this version never had a manifest, verify the SHA256 by hand at
+   https://github.com/${REPO}/releases before installing." \
+        "取不到校验清单 SHA256SUMS(curl $SHA_RC,HTTP ${SHA_HTTP:-无响应}): $BASE/SHA256SUMS
    包已经下下来了,但没法核对它是不是官方那一份 —— 这一步不能跳过就装,
    下一步要以 root 解包并执行里面的安装脚本。
    多半是网络抖动或出站被拦,重跑一次即可;确认这个版本本就没有清单的话,
@@ -770,8 +1129,9 @@ fi
 
 # ── 4. 解压 ──────────────────────────────────────────────────────────────────
 DEST="${INSTALL_DIR}/${VERSION}-${ARCH}"
-info "解压到 $DEST ..."
-mkdir -p "$DEST" || die "建不出 $DEST —— 检查 $INSTALL_DIR 的权限,或用 NANOTUN_INSTALL_DIR 换个落点。"
+info_t "Extracting to $DEST ..." "解压到 $DEST ..."
+mkdir -p "$DEST" || die_t "Could not create $DEST — check the permissions on $INSTALL_DIR, or pick another location with NANOTUN_INSTALL_DIR." \
+                          "建不出 $DEST —— 检查 $INSTALL_DIR 的权限,或用 NANOTUN_INSTALL_DIR 换个落点。"
 # --strip-components=1:tar 内是 nanotun-<ver>-linux-<arch>/ 一层目录,
 # 剥掉它,免得路径变成 /opt/nanotun/v0.1.0-amd64/nanotun-v0.1.0-linux-amd64/。
 #
@@ -781,17 +1141,21 @@ mkdir -p "$DEST" || die "建不出 $DEST —— 检查 $INSTALL_DIR 的权限,�
 # device" 然后脚本戛然而止,不知道要腾多少、腾在哪。
 if ! tar -xzf "$TMP/$TARBALL" -C "$DEST" --strip-components=1; then
   rm -rf "$DEST"   # 半个解压目录留着只会让下次重跑以为装过了
-  die "解压失败:$DEST
+  die_t "Extraction failed: $DEST
+   The tarball expands to about 150MB. Currently available on that filesystem: $(df -h "$INSTALL_DIR" 2>/dev/null | awk 'NR==2{print $4}')
+   Free some space and run this again, or pick another location:  NANOTUN_INSTALL_DIR=/data/nanotun <the command you just ran>" \
+        "解压失败:$DEST
    包解开约 150MB。当前该分区可用:$(df -h "$INSTALL_DIR" 2>/dev/null | awk 'NR==2{print $4}')
    腾出空间后重跑,或换个落点:NANOTUN_INSTALL_DIR=/data/nanotun <刚才那条命令>"
 fi
-ok "已解压"
+ok_t "Extracted" "已解压"
 
 if [ "${NANOTUN_NO_INSTALL:-0}" = "1" ]; then
   echo
-  info "NANOTUN_NO_INSTALL=1,到此为止。手动安装:"
-  echo "    sudo $DEST/scripts/install-self-hosted.sh    # 装二进制 / systemd / 防火墙"
-  echo "    sudo $DEST/scripts/setup.sh                  # 开服向导:拨号地址 / 用户 / 二维码"
+  info_t "NANOTUN_NO_INSTALL=1, stopping here. To install by hand:" \
+         "NANOTUN_NO_INSTALL=1,到此为止。手动安装:"
+  echo "    sudo $DEST/scripts/install-self-hosted.sh    $(tsel '# binaries / systemd / firewall' '# 装二进制 / systemd / 防火墙')"
+  echo "    sudo $DEST/scripts/setup.sh                  $(tsel '# setup wizard: dial host / user / QR codes' '# 开服向导:拨号地址 / 用户 / 二维码')"
   exit 0
 fi
 
@@ -875,7 +1239,7 @@ if [ "$NO_SETUP" = 0 ] && { [ -n "$SETUP_STDIN" ] || [ ${#SETUP_ARGS[@]} -gt 0 ]
   WIZARD_FOLLOWS=1
 fi
 
-info "执行安装脚本 ..."
+info_t "Running the install script ..." "执行安装脚本 ..."
 echo
 # 安装脚本按自身位置推导发布包根目录,不必再传 DEPLOY_DIR。
 # 环境已经在第 1 步验过了,不必再验一遍。
@@ -900,10 +1264,12 @@ if [ "$NO_SETUP" = 1 ]; then
   # DIAL_SET),只是本脚本这条早退路径绕过了它,自己又催了一遍。判据取同一个值。
   if [ -n "$(/usr/local/bin/nanotun-admin --db-path /var/lib/nanotun/nanotun.db \
        setting get server_dial_host 2>/dev/null | tail -1 | tr -d '[:space:]')" ]; then
-    info "--no-setup:跳过开服向导(这台机器此前已配置过,现有用户与密钥都没动)。"
-    echo "    要加用户 / 重出二维码 / 改拨号地址:sudo nanotun-setup"
+    info_t "--no-setup: skipping the setup wizard (this machine was configured before; existing users and keys were left alone)." \
+           "--no-setup:跳过开服向导(这台机器此前已配置过,现有用户与密钥都没动)。"
+    echo "    $(tsel 'To add users / reissue QR codes / change the dial host:' '要加用户 / 重出二维码 / 改拨号地址:')  sudo nanotun-setup"
   else
-    info "--no-setup:跳过开服向导。想连上客户端还差最后一步:"
+    info_t "--no-setup: skipping the setup wizard. One step is still missing before a client can connect:" \
+           "--no-setup:跳过开服向导。想连上客户端还差最后一步:"
     echo "    sudo nanotun-setup"
   fi
   exit 0
@@ -911,8 +1277,9 @@ fi
 
 if [ ! -x /usr/local/bin/nanotun-setup ]; then
   echo
-  info "这个版本的发布包里没有开服向导,手动完成剩下的配置:"
-  echo "    见 https://github.com/${REPO}#快速启动"
+  info_t "This release tarball has no setup wizard; finish the remaining configuration by hand:" \
+         "这个版本的发布包里没有开服向导,手动完成剩下的配置:"
+  echo "    $(tsel "see https://github.com/${REPO}#quick-start" "见 https://github.com/${REPO}#快速启动")"
   exit 0
 fi
 
@@ -921,34 +1288,61 @@ fi
 if [ -z "$SETUP_STDIN" ] && [ ${#SETUP_ARGS[@]} -eq 0 ]; then
   echo
   if [ "$SKIP_WHY" = sudo_pty ]; then
-    info "安装完成。开服向导这次不自动进 —— sudo 另开了一个 pty(Ubuntu/Debian 的"
-    echo "  Defaults use_pty),向导在里面问话会被挂死,所以主动跳过。接着跑:"
-    echo
-    echo "    sudo nanotun-setup"
-    echo
-    echo "  下次换成这条就能一次装完,不用再补这一步:"
-    echo "    sudo bash -c \"\$(curl -fsSL ${RAW_BASE}/install.sh)\""
+    if [ "$NT_LANG" = zh ]; then
+      info "安装完成。开服向导这次不自动进 —— sudo 另开了一个 pty(Ubuntu/Debian 的"
+      echo "  Defaults use_pty),向导在里面问话会被挂死,所以主动跳过。接着跑:"
+      echo
+      echo "    sudo nanotun-setup"
+      echo
+      echo "  下次换成这条就能一次装完,不用再补这一步:"
+      echo "    sudo bash -c \"\$(curl -fsSL ${RAW_BASE}/install.sh)\""
+    else
+      info "Installed. The setup wizard is not entered automatically this time — sudo"
+      echo "  opened a separate pty (Defaults use_pty on Ubuntu/Debian), and a wizard"
+      echo "  asking questions inside it would deadlock, so it is skipped on purpose. Next:"
+      echo
+      echo "    sudo nanotun-setup"
+      echo
+      echo "  Use this form next time and it finishes in one go, with no extra step:"
+      echo "    sudo bash -c \"\$(curl -fsSL ${RAW_BASE}/install.sh)\""
+    fi
   else
-    info "安装完成。这次既没有终端可问话、也没给向导参数,开服向导跳过。手动跑:"
+    info_t "Installed. This run had neither a terminal to ask questions on nor wizard arguments, so the setup wizard was skipped. Run it by hand:" \
+           "安装完成。这次既没有终端可问话、也没给向导参数,开服向导跳过。手动跑:"
     echo "    sudo nanotun-setup"
   fi
     # 这段恰好打在最像 CI 的那一刻(没终端、没参数),所以给的必须是**能直接抄进
     # cloud-init 的那条** —— 而不是眼熟但会骗过退出码的管道形态,也不是漏掉
     # --web-admin、装完把 /setup 敞给全网的那条。
     echo
-    echo "  无人值守(CI / cloud-init)可以一条命令做完 —— 先落盘,再带上 --web-admin:"
-    echo "    curl -fsSL ${RAW_BASE}/install.sh -o nanotun-install.sh \\"
-    echo "      && sudo NANOTUN_WEB_ADMIN_PASSWORD='<密码>' bash nanotun-install.sh \\"
-    echo "           --dial-host <域名或IP> --user <用户名> --web-admin <后台用户名> --yes"
-    echo
-    echo "  别写成 curl … | sudo bash:curl 失败时 bash 拿到空脚本,跑完零行内容以 0 退出,"
-    echo "  CI 只认退出码,会把「什么都没下下来」当成装好了。先落盘则由 && 如实挡住。"
-    echo "  漏掉 --web-admin 则不会建后台管理员,/setup 一直敞着 —— 谁先打开谁就是管理员。"
+    if [ "$NT_LANG" = zh ]; then
+      echo "  无人值守(CI / cloud-init)可以一条命令做完 —— 先落盘,再带上 --web-admin:"
+      echo "    curl -fsSL ${RAW_BASE}/install.sh -o nanotun-install.sh \\"
+      echo "      && sudo NANOTUN_WEB_ADMIN_PASSWORD='<密码>' bash nanotun-install.sh \\"
+      echo "           --dial-host <域名或IP> --user <用户名> --web-admin <后台用户名> --yes"
+      echo
+      echo "  别写成 curl … | sudo bash:curl 失败时 bash 拿到空脚本,跑完零行内容以 0 退出,"
+      echo "  CI 只认退出码,会把「什么都没下下来」当成装好了。先落盘则由 && 如实挡住。"
+      echo "  漏掉 --web-admin 则不会建后台管理员,/setup 一直敞着 —— 谁先打开谁就是管理员。"
+    else
+      echo "  Unattended (CI / cloud-init) can do it all in one command — write it to"
+      echo "  disk first, and pass --web-admin:"
+      echo "    curl -fsSL ${RAW_BASE}/install.sh -o nanotun-install.sh \\"
+      echo "      && sudo NANOTUN_WEB_ADMIN_PASSWORD='<password>' bash nanotun-install.sh \\"
+      echo "           --dial-host <host or IP> --user <username> --web-admin <admin-name> --yes"
+      echo
+      echo "  Do not write it as curl … | sudo bash: when curl fails, bash gets an empty"
+      echo "  script, runs its zero lines and exits 0. CI only looks at the exit code, so"
+      echo "  it treats \"nothing was downloaded\" as installed. Writing to disk first lets"
+      echo "  && catch it honestly."
+      echo "  Without --web-admin no web administrator is created and /setup stays open —"
+      echo "  whoever opens it first becomes the administrator."
+    fi
   exit 0
 fi
 
 echo
-info "进入开服向导 ..."
+info_t "Entering the setup wizard ..." "进入开服向导 ..."
 echo
 # exec 会拿新进程映像顶掉自己,EXIT trap **不会**执行 —— $TMP 里那个十几 MB 的
 # tar 就此长住 /tmp。交棒前自己收干净,并撤掉 trap 免得留个悬空的处理器。

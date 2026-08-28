@@ -29,7 +29,10 @@ func TestInstallSelfHosted_BacksUpDBBeforeMigrating(t *testing.T) {
 	body := string(raw)
 
 	iBackup := strings.Index(body, `backup "$BACKUP_FILE"`)
-	iStart := strings.Index(body, `step "6. 启动并设为开机自启"`)
+	// 步骤标题现在是双语的(`step_t "<英文>" "<中文>"`),所以按中文标题本身定位,不带
+	// `step ` 前缀 —— 否则这条断言会因为一次纯文案改动而失效,而失效的表现是「找不到第 6 步」,
+	// 读起来像备份那件事出了问题。
+	iStart := strings.Index(body, `"6. 启动并设为开机自启"`)
 	if iBackup < 0 {
 		t.Fatal("升级前没有备份数据库 —— 迁移过去就回不来了,而降级守卫给的出路正是「从备份恢复」")
 	}

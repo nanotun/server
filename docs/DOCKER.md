@@ -37,17 +37,17 @@ docker compose logs -f
 门禁的 tag 上构建（见 `docs/RELEASE.md`）。生产建议钉版本，别跟着 `latest` 漂：
 
 ```bash
-NANOTUN_IMAGE_TAG=0.1.12 docker compose up -d
+NANOTUN_IMAGE_TAG=1.0.0 docker compose up -d
 ```
 
-**镜像 tag 不带 `v`**。Release 页面上写的是 `v0.1.12`，镜像那边是 `0.1.12`（外加
+**镜像 tag 不带 `v`**。Release 页面上写的是 `v1.0.0`，镜像那边是 `1.0.0`（外加
 `0.1` 和 `latest`）—— 这是容器生态的惯例，照抄 Release 的版本号会拿到一句
 `not found`，而那句话看着像是没权限或者镜像是私有的，其实只是多了个字母。
 
 想验证镜像确实来自本仓库的构建流水线：
 
 ```bash
-gh attestation verify oci://ghcr.io/nanotun/server:0.1.12 --repo nanotun/server
+gh attestation verify oci://ghcr.io/nanotun/server:1.0.0 --repo nanotun/server
 ```
 
 首次启动会自动生成 REALITY 私钥、hy2 口令、自签证书，并初始化数据库。
@@ -327,6 +327,16 @@ docker compose exec nanotun diff /etc/nanotun/config.toml /etc/nanotun/config.to
 | `NANOTUN_FORCE_CONFIG` | `0` | 用镜像模板覆盖已有配置（会备份原文件） |
 | `NANOTUN_MAGIC_SUFFIX` | 空（模板默认 `lan`） | MagicDNS 局域网后缀，客户端解析 `*.<后缀>` → mesh 虚拟 IP。**只在首次生成 `config.toml` 时生效**；卷里已有配置后再改这行不起作用（改法见下） |
 | `NANOTUN_SKIP_INIT` | `0` | 跳过 `nanotun-admin init`。init 本身幂等，这个开关只为特殊排查保留 |
+| `NANOTUN_LANG` | `en` | 日志与 CLI 的语言，`en` 或 `zh`。容器里不问、不猜，默认英文 |
+
+> `NANOTUN_LANG` 是**整个项目共用**的那一个语言开关：`entrypoint.sh` 的日志、`nanotund` /
+> `nanotun-web` / `nanotun-admin` 的输出都认它（Web 后台另有自己的语言切换器和 cookie，
+> 与这里无关）。裸机安装那条路（`scripts/install.sh`）也是同一个变量、同一套优先级。
+>
+> 首次启动时它会被落盘到卷里的 `/etc/nanotun/lang`。这一步是为 `docker exec` 那条路准备的：
+> `docker exec <容器> nanotun-admin user list` 是一个**新起的进程**，不继承 compose 里
+> `environment:` 给主进程的变量 —— 不落盘的话，同一台机器上容器日志是中文、`docker exec`
+> 敲出来的却是英文。显式给了 `NANOTUN_LANG` 时仍以给的为准。
 
 > `NANOTUN_MAGIC_SUFFIX` 想换成别的（如 `nanotun`），要在**首次 `up -d` 前**设好（`docker-compose.yml` 的 `environment:` 里有注释好的样例）。数据卷里已经有 `config.toml` 之后，这个变量会被 `entrypoint.sh` 忽略并给出告警 —— 此时改后缀有两条路：直接改卷里 `config.toml` 的 `[server.magic_dns].domain_suffix` 再重启容器，或设 `NANOTUN_FORCE_CONFIG=1` 用模板重来（后者会重签密钥、踢掉所有客户端）。注意运行期后缀**只**从 `config.toml` 读，`nanotun-admin setting set magic_suffix` 不是入口（会被硬拒并指路）。
 

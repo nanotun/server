@@ -37,6 +37,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
 
 [`install.sh`](scripts/install.sh) 按顺序做四件事,任何一步没过都会停下来告诉你原因:
 
+0. **选语言** —— 英文或中文。默认英文;只在有终端时问一次,而且问在最前面(见下)
 1. **检查环境** —— 这台机器能不能跑(见下);不过就不下载、不安装,不留半个装了一半的系统
 2. **下载** —— 自动挑架构,校验 SHA256,解压到 `/opt/nanotun/`
 3. **安装**([`install-self-hosted.sh`](scripts/install-self-hosted.sh))—— systemd 单元、
@@ -82,12 +83,26 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install
 `install.sh` 自己不认得的参数一律原样转交向导,所以 [`setup.sh`](scripts/setup.sh)
 的选项都能这么带。
 
+**语言。** 整条安装链打出来的东西 —— 环境检查、安装脚本、开服向导,以及它装下的那几个
+`nanotun-*` 命令 —— 都有英文和中文两份,**默认英文**。有终端时会在一切动作之前问你一次;
+没有终端(CI、cloud-init、`curl … | bash`)就不问、直接用英文,所以无人值守永远不会卡在
+这一问上。
+
+```bash
+sudo bash -c "$(curl -fsSL …/install.sh)" --lang zh      # 或者 NANOTUN_LANG=zh
+```
+
+优先级是 `--lang` > `NANOTUN_LANG` > `/etc/nanotun/lang` 里记下的那次选择。装机时会把选择
+写进那个文件,所以之后单独敲 `nanotun-setup`、`nanotun-uninstall`、`nanotun-set-suffix`
+默认沿用同一种语言,不必再说一遍;要临时换,上面两个开关照样管用。`nanotun-admin` 和 Web
+后台认的是同一个 `NANOTUN_LANG`(后台另有自己的语言切换器),所以决定一次就覆盖整条链。
+
 **生产建议钉版本**,别跟着 latest 漂。把 URL 里的 `main` 和 `NANOTUN_VERSION` 都换成同一个
 tag,拿到的就是完全钉死的一次安装 —— 脚本、环境检查、发布包三样都来自那个 tag:
 
 ```bash
-sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL \
-  https://raw.githubusercontent.com/nanotun/server/v0.1.25/scripts/install.sh)"
+sudo NANOTUN_VERSION=v1.0.0 bash -c "$(curl -fsSL \
+  https://raw.githubusercontent.com/nanotun/server/v1.0.0/scripts/install.sh)"
 ```
 
 只换 `NANOTUN_VERSION`、URL 仍走 `main` 也可以,发布包一样钉得住;差别在于**脚本本身**跟着
@@ -458,8 +473,8 @@ tag,workflow 只认这种 tag —— 手工 `git tag` 推上去发不出版本�
 机器不需要再走一遍:
 
 ```bash
-sudo NANOTUN_VERSION=v0.1.25 bash -c "$(curl -fsSL \
-  https://raw.githubusercontent.com/nanotun/server/v0.1.25/scripts/install.sh)" --no-setup
+sudo NANOTUN_VERSION=v1.0.0 bash -c "$(curl -fsSL \
+  https://raw.githubusercontent.com/nanotun/server/v1.0.0/scripts/install.sh)" --no-setup
 ```
 
 也可以下新版本 tar 后直接跑 `install-self-hosted.sh`(那条本来就不进向导)。脚本幂等,

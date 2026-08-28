@@ -16,6 +16,11 @@
 # 架构：发布包分 linux-amd64 / linux-arm64 两份，下面会核对二进制与本机是否匹配 ——
 # 装错架构的表现是 systemd 反复 "Exec format error"，不先拦一道很难一眼看出来。
 #
+# 语言：默认英文,--lang en|zh 或环境变量 NANOTUN_LANG 切换。一键安装时 install.sh 已经
+# 问过一次并经环境变量传进来,本脚本不再问。选定的那一个会落到 /etc/nanotun/lang ——
+# 装完之后 nanotun-setup / nanotun-uninstall / nanotun-set-suffix 都是用户单独跑的,
+# 那时候没人再传环境变量,读这份才能跟装机时选的语言一致。
+#
 # $EXTRAS_DIR/nanotun.service 的权威模板是 repo 内 cmd/nanotund/nanotun.service —
 # 包含 G_exit_code 的 RestartPreventExitStatus 等关键字段;打部署包时请直接 cp
 # 该文件,不要手改 / 漂版本。
@@ -26,7 +31,7 @@
 #      ip_forward 可写。全在动任何文件之前。
 #   1. 安装文件到位：
 #      /usr/local/bin/{nanotund, nanotun-admin, nanotun-tun-setup.sh, ...}
-#      /etc/nanotun/{config.toml, certs/, masquerade/}（证书由 ensure-server-assets.sh 按需自签）
+#      /etc/nanotun/{config.toml, certs/, masquerade/, lang}（证书由 ensure-server-assets.sh 按需自签）
 #      /var/lib/nanotun/                        （SQLite home）
 #      /etc/systemd/system/{nanotun-tun-setup,nanotun}.service
 #      config.toml 已存在则**原样保留**（模板另存 config.toml.dist 供 diff）；模板里的
@@ -69,20 +74,68 @@ SCRIPTS_DIR="$DEPLOY_DIR/scripts"
 ETC_DIR=/etc/nanotun
 LIB_DIR=/var/lib/nanotun
 
-# nanotun-admin 默认输出英文,而本脚本从头到尾是中文。第 5 步 init 那两句问话
-# (admin username / admin PSK)会直接夹在中文安装过程里,还紧挨着最重要的凭据输出。
-# 自己显式设过 NANOTUN_LANG 的按你的来。
+# ── 语言 ─────────────────────────────────────────────────────────────────────
+# 默认英文。优先级:--lang > NANOTUN_LANG > /etc/nanotun/lang(上次装机落下的)> en。
+# 只有 install.sh 会交互询问语言;这里不问 —— 一键安装时它已经问过并经环境变量传进来,
+# 从解压好的发布包直接跑这个脚本时则读落盘的那份或用默认。
+#
+# 文案的组织方式:两种语言**并排写在调用处**(tsel / *_t),不抽成 key → 文案的目录。
+# 理由见 scripts/install.sh 里同名那节 —— 这些提示几乎每句都在插值,搬进目录得把每处
+# 插值改写成 %s 参数,错了还不会有任何东西红;而每句提示上面那段「为什么这么措辞」的
+# 注释也会和它解释的文案隔开好几百行。
+NT_LANG=en
+
+nt_lang_normalize() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    en|en[-_]*|english)      printf 'en' ;;
+    zh|zh[-_]*|chinese|cn)   printf 'zh' ;;
+    *)                       printf '' ;;
+  esac
+}
+
+_nt_l=""
+for _nt_a in "$@"; do
+  case "$_nt_a" in
+    --lang=*) _nt_l="$(nt_lang_normalize "${_nt_a#--lang=}")" ;;
+    --lang)   _nt_l=__next__ ;;
+    *)        [ "$_nt_l" = __next__ ] && _nt_l="$(nt_lang_normalize "$_nt_a")" ;;
+  esac
+done
+[ "$_nt_l" = __next__ ] && _nt_l=""
+if [ -n "$_nt_l" ]; then
+  NT_LANG="$_nt_l"
+elif [ -n "$(nt_lang_normalize "${NANOTUN_LANG:-}")" ]; then
+  NT_LANG="$(nt_lang_normalize "$NANOTUN_LANG")"
+elif [ -r /etc/nanotun/lang ] && \
+     [ -n "$(nt_lang_normalize "$(head -1 /etc/nanotun/lang 2>/dev/null)")" ]; then
+  NT_LANG="$(nt_lang_normalize "$(head -1 /etc/nanotun/lang 2>/dev/null)")"
+fi
+unset _nt_l _nt_a
+
+# 往下传。nanotun-admin 本来就认这个变量(它的默认也是英文),所以整条链只有一处决定语言。
+# 原来这里是 `${NANOTUN_LANG:-zh}` —— 那时本脚本只有中文,把 admin 按回中文是为了别让
+# 英文夹在中文里。现在脚本自己双语了,反过来:语言由上面解析出的那一个说了算。
 #
 # 对本脚本的解析没有影响:init 走 --json(键名与语言无关),count_real_users 读的
 # user list 表格两种语言下逐字一致 —— K1 守卫靠 $3=="no" 数人,已实测两边相同。
-export NANOTUN_LANG="${NANOTUN_LANG:-zh}"
+export NANOTUN_LANG="$NT_LANG"
+
+# tsel <英文> <中文> —— 按当前语言选一份。
+tsel() { if [ "$NT_LANG" = zh ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 ok()   { printf '    \033[1;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '    \033[1;33m!\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 
-# 本脚本不接受任何参数,但在此之前它是**默默**不接受的:多传什么都照装不误,装完退 0。
+# 双语版本:英文在前、中文在后,与 tsel 同序。并排放着的理由见上面「语言」那节。
+step_t() { step "$(tsel "$1" "$2")"; }
+ok_t()   { ok   "$(tsel "$1" "$2")"; }
+warn_t() { warn "$(tsel "$1" "$2")"; }
+die_t()  { die  "$(tsel "$1" "$2")"; }
+
+# 除了 --lang / --help,本脚本不接受任何参数,而在此之前它是**默默**不接受的:多传什么都
+# 照装不误,装完退 0。
 #
 # 踩点很集中。README 的无人值守示例是给 install.sh 的:
 #   sudo bash nanotun-install.sh --dial-host vpn.example.com --user alice --yes
@@ -96,11 +149,47 @@ die()  { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 # 转交给向导是行不通的:本脚本压根不跑向导(它只把 setup.sh 装成命令),转交就得把
 # 「装完自动接向导」这层职责也搬进来,而那正是 install.sh 存在的理由。所以只做一件事:
 # 拒绝,并把该去哪儿说清楚。
+#
+# --lang 是例外,而且必须真的进这套解析:一键安装会把它原样传下来,少了这一条,
+# `install.sh --lang zh` 就会被自己的下游顶回去(exit 2),而那句报错长得像「用户参数写错了」。
+# 语言在文件上方已经扫过一遍(必须早于任何一句提示),这里只负责把它从 argv 里吃掉、顺带校验值。
+
+# nt_lang_bad <收到的值> —— 语言写错就当场退,别默默回落到英文:那样 `--lang fr` 看着像生效了。
+# 退 2 而不是 die 的 1:与下面那条「本脚本不接受参数」同口径,都是参数错误。
+nt_lang_bad() {
+  printf '\033[1;31mFATAL: %s\033[0m\n' "$(tsel \
+    "install-self-hosted.sh: --lang takes en or zh (got '$1')" \
+    "install-self-hosted.sh: --lang 只认 en 或 zh(收到 '$1')")" >&2
+  exit 2
+}
+
+NT_ARGV=()
+_nt_want=0
+for _nt_a in "$@"; do
+  if [ "$_nt_want" = 1 ]; then
+    _nt_want=0
+    [ -n "$(nt_lang_normalize "$_nt_a")" ] || nt_lang_bad "$_nt_a"
+    continue
+  fi
+  case "$_nt_a" in
+    --lang)   _nt_want=1 ;;
+    --lang=*) [ -n "$(nt_lang_normalize "${_nt_a#--lang=}")" ] || nt_lang_bad "${_nt_a#--lang=}" ;;
+    *)        NT_ARGV+=("$_nt_a") ;;
+  esac
+done
+# `--lang` 是最后一个词、后面什么都没跟。这一条不能静静地当成「没给语言」:少打的那个 zh
+# 会让机器按英文装完,而敲的人以为自己选了中文,直到装完满屏英文才发现。
+[ "$_nt_want" = 0 ] || nt_lang_bad ""
+unset _nt_a _nt_want
+set -- ${NT_ARGV[@]+"${NT_ARGV[@]}"}
+unset NT_ARGV
+
 if [ "$#" -gt 0 ]; then
   case "${1:-}" in
     -h|--help)
+      if [ "$NT_LANG" = zh ]; then
       cat <<'USAGE'
-用法: sudo ./scripts/install-self-hosted.sh      (不接受参数)
+用法: sudo ./scripts/install-self-hosted.sh [--lang en|zh]      (不接受开服向导的参数)
 
 把发布包装成一台在跑的服务:二进制、systemd 单元、IP 转发、REALITY/hy2 密钥与自签证书、
 防火墙放行、第一个 VPN 管理员。**装完还不等于客户端能连** —— 拨号地址、Web 后台管理员、
@@ -111,22 +200,72 @@ if [ "$#" -gt 0 ]; then
 联网一键安装(下载 + 安装 + 向导一条龙)用 install.sh,它认得向导的参数并自动转交:
     sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh)"
 
+选项:
+  --lang en|zh   界面语言,默认英文。不给时按 NANOTUN_LANG,再不给就读上次装机落在
+                 /etc/nanotun/lang 的那份。选定的那一个会写回这个文件,之后单独跑的
+                 nanotun-setup / nanotun-uninstall / nanotun-set-suffix 默认沿用
+  -h, --help     显示本帮助
+
 可用的环境变量见本文件头部注释(NANOTUN_MAGIC_SUFFIX / NANOTUN_FORCE_CONFIG 等)。
 USAGE
+      else
+      cat <<'USAGE'
+Usage: sudo ./scripts/install-self-hosted.sh [--lang en|zh]   (takes no wizard arguments)
+
+Turns the release tarball into a running service: binaries, systemd units, IP
+forwarding, REALITY/hy2 keys and self-signed certificates, firewall openings, the
+first VPN administrator. **Installed is not yet reachable** — the dial host, the
+web administrator, the first user and its QR codes belong to the setup wizard.
+When this finishes, run:
+
+    sudo nanotun-setup
+
+For the one-command install over the network (download + install + wizard) use
+install.sh; it knows the wizard's arguments and passes them on:
+    sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh)"
+
+Options:
+  --lang en|zh   interface language (default: en). Without it NANOTUN_LANG
+                 decides, and failing that the value the last install left in
+                 /etc/nanotun/lang. Whichever is chosen is written back to that
+                 file, so nanotun-setup / nanotun-uninstall / nanotun-set-suffix
+                 keep to it when run on their own later
+  -h, --help     show this help
+
+The environment variables this script honours are documented in the comment at
+the top of the file (NANOTUN_MAGIC_SUFFIX / NANOTUN_FORCE_CONFIG and so on).
+USAGE
+      fi
       exit 0 ;;
     *)
-      printf '\033[1;31mFATAL: 本脚本不接受参数,收到:%s\033[0m\n' "$*" >&2
-      printf '\n' >&2
-      printf '  --dial-host / --user / --web-admin / --yes 这些是**开服向导**的参数。\n' >&2
-      printf '  本脚本只负责把系统装起来,装完之后跑:\n' >&2
-      printf '\n' >&2
-      printf '      sudo nanotun-setup %s\n' "$*" >&2
-      printf '\n' >&2
-      printf '  想一条命令做到底(下载 + 安装 + 向导),用 install.sh —— 它认得这些参数并转交:\n' >&2
-      printf '      curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh -o nanotun-install.sh \\\n' >&2
-      printf '        && sudo bash nanotun-install.sh %s\n' "$*" >&2
-      printf '\n' >&2
-      printf '  完整用法:%s --help\n' "$0" >&2
+      if [ "$NT_LANG" = zh ]; then
+        printf '\033[1;31mFATAL: 本脚本不接受参数,收到:%s\033[0m\n' "$*" >&2
+        printf '\n' >&2
+        printf '  --dial-host / --user / --web-admin / --yes 这些是**开服向导**的参数。\n' >&2
+        printf '  本脚本只负责把系统装起来,装完之后跑:\n' >&2
+        printf '\n' >&2
+        printf '      sudo nanotun-setup %s\n' "$*" >&2
+        printf '\n' >&2
+        printf '  想一条命令做到底(下载 + 安装 + 向导),用 install.sh —— 它认得这些参数并转交:\n' >&2
+        printf '      curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh -o nanotun-install.sh \\\n' >&2
+        printf '        && sudo bash nanotun-install.sh %s\n' "$*" >&2
+        printf '\n' >&2
+        printf '  完整用法:%s --help\n' "$0" >&2
+      else
+        printf '\033[1;31mFATAL: this script takes no arguments; got: %s\033[0m\n' "$*" >&2
+        printf '\n' >&2
+        printf '  --dial-host / --user / --web-admin / --yes belong to the **setup wizard**.\n' >&2
+        printf '  This script only gets the system installed. When it is done, run:\n' >&2
+        printf '\n' >&2
+        printf '      sudo nanotun-setup %s\n' "$*" >&2
+        printf '\n' >&2
+        printf '  To do it all in one command (download + install + wizard), use install.sh —\n' >&2
+        printf '  it knows these arguments and passes them on:\n' >&2
+        printf '      curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh -o nanotun-install.sh \\\n' >&2
+        printf '        && sudo bash nanotun-install.sh %s\n' "$*" >&2
+        printf '\n' >&2
+        printf '  Full usage: %s --help\n' "$0" >&2
+      fi
       exit 2 ;;
   esac
 fi
@@ -166,7 +305,8 @@ gen_x25519_priv() {
 # 生成值都是 hex / base64url([A-Za-z0-9_-]),不含 sed 元字符,可直接内插。
 fill_config_secrets() {
   local cfg="$ETC_DIR/config.toml" filled=0
-  command -v openssl >/dev/null 2>&1 || die "缺 openssl,无法生成 REALITY / hy2 密钥"
+  command -v openssl >/dev/null 2>&1 || die_t "openssl is missing, so the REALITY / hy2 keys cannot be generated" \
+                                              "缺 openssl,无法生成 REALITY / hy2 密钥"
 
   if grep -q 'REPLACE_WITH_YOUR_RANDOM_TOKEN' "$cfg"; then
     sed -i "s|REPLACE_WITH_YOUR_RANDOM_TOKEN|$(openssl rand -hex 16)|g" "$cfg"; filled=1
@@ -190,13 +330,16 @@ fill_config_secrets() {
 
   # 兜底自检:模板将来新增占位而本函数没跟上时,**装不上**比「装完 crash-loop」好得多。
   if grep -n 'REPLACE_WITH' "$cfg" >&2; then
-    die "config.toml 仍有未填占位(见上),nanotund 会启动失败;补齐后重跑本脚本"
+    die_t "config.toml still has unfilled placeholders (listed above); nanotund will fail to start. Fill them in and rerun this script" \
+          "config.toml 仍有未填占位(见上),nanotund 会启动失败;补齐后重跑本脚本"
   fi
 
   if [ "$filled" = 1 ]; then
-    ok "已为本机生成 REALITY 私钥 / hy2 密码 / obfs 密码 / WS path token / short_ids"
+    ok_t "Generated this machine's REALITY private key / hy2 password / obfs password / WS path token / short_ids" \
+         "已为本机生成 REALITY 私钥 / hy2 密码 / obfs 密码 / WS path token / short_ids"
   else
-    ok "config.toml 无待填占位,密钥原样保留"
+    ok_t "config.toml has no placeholders left to fill; the keys were left as they are" \
+         "config.toml 无待填占位,密钥原样保留"
   fi
 }
 
@@ -216,18 +359,23 @@ apply_magic_suffix() {
 
   # 合法性:小写 DNS 标签(字母数字 + 连字符,可点分多级)。既防命令注入,也防写坏 TOML。
   if ! printf '%s' "$suf" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$'; then
-    die "NANOTUN_MAGIC_SUFFIX 不合法(只允许小写字母/数字/连字符,可点分多级):'$suf'"
+    die_t "NANOTUN_MAGIC_SUFFIX is not valid (lowercase letters/digits/hyphens only, dot-separated labels allowed): '$suf'" \
+          "NANOTUN_MAGIC_SUFFIX 不合法(只允许小写字母/数字/连字符,可点分多级):'$suf'"
   fi
   case "$suf" in
-    local) die "NANOTUN_MAGIC_SUFFIX 不能用 'local' —— 与 mDNS/Bonjour(mac/iOS)严重冲突。" ;;
+    local) die_t "NANOTUN_MAGIC_SUFFIX cannot be 'local' — it collides badly with mDNS/Bonjour (mac/iOS)." \
+                 "NANOTUN_MAGIC_SUFFIX 不能用 'local' —— 与 mDNS/Bonjour(mac/iOS)严重冲突。" ;;
     lan|home|home.arpa|internal|corp)
-      warn "MagicDNS 后缀 '$suf' 可能与家用路由器 / 保留域冲突(想避开这类冲突正是换后缀的理由)。" ;;
+      warn_t "The MagicDNS suffix '$suf' may collide with home routers / reserved domains (avoiding exactly that is the reason to change it)." \
+             "MagicDNS 后缀 '$suf' 可能与家用路由器 / 保留域冲突(想避开这类冲突正是换后缀的理由)。" ;;
   esac
 
   # 保留了既有 config.toml 就不改它 —— 那是升级路径,擅自改后缀会踢乱已在用的 mesh 名字。
   if [ "${CONFIG_FRESH:-0}" != 1 ]; then
-    warn "已保留既有 config.toml,未套用 NANOTUN_MAGIC_SUFFIX='$suf'。要改现有后缀:"
-    warn "  scripts/set-magic-suffix.sh $suf   （备份→段感知改写→重启→失败自动回滚）"
+    warn_t "The existing config.toml was kept, so NANOTUN_MAGIC_SUFFIX='$suf' was not applied. To change the current suffix:" \
+           "已保留既有 config.toml,未套用 NANOTUN_MAGIC_SUFFIX='$suf'。要改现有后缀:"
+    warn_t "  scripts/set-magic-suffix.sh $suf   (back up → section-aware rewrite → restart → rolled back automatically on failure)" \
+           "  scripts/set-magic-suffix.sh $suf   （备份→段感知改写→重启→失败自动回滚）"
     return 0
   fi
 
@@ -235,7 +383,7 @@ apply_magic_suffix() {
   # 空白写 [ \t] 不用 [[:space:]]:mawk 1.3.3(老 Ubuntu/Debian 默认 awk)不认 POSIX 字符类。
   cur="$(awk -F'"' '/^[ \t]*domain_suffix[ \t]*=/{print $2; exit}' "$cfg" || true)"
   if [ "$cur" = "$suf" ]; then
-    ok "MagicDNS 后缀已是 '$suf'"
+    ok_t "The MagicDNS suffix is already '$suf'" "MagicDNS 后缀已是 '$suf'"
     return 0
   fi
 
@@ -257,9 +405,12 @@ apply_magic_suffix() {
       if (insec && !done) print "domain_suffix = \"" suf "\""
       if (!seen) { print ""; print "[server.magic_dns]"; print "domain_suffix = \"" suf "\"" }
     }
-  ' "$cfg" > "$cfg.new" && mv "$cfg.new" "$cfg" || { rm -f "$cfg.new"; die "写 MagicDNS 后缀失败(config.toml 未改动)"; }
+  ' "$cfg" > "$cfg.new" && mv "$cfg.new" "$cfg" \
+    || { rm -f "$cfg.new"; die_t "Could not write the MagicDNS suffix (config.toml was left untouched)" \
+                                 "写 MagicDNS 后缀失败(config.toml 未改动)"; }
   chmod 0600 "$cfg"
-  ok "MagicDNS 后缀设为 '$suf'(客户端解析 *.$suf → mesh 虚拟 IP;默认原为 'lan')"
+  ok_t "MagicDNS suffix set to '$suf' (clients resolve *.$suf → mesh virtual IP; the default was 'lan')" \
+       "MagicDNS 后缀设为 '$suf'(客户端解析 *.$suf → mesh 虚拟 IP;默认原为 'lan')"
 }
 
 # 环境自检:先验这台机器能不能跑,再验发布包对不对。
@@ -282,22 +433,28 @@ apply_magic_suffix() {
 # --offline:发布包已经在本地了,不需要 curl / tar。
 # NANOTUN_PREFLIGHT_DONE=1:install.sh 在下载之前已经验过一遍,不必重复。
 if [ "${NANOTUN_PREFLIGHT_DONE:-0}" = "1" ]; then
-  ok "环境自检已由引导脚本完成,跳过"
+  ok_t "The bootstrap script already ran the environment check, skipping" \
+       "环境自检已由引导脚本完成,跳过"
 elif [ -f "$SCRIPTS_DIR/preflight.sh" ]; then
   # --for-install:本脚本下一步就动 /usr/local/bin,非 root 必须当场拦下。
   # (不传的话 preflight 只会把非 root 记成一条提醒 —— 那是给「单独跑来问问
   # 机器行不行」准备的口径,不适用于这里。)
   bash "$SCRIPTS_DIR/preflight.sh" --offline --for-install \
-    || die "环境检查没过(见上面的修复清单),已中止安装。"
+    || die_t "The environment check did not pass (see the fix list above); the install was aborted." \
+             "环境检查没过(见上面的修复清单),已中止安装。"
 else
   # 老发布包里没有 preflight.sh。不能因此放行 —— 缺 systemd / TUN 装下去必炸,
   # 所以退回到最小一组硬检查,报错简短但至少能拦住。
-  warn "发布包里没有 preflight.sh,退回最小检查"
-  [ "$(id -u)" = 0 ]        || die "需要 root,请用 sudo 跑"
-  [ -d /run/systemd/system ] || die "没有正在运行的 systemd,裸机安装用不了,请改走 Docker"
-  [ -c /dev/net/tun ]        || die "/dev/net/tun 不存在,先 modprobe tun"
+  warn_t "This release tarball has no preflight.sh; falling back to the minimal checks" \
+         "发布包里没有 preflight.sh,退回最小检查"
+  [ "$(id -u)" = 0 ]        || die_t "This needs root; run it with sudo" \
+                                     "需要 root,请用 sudo 跑"
+  [ -d /run/systemd/system ] || die_t "There is no systemd running, so a bare-metal install is not possible; use Docker instead" \
+                                      "没有正在运行的 systemd,裸机安装用不了,请改走 Docker"
+  [ -c /dev/net/tun ]        || die_t "/dev/net/tun does not exist; modprobe tun first" \
+                                      "/dev/net/tun 不存在,先 modprobe tun"
   for c in iptables ip6tables ip openssl sysctl; do
-    command -v "$c" >/dev/null 2>&1 || die "缺少命令 $c"
+    command -v "$c" >/dev/null 2>&1 || die_t "The command $c is missing" "缺少命令 $c"
   done
 fi
 
@@ -312,7 +469,7 @@ for f in "$DEPLOY_DIR/nanotund" "$DEPLOY_DIR/nanotun-admin" \
          "$SCRIPTS_DIR/tun-teardown.sh" "$SCRIPTS_DIR/tun-setup.service" \
          "$SCRIPTS_DIR/ensure-server-assets.sh" \
          "$SCRIPTS_DIR/nanotun-ports.sh"; do
-  [ -e "$f" ] || die "缺文件: $f"
+  [ -e "$f" ] || die_t "Missing file: $f" "缺文件: $f"
 done
 
 WEB_AVAILABLE=0
@@ -336,11 +493,13 @@ check_arch() {
     x86_64|amd64)  host_machine="3e00"; desc="amd64" ;;
     aarch64|arm64) host_machine="b700"; desc="arm64" ;;
     *)
-      warn "本机架构 $(uname -m) 不在检查表内,跳过架构自检"
+      warn_t "This machine's architecture $(uname -m) is not in the table, skipping the architecture check" \
+             "本机架构 $(uname -m) 不在检查表内,跳过架构自检"
       return 0 ;;
   esac
 
-  command -v od >/dev/null 2>&1 || { warn "缺 od,跳过架构自检"; return 0; }
+  command -v od >/dev/null 2>&1 || { warn_t "od is missing, skipping the architecture check" \
+                                            "缺 od,跳过架构自检"; return 0; }
 
   for bin in nanotund nanotun-admin nanotun-web; do
     [ -f "$DEPLOY_DIR/$bin" ] || continue
@@ -349,18 +508,26 @@ check_arch() {
       case "$got" in
         3e00) want="amd64" ;;
         b700) want="arm64" ;;
-        *)    want="未知(e_machine=$got)" ;;
+        *)    want="$(tsel "unknown (e_machine=$got)" "未知(e_machine=$got)")" ;;
       esac
-      printf '\033[1;31mFATAL: 发布包架构不匹配\033[0m\n' >&2
-      printf '  本机: %s (%s)\n' "$(uname -m)" "$desc" >&2
-      printf '  包里的 %s: %s\n' "$bin" "$want" >&2
-      printf '\n请下载 linux-%s 那一份:\n' "$desc" >&2
+      if [ "$NT_LANG" = zh ]; then
+        printf '\033[1;31mFATAL: 发布包架构不匹配\033[0m\n' >&2
+        printf '  本机: %s (%s)\n' "$(uname -m)" "$desc" >&2
+        printf '  包里的 %s: %s\n' "$bin" "$want" >&2
+        printf '\n请下载 linux-%s 那一份:\n' "$desc" >&2
+      else
+        printf '\033[1;31mFATAL: the release tarball is for another architecture\033[0m\n' >&2
+        printf '  This machine: %s (%s)\n' "$(uname -m)" "$desc" >&2
+        printf '  %s in the tarball: %s\n' "$bin" "$want" >&2
+        printf '\nDownload the linux-%s one instead:\n' "$desc" >&2
+      fi
       printf '  https://github.com/nanotun/server/releases/latest\n' >&2
       printf '  nanotun-vX.Y.Z-linux-%s.tar.gz\n' "$desc" >&2
       exit 1
     fi
   done
-  ok "架构自检通过:发布包与本机同为 $desc"
+  ok_t "Architecture check passed: the tarball and this machine are both $desc" \
+       "架构自检通过:发布包与本机同为 $desc"
 }
 check_arch
 
@@ -386,13 +553,18 @@ check_arch
 LOCK_FILE=/run/nanotun-install.lock
 if command -v flock >/dev/null 2>&1 && { exec 9>"$LOCK_FILE"; } 2>/dev/null; then
   if ! flock -n 9; then
-    die "另一个 nanotun 安装 / 升级正在进行(锁:$LOCK_FILE)。
+    die_t "Another nanotun install / upgrade is in progress (lock: $LOCK_FILE).
+   Wait for it to finish and try again. If you are sure no other install is
+   running and this still says so, the lock is left over from one that was killed:
+     fuser -k $LOCK_FILE   # or just reboot this machine" \
+          "另一个 nanotun 安装 / 升级正在进行(锁:$LOCK_FILE)。
    等它跑完再重试。确认没有别的安装在跑却仍报这句的话,是上次被强杀留下的:
      fuser -k $LOCK_FILE   # 或直接重启这台机器"
   fi
 fi
 
-step "1. 安装二进制 / 脚本 / 证书 / 配置 / systemd 单元"
+step_t "1. Install binaries / scripts / certificates / config / systemd units" \
+       "1. 安装二进制 / 脚本 / 证书 / 配置 / systemd 单元"
 
 # 动手之前先确认几个落点是真的写得进去、也放得下。
 #
@@ -408,13 +580,21 @@ step "1. 安装二进制 / 脚本 / 证书 / 配置 / systemd 单元"
 NEED_MB=60   # 二进制 + 脚本实测约 41MB,留出余量
 for d in /usr/local/bin /etc/systemd/system "$ETC_DIR"; do
   if [ ! -d "$d" ] && ! mkdir -p "$d" 2>/dev/null; then
-    die "建不出目录 $d —— 上层可能是只读挂载,或没有权限。
+    die_t "Could not create the directory $d — the level above may be a read-only mount, or permissions are missing.
+   Fix that and rerun this script (it is idempotent; rerunning does not destroy existing config or keys)." \
+          "建不出目录 $d —— 上层可能是只读挂载,或没有权限。
    修好之后重跑本脚本(它是幂等的,重跑不会破坏已有配置和密钥)。"
   fi
   # 用真写一个文件来判,而不是 [ -w ]:后者对只读挂载是判不出来的 —— root 对目录的
   # 权限位永远是够的,拦住写入的是挂载选项,而那要等到真正 write 的时候才报出来。
   if ! touch "$d/.nanotun-write-test" 2>/dev/null; then
-    die "$d 写不进去。
+    die_t "$d is not writable.
+   Common causes: this partition is a read-only mount (hardened systems often
+   mount /usr ro), a quota is blocking it, or the directory is immutable
+   (lsattr $d to look, chattr -i to undo).
+   If it is read-only: mount -o remount,rw $(df -P "$d" 2>/dev/null | awk 'NR==2{print $6}').
+   Not one file has been touched, this machine is still as it was; fix that and rerun this script." \
+          "$d 写不进去。
    常见原因:这个分区是只读挂载(加固过的系统常把 /usr 挂 ro)、被 quota 卡住,
    或者目录设了 immutable(lsattr $d 看一眼,chattr -i 解开)。
    只读的话先 mount -o remount,rw $(df -P "$d" 2>/dev/null | awk 'NR==2{print $6}')。
@@ -424,7 +604,12 @@ for d in /usr/local/bin /etc/systemd/system "$ETC_DIR"; do
 done
 AVAIL_MB="$(df -Pm /usr/local/bin 2>/dev/null | awk 'NR==2{print $4}')"
 if [ -n "$AVAIL_MB" ] && [ "$AVAIL_MB" -lt "$NEED_MB" ]; then
-  die "/usr/local/bin 所在分区空间不够:要装的约 ${NEED_MB}MB,当前可用 ${AVAIL_MB}MB。
+  die_t "Not enough space on the filesystem holding /usr/local/bin: about ${NEED_MB}MB is needed, ${AVAIL_MB}MB is available.
+   Free some space and rerun. Do not let it install halfway — a truncated nanotund
+   on disk keeps working off the already-open old file until the next reboot, and
+   only then fails to start, which may be a long time from now.
+   Not one file has been touched, this machine is still as it was." \
+        "/usr/local/bin 所在分区空间不够:要装的约 ${NEED_MB}MB,当前可用 ${AVAIL_MB}MB。
    腾出空间后重跑。别让它装到一半 —— 半截的 nanotund 落在盘上,正在跑的服务
    靠着已打开的旧文件还能撑到下次重启,重启就起不来了,而那时离现在可能隔了很久。
    一个文件都还没动,机器仍是原样。"
@@ -480,6 +665,28 @@ install -d -m 0755 "$ETC_DIR" "$ETC_DIR/masquerade"
 install -d -m 0700 "$ETC_DIR/certs"
 install -d -m 0750 "$LIB_DIR"
 
+# 语言落盘。本脚本是创建 $ETC_DIR 的那个,也是这条链上唯一以 root 跑、拥有那个目录的
+# 一环,所以这份由它写。
+#
+# 为什么要落:装完之后 nanotun-setup / nanotun-uninstall / nanotun-set-suffix 都是用户
+# 单独敲的,那时候没有 install.sh 把 NANOTUN_LANG 传进来了 —— 读这份才能跟装机时选的
+# 语言一致。不落的话,一台按中文装好的机器上,之后每一条 nanotun-* 命令都蹦回英文,
+# 而人根本不知道有个语言可选。
+#
+# 写失败只 warn,不中断安装:它只影响后面那几条命令的默认语言,为它把一台已经装到
+# 第 1 步的机器丢在半路不划算。内容就是一行 en 或 zh,重复装机就是把同一行再写一遍,
+# 天然幂等。
+#
+# `2>/dev/null` 必须写在 `>` **前面**。重定向是从左往右生效的:反过来写的时候,`>` 已经
+# 失败了而 stderr 还指着终端,于是 bash 自己那句裸的 "Permission denied" 会抢在下面这条
+# warn 前面印出来 —— 同一件事说两遍,而先说的那遍没有语言、也没有下一步。
+if printf '%s\n' "$NT_LANG" 2>/dev/null > "$ETC_DIR/lang"; then
+  chmod 0644 "$ETC_DIR/lang" 2>/dev/null || true
+else
+  warn_t "Could not write $ETC_DIR/lang — later nanotun-* commands will fall back to the default language (English) instead of the one chosen here" \
+         "写不了 $ETC_DIR/lang —— 之后的 nanotun-* 命令会退回默认语言(英文),而不是这次选的这个"
+fi
+
 # config.toml：**绝不覆盖已有配置**。
 #
 # 2026-07-25 部署实测:原逻辑无条件用发布包模板覆盖 $ETC_DIR/config.toml(只留 .bak)。
@@ -495,14 +702,16 @@ install -m 0600 "$EXTRAS_DIR/config.toml" "$ETC_DIR/config.toml.dist"
 # CONFIG_FRESH 记「这次是不是真拿模板写了 config.toml」——apply_magic_suffix 靠它决定
 # 能不能改后缀:保留既有配置(升级路径)时它必须为 0,绝不擅自动别人已生效的 config。
 if [ -f "$ETC_DIR/config.toml" ] && [ "${NANOTUN_FORCE_CONFIG:-0}" != "1" ]; then
-  ok "保留已有 config.toml(发布包模板另存 config.toml.dist,可 diff 新增字段)"
+  ok_t "Kept the existing config.toml (the tarball's template is saved as config.toml.dist, so new fields can be diffed)" \
+       "保留已有 config.toml(发布包模板另存 config.toml.dist,可 diff 新增字段)"
   CONFIG_FRESH=0
 else
   if [ -f "$ETC_DIR/config.toml" ]; then
     CFG_BAK="$ETC_DIR/config.toml.bak.$(date +%Y%m%d-%H%M%S)"
     cp -f "$ETC_DIR/config.toml" "$CFG_BAK"
     chmod 0600 "$CFG_BAK"
-    warn "NANOTUN_FORCE_CONFIG=1:已用模板覆盖 config.toml(原文件 → $CFG_BAK)"
+    warn_t "NANOTUN_FORCE_CONFIG=1: config.toml was overwritten with the template (the old file → $CFG_BAK)" \
+           "NANOTUN_FORCE_CONFIG=1:已用模板覆盖 config.toml(原文件 → $CFG_BAK)"
   fi
   install -m 0600 "$EXTRAS_DIR/config.toml" "$ETC_DIR/config.toml"
   CONFIG_FRESH=1
@@ -528,21 +737,25 @@ install -m 0755 "$SCRIPTS_DIR/nanotun-ports.sh" /usr/local/bin/nanotun-ports.sh
 # 中间,前缀和标点都是另一套。正常装完这一步的结论由下面那句 ✓ 概括就够了 —— 首次
 # 安装本来就该生成这些。出错时才把它说过的话原样倒出来,那时每一行都是线索。
 ASSETS_LOG="$(mktemp)" \
-  || die "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 空间不足)。可以 TMPDIR=/var/tmp 重跑。"
+  || die_t "Could not create a temporary file — ${TMPDIR:-/tmp} is not writable (permissions / read-only / out of space). You can rerun with TMPDIR=/var/tmp." \
+           "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 空间不足)。可以 TMPDIR=/var/tmp 重跑。"
 if bash "$SCRIPTS_DIR/ensure-server-assets.sh" "$ETC_DIR" >"$ASSETS_LOG" 2>&1; then
   [ "${NANOTUN_VERBOSE:-0}" = 1 ] && sed 's/^/    /' "$ASSETS_LOG"
 else
   cat "$ASSETS_LOG" >&2; rm -f "$ASSETS_LOG"
-  die "生成证书 / masquerade 资产失败(上面是它的原始输出)"
+  die_t "Could not generate the certificates / masquerade assets (its raw output is above)" \
+        "生成证书 / masquerade 资产失败(上面是它的原始输出)"
 fi
 rm -f "$ASSETS_LOG"
 
 install -m 0644 "$SCRIPTS_DIR/tun-setup.service" /etc/systemd/system/nanotun-tun-setup.service
 install -m 0644 "$EXTRAS_DIR/nanotun.service"  /etc/systemd/system/nanotun.service
 systemctl daemon-reload
-ok "二进制 / 配置 / 证书 / systemd 单元已就位"
+ok_t "Binaries / config / certificates / systemd units are in place" \
+     "二进制 / 配置 / 证书 / systemd 单元已就位"
 
-step "2. 开启 IP forwarding + unprivileged ICMP ping"
+step_t "2. Enable IP forwarding + unprivileged ICMP ping" \
+       "2. 开启 IP forwarding + unprivileged ICMP ping"
 # /etc/sysctl.d 不是哪里都有:Rocky 9 的 minimal 镜像(以及最小化安装的 RHEL 系)
 # 只带 /usr/lib/sysctl.d,/etc/sysctl.d 要管理员自己建。少这一句的后果是安装在第 2 步
 # 当场炸在一行裸的 `No such file or directory` 上 —— 前一步刚把二进制和 systemd 单元
@@ -576,7 +789,8 @@ sysctl -e --system >/dev/null
 # 每个值都带 `|| echo` 兜底,别只兜 ping_group_range 那一个:v6.forwarding 在上面那种
 # 机器上读不出来,而命令替换失败不触发 set -e —— 结果是这行打印成 "v6.forwarding = ",
 # 一个看着像 bug 的空值。写成 n/a 才说得清「这台机器没有 IPv6」。
-ok "ip_forward = $(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 'n/a'), v6.forwarding = $(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo 'n/a（内核未启用 IPv6，不影响 IPv4）'), ping_group_range = '$(sysctl -n net.ipv4.ping_group_range 2>/dev/null || echo 'n/a')'"
+NO_V6="$(tsel 'n/a (IPv6 is disabled in the kernel; IPv4 is unaffected)' 'n/a（内核未启用 IPv6，不影响 IPv4）')"
+ok "ip_forward = $(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 'n/a'), v6.forwarding = $(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo "$NO_V6"), ping_group_range = '$(sysctl -n net.ipv4.ping_group_range 2>/dev/null || echo 'n/a')'"
 
 # 三个对外端口一律从**实际配置**里读出来,不写死。
 #
@@ -593,7 +807,8 @@ nanotun_load_ports "$ETC_DIR/config.toml" "$ETC_DIR/web.env"
 FW_TCP=("$NT_PORT_REALITY")
 [ "$WEB_AVAILABLE" -eq 1 ] && FW_TCP+=("$NT_PORT_WEB")
 
-step "3. 防火墙：放行 nanotun 监听端口（ufw / firewalld active 时）"
+step_t "3. Firewall: open the ports nanotun listens on (when ufw / firewalld is active)" \
+       "3. 防火墙：放行 nanotun 监听端口（ufw / firewalld active 时）"
 # ufw 默认 INPUT DROP（Ubuntu 全新系统常见配置），不放行端口客户端会全部被静默丢包，
 # 表现为「TCP 三次握手超时」「QUIC 重传无响应」。这里检测 ufw 状态后幂等放行。
 # 如果你用的是 firewalld / iptables / 云厂商安全组，请按各自方式自行放行：
@@ -629,10 +844,11 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: 
     ufw delete allow "${NT_DEFAULT_WEB}/tcp" >/dev/null 2>&1 || true
   fi
   if [ "$UFW_BAD" -eq 1 ]; then
-    warn "ufw 在跑,但自动放行没成功。请手动执行:"
+    warn_t "ufw is running, but opening the ports automatically did not work. Run this by hand:" \
+           "ufw 在跑,但自动放行没成功。请手动执行:"
     warn "  ufw allow$(printf -- ' %s' "${UFW_PORTS[@]}")"
   else
-    ok "ufw 放行：${UFW_PORTS[*]}"
+    ok_t "ufw opened: ${UFW_PORTS[*]}" "ufw 放行：${UFW_PORTS[*]}"
   fi
 elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null)" = running ]; then
   # RHEL 系(Rocky / Alma / CentOS / Fedora)默认跑的是 firewalld,而它的默认 zone 同样
@@ -658,15 +874,17 @@ elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev
   fi
   firewall-cmd --reload >/dev/null 2>&1 || FW_BAD=1
   if [ "$FW_BAD" -eq 0 ]; then
-    ok "firewalld 放行：${FW_PORTS[*]}"
+    ok_t "firewalld opened: ${FW_PORTS[*]}" "firewalld 放行：${FW_PORTS[*]}"
   else
     # 放行失败不该 die:服务本身能跑,只是外面进不来,而这在云上还可能被安全组兜着。
     # 但必须把那条命令原样给出来,不能只说「请自行放行」。
-    warn "firewalld 在跑,但自动放行没成功。请手动执行:"
+    warn_t "firewalld is running, but opening the ports automatically did not work. Run this by hand:" \
+           "firewalld 在跑,但自动放行没成功。请手动执行:"
     warn "  firewall-cmd --permanent$(printf -- ' --add-port=%s' "${FW_PORTS[@]}") && firewall-cmd --reload"
   fi
 else
-  warn "未检测到 ufw / firewalld active；如使用其他防火墙，请手动放行 ${NT_PORT_REALITY}/tcp 与 $(printf '%s' "$NT_HY2_SPECS" | tr ' ' ',')/udp（装了 web 再加 ${NT_PORT_WEB}/tcp）"
+  warn_t "Neither ufw nor firewalld was found active; if you use another firewall, open ${NT_PORT_REALITY}/tcp and $(printf '%s' "$NT_HY2_SPECS" | tr ' ' ',')/udp by hand (plus ${NT_PORT_WEB}/tcp when web is installed)" \
+         "未检测到 ufw / firewalld active；如使用其他防火墙，请手动放行 ${NT_PORT_REALITY}/tcp 与 $(printf '%s' "$NT_HY2_SPECS" | tr ' ' ',')/udp（装了 web 再加 ${NT_PORT_WEB}/tcp）"
 fi
 
 # 云厂商安全组:这一句必须在**任何一条分支之后**都印出来,包括「ufw 放行成功」那条。
@@ -683,12 +901,20 @@ fi
 # 也就是说照着模板走的人,REALITY(8443/tcp)自己加了,hy2 那条最容易漏 —— 而漏了它的
 # 表现不是连不上,是「能连但慢」(客户端悄悄退到别的传输),更难往防火墙上想。
 # 端口同样取实际值:安全组要放行的是这台机器真正在听的那个,照着默认值去填等于白填。
-note_ports="${NT_PORT_REALITY}/tcp（REALITY）、$(printf '%s' "$NT_HY2_SPECS" | tr ' ' ',')/udp（hysteria2）"
-[ "$WEB_AVAILABLE" -eq 1 ] && note_ports="${note_ports}、${NT_PORT_WEB}/tcp（Web 后台）"
-warn "云服务器还要去厂商控制台的**安全组 / 网络 ACL** 里放行：${note_ports}"
-warn "  这一步脚本做不了。ufw 放了不等于安全组放了；443 是 UDP，而安全组模板通常只给 TCP。"
+if [ "$NT_LANG" = zh ]; then
+  note_ports="${NT_PORT_REALITY}/tcp（REALITY）、$(printf '%s' "$NT_HY2_SPECS" | tr ' ' ',')/udp（hysteria2）"
+  [ "$WEB_AVAILABLE" -eq 1 ] && note_ports="${note_ports}、${NT_PORT_WEB}/tcp（Web 后台）"
+else
+  note_ports="${NT_PORT_REALITY}/tcp (REALITY), $(printf '%s' "$NT_HY2_SPECS" | tr ' ' ',')/udp (hysteria2)"
+  [ "$WEB_AVAILABLE" -eq 1 ] && note_ports="${note_ports}, ${NT_PORT_WEB}/tcp (web console)"
+fi
+warn_t "On a cloud server you also have to open these in the provider's **security group / network ACL**: ${note_ports}" \
+       "云服务器还要去厂商控制台的**安全组 / 网络 ACL** 里放行：${note_ports}"
+warn_t "  This script cannot do that step. An open ufw is not an open security group; 443 is UDP, and security-group templates usually only cover TCP." \
+       "  这一步脚本做不了。ufw 放了不等于安全组放了；443 是 UDP，而安全组模板通常只给 TCP。"
 
-step "4. 旧 DB 路径迁移自检（K1：2026-05-21 事故防再发）"
+step_t "4. Check for a database at the old path (K1: guard against the 2026-05-21 incident)" \
+       "4. 旧 DB 路径迁移自检（K1：2026-05-21 事故防再发）"
 # 背景:历史上 nanotun 曾用 /root/nanotun/data/nanotun.db 作为 SQLite home,
 # 新版本搬到了 /var/lib/nanotun/nanotun.db。若部署脚本只在新路径建空库 + 一个 admin,
 # 旧 DB 里的 smoker / 设备 / lease 留在原地不会被自动迁移 → 所有终端 401/403 「用户不存在」,
@@ -733,27 +959,41 @@ if [ "$NEW_USERS" -eq 0 ] && [ "$LEGACY_USERS" -gt 0 ]; then
     [ -f "$LEGACY_DB-wal" ] && install -m 0600 "$LEGACY_DB-wal" "$LIB_DIR/nanotun.db-wal" || rm -f "$LIB_DIR/nanotun.db-wal"
     [ -f "$LEGACY_DB-shm" ] && install -m 0600 "$LEGACY_DB-shm" "$LIB_DIR/nanotun.db-shm" || rm -f "$LIB_DIR/nanotun.db-shm"
     if [ -n "$BAK" ]; then
-      ok "已从旧路径导入 DB:${LEGACY_DB} → ${LIB_DIR}/nanotun.db(新路径原有的库已备份 → ${BAK})"
+      ok_t "Imported the database from the old path: ${LEGACY_DB} → ${LIB_DIR}/nanotun.db (the database that was at the new path is backed up → ${BAK})" \
+           "已从旧路径导入 DB:${LEGACY_DB} → ${LIB_DIR}/nanotun.db(新路径原有的库已备份 → ${BAK})"
     else
-      ok "已从旧路径导入 DB:${LEGACY_DB} → ${LIB_DIR}/nanotun.db(新路径原本没有库,无需备份)"
+      ok_t "Imported the database from the old path: ${LEGACY_DB} → ${LIB_DIR}/nanotun.db (there was no database at the new path, so nothing to back up)" \
+           "已从旧路径导入 DB:${LEGACY_DB} → ${LIB_DIR}/nanotun.db(新路径原本没有库,无需备份)"
     fi
     # 导入是 copy 不是 move。这句不是客套:上面那条没有备份的路径里,旧库就是唯一的回滚点。
-    ok "旧库原样留在 ${LEGACY_DB}(未删除);确认新库无误后再手动归档"
-    ok "Batch J 二进制启动时会自动跑 store.Migrate 应用新 migration"
+    ok_t "The old database is left exactly where it was, at ${LEGACY_DB} (not deleted); archive it by hand once you have checked the new one" \
+         "旧库原样留在 ${LEGACY_DB}(未删除);确认新库无误后再手动归档"
+    ok_t "The Batch J binaries run store.Migrate on startup, so new migrations are applied automatically" \
+         "Batch J 二进制启动时会自动跑 store.Migrate 应用新 migration"
   else
     SELF_PATH="$(realpath "$0" 2>/dev/null || echo "$0")"
-    printf >&2 '\n\033[1;31mFATAL: 旧 DB 路径 %s 检出 %d 个终端用户,\n新路径 %s/nanotun.db 没有,直接装会让所有终端登录失败「用户不存在」(2026-05-21 事故场景)。\033[0m\n\n' \
-      "$LEGACY_DB" "$LEGACY_USERS" "$LIB_DIR"
-    printf >&2 '请二选一明确处理:\n  1) 导入旧数据(保留 PSK / device UUID / lease):\n       systemctl stop nanotun.service 2>/dev/null || true\n       NANOTUN_IMPORT_LEGACY_DB=1 bash %s\n  2) 确认旧数据已无用,归档后再装:\n       mv %s %s.archived.$(date +%%Y%%m%%d-%%H%%M%%S)\n       bash %s\n\n' \
-      "$SELF_PATH" "$LEGACY_DB" "$LEGACY_DB" "$SELF_PATH"
-    die "拒绝在「旧 DB 仍有用户、新 DB 空」状态下完成安装"
+    if [ "$NT_LANG" = zh ]; then
+      printf >&2 '\n\033[1;31mFATAL: 旧 DB 路径 %s 检出 %d 个终端用户,\n新路径 %s/nanotun.db 没有,直接装会让所有终端登录失败「用户不存在」(2026-05-21 事故场景)。\033[0m\n\n' \
+        "$LEGACY_DB" "$LEGACY_USERS" "$LIB_DIR"
+      printf >&2 '请二选一明确处理:\n  1) 导入旧数据(保留 PSK / device UUID / lease):\n       systemctl stop nanotun.service 2>/dev/null || true\n       NANOTUN_IMPORT_LEGACY_DB=1 bash %s\n  2) 确认旧数据已无用,归档后再装:\n       mv %s %s.archived.$(date +%%Y%%m%%d-%%H%%M%%S)\n       bash %s\n\n' \
+        "$SELF_PATH" "$LEGACY_DB" "$LEGACY_DB" "$SELF_PATH"
+    else
+      printf >&2 '\n\033[1;31mFATAL: the database at the old path %s holds %d end-user accounts,\nand %s/nanotun.db does not. Installing straight over that makes every client fail to log in with "user does not exist" (the 2026-05-21 incident).\033[0m\n\n' \
+        "$LEGACY_DB" "$LEGACY_USERS" "$LIB_DIR"
+      printf >&2 'Pick one of these explicitly:\n  1) Import the old data (keeps PSKs / device UUIDs / leases):\n       systemctl stop nanotun.service 2>/dev/null || true\n       NANOTUN_IMPORT_LEGACY_DB=1 bash %s\n  2) The old data is of no use — archive it, then install:\n       mv %s %s.archived.$(date +%%Y%%m%%d-%%H%%M%%S)\n       bash %s\n\n' \
+        "$SELF_PATH" "$LEGACY_DB" "$LEGACY_DB" "$SELF_PATH"
+    fi
+    die_t "Refusing to finish the install while the old database still has users and the new one is empty" \
+          "拒绝在「旧 DB 仍有用户、新 DB 空」状态下完成安装"
   fi
 else
   if [ "$LEGACY_USERS" -gt 0 ] && [ "$NEW_USERS" -gt 0 ]; then
-    warn "旧 DB $LEGACY_DB 仍有 $LEGACY_USERS 个终端用户,但新 DB 已有 $NEW_USERS 个 — 不会自动覆盖。"
-    warn "确认无用后请手动 mv 归档:mv $LEGACY_DB $LEGACY_DB.archived.\$(date +%Y%m%d-%H%M%S)"
+    warn_t "The old database $LEGACY_DB still holds $LEGACY_USERS end-user accounts, but the new one already has $NEW_USERS — it will not be overwritten automatically." \
+           "旧 DB $LEGACY_DB 仍有 $LEGACY_USERS 个终端用户,但新 DB 已有 $NEW_USERS 个 — 不会自动覆盖。"
+    warn_t "Once you are sure it is of no use, archive it by hand: mv $LEGACY_DB $LEGACY_DB.archived.\$(date +%Y%m%d-%H%M%S)" \
+           "确认无用后请手动 mv 归档:mv $LEGACY_DB $LEGACY_DB.archived.\$(date +%Y%m%d-%H%M%S)"
   else
-    ok "没有需要迁移的历史 DB"
+    ok_t "There is no legacy database that needs migrating" "没有需要迁移的历史 DB"
   fi
 fi
 
@@ -778,20 +1018,25 @@ if [ -f "$DB_FILE" ]; then
   BACKUP_FILE="$BACKUP_DIR/nanotun-$(date +%Y%m%d-%H%M%S).db"
   mkdir -p "$BACKUP_DIR" && chmod 0700 "$BACKUP_DIR"
   if nanotun-admin --db-path "$DB_FILE" backup "$BACKUP_FILE" >/dev/null 2>&1; then
-    ok "升级前已备份数据库 → $BACKUP_FILE"
+    ok_t "Backed up the database before upgrading → $BACKUP_FILE" \
+         "升级前已备份数据库 → $BACKUP_FILE"
     # 只留最近 3 份。不设上限的话,每升一次多一份,而这个目录没人会去看 ——
     # 直到某天磁盘满了才发现,那时症状是「服务起不来」,跟备份看不出关系。
     ls -1t "$BACKUP_DIR"/nanotun-*.db 2>/dev/null | tail -n +4 | while read -r old; do
       rm -f "$old"
     done
   else
-    warn "数据库备份没做成(不影响本次安装,继续)。"
-    warn "  想手动留一份:nanotun-admin --db-path $DB_FILE backup <落点>"
-    warn "  在意的话先备份再升级 —— schema 迁移过去就回不来了。"
+    warn_t "The database backup did not succeed (this install is unaffected, carrying on)." \
+           "数据库备份没做成(不影响本次安装,继续)。"
+    warn_t "  To take one by hand: nanotun-admin --db-path $DB_FILE backup <destination>" \
+           "  想手动留一份:nanotun-admin --db-path $DB_FILE backup <落点>"
+    warn_t "  If you care, back it up before upgrading — a schema migration cannot be undone." \
+           "  在意的话先备份再升级 —— schema 迁移过去就回不来了。"
   fi
 fi
 
-step "5. 初始化 admin 用户（首次部署生成 PSK；重复部署 noop 保留现有 PSK）"
+step_t "5. Initialise the admin user (first deploy generates a PSK; a repeat deploy is a noop and keeps the existing one)" \
+       "5. 初始化 admin 用户（首次部署生成 PSK；重复部署 noop 保留现有 PSK）"
 # init 默认幂等：setup_completed=1 时再跑只输出 admin 元信息（{"noop":true}），不改 PSK。
 # 想强制重置请手动 `nanotun-admin --json init --reset-psk`，不要让脚本自动做。
 # 输出要洗两遍,不能 2>&1 一把抓:
@@ -800,7 +1045,8 @@ step "5. 初始化 admin 用户（首次部署生成 PSK；重复部署 noop 保
 #   · init 会问用户名和 PSK 两个问题(两个空行 = 都取默认值),提示语走 stdout,
 #     会贴在 JSON 前面变成「admin username [admin]: {」,所以从第一个 { 起截断。
 INIT_ERR="$(mktemp)" || INIT_ERR=""
-[ -n "$INIT_ERR" ] || die "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 配额 / 空间不足)。"
+[ -n "$INIT_ERR" ] || die_t "Could not create a temporary file — ${TMPDIR:-/tmp} is not writable (permissions / read-only / quota / out of space)." \
+                            "创建临时文件失败 —— ${TMPDIR:-/tmp} 写不进去(权限 / 只读 / 配额 / 空间不足)。"
 INIT_RC=0
 INIT_OUT="$(printf '\n\n' | /usr/local/bin/nanotun-admin --db-path "$LIB_DIR/nanotun.db" --json init 2>"$INIT_ERR")" || INIT_RC=$?
 INIT_JSON="$(printf '%s\n' "$INIT_OUT" | awk 'f {print; next} /{/ {sub(/^[^{]*/, ""); print; f=1}')"
@@ -818,28 +1064,44 @@ if [ "$INIT_RC" != 0 ] || [ -z "$INIT_JSON" ]; then
   # 实测降级到旧版、库的 schema 却来自新版时,上一行明明白白写着「库的 schema 版本
   # 是 99,本程序只认到 30」,而这行红字却把人引去建管理员 —— 建一次再失败一次。
   # 扫红字的人只看得到这一行,所以它必须把视线送回上面,而不是自己猜一个原因。
-  die "nanotun-admin init 失败(退出码 ${INIT_RC})—— 原因见上面几行 init 的原始输出。
+  die_t "nanotun-admin init failed (exit code ${INIT_RC}) — the reason is in init's raw output a few lines above.
+   There is no administrator in the database, so this machine cannot be managed once
+   installed. Deal with what it says above, then rerun this script." \
+        "nanotun-admin init 失败(退出码 ${INIT_RC})—— 原因见上面几行 init 的原始输出。
    库里没有管理员,这台机器装完也管不了,先按上面的提示解决再重跑本脚本。"
 fi
 rm -f "$INIT_ERR"
 
 if printf '%s' "$INIT_JSON" | grep -q '"noop"[[:space:]]*:[[:space:]]*true'; then
-  ok "已 setup，init 跳过（不重置 PSK）"
+  ok_t "Already set up, init skipped (the PSK was not reset)" \
+       "已 setup，init 跳过（不重置 PSK）"
 else
   INIT_FILE="$DEPLOY_DIR/init.out.txt"
   printf '%s\n' "$INIT_JSON" > "$INIT_FILE"
   chmod 600 "$INIT_FILE"
-  ok "首次 init,已创建管理员账号"
+  ok_t "First init, the administrator account has been created" \
+       "首次 init,已创建管理员账号"
   # 摆出来,别让人从 JSON 里自己捞。这是整个安装过程产出的最重要的一样东西。
   echo
-  printf '        用户名  %s\n' "$(printf '%s' "$INIT_JSON" | sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-  printf '        PSK     %s\n' "$(printf '%s' "$INIT_JSON" | sed -n 's/.*"psk"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  INIT_USERNAME="$(printf '%s' "$INIT_JSON" | sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  INIT_PSK="$(printf '%s' "$INIT_JSON" | sed -n 's/.*"psk"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  # 两份各自写全,不用 tsel 拼:标签宽度要跟着语言变(「用户名」占 6 列、Username 占 8),
+  # 而这两行是**唯一**一次明文露出 PSK 的地方 —— 值必须对齐在同一列,扫一眼就能抄。
+  if [ "$NT_LANG" = zh ]; then
+    printf '        用户名  %s\n' "$INIT_USERNAME"
+    printf '        PSK     %s\n' "$INIT_PSK"
+  else
+    printf '        Username  %s\n' "$INIT_USERNAME"
+    printf '        PSK       %s\n' "$INIT_PSK"
+  fi
   echo
-  warn "这是 admin 这个 VPN 账号的凭据(跟 Web 后台管理员是两回事),现在就抄走。"
-  warn "另存了一份在 ${INIT_FILE}(0600)—— 那是发布包解压目录,别顺手删了。"
+  warn_t "These are the credentials of the VPN account called admin (a different thing from the web console administrator) — copy them now." \
+         "这是 admin 这个 VPN 账号的凭据(跟 Web 后台管理员是两回事),现在就抄走。"
+  warn_t "A second copy is kept in ${INIT_FILE} (0600) — that is the release tarball's extraction directory, so do not delete it by reflex." \
+         "另存了一份在 ${INIT_FILE}(0600)—— 那是发布包解压目录,别顺手删了。"
 fi
 
-step "6. 启动并设为开机自启"
+step_t "6. Start the services and enable them at boot" "6. 启动并设为开机自启"
 # 起不来**不能**在这一步就终止脚本。
 #
 # nanotun.service 是 Type=notify:服务没发出 READY 时 systemctl restart 返回非零,
@@ -870,13 +1132,15 @@ systemctl enable nanotun.service >/dev/null 2>&1 || true
 if systemctl restart nanotun.service && settled_active nanotun.service; then
   # 成功也说一声。失败那条路现在很详细,这里再什么都不打,第 6 步在屏幕上就只剩一个
   # 空标题 —— 而它恰恰是全脚本最慢的一步,看着像卡住了。
-  [ "$START_FAILED" = 0 ] && ok "nanotun.service 已启动并设为开机自启"
+  [ "$START_FAILED" = 0 ] && ok_t "nanotun.service is running and enabled at boot" \
+                                  "nanotun.service 已启动并设为开机自启"
 else
   START_FAILED=1
 fi
 
 if [ "$WEB_AVAILABLE" -eq 1 ]; then
-  step "6b. 安装 nanotun-web(Web 管理后台,M2)"
+  step_t "6b. Install nanotun-web (the web console, M2)" \
+         "6b. 安装 nanotun-web(Web 管理后台,M2)"
   install -m 0755 "$DEPLOY_DIR/nanotun-web" /usr/local/bin/nanotun-web
   install -m 0644 "$EXTRAS_DIR/nanotun-web.service" /etc/systemd/system/nanotun-web.service
   install -d -m 0700 "$ETC_DIR/certs"  # web TLS 自签证书会落到这里
@@ -888,14 +1152,16 @@ if [ "$WEB_AVAILABLE" -eq 1 ]; then
       # 别再把人往 /setup 引。那个页面在第一个管理员出现之前对全网公开(谁先打开谁是
       # 管理员),而紧接着要跑的开服向导会当场把账号建掉 —— 指向它才是短的那条路,
       # 也不留窗口。手动建也不必开浏览器:nanotun-admin webadmin create。
-      ok "nanotun-web 已启动,后台账号在下一步的开服向导里设(也可 nanotun-admin webadmin create)"
+      ok_t "nanotun-web is running; its console account is set up by the setup wizard in the next step (or with nanotun-admin webadmin create)" \
+           "nanotun-web 已启动,后台账号在下一步的开服向导里设(也可 nanotun-admin webadmin create)"
   else
     START_FAILED=1
-    warn "nanotun-web 没能启动(原因见下面第 7 步的诊断)"
+    warn_t "nanotun-web did not start (the reason is in the step 7 diagnostics below)" \
+           "nanotun-web 没能启动(原因见下面第 7 步的诊断)"
   fi
 fi
 
-step "7. 状态自检"
+step_t "7. Status check" "7. 状态自检"
 
 # 这一步以前无条件把三份 systemctl status、ss 表和 journalctl -n 40 全倒出来 ——
 # 九十来行原始日志,占掉整个安装输出的三分之一。代价不是「话多」这么简单:第 5 步
@@ -938,8 +1204,8 @@ check_port tcp "$NT_PORT_REALITY" "${NT_PORT_REALITY}/tcp(REALITY)"
 # hy2 开端口跳跃时只有首端口真的 listen,其余靠 iptables REDIRECT 过来,所以这里只看首端口。
 check_port udp "$NT_PORT_HY2"     "${NT_PORT_HY2}/udp(hy2)"
 [ "$WEB_AVAILABLE" -eq 1 ] && check_port tcp "$NT_PORT_WEB" "${NT_PORT_WEB}/tcp(Web)"
-[ ${#PORTS_UP[@]}   -gt 0 ] && ok   "监听中:${PORTS_UP[*]}"
-[ ${#PORTS_DOWN[@]} -gt 0 ] && warn "没听上:${PORTS_DOWN[*]}"
+[ ${#PORTS_UP[@]}   -gt 0 ] && ok_t   "Listening: ${PORTS_UP[*]}"     "监听中:${PORTS_UP[*]}"
+[ ${#PORTS_DOWN[@]} -gt 0 ] && warn_t "Not listening: ${PORTS_DOWN[*]}" "没听上:${PORTS_DOWN[*]}"
 
 # TUN 到底有没有拿到 IPv4 —— 这一项服务状态和端口都照不出来。
 #
@@ -955,10 +1221,14 @@ TUN_DEV="$(sed -n 's/^[[:space:]]*device_name[[:space:]]*=[[:space:]]*"\([^"]*\)
 TUN_DEV="${TUN_DEV:-tun0}"
 if [ "$START_FAILED" != 1 ] && ip link show "$TUN_DEV" >/dev/null 2>&1 \
    && ! ip -4 addr show dev "$TUN_DEV" 2>/dev/null | grep -q 'inet '; then
-  warn "$TUN_DEV 没有 IPv4 地址 —— [tun].subnets 里的候选网段与本机网段全部冲突,已跳过 IPv4。"
-  warn "  服务是起来了,但客户端拿不到 IPv4 虚拟 IP,这台 VPN 眼下只有 IPv6 能用。"
-  warn "  本机占着:$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | tr '\n' ' ')"
-  warn "  改 $ETC_DIR/config.toml 的 [tun].subnets 换一段不冲突的,再 systemctl restart nanotun"
+  warn_t "$TUN_DEV has no IPv4 address — every candidate in [tun].subnets collides with a subnet this machine already uses, so IPv4 was skipped." \
+         "$TUN_DEV 没有 IPv4 地址 —— [tun].subnets 里的候选网段与本机网段全部冲突,已跳过 IPv4。"
+  warn_t "  The service did come up, but clients get no IPv4 virtual IP, so this VPN is IPv6-only for now." \
+         "  服务是起来了,但客户端拿不到 IPv4 虚拟 IP,这台 VPN 眼下只有 IPv6 能用。"
+  warn_t "  This machine holds: $(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | tr '\n' ' ')" \
+         "  本机占着:$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | tr '\n' ' ')"
+  warn_t "  Pick a range that does not collide in [tun].subnets of $ETC_DIR/config.toml, then systemctl restart nanotun" \
+         "  改 $ETC_DIR/config.toml 的 [tun].subnets 换一段不冲突的,再 systemctl restart nanotun"
   STATUS_BAD=1
 fi
 
@@ -972,8 +1242,9 @@ if [ "$STATUS_BAD" = 1 ] || [ "$START_FAILED" = 1 ] || [ "${NANOTUN_VERBOSE:-0}"
     echo "--- systemctl status nanotun-web ---"
     systemctl --no-pager status nanotun-web.service | head -18 || true
   fi
-  echo "--- 监听端口 ---"
-  ss -lntup 2>&1 | grep -E ":(443|7443|8080|8443)" || echo "(443/7443/8080/8443 上没有任何监听)"
+  echo "--- $(tsel 'listening ports' '监听端口') ---"
+  ss -lntup 2>&1 | grep -E ":(443|7443|8080|8443)" \
+    || echo "$(tsel '(nothing is listening on 443/7443/8080/8443)' '(443/7443/8080/8443 上没有任何监听)')"
   echo "--- journalctl -u nanotun -n 40 ---"
   journalctl -u nanotun.service --no-pager -n 40 || true
   # nanotun-web 的日志也要抓 —— 只抓 status 是不够的。
@@ -988,7 +1259,9 @@ if [ "$STATUS_BAD" = 1 ] || [ "$START_FAILED" = 1 ] || [ "${NANOTUN_VERBOSE:-0}"
     journalctl -u nanotun-web.service --no-pager -n 30 || true
   fi
 else
-  printf '    \033[2m· 详细状态与日志:NANOTUN_VERBOSE=1 重跑,或 journalctl -u nanotun -n 50\033[0m\n'
+  printf '    \033[2m· %s\033[0m\n' "$(tsel \
+    'For the full status and logs: rerun with NANOTUN_VERBOSE=1, or journalctl -u nanotun -n 50' \
+    '详细状态与日志:NANOTUN_VERBOSE=1 重跑,或 journalctl -u nanotun -n 50')"
 fi
 
 echo
@@ -997,15 +1270,24 @@ echo
 # 上面第 7 步已经把 status 和 journalctl 打出来了,这里只负责把结论说清楚。
 if [ "$START_FAILED" = 1 ]; then
   echo
-  printf '\033[1;31mFATAL: 文件已装好,但服务没能启动(诊断见上面第 7 步)。\033[0m\n' >&2
-  printf '\n常见原因:\n' >&2
-  printf '  · 配置有问题        nanotun-admin config lint %s/config.toml\n' "$ETC_DIR" >&2
-  # 必须带 u:hysteria2 听的是 **UDP** 443,而端口冲突里它恰恰是最常撞的一个
-  # (systemd-resolved、别的代理都爱占 UDP)。给一条 -lntp 的命令,人照着敲,
-  # 屏幕上空空如也,于是把「端口被占」这条正确的线索排除掉了。
-  printf '  · 端口被占          ss -lntup | grep -E ":(443|7443|8443)"\n' >&2
-  printf '  · 环境不满足        nanotun-preflight\n' >&2
-  printf '\n改完重跑本脚本即可(幂等,不会动已生效的配置和密钥)。\n' >&2
+  if [ "$NT_LANG" = zh ]; then
+    printf '\033[1;31mFATAL: 文件已装好,但服务没能启动(诊断见上面第 7 步)。\033[0m\n' >&2
+    printf '\n常见原因:\n' >&2
+    printf '  · 配置有问题        nanotun-admin config lint %s/config.toml\n' "$ETC_DIR" >&2
+    # 必须带 u:hysteria2 听的是 **UDP** 443,而端口冲突里它恰恰是最常撞的一个
+    # (systemd-resolved、别的代理都爱占 UDP)。给一条 -lntp 的命令,人照着敲,
+    # 屏幕上空空如也,于是把「端口被占」这条正确的线索排除掉了。
+    printf '  · 端口被占          ss -lntup | grep -E ":(443|7443|8443)"\n' >&2
+    printf '  · 环境不满足        nanotun-preflight\n' >&2
+    printf '\n改完重跑本脚本即可(幂等,不会动已生效的配置和密钥)。\n' >&2
+  else
+    printf '\033[1;31mFATAL: the files are installed, but the service did not start (diagnostics in step 7 above).\033[0m\n' >&2
+    printf '\nUsual causes:\n' >&2
+    printf '  · a bad config       nanotun-admin config lint %s/config.toml\n' "$ETC_DIR" >&2
+    printf '  · a port is taken    ss -lntup | grep -E ":(443|7443|8443)"\n' >&2
+    printf '  · the machine falls short   nanotun-preflight\n' >&2
+    printf '\nFix it and rerun this script (it is idempotent and does not touch config or keys already in effect).\n' >&2
+  fi
   exit 1
 fi
 
@@ -1031,36 +1313,42 @@ if [ "${NANOTUN_WIZARD_FOLLOWS:-0}" = 1 ]; then
   # 向导接着就来,而且它结束时会把这些运维命令再列一遍。这里少说几句,
   # 好让上面第 5 步那段 admin PSK 尽量留在屏幕上。
   if [ -n "$DIAL_SET" ]; then
-    ok "安装完成,开服向导马上开始 —— 已配好的值会显示出来,回车即保留。"
+    ok_t "Installed. The setup wizard starts in a moment — values already configured are shown, and Enter keeps them." \
+         "安装完成,开服向导马上开始 —— 已配好的值会显示出来,回车即保留。"
   else
-    ok "安装完成,开服向导马上开始 —— 设置拨号地址、建第一个用户、出二维码。"
+    ok_t "Installed. The setup wizard starts in a moment — it sets the dial host, creates the first user and prints its QR codes." \
+         "安装完成,开服向导马上开始 —— 设置拨号地址、建第一个用户、出二维码。"
   fi
 elif [ -n "$DIAL_SET" ]; then
-  ok "安装完成。这台机器此前已配置过(拨号地址 $DIAL_SET),现有用户与密钥都没动。"
+  ok_t "Installed. This machine was configured before (dial host $DIAL_SET); existing users and keys were left alone." \
+       "安装完成。这台机器此前已配置过(拨号地址 $DIAL_SET),现有用户与密钥都没动。"
   echo
-  echo "    要加用户 / 重出二维码 / 改拨号地址:sudo nanotun-setup"
+  echo "    $(tsel 'To add users / reissue QR codes / change the dial host:' '要加用户 / 重出二维码 / 改拨号地址:') sudo nanotun-setup"
   echo
 elif [ "${SETUP_AVAILABLE:-0}" -eq 1 ]; then
-  ok "安装完成。**还差最后一步**,客户端才连得上:"
+  ok_t "Installed. **One step is still missing** before a client can connect:" \
+       "安装完成。**还差最后一步**,客户端才连得上:"
   echo
   printf '        \033[1;36msudo nanotun-setup\033[0m\n'
   echo
-  echo "    它会带你设置客户端拨号地址、创建 Web 管理员、建第一个用户并出二维码。"
+  echo "    $(tsel \
+    'It walks you through the client dial host, the web administrator, the first user and its QR codes.' \
+    '它会带你设置客户端拨号地址、创建 Web 管理员、建第一个用户并出二维码。')"
   echo
 else
-  ok "安装完成。"
+  ok_t "Installed." "安装完成。"
 fi
 
 if [ "${NANOTUN_WIZARD_FOLLOWS:-0}" != 1 ]; then
-  ok "常用运维："
-  echo "    journalctl -u nanotun -f                                       # 实时日志"
+  ok_t "Day-to-day commands:" "常用运维："
+  echo "    journalctl -u nanotun -f                                       $(tsel '# live logs' '# 实时日志')"
   echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db user list"
   echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db device list"
   echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db lease list"
   echo "    /usr/local/bin/nanotun-admin --db-path $LIB_DIR/nanotun.db setting list"
   if [ "$WEB_AVAILABLE" -eq 1 ]; then
     echo
-    echo "  Web 管理后台(M2):"
+    echo "  $(tsel 'Web console (M2):' 'Web 管理后台(M2):')"
     echo "    journalctl -u nanotun-web -f"
     # 「/setup 对全网公开」只在这台机器**真的一个后台管理员都没有**时才成立。
     #
@@ -1075,23 +1363,47 @@ if [ "${NANOTUN_WIZARD_FOLLOWS:-0}" != 1 ]; then
     WEB_ADMINS="$({ /usr/local/bin/nanotun-admin --db-path "$LIB_DIR/nanotun.db" \
       webadmin list 2>/dev/null || true; } | awk 'NR>1 && NF {n++} END {print n+0}')"
     if [ "${WEB_ADMINS:-0}" -gt 0 ]; then
-      echo "    已有 $WEB_ADMINS 个后台管理员,/setup 已关闭。登录: https://<server>:7443/"
-      echo "    看都有谁: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin list"
+      if [ "$NT_LANG" = zh ]; then
+        echo "    已有 $WEB_ADMINS 个后台管理员,/setup 已关闭。登录: https://<server>:7443/"
+        echo "    看都有谁: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin list"
+      else
+        echo "    There are $WEB_ADMINS console administrators, so /setup is closed. Log in at: https://<server>:7443/"
+        echo "    To see who they are: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin list"
+      fi
     elif grep -qE '^NANOTUN_WEB_ALLOW_SETUP=(0|false|no)[[:space:]]*$' "$ETC_DIR/web.env" 2>/dev/null; then
-      echo "    这台机器的 /setup 已关闭,而一个后台管理员都没有 —— 网页那条路进不去,只能:"
-      echo "    nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <名字>"
+      if [ "$NT_LANG" = zh ]; then
+        echo "    这台机器的 /setup 已关闭,而一个后台管理员都没有 —— 网页那条路进不去,只能:"
+        echo "    nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <名字>"
+      else
+        echo "    /setup is closed on this machine and there is no console administrator at all —"
+        echo "    the browser route is shut, so the only way in is:"
+        echo "    nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <name>"
+      fi
     else
-      echo "    建后台账号: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <名字>"
-      echo "    (开服向导 nanotun-setup 会问这一步;在建好之前 https://<server>:7443/setup"
-      echo "     对全网公开 —— 谁先打开谁就是管理员)"
+      if [ "$NT_LANG" = zh ]; then
+        echo "    建后台账号: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <名字>"
+        echo "    (开服向导 nanotun-setup 会问这一步;在建好之前 https://<server>:7443/setup"
+        echo "     对全网公开 —— 谁先打开谁就是管理员)"
+      else
+        echo "    Create a console account: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <name>"
+        echo "    (the setup wizard nanotun-setup asks for this; until one exists,"
+        echo "     https://<server>:7443/setup is open to the whole internet — whoever opens it"
+        echo "     first becomes the administrator)"
+      fi
     fi
-    echo "    证书: $ETC_DIR/certs/{cert.pem,key.pem}(可作为 root CA 装入信任库)"
+    echo "    $(tsel 'Certificates:' '证书:') $ETC_DIR/certs/{cert.pem,key.pem}$(tsel ' (can be installed into a trust store as a root CA)' '(可作为 root CA 装入信任库)')"
   fi
   echo
   # 卸载放在这里说一次。它此前唯一的出处是 README 里的 `sudo ./scripts/uninstall.sh`,
   # 而一键安装的人当前目录并没有 scripts/ —— 想卸载得先知道自己装的是哪个版本、什么架构,
   # 才拼得出 /opt/nanotun/<版本>-<架构>/scripts/uninstall.sh。现在它装成了命令。
-  echo "  卸载:"
-  echo "    sudo nanotun-uninstall --dry-run   # 先看会动哪些文件"
-  echo "    sudo nanotun-uninstall             # 停服务、删程序,保留配置与数据库"
+  if [ "$NT_LANG" = zh ]; then
+    echo "  卸载:"
+    echo "    sudo nanotun-uninstall --dry-run   # 先看会动哪些文件"
+    echo "    sudo nanotun-uninstall             # 停服务、删程序,保留配置与数据库"
+  else
+    echo "  Uninstall:"
+    echo "    sudo nanotun-uninstall --dry-run   # show which files would be touched"
+    echo "    sudo nanotun-uninstall             # stop services, remove programs, keep config + database"
+  fi
 fi
