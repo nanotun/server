@@ -93,8 +93,8 @@ func TestUsersListView_ShowDisabledToggle(t *testing.T) {
 
 // TestUsersListView_DisabledBadgeAndOpacity:disabled 用户必须:
 // 1) <tr> 有 opacity:.5(灰化);
-// 2) 状态列出 `badge warn` "disabled";
-// 3) enabled 用户的 row 不灰化,badge 显示 "enabled"。
+// 2) 状态列出 `badge warn` 的「已禁用」;
+// 3) enabled 用户的 row 不灰化,badge 显示「已启用」。文案取自目录表,不写死。
 func TestUsersListView_DisabledBadgeAndOpacity(t *testing.T) {
 	users := []*store.User{
 		{ID: 1, Username: "alive", DisabledAt: 0, CreatedAt: 1700000000},
@@ -105,10 +105,13 @@ func TestUsersListView_DisabledBadgeAndOpacity(t *testing.T) {
 	if !strings.Contains(html, `opacity:.5`) {
 		t.Errorf("disabled 用户 row 应灰化,但没找到 opacity:.5\n%s", html)
 	}
-	if !strings.Contains(html, `>disabled<`) {
+	// 文案从目录表取,不写死字面量。2026-08-28 徽标改走 i18n 之后,原来断言的 `>disabled<`
+	// 就不再出现了(渲染成「已禁用」)—— 而这个测试要验的是「禁用徽标显示了没有」,
+	// 跟具体措辞无关。从表里取,以后改措辞它自己跟上。
+	if !strings.Contains(html, ">"+catZH["common.disabled"]+"<") {
 		t.Errorf("disabled badge 文案缺失\n%s", html)
 	}
-	if !strings.Contains(html, `>enabled<`) {
+	if !strings.Contains(html, ">"+catZH["common.enabled"]+"<") {
 		t.Errorf("enabled badge 文案缺失(alive 用户)\n%s", html)
 	}
 	if !strings.Contains(html, ">alive<") || !strings.Contains(html, ">ghost<") {

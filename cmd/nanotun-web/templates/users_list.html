@@ -30,9 +30,9 @@
         <tr {{if ne .DisabledAt 0}}style="opacity:.5"{{end}}>
             <td>{{.ID}}</td>
             <td><a href="/users/{{.ID}}">{{.Username}}</a></td>
-            <td>{{if .IsAdmin}}<span class="badge ok">admin</span>{{end}}</td>
+            <td>{{if .IsAdmin}}<span class="badge ok">{{T "common.roleAdmin"}}</span>{{end}}</td>
             <td>{{fmtBool .ExitAllowed}}</td>
-            <td>{{if eq .DisabledAt 0}}<span class="badge ok">enabled</span>{{else}}<span class="badge warn">disabled</span>{{end}}</td>
+            <td>{{if eq .DisabledAt 0}}<span class="badge ok">{{T "common.enabled"}}</span>{{else}}<span class="badge warn">{{T "common.disabled"}}</span>{{end}}</td>
             <td>
                 {{- if .CredentialID -}}
                     <code title="{{.CredentialID}}">{{printf "%.8s" .CredentialID}}…</code>

@@ -17,8 +17,8 @@
             <td>{{.ID}}</td>
             <td>{{.Username}}{{if eq .ID $.Admin.ID}} <span class="badge neutral">{{T "admins.you"}}</span>{{end}}</td>
             <td><span class="badge role">{{.Role}}</span></td>
-            <td>{{if .Enabled}}<span class="badge ok">enabled</span>{{else}}<span class="badge warn">disabled</span>{{end}}
-                {{if and .LockedUntil (gt .LockedUntil (int64 0))}}<span class="badge err">locked</span>{{end}}</td>
+            <td>{{if .Enabled}}<span class="badge ok">{{T "common.enabled"}}</span>{{else}}<span class="badge warn">{{T "common.disabled"}}</span>{{end}}
+                {{if and .LockedUntil (gt .LockedUntil (int64 0))}}<span class="badge err">{{T "common.locked"}}</span>{{end}}</td>
             <td>{{if .LastLoginAt}}{{fmtDuration .LastLoginAt}}{{else}}<span class="muted">{{T "admins.never"}}</span>{{end}}</td>
             <td class="muted">{{.LastLoginIP}}</td>
             <td>{{.FailedLogins}}</td>

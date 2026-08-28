@@ -2,9 +2,10 @@
 # nanotun 容器入口:顶替 systemd 做三件事 —— 起飞前自检、首次初始化、进程守护。
 #
 # 为什么需要它而不是直接 ENTRYPOINT ["nanotund"]:
-#   * systemd 那套里,RuntimeDirectory 建 /run/nanotun、tun-setup.service 备好设备、
-#     install-self-hosted.sh 填密钥自签证书、两个 unit 各自守护。容器里这些全没了,
-#     缺一样都是启动即死或者跑起来功能残缺。
+#   * systemd 那套里,RuntimeDirectory 建 /run/nanotun、tun-setup.service 清理旧版残留的
+#     TUN、install-self-hosted.sh 填密钥自签证书、两个 unit 各自守护。容器里这些全没了,
+#     缺一样都是启动即死或者跑起来功能残缺 —— 所以这里一件件补上,包括调用镜像里那份
+#     nanotun-tun-setup.sh(与裸机同一个脚本,不另抄一份)。
 #   * nanotund 对 ip_forward / TUN 失败的处理是 FatalExit(exit 60),容器只会看到
 #     "restarting" 循环。与其让人去翻日志,不如在起飞前把话说清楚。
 #
@@ -165,6 +166,28 @@ preflight() {
   sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
   # nanotun-web 保存 server_dial_host 时会做 unprivileged ICMP 探测,没这个只能勾"跳过检测"。
   sysctl -w net.ipv4.ping_group_range="0 2147483647" >/dev/null 2>&1 || true
+
+  # 清理老版本(v0.1.14 及之前)留下的 persist TUN。裸机那边由 tun-setup.service 做,
+  # 容器里没有 systemd,所以在这儿调同一个脚本 —— 不另抄一份逻辑。
+  #
+  # 为什么容器也需要:network_mode: host(官方 compose 用的就是它)下容器与宿主共用
+  # netns,那些残留就在眼前。它们是 persist on 的,各占一个常见私网段(10.0.x.1 /
+  # 192.168.10x.1 / 172.1x.0.1),轻则挡住宿主路由,重则和 nanotund 要建的 tun0 撞名,
+  # 让它 exit 60 反复重启。而现象(容器 healthy 或反复重启、宿主出不了网)完全指不到
+  # 「几个月前那次裸机安装留下的空网卡」上。
+  #
+  # 桥接模式下容器有自己的 netns,脚本什么也找不到,是个无害的空转。
+  # 删除判据由脚本自己把关(名字 tun0–14 + 类型是 tun + persist on + 地址正好是老脚本
+  # 分的那一个,四项全中才动手),所以不会误伤正在服务的网卡 —— nanotund 建的永远是
+  # persist off。
+  if [[ -x /usr/local/bin/nanotun-tun-setup.sh ]]; then
+    NANOTUN_LANG="$NT_LANG" /usr/local/bin/nanotun-tun-setup.sh || warn_t \
+      "the TUN pre-start script exited non-zero; if this host once had a bare-metal install, check for leftovers: ip -d link show type tun" \
+      "TUN 预处理脚本非零退出;这台机器若装过裸机版,自己看一眼残留:ip -d link show type tun"
+  else
+    warn_t "/usr/local/bin/nanotun-tun-setup.sh is missing or not executable, so stale TUN devices left by an older bare-metal install are not cleaned up" \
+           "/usr/local/bin/nanotun-tun-setup.sh 不存在或没有执行位,旧版裸机安装留下的 TUN 残留不会被清理"
+  fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

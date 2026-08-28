@@ -111,7 +111,7 @@
                 {{end}}
             </td>
             <td title="{{fmtTime .CreatedAt}}">{{fmtDuration .CreatedAt}}</td>
-            <td>{{if .ExitAllowed}}<span class="badge ok">ON</span>{{else}}<span class="badge">OFF</span>{{end}}</td>
+            <td>{{if .ExitAllowed}}<span class="badge ok">{{T "common.on"}}</span>{{else}}<span class="badge">{{T "common.off"}}</span>{{end}}</td>
             <td class="muted">
                 {{if not .RateKnown}}
                     <span title="{{T "sessions.rateUnknownTitle"}}">—</span>

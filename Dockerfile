@@ -158,8 +158,16 @@ RUN set -eux; \
 # 会在挂了卷之后被遮住,给人「模板丢了」的错觉。
 COPY cmd/nanotund/config.toml            /usr/share/nanotun/config.toml.dist
 COPY scripts/ensure-server-assets.sh     /usr/local/bin/nanotun-ensure-assets.sh
+# tun-setup.sh 也要带上。它不建任何设备,只清理老版本(v0.1.14 及之前)留下的 tun0–tun14 ——
+# 那些是 persist on 的,进程退了也不消失,各占一个常见私网段(10.0.x.1、192.168.10x.1、
+# 172.1x.0.1)。network_mode: host 下容器和宿主共用 netns,于是「以前用裸机装过、现在改跑
+# 容器」的机器上,这些残留就在眼前:轻则挡住宿主路由,重则和 nanotund 要建的 tun0 撞名。
+# 不带这个脚本的话,容器这条路就少了裸机那条路已经有的治疗,而症状(容器 healthy、宿主却
+# 出不了网)完全指不到这儿。
+COPY cmd/nanotund/tun-setup.sh           /usr/local/bin/nanotun-tun-setup.sh
 COPY docker/entrypoint.sh                /usr/local/bin/nanotun-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/nanotun-ensure-assets.sh /usr/local/bin/nanotun-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/nanotun-ensure-assets.sh /usr/local/bin/nanotun-entrypoint.sh \
+               /usr/local/bin/nanotun-tun-setup.sh
 
 # nanotun-admin 的 --db-path 默认是**相对 cwd** 的 data/nanotun.db。不固定住的话,
 # `docker compose exec nanotun nanotun-admin user list` 会去找 /etc/nanotun/data/nanotun.db

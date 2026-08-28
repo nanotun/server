@@ -112,7 +112,7 @@
     </div>
     <div class="grid-stats">
         <div class="stat"><div class="label">{{T "common.status"}}</div>
-            <div class="value">{{if .ok}}<span class="badge ok">OK</span>{{else}}<span class="badge err">DOWN</span>{{end}}</div></div>
+            <div class="value">{{if .ok}}<span class="badge ok">{{T "common.ok"}}</span>{{else}}<span class="badge err">{{T "common.down"}}</span>{{end}}</div></div>
         <div class="stat"><div class="label">{{T "dashboard.statOnlineSessions"}}</div><div class="value">{{.conn_count}}</div></div>
         <div class="stat"><div class="label">Uptime</div><div class="value">{{.uptime}}</div></div>
         <div class="stat"><div class="label">ACL drop</div><div class="value">{{.acl_drop_total}}</div></div>
@@ -154,7 +154,7 @@
                 <td><code>{{if .VIPv4}}{{.VIPv4}}{{else}}—{{end}}</code></td>
                 <td><code>{{if .VIPv6}}{{.VIPv6}}{{else}}—{{end}}</code></td>
                 <td>{{fmtDuration .CreatedAt}}</td>
-                <td>{{if .ExitAllowed}}<span class="badge ok">ON</span>{{else}}<span class="badge">OFF</span>{{end}}</td>
+                <td>{{if .ExitAllowed}}<span class="badge ok">{{T "common.on"}}</span>{{else}}<span class="badge">{{T "common.off"}}</span>{{end}}</td>
                 <td class="muted" style="font-family:monospace;font-size:11px">{{.ConnID}}</td>
             </tr>
         {{else}}
@@ -174,7 +174,7 @@
         <div class="stat"><div class="label">{{T "nav.routes"}}</div><div class="value">{{.Data.DB.Routes}}</div></div>
         <div class="stat"><div class="label">{{T "nav.audit"}}</div><div class="value">{{.Data.DB.Audits}}</div></div>
         <div class="stat"><div class="label">{{T "dashboard.dbAdmins"}}</div><div class="value">{{.Data.DB.Admins}}</div></div>
-        <div class="stat"><div class="label">Web sessions</div><div class="value">{{.Data.DB.WebSess}}</div></div>
+        <div class="stat"><div class="label">{{T "dashboard.webSessions"}}</div><div class="value">{{.Data.DB.WebSess}}</div></div>
     </div>
 </div>
 

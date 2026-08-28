@@ -22,7 +22,7 @@
     {{range .Data.Rows}}
         <tr>
             <td>{{.ID}}</td>
-            <td>{{if eq .Action "allow"}}<span class="badge ok">allow</span>{{else}}<span class="badge err">deny</span>{{end}}</td>
+            <td>{{if eq .Action "allow"}}<span class="badge ok">{{T "common.allow"}}</span>{{else}}<span class="badge err">{{T "common.deny"}}</span>{{end}}</td>
             <td>{{.SrcName}}</td>
             <td>{{.DstName}}</td>
             <td>{{if .Proto}}{{.Proto}}{{else}}*{{end}}</td>

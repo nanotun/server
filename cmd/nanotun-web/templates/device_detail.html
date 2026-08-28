@@ -130,8 +130,8 @@
     {{range .Data.Routes}}
         <tr>
             <td><code>{{.CIDR}}</code></td>
-            <td>{{if eq .Status "approved"}}<span class="badge ok">approved</span>
-                {{else if eq .Status "pending"}}<span class="badge warn">pending</span>
+            <td>{{if eq .Status "approved"}}<span class="badge ok">{{T "routes.approved"}}</span>
+                {{else if eq .Status "pending"}}<span class="badge warn">{{T "routes.pending"}}</span>
                 {{else}}<span class="badge err">{{.Status}}</span>{{end}}</td>
             <td>{{fmtTime .AdvertisedAt}}</td>
             <td>{{if .ApprovedAt}}{{fmtTime .ApprovedAt}}{{else}}-{{end}}</td>

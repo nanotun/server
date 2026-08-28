@@ -603,3 +603,48 @@ func TestReleaseDocListsEveryDeferredField(t *testing.T) {
 		}
 	}
 }
+
+// 镜像必须带上 tun-setup.sh,entrypoint 必须调用它。
+//
+// 它清理的是老版本(v0.1.14 及之前)留下的 persist TUN:tun0–tun14,各占一个常见私网段。
+// 那些设备进程退了也不消失,而 network_mode: host(官方 compose 用的就是它)下容器与宿主
+// 共用 netns —— 于是「以前用裸机装过、现在改跑容器」的机器上,残留就在眼前:轻则挡住宿主
+// 路由,重则和 nanotund 要建的 tun0 撞名让它 exit 60 反复重启。
+//
+// 而现象完全指不到这儿:容器 healthy 或反复重启、宿主出不了网,没有任何线索会让人想到
+// 几个月前那次裸机安装留下的空网卡。裸机那条路由 tun-setup.service 治好了,容器这条
+// 2026-08-28 之前一直缺着。
+//
+// 也钉住「用同一个脚本」而不是在 entrypoint 里另抄一份删除逻辑:判据有四项(名字 tun0–14 +
+// 类型是 tun + persist on + 地址正好是老脚本分的那一个),抄漏一项就可能误删别人的网卡。
+func TestDockerImageShipsAndRunsTunSetup(t *testing.T) {
+	df, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("读不到 Dockerfile:%v", err)
+	}
+	ep, err := os.ReadFile(filepath.Join("..", "..", "docker", "entrypoint.sh"))
+	if err != nil {
+		t.Fatalf("读不到 entrypoint.sh:%v", err)
+	}
+	dfs, eps := string(df), stripShellComments(string(ep))
+
+	const dst = "/usr/local/bin/nanotun-tun-setup.sh"
+	if !strings.Contains(dfs, "cmd/nanotund/tun-setup.sh") || !strings.Contains(dfs, dst) {
+		t.Errorf("Dockerfile 没把 tun-setup.sh 装进镜像(应 COPY 到 %s):\n"+
+			"  少了它,旧版裸机安装留下的 persist TUN 在 host 网络模式下不会被清理。", dst)
+	}
+	// 只 COPY 不给执行位等于没装 —— 实测踩过:文件在,但 -rw-r--r--,entrypoint 的 -x 判断
+	// 落空,安静地跳过清理。
+	//
+	// 先把续行折叠再匹配:chmod 那条常写成多行(`RUN chmod 0755 a \` 换行 `  b`),
+	// 按单行匹配会在干净代码上误报 —— 写这条守卫时就先踩了一次。
+	flat := strings.ReplaceAll(dfs, "\\\n", " ")
+	if !regexp.MustCompile(`chmod[^\n]*nanotun-tun-setup\.sh`).MatchString(flat) &&
+		!strings.Contains(dfs, "--chmod=0755 cmd/nanotund/tun-setup.sh") {
+		t.Error("tun-setup.sh 进了镜像却没有执行位:entrypoint 的 -x 判断会落空,\n" +
+			"  于是它安静地跳过清理,只留一行 warn —— 和「压根没装」的表现一样。")
+	}
+	if !strings.Contains(eps, dst) {
+		t.Errorf("entrypoint 没调用 %s:装进镜像却不跑,等于没装。", dst)
+	}
+}

@@ -285,6 +285,15 @@ func i18nFuncs(lang string) template.FuncMap {
 		"T": func(key string, args ...any) string {
 			return translate(lang, key, args...)
 		},
+		// LangName 语言在切换器里的展示名。之所以走函数而不是在模板里写死:
+		// langDisplayName 本来就存在,模板另抄一份等于两处维护 —— 而它俩一旦不一致,
+		// 表现是切换器上写着一种语言、点过去是另一种。
+		"LangName": func(code string) string {
+			if n, ok := langDisplayName[code]; ok {
+				return n
+			}
+			return code
+		},
 		"Th": func(key string, args ...any) template.HTML {
 			return template.HTML(translate(lang, key, args...)) //nolint:gosec // 受信静态文案
 		},

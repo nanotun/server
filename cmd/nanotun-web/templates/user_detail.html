@@ -16,7 +16,7 @@
         {{else if lt .Data.User.MaxSessions 0}}<span class="muted">{{T "userDetail.maxSessionsUnlimited"}}</span>
         {{else}}<span class="muted">{{T "userDetail.maxSessionsFollowGlobal"}}</span>{{end}}
     </td></tr>
-    <tr><th>{{T "common.status"}}</th><td>{{if eq .Data.User.DisabledAt 0}}<span class="badge ok">enabled</span>{{else}}<span class="badge warn">disabled ({{fmtTime .Data.User.DisabledAt}})</span>{{end}}</td></tr>
+    <tr><th>{{T "common.status"}}</th><td>{{if eq .Data.User.DisabledAt 0}}<span class="badge ok">{{T "common.enabled"}}</span>{{else}}<span class="badge warn">{{T "common.disabled"}} ({{fmtTime .Data.User.DisabledAt}})</span>{{end}}</td></tr>
     <tr><th>{{T "common.createdAt"}}</th><td>{{fmtTime .Data.User.CreatedAt}}</td></tr>
     <tr><th>Credential ID</th><td>
         {{if .Data.User.CredentialID}}<code>{{.Data.User.CredentialID}}</code>{{else}}<span class="muted">{{T "users.credNotGenerated"}}</span>{{end}}
