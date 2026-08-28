@@ -660,9 +660,20 @@ else
     note_t "MagicDNS suffix = $cur_suffix (--yes leaves it alone; to change it: --magic-suffix <suffix> or sudo nanotun-set-suffix <suffix>)" \
            "MagicDNS 后缀 = $cur_suffix(--yes 不改;要改:--magic-suffix <后缀> 或 sudo nanotun-set-suffix <后缀>)"
   else
-    note_t "Clients resolve *.<suffix> → mesh virtual IP. Default nanotun; pick another one if it clashes with something on your network." \
-           "客户端解析 *.<后缀> → mesh 虚拟 IP。默认 nanotun;与你网内已有的名字撞车时可换一个。"
+    # 这里**不要**笼统地讲「默认是 nanotun」。那说的是新装机器的模板默认,而下面那个提示
+    # 的方括号里是**现值** —— 同一屏出现两个「默认」,而人照着做的是后者(回车)。
+    # 2026-08-28 实测就撞上了:一台现值为 lan 的机器上,屏幕同时写着 "Default nanotun"、
+    # "Current suffix: lan" 和 "[lan]:",读的人只会觉得默认值没生效。
+    note_t "Clients resolve *.<suffix> → mesh virtual IP. Press Enter to keep the current one." \
+           "客户端解析 *.<后缀> → mesh 虚拟 IP。回车保留现值。"
     ok_t "Current suffix: $cur_suffix" "当前后缀: $cur_suffix"
+    # 只在现值确实落在「容易撞车」那几个上时才提新默认 —— 那时候这条信息是可行动的,
+    # 而不是一句和眼前选择无关的背景介绍。清单与 set-magic-suffix.sh / 装机脚本同一份。
+    case "$cur_suffix" in
+      lan|home|home.arpa|internal|corp)
+        note_t "  '$cur_suffix' is one of the names that commonly clash with home routers and reserved domains; new installs default to 'nanotun'." \
+               "  '$cur_suffix' 属于容易与家用路由器 / 保留域撞车的那几个;新装机器的默认值是 'nanotun'。" ;;
+    esac
 
     # 目标后缀:命令行显式给了(--magic-suffix)就用它;否则交互询问,默认=现值(回车即保留)。
     want_suffix="${OPT_MAGIC_SUFFIX:-$(ask "$(tsel 'MagicDNS suffix' 'MagicDNS 后缀')" "$cur_suffix")}"
