@@ -173,7 +173,7 @@ func sendExitsListTo(c *Connection, exits []util.ExitInfo) {
 		defer func() { _ = dl.SetWriteDeadline(time.Time{}) }()
 	}
 	if werr := util.WriteLinkFrame(c.linkConn, util.LinkTypeExitsList, body); werr != nil {
-		logrus.WithError(werr).WithField("user_id", c.userID).Debug("[exits] 推送出口列表失败")
+		logrus.WithError(werr).WithField("user_id", c.userID).Debug("[exits] failed to push exit node list")
 	}
 }
 

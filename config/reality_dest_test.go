@@ -25,14 +25,14 @@ func TestValidateRealityDest_RejectsWhatWouldBreakTheDisguise(t *testing.T) {
 			"net.LookupPort 认得 https,底层 Dial 也认"},
 		{"前后空白容忍", "  www.microsoft.com:443  ", "", ""},
 
-		{"空", "", "不能为空", "没有落点,握手失败的连接无处可去"},
-		{"只有空白", "   ", "不能为空", ""},
+		{"空", "", "must not be empty", "没有落点,握手失败的连接无处可去"},
+		{"只有空白", "   ", "must not be empty", ""},
 		{"缺端口", "www.microsoft.com", "host:port", "Dial 会直接报 missing port"},
-		{"只有端口", ":443", "host 段为空",
+		{"只有端口", ":443", "host part is empty",
 			"fallback 落到本机 = 回环,扫描者会看到自己被打回来"},
-		{"端口为 0", "www.microsoft.com:0", "越界",
+		{"端口为 0", "www.microsoft.com:0", "out of range",
 			"Dial 报 unknown port,伪装当场失效"},
-		{"端口非数字且不是服务名", "www.microsoft.com:notaport", "port 段非法", ""},
+		{"端口非数字且不是服务名", "www.microsoft.com:notaport", "port part is invalid", ""},
 		{"端口超界", "www.microsoft.com:99999", "port", ""},
 		{"多个冒号", "a:b:c", "host:port", ""},
 	}
@@ -77,11 +77,11 @@ func TestRealityConfig_Validate_HandshakeMatchingListsMustNotBeEmpty(t *testing.
 		wantErr string
 		because string
 	}{
-		{"server_names 为空", func(c *RealityConfig) { c.ServerNames = nil }, "server_names 至少一项",
+		{"server_names 为空", func(c *RealityConfig) { c.ServerNames = nil }, "server_names needs at least one entry",
 			"没有 SNI 可匹配,所有握手都回落到 dest,表现为「谁都连不上但服务是好的」"},
 		{"server_names 含空项", func(c *RealityConfig) { c.ServerNames = []string{"a.com", "  "} },
-			"含空项", "空 SNI 匹配不到任何东西,还会挡住排查视线"},
-		{"short_ids 为空", func(c *RealityConfig) { c.ShortIds = nil }, "short_ids 至少一项",
+			"contains an empty entry", "空 SNI 匹配不到任何东西,还会挡住排查视线"},
+		{"short_ids 为空", func(c *RealityConfig) { c.ShortIds = nil }, "short_ids needs at least one entry",
 			"空列表与「含一个空串」不是一回事:后者表示允许全 0 shortId,前者是谁都不允许"},
 		{"short_ids 含空串是允许的", func(c *RealityConfig) { c.ShortIds = []string{""} }, "",
 			"这是「允许全 0 shortId」的显式写法"},
@@ -168,7 +168,7 @@ func TestStrictCheck_UnknownFieldVersusPlainParseError(t *testing.T) {
 	if err == nil {
 		t.Fatal("拼错的字段名应被拦下 —— 静默忽略正是这个检查要防的")
 	}
-	if !strings.Contains(err.Error(), "未知字段") {
+	if !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("未知字段的报错应当点明是拼写问题,实际 %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestStrictCheck_UnknownFieldVersusPlainParseError(t *testing.T) {
 	if err == nil {
 		t.Fatal("类型错应报错")
 	}
-	if strings.Contains(err.Error(), "未知字段") {
+	if strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("类型错被包装成了「未知字段」,会让人去查字段名而不是值:%v", err)
 	}
 }

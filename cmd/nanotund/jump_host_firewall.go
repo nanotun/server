@@ -120,7 +120,7 @@ func (f *jumpHostFirewall) Replace(ips []string) error {
 	}
 	if !jumpFWOnLinux() {
 		if atomic.CompareAndSwapUint32(&f.nonLinuxLogged, 0, 1) {
-			logrus.Warn("[server] jump_host_firewall 仅支持 Linux，已忽略")
+			logrus.Warn("[server] jump_host_firewall is Linux-only; ignoring it")
 		}
 		return nil
 	}
@@ -129,19 +129,19 @@ func (f *jumpHostFirewall) Replace(ips []string) error {
 	defer f.mu.Unlock()
 
 	if err := f.ensureInstalledLocked(); err != nil {
-		logrus.Errorf("[server] jump_host_firewall 安装失败（已跳过本次刷新，避免误伤端口）: %v", err)
-		return fmt.Errorf("jump_host_firewall 安装失败(受保护端口当前**未**受限): %w", err)
+		logrus.Errorf("[server] jump_host_firewall install failed (this refresh was skipped so the ports are not disturbed): %v", err)
+		return fmt.Errorf("jump_host_firewall install failed (the protected ports are currently **not** restricted, protected_ports=unrestricted): %w", err)
 	}
 	if out, err := jumpFWExec("ipset", "flush", jumpHostIPSetName); err != nil {
-		logrus.Errorf("[server] ipset flush %s: %v (%s)，尝试回滚防火墙规则", jumpHostIPSetName, err, strings.TrimSpace(string(out)))
+		logrus.Errorf("[server] ipset flush %s: %v (%s), rolling back the firewall rules", jumpHostIPSetName, err, strings.TrimSpace(string(out)))
 		f.rollbackJumpFirewallLocked()
-		return fmt.Errorf("ipset flush %s 失败,已回滚(受保护端口当前**未**受限): %w", jumpHostIPSetName, err)
+		return fmt.Errorf("ipset flush %s failed, rolled back (the protected ports are currently **not** restricted, protected_ports=unrestricted): %w", jumpHostIPSetName, err)
 	}
 	for _, ip := range sanitized {
 		if out, err := jumpFWExec("ipset", "add", jumpHostIPSetName, ip); err != nil {
-			logrus.Errorf("[server] ipset add %s %q: %v (%s)，尝试回滚（避免端口在空 ipset 下被全 DROP）", jumpHostIPSetName, ip, err, strings.TrimSpace(string(out)))
+			logrus.Errorf("[server] ipset add %s %q: %v (%s), rolling back (so the ports are not left fully DROPped behind an empty ipset)", jumpHostIPSetName, ip, err, strings.TrimSpace(string(out)))
 			f.rollbackJumpFirewallLocked()
-			return fmt.Errorf("ipset add %s %q 失败,已回滚(受保护端口当前**未**受限): %w", jumpHostIPSetName, ip, err)
+			return fmt.Errorf("ipset add %s %q failed, rolled back (the protected ports are currently **not** restricted, protected_ports=unrestricted): %w", jumpHostIPSetName, ip, err)
 		}
 	}
 	f.installed = true
@@ -149,7 +149,7 @@ func (f *jumpHostFirewall) Replace(ips []string) error {
 		"ipset":          jumpHostIPSetName,
 		"ip_count":       len(sanitized),
 		"protected_spec": describePortSpecs(f.protectedPorts),
-	}).Info("[server] jump_host_firewall:已刷新 ipset")
+	}).Info("[server] jump_host_firewall: ipset refreshed")
 	return nil
 }
 
@@ -171,14 +171,14 @@ func (f *jumpHostFirewall) teardownImpl() {
 	}
 	f.removeJumpFirewallRulesLocked()
 	f.installed = false
-	logrus.Info("[server] jump_host_firewall：已清理 ipset/iptables")
+	logrus.Info("[server] jump_host_firewall: cleaned up ipset/iptables")
 }
 
 // rollbackJumpFirewallLocked 在 flush/add 失败时调用：去掉本功能挂上的 INPUT/链/ipset，避免空 ipset 导致该端口被全 DROP。须已持 f.mu。
 func (f *jumpHostFirewall) rollbackJumpFirewallLocked() {
 	f.removeJumpFirewallRulesLocked()
 	f.installed = false
-	logrus.Warn("[server] jump_host_firewall：已回滚（本端口不再套用跳板 ipset 限制）")
+	logrus.Warn("[server] jump_host_firewall: rolled back (this port no longer has the jump-host ipset restriction applied)")
 }
 
 func (f *jumpHostFirewall) removeJumpFirewallRulesLocked() {
@@ -282,10 +282,10 @@ func ensureLoopbackIPv4Allowlist(in []string) []string {
 		}
 	}
 	if len(out) == 0 {
-		logrus.Warn("[server] jump_host_firewall：无有效 IPv4，仅加入 127.0.0.1（本机环回）")
+		logrus.Warn("[server] jump_host_firewall: no valid IPv4 in the list, adding only 127.0.0.1 (local loopback)")
 		return []string{lb}
 	}
-	logrus.Warn("[server] jump_host_firewall：名单未含 127.0.0.1，已自动加入（本机 hy2/REALITY 环回）")
+	logrus.Warn("[server] jump_host_firewall: the list did not contain 127.0.0.1, added it automatically (local hy2/REALITY loopback)")
 	return append([]string{lb}, out...)
 }
 
@@ -299,7 +299,7 @@ func ensureLoopbackIPv4Allowlist(in []string) []string {
 func parseJumpHostProtectedPorts(in []string) []jumpHostPortSpec {
 	specs, rejected := parseJumpHostProtectedPortsQuiet(in)
 	for _, r := range rejected {
-		logrus.WithField("entry", r.raw).Warn("[server] jump_host_protected_ports " + r.why + ",跳过")
+		logrus.WithField("entry", r.raw).Warn("[server] jump_host_protected_ports " + r.why + ", skipping this entry")
 	}
 	return specs
 }
@@ -325,13 +325,13 @@ func parseJumpHostProtectedPortsQuiet(in []string) ([]jumpHostPortSpec, []jumpHo
 		}
 		idx := strings.Index(s, "/")
 		if idx <= 0 || idx == len(s)-1 {
-			rejected = append(rejected, jumpHostPortReject{raw, "格式应为 proto/port 或 proto/start-end"})
+			rejected = append(rejected, jumpHostPortReject{raw, "entry must be proto/port or proto/start-end"})
 			continue
 		}
 		proto := s[:idx]
 		portPart := s[idx+1:]
 		if proto != "tcp" && proto != "udp" {
-			rejected = append(rejected, jumpHostPortReject{raw, "proto 必须 tcp/udp"})
+			rejected = append(rejected, jumpHostPortReject{raw, "proto must be tcp or udp"})
 			continue
 		}
 		startStr := portPart
@@ -347,14 +347,14 @@ func parseJumpHostProtectedPortsQuiet(in []string) ([]jumpHostPortSpec, []jumpHo
 		}
 		start, err := strconv.Atoi(startStr)
 		if err != nil || start < 1 || start > 65535 {
-			rejected = append(rejected, jumpHostPortReject{raw, "起始端口非法"})
+			rejected = append(rejected, jumpHostPortReject{raw, "invalid start port"})
 			continue
 		}
 		end := 0
 		if endStr != "" {
 			end, err = strconv.Atoi(endStr)
 			if err != nil || end < 1 || end > 65535 {
-				rejected = append(rejected, jumpHostPortReject{raw, "结束端口非法"})
+				rejected = append(rejected, jumpHostPortReject{raw, "invalid end port"})
 				continue
 			}
 		}

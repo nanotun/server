@@ -61,7 +61,7 @@ func buildSmuxConfigFrom(c *config.SmuxConfig) *smux.Config {
 	// smux 的跨字段约束(如用户只设 max_stream_buffer 且 > 默认 max_receive_buffer)。若最终 config 非法,
 	// 回退全默认并告警 —— 远好过让每条连接静默 VerifyConfig 失败、数据面整体不可用。
 	if err := smux.VerifyConfig(out); err != nil {
-		logrus.WithError(err).Warn("[smux] 合成配置未通过 VerifyConfig,回退 smux 默认配置")
+		logrus.WithError(err).Warn("[smux] the synthesized config failed VerifyConfig, falling back to the smux defaults")
 		return smux.DefaultConfig()
 	}
 	return out
@@ -157,7 +157,7 @@ func (p *loopbackSmuxPool) OpenStream() (net.Conn, error) {
 		}
 		return &poolStream{Stream: st, pool: p, sess: sess}, nil
 	}
-	return nil, errors.New("loopback smux: 会话重建未能就绪")
+	return nil, errors.New("loopback smux: the rebuilt session never became ready")
 }
 
 // poolStream 包住一条复用 stream,把「承载已断」的信号回传给池。
@@ -287,14 +287,14 @@ func dispatchVPNIncoming(c net.Conn, gw *gatewayState, muxEnabled bool, smuxCfg 
 		// ≥0x5600 时才可能撞上 'V',而那时后续字节早已到齐,Peek(4) 不会等。所以「首字节匹配才要求
 		// 看满 4 字节」既不会误判,也不会在直连路径上多等一个字节。
 		if err := setPeekDeadline(c); err != nil {
-			logrus.WithError(err).Debug("VPN 连接设置识别期读超时失败")
+			logrus.WithError(err).Debug("failed to set the read deadline for the VPN connection detection phase")
 		}
 		head, err := br.Peek(1)
 		if err == nil && head[0] == loopbackSmuxMagic[0] {
 			head, err = br.Peek(4)
 		}
 		if err != nil {
-			logrus.WithError(err).Debug("VPN 连接 Peek 失败")
+			logrus.WithError(err).Debug("VPN connection Peek failed")
 			_ = c.Close()
 			return
 		}
@@ -308,7 +308,7 @@ func dispatchVPNIncoming(c net.Conn, gw *gatewayState, muxEnabled bool, smuxCfg 
 			if !isLoopbackConnPeer(c) {
 				loopbackSmuxForeignRejectCount.Add(1)
 				logrus.WithField("remote", c.RemoteAddr().String()).
-					Warn("拒绝非环回来源的 VPN1/smux 承载(疑似伪造 PROXY 源地址绕过按 IP 反滥用)")
+					Warn("rejecting a VPN1/smux carrier from a non-loopback source (likely a forged PROXY source address trying to bypass per-IP abuse controls)")
 				_ = c.Close()
 				return
 			}
@@ -333,16 +333,16 @@ func dispatchVPNIncoming(c net.Conn, gw *gatewayState, muxEnabled bool, smuxCfg 
 func runLoopbackSmuxServerSide(rw io.ReadWriteCloser, gw *gatewayState, smuxCfg *smux.Config) {
 	sess, err := smux.Server(rw, smuxCfg)
 	if err != nil {
-		logrus.WithError(err).Warn("环回 smux.Server 失败")
+		logrus.WithError(err).Warn("loopback smux.Server failed")
 		_ = rw.Close()
 		return
 	}
 	defer func() { _ = sess.Close() }()
-	logrus.Info("环回 VPN：smux 承载已建立，hy2/REALITY 将多路复用至本会话")
+	logrus.Info("loopback VPN: smux carrier established, hy2/REALITY will multiplex onto this session")
 	for {
 		st, err := sess.AcceptStream()
 		if err != nil {
-			logrus.WithError(err).Debug("smux AcceptStream 结束")
+			logrus.WithError(err).Debug("smux AcceptStream ended")
 			return
 		}
 		// per-stream goroutine:smux 单 stream panic 不应该拖死同 sess 上的其它复用 stream

@@ -70,7 +70,7 @@ func (s *Server) handlePortForwardList(w http.ResponseWriter, r *http.Request) {
 		if st, lerr := s.control.PortForwardStatus(ctx); lerr == nil {
 			live = st
 		} else {
-			logrus.WithError(lerr).Debug("[web] 拉取端口转发运行态失败，列表降级为状态未知")
+			logrus.WithError(lerr).Debug("[web] failed to fetch port forward runtime state, the list degrades to unknown status")
 		}
 		cancel()
 	}
@@ -277,7 +277,7 @@ func (s *Server) checkPortForwardTargetDeviceConflict(r *http.Request, ip netip.
 		// 第九轮深扫 LOW:此前把 raw DB 错误(可能带 schema / 约束 / 路径片段)经
 		// err.Error() 塞进管理员可见页面,与本仓其它端口转发失败路径统一遮蔽内部错误的
 		// 做法不一致。改为 server 侧 log 细节、页面只回本地化通用文案(去掉 %s 参数)。
-		logrus.WithError(err).Warn("[port-forward] 查已有映射失败(冲突预检)")
+		logrus.WithError(err).Warn("[port-forward] failed to query existing mappings (conflict pre-check)")
 		return tr(r, "pf.queryExistingFailed")
 	}
 	ipKey := ip.Unmap() // 与数据面 frpTargetTable 的 key 口径一致：v4 与 v4-in-v6 视为同一 IP，避免绕过冲突检测

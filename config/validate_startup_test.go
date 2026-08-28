@@ -40,19 +40,19 @@ func TestPoWConfigValidate_ZeroMeansDefaultAndOrderMustHold(t *testing.T) {
 			"负步长意味着失败越多难度越低"},
 		{"ttl_sec 为负", PoWConfig{TTLSec: -1}, "ttl_sec", ""},
 
-		{"ramp 低于 base", PoWConfig{BaseDifficulty: 16, RampDifficulty: 10}, "必须 ≥",
+		{"ramp 低于 base", PoWConfig{BaseDifficulty: 16, RampDifficulty: 10}, "must be >=",
 			"倒置意味着「失败之后反而更好算」,自适应升级形同虚设"},
-		{"ceiling 低于 ramp", PoWConfig{RampDifficulty: 20, AdaptiveCeiling: 10}, "必须 ≥",
+		{"ceiling 低于 ramp", PoWConfig{RampDifficulty: 20, AdaptiveCeiling: 10}, "must be >=",
 			"天花板比 ramp 还低,难度永远升不上去"},
-		{"缺省 base 与显式低 ramp 的组合", PoWConfig{RampDifficulty: 5}, "必须 ≥",
+		{"缺省 base 与显式低 ramp 的组合", PoWConfig{RampDifficulty: 5}, "must be >=",
 			"顺序要在「零值→默认」解析之后比:base 缺省是 8,ramp=5 就是倒置。" +
 				"只比显式值的话这份配置会被放过"},
 		{"缺省 ceiling 不该误报", PoWConfig{BaseDifficulty: 20, RampDifficulty: 22}, "",
 			"ceiling 缺省是 22,等于 ramp 不算倒置"},
 
-		{"越界优先于顺序报错", PoWConfig{BaseDifficulty: 99, RampDifficulty: 10}, "越界",
+		{"越界优先于顺序报错", PoWConfig{BaseDifficulty: 99, RampDifficulty: 10}, "out of range",
 			"先查区间再查顺序:拿被污染的值去比大小,报出来的顺序错误会把人带偏"},
-		{"越界时不该同时抱怨顺序", PoWConfig{BaseDifficulty: 99, RampDifficulty: 10}, "!必须 ≥",
+		{"越界时不该同时抱怨顺序", PoWConfig{BaseDifficulty: 99, RampDifficulty: 10}, "!must be >=",
 			"base=99 本身就非法,再报一句「ramp 必须 ≥ base(99)」只会让人去改 ramp"},
 	}
 
@@ -120,21 +120,21 @@ func TestServerConfigValidateJumpHostFirewall_RejectsWhatRuntimeWouldSilentlyDro
 		{"没启用就不管", false, nil, "", "关掉时这个字段完全被忽略"},
 		{"没启用时非法条目也不管", false, []string{"垃圾"}, "", ""},
 
-		{"启用但名单为空", true, nil, "必须",
+		{"启用但名单为空", true, nil, "requires",
 			"空名单 + 开 firewall = 「以为开了限制、实际全网开放」"},
 		{"启用且名单合法", true, []string{"203.0.113.7", "198.51.100.9"}, "", ""},
 		{"空白项被容忍", true, []string{" ", "203.0.113.7", ""}, "",
 			"与 runtime skip 空串的行为一致"},
 
-		{"CIDR 被拒", true, []string{"203.0.113.0/24"}, "不是合法 IPv4",
+		{"CIDR 被拒", true, []string{"203.0.113.0/24"}, "is not a valid IPv4",
 			"runtime 静默丢弃 CIDR。放它过 lint,运维会以为整个网段都放行了"},
-		{"主机名被拒", true, []string{"jump.example.com"}, "不是合法 IPv4",
+		{"主机名被拒", true, []string{"jump.example.com"}, "is not a valid IPv4",
 			"同上,而且 DNS 会变,名单不能依赖它"},
-		{"IPv6 被拒", true, []string{"2001:db8::1"}, "不是合法 IPv4",
+		{"IPv6 被拒", true, []string{"2001:db8::1"}, "is not a valid IPv4",
 			"ipset 建的是 family inet,v6 进不去"},
-		{"混着一个非法项也拒", true, []string{"203.0.113.7", "not-an-ip"}, "不是合法 IPv4",
+		{"混着一个非法项也拒", true, []string{"203.0.113.7", "not-an-ip"}, "is not a valid IPv4",
 			"部分非法比全非法更危险:剩下的那些还能连,问题要等到用那台跳板机时才暴露"},
-		{"全是空白项", true, []string{"  ", "\t"}, "全是空白",
+		{"全是空白项", true, []string{"  ", "\t"}, "nothing but blank entries",
 			"等价于空名单,退化成只允许 127.0.0.1"},
 	}
 
@@ -216,15 +216,15 @@ func TestTUNConfigValidateTUNSubnets_CatchesEmptyAndSwappedFamilies(t *testing.T
 		{"只配 v6", TUNConfig{SubnetsV6: []string{"fd00:80::/64"}}, "", ""},
 		{"两族都配", TUNConfig{Subnets: []string{"10.80.0.0/16"}, SubnetsV6: []string{"fd00:80::/64"}}, "", ""},
 
-		{"两个都空", TUNConfig{}, "至少配置一项",
+		{"两个都空", TUNConfig{}, "at least one of subnets and subnets_v6",
 			"数据面没有地址池,谁也分不到 vIP"},
-		{"两个都只有空白", TUNConfig{Subnets: []string{" "}, SubnetsV6: []string{""}}, "至少配置一项", ""},
+		{"两个都只有空白", TUNConfig{Subnets: []string{" "}, SubnetsV6: []string{""}}, "at least one of subnets and subnets_v6", ""},
 
-		{"v6 段写进了 subnets", TUNConfig{Subnets: []string{"fd00:80::/64"}}, "应放到 [tun].subnets_v6",
+		{"v6 段写进了 subnets", TUNConfig{Subnets: []string{"fd00:80::/64"}}, "belongs in [tun].subnets_v6",
 			"语法完全合法,只是放错了字段 —— 只查 CIDR 语法的校验抓不住"},
-		{"v4 段写进了 subnets_v6", TUNConfig{SubnetsV6: []string{"10.80.0.0/16"}}, "应放到 [tun].subnets", ""},
+		{"v4 段写进了 subnets_v6", TUNConfig{SubnetsV6: []string{"10.80.0.0/16"}}, "belongs in [tun].subnets", ""},
 		{"两边都写反", TUNConfig{Subnets: []string{"fd00:80::/64"}, SubnetsV6: []string{"10.80.0.0/16"}},
-			"应放到", "把两个字段整体对调是最常见的写法错误"},
+			"belongs in", "把两个字段整体对调是最常见的写法错误"},
 
 		{"语法错的 CIDR 交给别人报", TUNConfig{Subnets: []string{"这不是CIDR"}, SubnetsV6: []string{"fd00::/64"}}, "",
 			"族校验只补「族」这一维,语法由 Config.Validate 的 checkCIDRs 负责,两边都报会刷屏"},

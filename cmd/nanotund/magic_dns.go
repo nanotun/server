@@ -269,7 +269,7 @@ func startMagicDNS(gw *gatewayState, listenAddr string) func() {
 		return func() {}
 	}
 	if listenAddr == "" {
-		logrus.Warn("[magic-dns] listen_addr 为空(TUN gateway 未就绪),跳过 Magic DNS 启动")
+		logrus.Warn("[magic-dns] listen_addr is empty (the TUN gateway is not ready), skipping Magic DNS startup")
 		return func() {}
 	}
 	resolved := resolveMagicDNSConfig(gw.cfg.Server.MagicDNS)
@@ -278,19 +278,19 @@ func startMagicDNS(gw *gatewayState, listenAddr string) func() {
 		Port: int(resolved.port),
 	}
 	if addr.IP == nil {
-		logrus.WithField("listen_addr", listenAddr).Error("[magic-dns] listen_addr 不是合法 IP,跳过启动")
+		logrus.WithField("listen_addr", listenAddr).Error("[magic-dns] listen_addr is not a valid IP, skipping startup")
 		return func() {}
 	}
 	conn, err := net.ListenUDP("udp", &addr)
 	if err != nil {
-		logrus.WithError(err).WithField("addr", addr.String()).Error("[magic-dns] 启动 UDP DNS server 失败")
+		logrus.WithError(err).WithField("addr", addr.String()).Error("[magic-dns] failed to start the UDP DNS server")
 		return func() {}
 	}
 	logrus.WithFields(logrus.Fields{
 		"addr":     addr.String(),
 		"suffix":   resolved.suffix,
 		"upstream": resolved.upstream,
-	}).Info("[magic-dns] 已启动")
+	}).Info("[magic-dns] started")
 
 	go safeGlobalGoroutine("magicDNS", globalContextCancel, func() {
 		runMagicDNSLoop(globalContext, gw, conn, resolved)
@@ -317,7 +317,7 @@ func runMagicDNSLoop(ctx context.Context, gw *gatewayState, conn *net.UDPConn, r
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				continue // 借此 tick 检查 ctx.Done
 			}
-			logrus.WithError(err).Debug("[magic-dns] ReadFromUDP 错误")
+			logrus.WithError(err).Debug("[magic-dns] ReadFromUDP error")
 			continue
 		}
 		query := make([]byte, n)
@@ -1239,7 +1239,7 @@ func magicDNSExtraDNS(gw *gatewayState, listenAddr string) string {
 	if r.port != 53 {
 		magicDNSNonStdPortWarnOnce.Do(func() {
 			logrus.WithField("listen_port", r.port).Warn(
-				"[magic-dns] listen_port != 53,跳过给客户端 prepend gateway DNS;客户端 OS stub resolver 默认打 :53,非 53 端口需要运维自行接转发器")
+				"[magic-dns] listen_port != 53, so the gateway DNS is not prepended for clients; a client OS stub resolver always queries :53, and a non-53 port requires the operator to wire up a forwarder")
 		})
 		return ""
 	}

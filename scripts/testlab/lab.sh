@@ -474,6 +474,15 @@ cmd_i18n() {
   dex "$NAME" nanotun-uninstall --dry-run                           >>"$log" 2>&1
   dex "$NAME" nanotun-set-suffix --help                             >>"$log" 2>&1
 
+  # 开机脚本的输出进 journal,不进装机那一屏 —— 而装机收尾恰恰让人去敲 journalctl。
+  # 这个盲区是实打实漏过的:cmd/nanotund/tun-setup.sh / tun-teardown.sh 那五行中文
+  # 一直活到 2026-08-28 的全量扫描才被发现,而在此之前这条演练一直是绿的。
+  #
+  # 眼下只扫 nanotun-tun-setup。nanotund 与 nanotun-web 的日志还是中文(各 560 / 59 处,
+  # 正在改成纯英文),等它们改完再把那两个单元加进来 —— 现在加进来只会让这条演练常红,
+  # 而常红的守卫等于没有守卫。
+  dex "$NAME" journalctl -u nanotun-tun-setup --no-pager -n 50      >>"$log" 2>&1 || true
+
   eval "$_saved_step"; eval "$_saved_ok"; eval "$_saved_warn"
 
   # 剩下要排除的只有 build-release.sh:打包是维护者动作,不是装机的一部分,而 cmd_install

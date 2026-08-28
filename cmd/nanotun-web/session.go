@@ -133,19 +133,19 @@ type SessionService struct {
 func NewSessionService(st *store.Store, cfg Config) *SessionService {
 	key := make([]byte, 32)
 	if _, err := randRead(key); err != nil {
-		panic("nanotun-web: 无法初始化 pending hmac key: " + err.Error())
+		panic("nanotun-web: cannot initialize the pending hmac key: " + err.Error())
 	}
 	capKey := make([]byte, 32)
 	if _, err := randRead(capKey); err != nil {
-		panic("nanotun-web: 无法初始化 captcha hmac key: " + err.Error())
+		panic("nanotun-web: cannot initialize the captcha hmac key: " + err.Error())
 	}
 	powKey := make([]byte, 32)
 	if _, err := randRead(powKey); err != nil {
-		panic("nanotun-web: 无法初始化 pow hmac key: " + err.Error())
+		panic("nanotun-web: cannot initialize the pow hmac key: " + err.Error())
 	}
 	csrfKey := make([]byte, 32)
 	if _, err := randRead(csrfKey); err != nil {
-		panic("nanotun-web: 无法初始化 csrf hmac key: " + err.Error())
+		panic("nanotun-web: cannot initialize the csrf hmac key: " + err.Error())
 	}
 	return &SessionService{
 		store:          st,
@@ -183,7 +183,7 @@ func (s *SessionService) IssueSession(ctx context.Context, w http.ResponseWriter
 	// maxConcurrentWebSessionsPerAdmin,删掉较旧的多余项。防止反复登录无界累积有效 session、给失窃 /
 	// 遗留 cookie 一个确定的淘汰路径。best-effort:prune 失败只记日志,不阻断本次登录(会话已建成)。
 	if _, perr := s.store.PruneWebSessionsKeepingRecent(ctx, adminID, maxConcurrentWebSessionsPerAdmin); perr != nil {
-		logrus.WithError(perr).WithField("admin_id", adminID).Warn("[web] 登录后封顶并发 session 失败(忽略)")
+		logrus.WithError(perr).WithField("admin_id", adminID).Warn("[web] failed to cap concurrent sessions after login (ignored)")
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     s.cookieName(sessionCookieName),

@@ -260,7 +260,7 @@ func TestJumpFirewall_ReplaceReportsFailureInsteadOfPretendingItWorked(t *testin
 			if err == nil {
 				t.Fatalf("%s 失败了,Replace 却回报成功 —— %s", tc.failOn, tc.because)
 			}
-			if !strings.Contains(err.Error(), "未") {
+			if !strings.Contains(err.Error(), "**not** restricted") {
 				t.Errorf("错误文案应当讲清「端口当前未受限」,got %q", err)
 			}
 			if fw.installed {

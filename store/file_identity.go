@@ -59,8 +59,8 @@ func (s *Store) CheckFileIdentity() error {
 	if cur == s.identity {
 		return nil
 	}
-	return fmt.Errorf("store: 数据库文件已被替换(%s):打开时 dev=%d ino=%d,现在 dev=%d ino=%d;"+
-		"本进程仍在写那个已被删除的旧文件,所有写入都不会被其他进程看到",
+	return fmt.Errorf("store: the database file has been replaced (%s): dev=%d ino=%d at open, now dev=%d ino=%d; "+
+		"this process is still writing to the deleted old file, and no other process can see those writes",
 		s.path, s.identity.Dev, s.identity.Ino, cur.Dev, cur.Ino)
 }
 

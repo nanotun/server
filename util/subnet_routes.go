@@ -171,7 +171,7 @@ func NormalizeAdvertisedCIDR(in string) (string, error) {
 		return "", fmt.Errorf("invalid cidr %q: %w", in, err)
 	}
 	if p.Bits() == 0 {
-		return "", errors.New("cidr /0 not allowed(请勿声明全网路由)")
+		return "", errors.New("cidr /0 not allowed (do not advertise a route for the entire internet)")
 	}
 	masked := p.Masked()
 	// 只拒**落在** 4via6 /64 之内的(含等于);更宽的 ULA 超网(fc00::/7、fd00::/8 …)维持既有语义

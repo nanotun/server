@@ -120,7 +120,7 @@ func (s *Server) handleSysmonData(w http.ResponseWriter, r *http.Request) {
 			resp.HostError = trErr(r, ErrSysmonUnsupported)
 		} else {
 			resp.HostError = trErr(r, hostErr)
-			logrus.WithError(hostErr).Warn("[sysmon] 采样宿主机指标失败")
+			logrus.WithError(hostErr).Warn("[sysmon] failed to sample host metrics")
 		}
 	}
 	if host != nil {
@@ -158,6 +158,6 @@ func (s *Server) handleSysmonData(w http.ResponseWriter, r *http.Request) {
 	// 始终 200 — 错误信息编在 JSON 里,前端能直接渲染横幅;5xx 会让 fetch().catch
 	// 路径分流,反而麻烦。
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		logrus.WithError(err).Warn("[sysmon] 编码响应失败")
+		logrus.WithError(err).Warn("[sysmon] failed to encode the response")
 	}
 }

@@ -1,222 +1,305 @@
-# VPN 数据面：listen_addr 上 HTTP + WebSocket Upgrade；链路帧在 WS Binary 中。
-# 自托管 PSK 模式:用户/PSK 由本机 SQLite([store].db_path)维护,由 nanotun-admin
-# CLI 管理。详见 nanotun-admin/README.md。
+# VPN data plane: HTTP + WebSocket Upgrade on listen_addr; link frames ride inside WS Binary.
+# Self-hosted PSK mode: users and PSKs live in the local SQLite database ([store].db_path) and
+# are managed by the nanotun-admin CLI. See nanotun-admin/README.md for details.
 
 [server]
-# 默认只绑本机回环。这是数据面 WS 端点,生产客户端(iOS/Android)一律经 hy2(:443/udp)
-# 或 REALITY(:8443/tcp)接入,由服务端在本机把它们桥接到这里(dial 127.0.0.1:<port>),
-# 客户端**从不**直连本端口 —— 所以没必要暴露到公网(暴露只会多一个仅靠路径 token
-# 遮挡的攻击面)。安装脚本据此也不再放行 8080/tcp。
-# 仅当你确实要让客户端(或同仓 Go 测试客户端)直接 wss:// 拨这个端口时,才改成
-# ":8080"(所有网卡)并自行放行防火墙。
+# Loopback only by default. This is the data-plane WS endpoint: production clients (iOS/Android)
+# always come in over hy2 (:443/udp) or REALITY (:8443/tcp), and the server bridges them here on
+# the local machine (dial 127.0.0.1:<port>). Clients **never** connect to this port directly —
+# so there is no reason to expose it to the internet (exposing it only adds one more attack
+# surface, guarded by nothing but the path token). The install scripts no longer open 8080/tcp
+# for the same reason.
+# Change this to ":8080" (all interfaces) and open the firewall yourself only if you really do
+# want clients (or the Go test client in this repo) to dial this port over wss:// directly.
 listen_addr = "127.0.0.1:8080"
-# Linux:true 时按 [server].jump_host_allowed_ips 限制「仅本监听 TCP 端口」入站
-# (固定 ipset nanotun_jump_src、链 NANOTUN_JUMP)。需 ipset/iptables;换 listen
-# 端口不改上述名字。
-# 进程正常退出 / SIGINT / SIGTERM 都会按 LIFO defer 链清理(jump_host → hy2 porthop
-# → store WAL checkpoint → TUN close)。异常路径(SIGKILL / panic / OOM)规则会
-# 残留,但下次启动时各模块会先 sweep 同名规则再重建,保证幂等。
+# Linux: when true, inbound traffic is restricted to [server].jump_host_allowed_ips for **this
+# listening TCP port only** (fixed names: ipset nanotun_jump_src, chain NANOTUN_JUMP). Needs
+# ipset/iptables; changing the listen port does not change those names.
+# A normal exit / SIGINT / SIGTERM all clean up along the LIFO defer chain (jump_host → hy2
+# porthop → store WAL checkpoint → TUN close). On abnormal paths (SIGKILL / panic / OOM) the
+# rules are left behind, but on the next start every module sweeps rules of the same name before
+# rebuilding them, which keeps this idempotent.
 jump_host_firewall = false
-# 启用 jump_host_firewall 时必须在此列出跳板机 IPv4 名单(127.0.0.1 自动加入)。
-# 留空 + jump_host_firewall=true 会 Fatal,避免「以为开了限制实际全网开放」陷阱。
+# With jump_host_firewall enabled, the jump hosts' IPv4 addresses must be listed here
+# (127.0.0.1 is added automatically). An empty list plus jump_host_firewall=true is fatal, which
+# avoids the "thought the restriction was on, actually open to the whole internet" trap.
 # jump_host_allowed_ips = ["1.2.3.4", "5.6.7.8"]
-# 与 hy2 开发证书可共用；相对路径请在 server 目录下启动；不配则仍为明文 ws
+# May share the hy2 dev certificate; with relative paths, start from the server directory;
+# leave these unset and the endpoint stays plain ws.
 tls_cert_file = "certs/dev-cert.pem"
 tls_key_file = "certs/dev-key.pem"
-# WebSocket 路径（须以 / 开头）；环回 hy2/REALITY 与公网客户端须一致；省略时用代码内置默认长路径。
-# 生产务必换成你自己的随机长路径（例如 openssl rand -hex 20 生成末段），别照抄这个公开示例值。
+# WebSocket path (must start with /); the loopback hy2/REALITY side and public clients have to
+# agree on it; omit it and the long default compiled into the code is used.
+# In production always switch to a long random path of your own (for example generate the last
+# segment with openssl rand -hex 20) — do not copy this public example value.
 vpn_websocket_path = "/internal/nanotun/data-plane/ws/v1/REPLACE_WITH_YOUR_RANDOM_TOKEN"
-# VPN 单 TCP 链路上的吞吐限速（字节/秒）；0 表示不限制
-upload_rate = 20971520   # 20 MiB/s，对客户端→服务端方向（Read）
-download_rate = 20971520 # 20 MiB/s，对服务端→客户端方向（Write）
-# 按登录 JSON 的 platform（小写，与 runtime.GOOS 一致）覆盖；某项为 0 表示该方向仍用上面全局值
+# Throughput limit on a single VPN TCP link (bytes/sec); 0 means no limit
+upload_rate = 20971520   # 20 MiB/s, for the client → server direction (Read)
+download_rate = 20971520 # 20 MiB/s, for the server → client direction (Write)
+# Overridden by the platform in the login JSON (lowercase, same values as runtime.GOOS); a 0 in
+# either entry means that direction keeps the global value above
 # [server.rate_limit_by_platform.android]
 # upload_rate = 1048576
 # download_rate = 2097152
 
-# per-IP 登录限速：每个源 IP 每分钟最多多少次登录尝试（进 argon2 verify 之前判定）。
-#   0 = 不限制（默认）；N>0 = 每 IP 每分钟最多 N 次（突发固定 3），超出回 429。
-# 防暴破主力是始终启用的 PoW + argon2id 并发上限；本项仅可选兜底，弱网频繁重连场景建议保持 0。
-# 可 SIGHUP 热更（切 0 立即放行）。
+# Per-IP login rate limit: how many login attempts a single source IP may make per minute
+# (decided before the argon2 verify).
+#   0 = no limit (default); N>0 = at most N per IP per minute (burst fixed at 3), 429 beyond it.
+# The main anti-brute-force defence is the always-on PoW plus the argon2id concurrency cap; this
+# is only an optional backstop, and 0 is the recommendation where flaky networks make clients
+# reconnect often.
+# Hot-reloadable via SIGHUP (switching to 0 lifts the limit immediately).
 login_rate_limit_per_min = 0
 
-# P2#11 Magic DNS:server 内置 DNS server,把 peer 主机名(`<device>.<user>.<suffix>`)
-# 解析成 vIP,客户端无需记 100.64.0.x。默认 disabled,启用后需注意:
+# P2#11 Magic DNS: the server runs a built-in DNS server that resolves peer hostnames
+# (`<device>.<user>.<suffix>`) to vIPs, so clients need not remember 100.64.0.x. Disabled by
+# default; once enabled, note:
 #
-# ★ 关键 — listen_port 默认 = 53,务必读完下面三个部署陷阱再启用:
+# ★ Important — listen_port defaults to 53; read all three deployment traps below before enabling:
 #
-#   1. 客户端 stub resolver 永远打 :53。如果运维改成 5353 之类非标端口,
-#      server 会跳过给客户端 prepend gateway DNS(打 Warn 一次,见日志),
-#      客户端 DNS 维持 [tun].dns_servers_v4。非标端口仅适合"server 自己用
-#      dnsmasq / systemd-resolved 在 :53 上做转发器,真正解析转给 :5353"
-#      这类拓扑。
+#   1. A client's stub resolver always talks to :53. If an operator moves this to a
+#      non-standard port such as 5353, the server skips prepending the gateway DNS to the
+#      client (logging one Warn, see the log), and the client's DNS stays at
+#      [tun].dns_servers_v4. A non-standard port only suits topologies where "the server
+#      itself runs dnsmasq / systemd-resolved as a forwarder on :53 and hands the real
+#      resolution to :5353".
 #
-#   2. 系统级 DNS 端口冲突:
-#      - systemd-resolved 默认 listen 在 127.0.0.53:53(具体 IP),
-#        与 server 的 100.x.x.x:53 不同 IP,**不**冲突,直接启用即可;
-#      - dnsmasq / Pi-hole 等若 listen 在 0.0.0.0:53(全 IP),会和
-#        server bind TUN gateway IP:53 冲突 → server 启动报 "address
-#        already in use",magic_dns 模块不起(但 server 主进程继续跑)。
-#        修法:把 dnsmasq 改为只 listen 在具体 IP(`bind-interfaces`
-#        + `listen-address=127.0.0.1`),或把 nanotun 的 listen_port
-#        换 5353 + 自行做 53→5353 转发(见上一条)。
+#   2. System-level DNS port conflicts:
+#      - systemd-resolved listens on 127.0.0.53:53 by default (a specific IP), which is a
+#        different IP from the server's 100.x.x.x:53, so it does **not** conflict — just
+#        enable it;
+#      - dnsmasq / Pi-hole and friends listening on 0.0.0.0:53 (all IPs) do conflict with the
+#        server binding TUN gateway IP:53 → the server logs "address already in use" at
+#        startup and the magic_dns module does not come up (the main server process keeps
+#        running). Fix: make dnsmasq listen on a specific IP only (`bind-interfaces`
+#        + `listen-address=127.0.0.1`), or move nanotun's listen_port to 5353 and do the
+#        53→5353 forwarding yourself (see the previous item).
 #
-#   3. 权限:server 进程已经以 root 启动(TUN 需要),直接绑 :53 没额外
-#      成本;非 root 部署(rootless container)需 cap_net_bind_service。
+#   3. Privileges: the server process already starts as root (TUN needs that), so binding :53
+#      costs nothing extra; non-root deployments (rootless containers) need
+#      cap_net_bind_service.
 #
-# 其它行为:
-#   - 客户端登录会收到 TUN gateway IP 作为头号 DNS server,系统全局 DNS 先打这里;
-#   - 没配 upstream_v4/v6 时非 magic 域名查询会回 SERVFAIL —— "magic-only" 模式;
-#   - DNS server 只在 TUN gateway IP 上 listen,不暴露 WAN。
-#   - **UDP 与 TCP 都听**(RFC 7766 要求成对):应答超出使用方 EDNS 缓冲区时置 TC=1,使用方唯一的
-#     补救就是改用 TCP 重查,只听 UDP 会让大应答彻底解不出来。自带防火墙的部署要放行网关 IP 的
-#     udp/53 **和** tcp/53(server 自己装的 iptables 例外已两者都放)。TCP listener 起不来只记日志、
-#     不影响 UDP(丢的是截断回落);UDP bind 失败才会让 magic_dns 模块整体不起。
-#   - 与出口 DNS 接管(exit_dns_redirect,默认 auto)共存已自动处理:enabled=true 时
-#     server 在 nat PREROUTING 给「网关 IP:53」加一条 RETURN(排在出口接管的 :53 DNAT
-#     之前),并在 filter INPUT 放行「网关 IP:53」(绕开 -P INPUT DROP / ufw)。否则发往
-#     magic DNS 的查询会被出口接管 DNAT 劫持走 / 被默认 INPUT 策略丢弃。仅 listen_port=53
-#     生效(非标端口客户端 stub 不会查网关,见上文陷阱 1)。
-#     **v4 与 v6 都放行**:magic DNS 在两族网关上成对 listen,而客户端(iOS 仅组网确定如此)会把
-#     mesh ULA 网关一并写进解析器列表 —— v6 少了那条 ACCEPT,`ip6tables -P INPUT DROP` 的机器
-#     (开着 ufw 即是)上 socket 明明在 LISTEN、查询也确实到了 tun0,却在进 socket 前被丢掉:凡是
-#     选了 v6 解析器的客户端都静默解不出 AAAA / 4via6。(2026-08-17 iOS 18.7.9 实测走的是 v4
-#     网关,AAAA 亦然,故 v6 这条属兜底;但兜底缺位的症状极难排查,别省。)
-#     v6 侧只装 INPUT ACCEPT,不装 nat RETURN:出口 DNS 接管的 DNAT 只在 v4,v6 没有要绕的。
+# Other behaviour:
+#   - On login a client receives the TUN gateway IP as its first DNS server, so the system-wide
+#     DNS goes there first;
+#   - Without upstream_v4/v6, queries for non-magic domains return SERVFAIL — "magic-only" mode;
+#   - The DNS server listens on the TUN gateway IP only; it is never exposed to the WAN.
+#   - **Both UDP and TCP are served** (RFC 7766 requires the pair): when a reply exceeds the
+#     asker's EDNS buffer it is marked TC=1, and the asker's only recourse is to retry over TCP,
+#     so serving UDP alone leaves large replies unresolvable for good. Deployments with their own
+#     firewall must allow **both** udp/53 and tcp/53 on the gateway IP (the iptables exceptions
+#     the server installs itself already cover both). A TCP listener that fails to come up is
+#     only logged and does not affect UDP (what is lost is the truncation fallback); only a
+#     failed UDP bind takes the whole magic_dns module down.
+#   - Coexistence with the exit DNS takeover (exit_dns_redirect, auto by default) is handled
+#     automatically: with enabled=true the server adds a RETURN for "gateway IP:53" in nat
+#     PREROUTING (ordered before the takeover's :53 DNAT), and accepts "gateway IP:53" in
+#     filter INPUT (getting past -P INPUT DROP / ufw). Otherwise queries aimed at magic DNS get
+#     hijacked away by the takeover DNAT / dropped by the default INPUT policy. Only in effect
+#     when listen_port=53 (on a non-standard port the client stub never asks the gateway at all,
+#     see trap 1 above).
+#     **Both v4 and v6 are allowed**: magic DNS listens on the gateways of both families as a
+#     pair, and clients (certainly iOS in mesh-only mode) put the mesh ULA gateway into their
+#     resolver list as well — without that v6 ACCEPT, on a machine running `ip6tables -P INPUT
+#     DROP` (which is what having ufw on amounts to) the socket is plainly LISTENing and the
+#     query really does reach tun0, yet it is dropped before it gets into the socket: every
+#     client that picked the v6 resolver silently fails to resolve AAAA / 4via6. (Measured on
+#     iOS 18.7.9 on 2026-08-17, the v4 gateway is the one actually used, AAAA included, so the
+#     v6 rule is a backstop; but the symptom of a missing backstop is extremely hard to track
+#     down, so don't skip it.)
+#     The v6 side installs only the INPUT ACCEPT, no nat RETURN: the exit DNS takeover's DNAT
+#     exists on v4 only, so on v6 there is nothing to route around.
 #
-# Magic 域名命名规则(去掉尾部 .<suffix> 后按段数 / 首段区分,均严格匹配):
-#   A) 设备名   <device>.<user>.<suffix>              → 该设备的 mesh 虚拟 IP(A/AAAA)
-#      例: vultr.smoker.lan                           → 10.201.0.36
-#   B) 4via6    <v4-dashed>via<siteID>.<suffix>       → 该站点内网主机的 4via6 地址(AAAA)
-#      例: 192-168-199-1via3.lan                      → fdbc:4a60::3:c0a8:c701 (siteID=3)
-#      · <v4-dashed> = 目标内网 IPv4,把点写成连字符(192.168.199.1 → 192-168-199-1);
-#      · <siteID> = 宣告方在 via6_sites 表的全局唯一站点号(AUTOINCREMENT,≥1),紧跟字面 "via"
-#        (为可读性也接受 "-via-" 变体,如 192-168-199-1-via-3);去 suffix 后须为**单段**(不含 ".")才判为 4via6,否则回落 A 规则;
-#      · 为何用 siteID 而非 device/user(对齐 Tailscale 4via6):site_id 全局唯一且稳定,设备名可能同用户下重名 →
-#        用名字会错路由甚至 fail-closed。故 4via6 名只含「目标 v4 + 数字 siteID」,与设备名/用户名彻底解耦(见 magic_dns.go parseVia6Hostname);
-#      · 用途:客户端本地 LAN 与宣告方网段重叠时消歧——直连该 v4 只命中本地,用此名字经 4via6 才穿到宣告方内网的同网段主机;
-#      · 仅当目标 v4 落在该 siteID 对应宣告方**已批准的宣告网段**内才解析成功(否则 NameError)。
-#   A 规则的 <device>/<user> 匹配做 normalize(小写 + 空格/下划线 → 连字符),
-#   故「Alice 的 MacBook」可写成 alice-的-macbook.<user>.<suffix>。
-#   URL 里的端口是目标服务端口(与 DNS 无关),如 http://192-168-199-1via3.lan:8899/
-#   解析出 IPv6 后实际连的是 [fdbc:4a60::3:c0a8:c701]:8899。
+# Magic hostname rules (after the trailing .<suffix> is stripped, told apart by label count /
+# first label; both matched strictly):
+#   A) device   <device>.<user>.<suffix>              → that device's mesh virtual IP (A/AAAA)
+#      e.g. vultr.smoker.lan                          → 10.201.0.36
+#   B) 4via6    <v4-dashed>via<siteID>.<suffix>       → the 4via6 address of a LAN host at that site (AAAA)
+#      e.g. 192-168-199-1via3.lan                     → fdbc:4a60::3:c0a8:c701 (siteID=3)
+#      · <v4-dashed> = the target LAN IPv4 with the dots written as hyphens
+#        (192.168.199.1 → 192-168-199-1);
+#      · <siteID> = the advertiser's globally unique site number in the via6_sites table
+#        (AUTOINCREMENT, ≥1), immediately after the literal "via" (a "-via-" variant is also
+#        accepted for readability, e.g. 192-168-199-1-via-3); once the suffix is stripped the name
+#        must be a **single label** (no ".") to be read as 4via6, otherwise rule A applies;
+#      · Why siteID and not device/user (matching Tailscale's 4via6): site_id is globally unique
+#        and stable, while device names can repeat under one user → going by name would misroute
+#        or even fail closed. So a 4via6 name carries only "target v4 + numeric siteID" and is
+#        completely decoupled from device/user names (see parseVia6Hostname in magic_dns.go);
+#      · What it is for: disambiguation when the client's own LAN overlaps the advertiser's
+#        subnet — dialing that v4 directly only ever reaches the local one; only this name gets
+#        through, over 4via6, to the same-subnet host inside the advertiser's LAN;
+#      · Resolution succeeds only when the target v4 falls inside an **approved advertised
+#        subnet** of the advertiser behind that siteID (NameError otherwise).
+#   Rule A normalizes <device>/<user> before matching (lowercase, spaces/underscores → hyphens),
+#   so a device named "Alice Work MacBook" is written alice-work-macbook.<user>.<suffix>;
+#   characters outside ASCII are carried through as they are.
+#   A port in a URL is the target service's port and has nothing to do with DNS: e.g.
+#   http://192-168-199-1via3.lan:8899/ resolves to IPv6 and then really connects to
+#   [fdbc:4a60::3:c0a8:c701]:8899.
 #
 [server.magic_dns]
 enabled = true
 domain_suffix = "lan"
 listen_port = 53
-# upstream_v4/v6：非 magic 域名的上游解析器，**务必配置**。留空 → 非 magic 查询回 SERVFAIL（"magic-only"）：
-# 客户端拿网关作头号/唯一 DNS，全隧道下公网 DNS 会全断（mac 客户端更是把隧道 DNS 收敛为唯一网关）。配置后网关
-# 转发上游，magic 名字本地解析、公网名字照常（应答含 A/AAAA）。选就近可达的上游（本机为非中国节点时建议把中性的排前）。
+# upstream_v4/v6: the upstream resolvers for non-magic domains — **do configure these**. Left
+# empty → non-magic queries return SERVFAIL ("magic-only"): the client takes the gateway as its
+# first / only DNS, so under a full tunnel all public DNS breaks (the mac client goes further and
+# collapses the tunnel's DNS down to the gateway alone). Once configured, the gateway forwards
+# upstream: magic names resolve locally, public names work as usual (replies carry A/AAAA). Pick
+# upstreams that are nearby and reachable (on a node outside China, put the neutral ones first).
 upstream_v4 = ["223.5.5.5", "8.8.8.8"]
 upstream_v6 = ["2001:4860:4860::8888"]
-# ecs_forward：转发非 magic 域名到上游时，附带 EDNS Client Subnet（RFC 7871，客户端会话对端 IP 的
-# /24(v4) / /56(v6)），让上游按**客户端所在地**而不是**本机所在地**做 CDN 调度。
+# ecs_forward: when forwarding a non-magic domain upstream, attach EDNS Client Subnet (RFC 7871,
+# the /24 (v4) / /56 (v6) of the client session's peer IP), so the upstream does its CDN steering
+# by **where the client is** rather than **where this machine is**.
 #
-# 不开会怎样（真机实测：重庆客户端 → 新加坡 server，全隧道）：上游只看到 server 的地址，于是
-# www.baidu.com 被调度到 45.113.192.x / 103.235.46.x（港/海外节点），客户端本地视角本该是
-# 153.3.238.x。域名解析得出来、能访问，但每个 CDN 请求都绕远一趟——症状隐蔽，容易被当成「隧道慢」。
-# 开启后同一查询回国内节点。跨国部署（server 与用户不同地区）几乎一定要开。
+# What it looks like without it (measured on real hardware: a client in Chongqing → a server in
+# Singapore, full tunnel): the upstream only ever sees the server's address, so www.baidu.com
+# gets steered to 45.113.192.x / 103.235.46.x (Hong Kong / overseas nodes) where the client's own
+# vantage point should have given 153.3.238.x. The name resolves, the site loads, but every CDN
+# request takes the long way round — a quiet symptom, easily mistaken for "the tunnel is slow".
+# With it on, the same query comes back with a node inside China. Cross-border deployments
+# (server and users in different regions) almost always want this on.
 #
-# 代价与前提：
-#   · 隐私让渡——向上游暴露客户端所在的 /24。故默认 false，必须运维显式选择；
-#   · 上游要支持 ECS（223.5.5.5 / 8.8.8.8 支持；运营商内网 DNS 多半忽略之，无害不报错）；
-#   · 客户端对端 IP 是私网 / 回环 / 链路本地 / CGNAT（非全球单播）时自动跳过——同机房或
-#     NAT 后的客户端没有可用的地理信息，不会瞎附一个。
+# Cost and prerequisites:
+#   · A privacy trade-off — the client's /24 is disclosed to the upstream. Hence false by
+#     default: the operator has to choose it explicitly;
+#   · The upstream must support ECS (223.5.5.5 / 8.8.8.8 do; carrier-internal resolvers mostly
+#     ignore it, harmlessly and without an error);
+#   · Automatically skipped when the client's peer IP is private / loopback / link-local / CGNAT
+#     (not globally unicast) — a client in the same datacenter or behind NAT carries no usable
+#     geographic information, and nothing is attached on a guess.
 #
-# 注：客户端侧要真的用上这条，全隧道下公网域名必须确实问到网关（Windows 客户端为此装了 NRPT
-# catch-all；mac/iOS 靠 matchDomains=[""]）。客户端绕开网关直接问公共 DNS 时，本项无从生效。
+# Note: for the client side to actually benefit, public domains really have to be asked of the
+# gateway under a full tunnel (the Windows client installs an NRPT catch-all for this; mac/iOS
+# rely on matchDomains=[""]). When a client bypasses the gateway and asks a public resolver
+# directly, this setting has no way to take effect.
 ecs_forward = false
-# via4_pool：4via6 名字的 **A 记录合成池**（DNS46+NAT46）。
+# via4_pool: the **synthetic A-record pool** for 4via6 names (DNS46 + NAT46).
 #
-# 为什么需要：4via6 名字（如 192-168-1-10via7.lan）原本只有 AAAA 应答，而 Apple 平台在系统没有
-# v6 默认路由时**根本不发 AAAA 查询**（iOS 真机定位，2026-08-17）——iOS「仅组网」模式下 via 名
-# 就是死名字。启用本池后，via 名的 A 查询会从池里分配一个 v4 地址作答（映射 池地址⇔(站点,目标v4)
-# 存服务端内存），数据面把发往池地址的 v4 包无状态改写成 4via6 v6 包、汇入现有子网路由转发路径，
-# 回程再反译回 v4 —— **客户端零改动**，iOS/Android/Windows 全平台受益。
+# Why it is needed: a 4via6 name (such as 192-168-1-10via7.lan) originally answered AAAA only,
+# and Apple platforms **do not send an AAAA query at all** when the system has no default v6
+# route (pinned down on real iOS hardware, 2026-08-17) — under iOS "mesh-only" a via name is
+# simply a dead name. With this pool enabled, an A query for a via name is answered with an
+# address allocated from the pool (the pool address ⇔ (site, target v4) mapping lives in server
+# memory); the data plane statelessly rewrites v4 packets sent to a pool address into 4via6 v6
+# packets and merges them into the existing subnet-route forwarding path, then translates the
+# return traffic back to v4 — **no client changes whatsoever**, and iOS/Android/Windows all
+# benefit.
 #
-# 取值：
-#   · 留空/不写 → 默认 "100.100.0.0/16"（CGNAT 段，不与家庭/企业 RFC1918 LAN 冲突），
-#                 即 magic_dns 开着就默认启用；
-#   · "off"     → 显式关闭（via 名维持 AAAA-only 老行为）；
-#   · 自定义    → IPv4 CIDR，前缀 ≤ /28，且不得与 [tun].subnets 重叠（启动时校验，违规拒启）。
+# Values:
+#   · empty / absent → the default "100.100.0.0/16" (a CGNAT range, so it collides with neither
+#                      home nor corporate RFC1918 LANs), i.e. on by default whenever magic_dns is;
+#   · "off"          → explicitly off (via names keep the old AAAA-only behaviour);
+#   · custom         → an IPv4 CIDR, prefix ≤ /28, and it must not overlap [tun].subnets
+#                      (validated at startup; a violation refuses to start).
 #
-# 行为细节：
-#   · 池网段作为一条 server 拥有的合成条目随 routes-list 下发，客户端开着 accept-routes 即自动
-#     装路由（与 4via6 的 fdbc:4a60::/64 生效前提完全一致）；
-#   · A 应答 TTL 30s；映射闲置 4h 后池满时可被 LRU 回收；server 重启丢映射（进行中的 via4 连接
-#     断开，客户端重查 DNS 即自愈）——与 NAT64 部署常识一致；
-#   · 翻译流 TCP MSS 钳到 1220（保证翻成 v6 后 ≤ 客户端 mesh MTU 1280）；v4 分片与 >1260 字节的
-#     UDP 不翻译（丢弃计数，/status 的 via4_dropped 可见）；ICMP 只翻 echo（ping 可用）。
+# Behaviour details:
+#   · The pool prefix is handed out with routes-list as a synthetic entry owned by the server, so
+#     a client with accept-routes on installs the route automatically (exactly the same
+#     precondition as 4via6's fdbc:4a60::/64);
+#   · A replies have a TTL of 30s; a mapping idle for 4h may be reclaimed by LRU once the pool is
+#     full; a server restart loses the mappings (via4 connections in flight break, and the client
+#     heals itself by re-querying DNS) — in line with what NAT64 deployments take for granted;
+#   · Translated flows have their TCP MSS clamped to 1220 (which guarantees ≤ the client's mesh
+#     MTU of 1280 once translated to v6); v4 fragments and UDP over 1260 bytes are not translated
+#     (counted as drops, visible as via4_dropped in /status); of ICMP only echo is translated
+#     (so ping works).
 #via4_pool = "100.100.0.0/16"
 
 [log]
 level = "info"
 
 [tun]
-# 服务端启动时会先 `ip link delete` 掉同名网卡再重建。所以这个名字**不能**是本机
-# nanotun 客户端在用的那块(客户端默认 nanotun0,名字记在 /var/lib/nanotun/tun_name)——
-# 否则服务端每次启动都会掐断客户端的数据面,而客户端那头只表现为「一到服务端重启就断线」。
-# 默认的 tun0 与客户端不冲突;真配撞了服务端会拒绝启动并说明原因,不会闷声删掉。
+# On startup the server first `ip link delete`s any interface of the same name and recreates it.
+# So this name **must not** be the one a nanotun client on this machine is using (the client
+# defaults to nanotun0, with the name recorded in /var/lib/nanotun/tun_name) — otherwise every
+# server start cuts the client's data plane, and all the client end shows is "it drops whenever
+# the server restarts". The default tun0 does not clash with the client; if the two really are
+# configured the same, the server refuses to start and says why rather than deleting it quietly.
 device_name = "tun0"
-# 每个虚拟 IP 的并发连接上限(iptables connlimit)。≤0 按 40。
-# 只在**启动时**落 FORWARD 链,SIGHUP 不重建 —— 改完必须 restart 才生效。
+# Concurrent connection cap per virtual IP (iptables connlimit). ≤0 is treated as 40.
+# Written into the FORWARD chain **at startup only**, not rebuilt on SIGHUP — a change takes
+# effect only after a restart.
 tcp_connlimit_per_ip = 40
 udp_connlimit_per_ip = 60
-# 从 TUN 转发出站按目的端口 DROP（不需要时改为 false）
+# DROP outbound traffic forwarded out of the TUN by destination port (set false when not wanted)
 forward_block_bt = false
 forward_block_tracker_6969 = false
 forward_block_smtp_25 = false
-# 自托管 mesh 默认：同 TUN 客户端可互访（远程桌面 / SMB / SSH / VoIP）。
-# true：在 FORWARD 链插入 device→device DROP，禁止任何客户端互访（公共出口型 / 访客网络）。
-# 应用层细粒度策略由 store/acl.go 管理（user_a, user_b → allow/deny），与本开关无关。
-# 注:P2#16 起 exit_mode 优先,client_isolate 只在 exit_mode 留空 / 未识别时作为兼容路径。
+# Self-hosted mesh default: clients on the same TUN can reach each other (remote desktop / SMB /
+# SSH / VoIP).
+# true: inserts a device→device DROP into the FORWARD chain, forbidding any client-to-client
+# traffic (public-exit style / guest networks).
+# Fine-grained application-layer policy is managed in store/acl.go (user_a, user_b →
+# allow/deny) and has nothing to do with this switch.
+# Note: since P2#16 exit_mode wins; client_isolate is only the compatibility path when exit_mode
+# is empty / unrecognized.
 client_isolate = false
-# P2#16:TUN 出口三档开关。比 client_isolate 表达更细的拓扑。
-#   mesh    (默认)允许同 TUN 客户端互访 + 允许出 WAN(SNAT/MASQUERADE)。
-#   isolate 禁止同 TUN 客户端互访,仍允许出 WAN(公共出口/访客网络)。
-#           与「出口节点」「子网路由」互斥 —— 这两者都是经另一个客户端中转,回程会撞上
-#           客户端互访 DROP。isolate 下 EgressSelect 直接拒绝(reason=isolate),启动期
-#           对库里已批准的出口设备 / 子网路由打 WARN。要用它们请改 mesh。
-#   off     禁止出 WAN(不装 NAT,FORWARD device->wan DROP),仅允许同 TUN 客户端互访(纯组网)。
-# 留空 → 回退 client_isolate 兼容路径(true→isolate, false→mesh)。
-# 想要 off 模式必须显式写 exit_mode = "off"。
-# 该字段 SIGHUP 不可热更(改 conntrack 表 + NAT 链涉及在线连接);改后须 systemctl restart。
+# P2#16: a three-way TUN egress switch, expressing finer topologies than client_isolate.
+#   mesh    (default) clients on the same TUN may reach each other, and may go out to the WAN
+#           (SNAT/MASQUERADE).
+#   isolate clients on the same TUN may not reach each other, but may still go out to the WAN
+#           (public exit / guest network).
+#           Mutually exclusive with "exit nodes" and "subnet routes" — both of those relay
+#           through another client, and the return path runs straight into the client-to-client
+#           DROP. Under isolate, EgressSelect refuses outright (reason=isolate), and at startup
+#           a WARN is logged for exit devices / subnet routes already approved in the database.
+#           Switch to mesh if you want to use them.
+#   off     no WAN egress (no NAT installed, FORWARD device->wan DROP); only clients on the same
+#           TUN may reach each other (pure mesh).
+# Empty → falls back to the client_isolate compatibility path (true→isolate, false→mesh).
+# Getting off mode requires writing exit_mode = "off" explicitly.
+# This field cannot be hot-reloaded with SIGHUP (changing it touches the conntrack table and the
+# NAT chains, and with them live connections); after changing it, systemctl restart.
 exit_mode = "mesh"
-# 出口方向对「链路本地 / 私网目的地」的拦截档位。出口模式装的是「凡经出网网卡可达的目的地
-# 一律放行」,这句话顺带包含两类本该只有服务器自己够得着的地方:
-#   1) 云厂商元数据 169.254.169.254 —— 吐的是本机身份:主机名 / 网络配置 / SSH 公钥,
-#      AWS 上是 IMDSv1 的 IAM 角色临时凭证,GCP·Azure 上是服务账号 token;
-#   2) 服务器所处的私网 —— 云上单网卡形态(AWS/GCP/Azure)内网地址与出网流量共用一块卡,
-#      「出网卡」同时就是「进 VPC」,邻居的数据库 / 内部管理页往往只靠「在 VPC 里」防护。
-#   auto      (默认,留空同此)拦链路本地 + 自动探测到的「出网网卡上 on-link / 经它路由」的
-#             私网段(RFC1918、CGNAT 100.64/10、ULA)。启动日志会打印实际拦了哪些前缀。
-#   link-local 只拦链路本地。私网段照旧放行 —— 给「服务器兼作局域网网关」的部署留门,
-#             但云上单网卡 VPC 仍然暴露,选它要清楚这一点。
-#   off       完全不拦。
-# 不影响客户端互访(tun→tun)与已批准的子网路由(用户态直投宣告方会话);探测结果里与
-# mesh 网段重叠的前缀会被显式剔除。SIGHUP 不可热更,改后须 systemctl restart。
+# How hard the egress direction blocks "link-local / private destinations". Egress mode installs
+# "allow every destination reachable through the WAN interface", and that sentence quietly covers
+# two kinds of place only the server itself has any business reaching:
+#   1) cloud metadata at 169.254.169.254 — what it hands out is this machine's identity:
+#      hostname / network config / SSH public keys, on AWS the IMDSv1 temporary IAM role
+#      credentials, on GCP and Azure the service-account token;
+#   2) the private network the server sits in — in the single-NIC cloud shape (AWS/GCP/Azure) the
+#      internal address and the outbound traffic share one card, so the "WAN interface" is at the
+#      same time the "way into the VPC", and a neighbour's database / internal admin page is
+#      often protected by nothing more than being inside that VPC.
+#   auto      (default; empty means the same) blocks link-local plus the automatically detected
+#             private ranges that are on-link on, or routed through, the WAN interface (RFC1918,
+#             CGNAT 100.64/10, ULA). The startup log prints which prefixes were actually blocked.
+#   link-local blocks link-local only. Private ranges stay allowed — this leaves a door open for
+#             deployments where the server doubles as the LAN gateway, but a single-NIC cloud VPC
+#             is still exposed, and picking this means knowing that.
+#   off       blocks nothing at all.
+# Does not affect client-to-client traffic (tun→tun) or approved subnet routes (delivered in
+# userspace straight to the advertiser's session); prefixes in the detection result that overlap
+# the mesh ranges are explicitly removed. Cannot be hot-reloaded with SIGHUP; after changing it,
+# systemctl restart.
 exit_deny_private = "auto"
-# 候选网段,启动时按顺序挑第一个不与本机冲突的(选中后会粘住,重启仍是同一段)。
-# 10.200~10.202/16 避开常见局域网 10.0.x。
+# Candidate ranges; at startup the first one that does not clash with this machine is picked
+# (once picked it sticks, so a restart still gets the same range).
+# 10.200~10.202/16 stay clear of the common 10.0.x home LANs.
 #
-# 最后那条 100.99/16 是给「本机地址是 10.x/**8**」的机器兜底 —— 企业内网和一些云的
-# 内网就是这么分的,一个 10.5.3.4/8 会把上面三段一次全撞掉。那时 IPv4 一段都挑不出来,
-# 服务照常起来、日志里只留一句 warning,而客户端再也拿不到 IPv4 虚拟 IP —— 一台
-# "看起来完全健康"的 VPN,实际只剩 IPv6 能用。
-# 选 CGNAT 的 100.64/10 是因为它既不是家用局域网网段、也不在 Docker 的默认地址池里,
-# 撞上的概率最低(真撞上了照样会被上面那条冲突检查跳过)。
+# That last 100.99/16 is the backstop for machines whose own address is 10.x/**8** — corporate
+# networks and some clouds hand out exactly that, and a single 10.5.3.4/8 collides with all three
+# ranges above at once. Then not one IPv4 range can be picked: the service comes up as usual and
+# leaves a single line of warning in the log, while clients never get an IPv4 virtual IP again —
+# a VPN that "looks perfectly healthy" with only IPv6 actually working.
+# CGNAT's 100.64/10 was chosen because it is neither a home LAN range nor part of Docker's default
+# address pool, which makes it the least likely to collide (and if it does collide after all, the
+# conflict check above skips it just the same).
 subnets = [
   "10.200.0.0/16",
   "10.201.0.0/16",
   "10.202.0.0/16",
   "100.99.0.0/16",
 ]
-# IPv6 ULA 网段（可选）；为空则不分配 IPv6 虚拟地址
+# IPv6 ULA range (optional); empty means no IPv6 virtual address is assigned
 subnets_v6 = [
   "fd00:200::/64",
 ]
-# 登录成功后随 ConvSaltLite 下发；无 IPv6 虚拟网段或未启用 v6 隧道时不下发 dns_servers_v6
+# Handed out with ConvSaltLite after a successful login; dns_servers_v6 is not sent when there is
+# no IPv6 virtual range or the v6 tunnel is not enabled
 dns_servers_v4 = [
   "8.8.8.8",
   "114.114.114.114",
@@ -226,8 +309,11 @@ dns_servers_v6 = [
   "2001:4860:4860::8844",
 ]
 
-# 主 VPN 明文端口上：若同时配置本段 [smux] 且启用下方 [hysteria] 或 [reality]，则 hy2/REALITY 环回 127.0.0.1:<[server].listen_addr> 共用一条 TCP，其上用 smux 多流承载各 VPN 会话（首包魔法前缀 VPN1）。不配 [smux] 时仍为「每 hy2 TCP 流 / 每 REALITY 客户端」各 dial 一次。
-# server-simple / client-simple 的 KCP 仍用各自目录下 config 中的 [smux]。
+# On the main plaintext VPN port: if this [smux] section is configured and [hysteria] or [reality]
+# below is enabled, the hy2/REALITY loopback to 127.0.0.1:<[server].listen_addr> shares one TCP
+# connection, carrying each VPN session as an smux stream on top of it (magic prefix VPN1 in the
+# first packet). Without [smux] it stays one dial per hy2 TCP stream / per REALITY client.
+# The KCP in server-simple / client-simple still uses the [smux] in the config in its own directory.
 
 [smux]
 version = 1
@@ -235,37 +321,53 @@ version = 1
 # keepalive_interval_s = 10
 # keepalive_timeout_s = 30
 # max_frame_size = 32768
-# 环回 smux；与 [server] 链路限速同量级时可再收，省 RSS
+# Loopback smux; when it is the same order of magnitude as the [server] link rate limits it can
+# be tightened further, saving RSS
 max_receive_buffer = 1048576
 max_stream_buffer = 32768
 
-# 进程内 Hysteria 2（QUIC/UDP）。password + tls_cert_file + tls_key_file 三项同时非空则启用。
-# 证书路径相对「当前工作目录」解析;缺证书时可先跑 scripts/ensure-server-assets.sh 自签。本仓库内启动: cd cmd/nanotund && ./nanotund -config config.toml
-# 绑定 UDP :443 常需 root 或 setcap；无权限时可改 listen_addr 为 ":8443" 等高端口。
-# 端口跳跃（抗 UDP 单端口封锁）：listen_addr = ":443,8443,5000-5100"（Linux 上自动 iptables REDIRECT 至首端口 443）。
-# port_hop_interval_sec = 30  # 可选，下发给客户端；亦可用 port_hop_interval_min_sec / max_sec 随机间隔。
-# I3: port_hop_iface = "eth0"  # 可选;Linux iptables PREROUTING REDIRECT 规则的入接口限定。
-#                                 留空 = 不限定接口(向后兼容);多网卡 / 容器宿主机强烈建议显式指定外网卡。
-# TCP 出口指向本机 [server] 端口：未配 [smux] 时每 hy2 流一次 Dial；配 [smux] 时经环回 smux 多流。详见 cmd/nanotund/hysteria.go。
+# In-process Hysteria 2 (QUIC/UDP). Enabled when password + tls_cert_file + tls_key_file are all
+# non-empty.
+# Certificate paths resolve relative to the *current working directory*; when a certificate is
+# missing, run scripts/ensure-server-assets.sh first to self-sign one. To start from inside this
+# repo: cd cmd/nanotund && ./nanotund -config config.toml
+# Binding UDP :443 usually needs root or setcap; without the privilege, change listen_addr to a
+# high port such as ":8443".
+# Port hopping (against single-UDP-port blocking): listen_addr = ":443,8443,5000-5100" (on Linux
+# an iptables REDIRECT to the first port, 443, is set up automatically).
+# port_hop_interval_sec = 30  # optional, handed out to clients; port_hop_interval_min_sec /
+#                               max_sec give a randomized interval instead.
+# I3: port_hop_iface = "eth0"  # optional; restricts the inbound interface of the Linux iptables
+#                                 PREROUTING REDIRECT rules. Empty = no interface restriction
+#                                 (backward compatible); on multi-NIC hosts / container hosts,
+#                                 naming the WAN interface explicitly is strongly recommended.
+# The TCP egress points at this machine's [server] port: without [smux], one Dial per hy2 stream;
+# with [smux], many streams over the loopback smux. See cmd/nanotund/hysteria.go for details.
 [hysteria]
 listen_addr = ":443"
 tls_cert_file = "certs/dev-cert.pem"
 tls_key_file = "certs/dev-key.pem"
-# Hy2 mTLS（默认开）：客户端证书走 profile 派发；admin 已切 Ed25519 + PKCS8
-# (~950 B/对) + 顶层共享，开启后单/多入口 profile URL 仍能进 QR Low 2953。
-# 极端不需要 mTLS 时（例如带外控制访问、profile 体积要进 QR Medium 2331）
-# 注释掉下行即可只靠 password + obfs。
-# 2026-07-17:独立 WSS 保活(:8444/keepalive_ws_*)已下线,数据面 1s 链路 Ping 覆盖其全部功能。
+# Hy2 mTLS (on by default): client certificates are distributed through the profile; admin has
+# moved to Ed25519 + PKCS8 (~950 B per pair) plus top-level sharing, so with it on, single- and
+# multi-entry profile URLs still fit inside QR Low 2953.
+# In the rare case mTLS is not wanted (out-of-band control access, say, or the profile has to fit
+# QR Medium 2331), comment out the line below to rely on password + obfs alone.
+# 2026-07-17: the separate WSS keepalive (:8444/keepalive_ws_*) has been retired; the data plane's
+# 1s link Ping covers everything it used to do.
 tls_client_ca_file = "certs/dev-client-ca.pem"
 password = "REPLACE_WITH_A_LONG_RANDOM_PASSWORD"
-# 与官方客户端 obfs.salamander.password 须完全一致；≥4 字节
+# Must match the official client's obfs.salamander.password exactly; ≥4 bytes
 obfs_salamander_password = "REPLACE_WITH_ANOTHER_RANDOM_OBFS_PASSWORD"
 
-# 与官方 hysteria 客户端 mtu 一致，随 node_login 下发（字节）
+# Matches the official hysteria client's mtu, handed out with node_login (bytes)
 mtu = 1280
 
-# QUIC（0 = hysteria 默认 ≈ 流 8MiB / 连接 20MiB）。公网 hy2 在 [server] 限速之前仍受窗口×RTT 约束：吞吐约 ≤ max_conn_window/RTT，过小会卡在约 10MiB/s（例如 2MiB 窗 + 200ms RTT）
-# 与 upload/download 约 20+ MiB/s 对齐；可改为全 0 回 hysteria 默认，或按更高带宽再调大（须 ≥ 16384）
+# QUIC (0 = hysteria's defaults ≈ 8 MiB per stream / 20 MiB per connection). Over the public
+# internet, hy2 is still bound by window × RTT before the [server] limits even apply: throughput
+# is roughly ≤ max_conn_window/RTT, and too small a window pins it at about 10 MiB/s (a 2 MiB
+# window with 200 ms RTT, for instance)
+# Sized to match the ~20+ MiB/s upload/download above; set them all to 0 to go back to hysteria's
+# defaults, or raise them further for higher bandwidth (must be ≥ 16384)
 quic_max_idle_timeout_sec = 15
 quic_initial_stream_recv_window = 1048576
 quic_max_stream_recv_window = 8388608
@@ -283,29 +385,37 @@ quic_max_incoming_streams = 16
 
 masquerade_dir = "masquerade"
 
-# nanotun-admin 生成 profile 时使用(不影响服务端运行);自签证书时建议
-# insecure_hint=true,客户端 tls.insecure: true。生产部署用合法证书时把
-# insecure_hint 改成 false 即可。
+# Used by nanotun-admin when it generates a profile (this does not affect how the server runs);
+# with a self-signed certificate insecure_hint=true is the recommendation, which gives the client
+# tls.insecure: true. For a production deployment with a real certificate, set insecure_hint to
+# false.
 report_tls_sni = "localhost"
 report_tls_insecure_hint = true
 
-# REALITY 入站（与 Xray-core v26.3.27 / rust_reality 同栈）。握手成功后环回本机 [server].listen_addr（如 127.0.0.1:8080）：
-# 未配 [smux] 时为每客户端一次 TCP dial；配 [smux] 且与 [hysteria] 或本段同时生效时，与 hy2 共用环回 smux（单 TCP + VPN1 + 多 stream）。
-# 与 Hysteria 转 VPN 一致，Accept 侧经 dispatch 后走同一套登录帧 + TUN。dest 须可达；启动时会向 dest 拨测握手记录长度。
+# REALITY inbound (the same stack as Xray-core v26.3.27 / rust_reality). After a successful
+# handshake it loops back to this machine's [server].listen_addr (127.0.0.1:8080, say):
+# without [smux], one TCP dial per client; with [smux] configured and either [hysteria] or this
+# section in effect, it shares the loopback smux with hy2 (one TCP + VPN1 + many streams).
+# As with Hysteria into VPN, the Accept side goes through dispatch and then the very same login
+# frame + TUN. dest must be reachable; at startup a probe dial to dest records the handshake
+# record length.
 [reality]
 listen_addr = ":8443"
 dest = "www.microsoft.com:443"
 type = "tcp"
 xver = 0
-# private_key 为 X25519 私钥(RawURL Base64)。生成方式任选其一:
-#   xray x25519                          # Xray 自带,同时打印 private/public
-#   openssl genpkey -algorithm X25519    # 再自行导出 raw 并 base64url 编码
-# 对应公钥供客户端 / Xray realitySettings.publicKey、rust_reality 公钥配置使用
-# (勿把私钥下发客户端)。**务必替换,不要使用任何示例值上线。**
+# private_key is an X25519 private key (RawURL Base64). Generate it either way:
+#   xray x25519                          # ships with Xray, prints private/public together
+#   openssl genpkey -algorithm X25519    # then export the raw key yourself and base64url it
+# The matching public key is what clients / Xray's realitySettings.publicKey / rust_reality's
+# public key setting use (never hand the private key to clients).
+# **Do replace this — never go live with any example value.**
 private_key = "REPLACE_WITH_YOUR_X25519_PRIVATE_KEY"
 server_names = ["www.microsoft.com"]
-# 可配置多条：客户端 shortId 命中任一即可。每项为 8 字节 = 16 个十六进制字符（亦可更短左侧补 0，生产建议写满 16 位）。
-# 生成: openssl rand -hex 8。**替换示例值再上线。**
+# Several entries are allowed: a client's shortId matching any one of them is enough. Each is
+# 8 bytes = 16 hex characters (shorter values are left-padded with 0, but writing the full 16 is
+# the recommendation in production).
+# Generate with: openssl rand -hex 8. **Replace the example values before going live.**
 short_ids = [
   "0123456789abcdef",
   "fedcba9876543210",
@@ -315,29 +425,33 @@ max_time_diff_ms = 0
 client_addr = "example.com:8443"
 
 # ===========================
-# 自托管 PSK 持久化层
+# Self-hosted PSK storage layer
 # ===========================
-# 用户 / 设备 / vIP 租约 / ACL / audit_logs 都存在本机 SQLite 中,
-# 由 nanotun-admin CLI 管理(见 nanotun-admin/README.md)。
+# Users / devices / vIP leases / ACLs / audit_logs all live in the local SQLite database and are
+# managed by the nanotun-admin CLI (see nanotun-admin/README.md).
 
 [store]
-# SQLite 数据库文件路径。首次启动时会自动创建并迁移到最新 schema。
-# 部署期搬迁数据库时务必同步迁数据,详见 scripts/install-self-hosted.sh
-# 的 K1 「Old DB 自检」分支与 docs/POSTMORTEM-20260521-db-path-migration.md。
+# Path to the SQLite database file. On first start it is created and migrated to the latest
+# schema. When the database is moved during a deployment, be sure to move the data with it — see
+# the K1 "old DB check" branch in scripts/install-self-hosted.sh and
+# docs/POSTMORTEM-20260521-db-path-migration.md.
 #
-# K2(2026-05-23):用绝对路径,与 install-self-hosted.sh 的 LIB_DIR + systemd
-# ReadWritePaths=/var/lib/nanotun 完全对齐。旧值 "data/nanotun.db" 是相对
-# WorkingDirectory=/etc/nanotun 的,配合 systemd ProtectSystem=strict 直接报
-# "read-only file system";且 admin CLI 走 --db-path /var/lib/nanotun/nanotun.db,
-# 两边不一致会让 server 启空库 + admin 看不到用户(2026-05-21 事故的近邻场景)。
+# K2 (2026-05-23): use an absolute path, lined up exactly with install-self-hosted.sh's LIB_DIR
+# and systemd's ReadWritePaths=/var/lib/nanotun. The old value "data/nanotun.db" was relative to
+# WorkingDirectory=/etc/nanotun, which together with systemd's ProtectSystem=strict fails
+# outright with "read-only file system"; and the admin CLI goes through
+# --db-path /var/lib/nanotun/nanotun.db, so a mismatch leaves the server on an empty database
+# while admin sees no users (the near neighbour of the 2026-05-21 incident).
 db_path = "/var/lib/nanotun/nanotun.db"
 
-# [admin] 段已废弃,故意不再出现在模板里。
+# The [admin] section is deprecated and deliberately no longer appears in this template.
 #
-# 它曾经是「管理后台 Web UI」的占位配置,但那个里程碑最终由独立的 nanotun-web
-# 落地(默认 7443,证书是 certs/cert.pem,由 nanotun-web 自己按需自签),没有任何
-# 代码读 [admin]。config.AdminConfig 结构体仍保留,只为让老机器上已有的 [admin]
-# 段通过 strict 校验 —— 见 config/config.go 的注释。
+# It used to be the placeholder config for an "admin Web UI", but that milestone eventually
+# landed as the separate nanotun-web (7443 by default, certificate certs/cert.pem, self-signed on
+# demand by nanotun-web itself), and no code reads [admin]. The config.AdminConfig struct is still
+# kept, purely so that an [admin] section already present on an older machine passes strict
+# validation — see the comment in config/config.go.
 #
-# 所以:写 enabled = true 不会启动任何监听,tls_cert_file 指向的证书也不会被生成
-# 或加载。别指望它,那是个静默的空操作。老配置里留着这一段无害,可以直接删掉。
+# So: writing enabled = true starts no listener, and the certificate tls_cert_file points at is
+# neither generated nor loaded. Don't count on it; it is a silent no-op. Leaving the section in an
+# old config is harmless, and it can simply be deleted.

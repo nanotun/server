@@ -234,14 +234,14 @@ _sighup_and_wait_platform_reload() {
 }
 
 _platform_reload_logged() {
-  s "journalctl -u nanotun --since @$1 --no-pager | grep -c 'rate_limit_by_platform 已热更'" \
+  s "journalctl -u nanotun --since @$1 --no-pager | grep -cF '[reload] server.rate_limit_by_platform'" \
     | tr -d '[:space:]' | grep -qvE '^0?$'
 }
 
 # _platform_count_now 取本次热更日志里的 platform_count(服务端实际载入的平台条目数)。
 # 这是唯一能从外面看出「配置到底有没有进到进程里」的数。
 _platform_count_now() {
-  s "journalctl -u nanotun --since @${_PLATFORM_RELOAD_SINCE:-0} --no-pager | grep 'rate_limit_by_platform 已热更' | tail -1" \
+  s "journalctl -u nanotun --since @${_PLATFORM_RELOAD_SINCE:-0} --no-pager | grep -F '[reload] server.rate_limit_by_platform' | tail -1" \
     | sed -nE 's/.*platform_count=([0-9]+).*/\1/p'
 }
 
@@ -497,7 +497,7 @@ _apply_login_rate_limit() {
 # _login_rl_log_shows 判「本次 SIGHUP 之后确实打出了切到 $2 的那行热更日志」。
 _login_rl_log_shows() {
   s "journalctl -u nanotun --since @$1 --no-pager" \
-    | grep "server.login_rate_limit_per_min 已热更" | grep -q "new=$2"
+    | grep -F "[reload] server.login_rate_limit_per_min" | grep -q "new=$2"
 }
 
 # _restore_login_rl 把限速归零。

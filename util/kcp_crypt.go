@@ -71,7 +71,7 @@ func NewKCPBlockCrypt(crypt, key string) (kcp.BlockCrypt, error) {
 		b := keyBytes(keyBuf, 16)
 		return kcp.NewSM4BlockCrypt(b)
 	default:
-		return nil, fmt.Errorf("不支持的 KCP 加密方式: %q，可选: none, aes-128, aes-192, aes-256, aes-128-gcm, aes-256-gcm, tea, xtea, salsa20, xor, blowfish, cast5, 3des, twofish, sm4", crypt)
+		return nil, fmt.Errorf("unsupported KCP cipher: %q; available: none, aes-128, aes-192, aes-256, aes-128-gcm, aes-256-gcm, tea, xtea, salsa20, xor, blowfish, cast5, 3des, twofish, sm4", crypt)
 	}
 }
 
@@ -92,7 +92,7 @@ func ValidateCrypt(crypt string) error {
 		"twofish", "sm4":
 		return nil
 	default:
-		return fmt.Errorf("不支持的加密方式: %q，可选: none, aes-128, aes-192, aes-256, aes-128-gcm, aes-256-gcm, tea, xtea, salsa20, xor, blowfish, cast5, 3des, twofish, sm4", crypt)
+		return fmt.Errorf("unsupported cipher: %q; available: none, aes-128, aes-192, aes-256, aes-128-gcm, aes-256-gcm, tea, xtea, salsa20, xor, blowfish, cast5, 3des, twofish, sm4", crypt)
 	}
 }
 

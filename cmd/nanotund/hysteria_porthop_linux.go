@@ -43,7 +43,7 @@ func setupHy2UDPPortHopRedirect(primaryPort uint16, portUnion, iface string) (fu
 	// 启动前 sweep 旧规则(包括本进程上次残留 + 旧端口配置 + 旧 iface 设置)。
 	sweptN := sweepHy2UDPPortHopByComment()
 	if sweptN > 0 {
-		logrus.Infof("Hy2 端口跳跃: 启动前清理了 %d 条残留 PREROUTING REDIRECT 规则(同 comment)", sweptN)
+		logrus.Infof("Hy2 port hopping: cleaned up %d leftover PREROUTING REDIRECT rule(s) before starting (same comment)", sweptN)
 	}
 
 	for _, dport := range rules {
@@ -69,9 +69,9 @@ func setupHy2UDPPortHopRedirect(primaryPort uint16, portUnion, iface string) (fu
 		}
 	}
 	if iface != "" {
-		logrus.Infof("Hy2 端口跳跃：已用 iptables 将接口 %s 上的 UDP %v REDIRECT 到主端口 %s", iface, rules, primary)
+		logrus.Infof("Hy2 port hopping: on interface %s, used iptables to REDIRECT UDP %v to primary port %s", iface, rules, primary)
 	} else {
-		logrus.Infof("Hy2 端口跳跃：已用 iptables 将 UDP %v REDIRECT 到主端口 %s (未限定入接口,所有接口生效)", rules, primary)
+		logrus.Infof("Hy2 port hopping: used iptables to REDIRECT UDP %v to primary port %s (no inbound interface restriction, so it applies on every interface)", rules, primary)
 	}
 	return func() { teardownHy2UDPPortHopRules(rules, primary, iface) }, nil
 }

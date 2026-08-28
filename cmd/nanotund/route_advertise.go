@@ -103,7 +103,7 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 	if c.deviceID == 0 {
 		routeAdvAnonymous.Add(1)
 		logrus.WithField("user_id", c.userID).Warn(
-			"[route_adv] device_uuid 缺失,拒绝路由声明;请客户端在 LoginReq.DeviceUUID 上送合法 UUIDv4")
+			"[route_adv] device_uuid is missing, rejecting the route advertisement; the client must send a valid UUIDv4 in LoginReq.DeviceUUID")
 		return
 	}
 	gw := gatewayInstance
@@ -114,7 +114,7 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 	ra, err := util.ParseRouteAdvertise(payload)
 	if err != nil {
 		routeAdvFailed.Add(1)
-		logrus.WithError(err).WithField("user_id", c.userID).Warn("[route_adv] 解析失败,丢弃")
+		logrus.WithError(err).WithField("user_id", c.userID).Warn("[route_adv] parse failed, dropping")
 		return
 	}
 
@@ -126,7 +126,7 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 		if _, err := gw.store.DeleteAdvertisedRoutesForDevice(dbCtx, c.deviceID); err != nil {
 			routeAdvFailed.Add(1)
 			logrus.WithError(err).WithField("device_id", c.deviceID).
-				Warn("[route_adv] 撤回 pending 路由失败")
+				Warn("[route_adv] failed to withdraw pending routes")
 		}
 		_ = sendRouteApproveStatusForDevice(dbCtx, c, nil)
 		// 撤回所有声明 = 本会话不再「真在跑出口」→ 清 advertisedExit;若之前在跑,广播让它从出口下拉消失,
@@ -152,7 +152,7 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 			"device_id": c.deviceID,
 			"got":       len(ra.Routes),
 			"max":       RouteAdvertiseMaxRoutes,
-		}).Warn("[route_adv] 路由条数超限,截断")
+		}).Warn("[route_adv] too many routes, truncating")
 		ra.Routes = ra.Routes[:RouteAdvertiseMaxRoutes]
 	}
 
@@ -171,7 +171,7 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 				"device_id": c.deviceID,
 				"cidr":      raw,
 				"err":       nerr.Error(),
-			}).Warn("[route_adv] CIDR 不合法,跳过")
+			}).Warn("[route_adv] invalid CIDR, skipping")
 			continue
 		}
 		// 归一成功即计入「当前宣告集」(非 0/0),不等 upsert——见上方 advPfx 说明。
@@ -188,7 +188,7 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 					logrus.WithFields(logrus.Fields{
 						"device_id": c.deviceID,
 						"cidr":      norm,
-					}).Warn("[route_adv] 宣告网段与 server 自身 mesh 网段交叠,拒绝(该网段由 VPN 自己使用,批准也不会生效)")
+					}).Warn("[route_adv] the advertised prefix overlaps the server's own mesh prefix, rejecting it (that prefix is used by the VPN itself, so approving it would never take effect)")
 					continue
 				}
 				advPfx = append(advPfx, p)
@@ -199,7 +199,7 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 			logrus.WithError(err).WithFields(logrus.Fields{
 				"device_id": c.deviceID,
 				"cidr":      norm,
-			}).Warn("[route_adv] upsert 失败")
+			}).Warn("[route_adv] upsert failed")
 			continue
 		}
 		routeAdvAccepted.Add(1)

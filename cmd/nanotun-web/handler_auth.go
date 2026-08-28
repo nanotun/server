@@ -378,7 +378,7 @@ func (s *Server) loginRetry(w http.ResponseWriter, r *http.Request,
 	// **第三轮深扫 P1-A**:`ErrAuthDisabled` 对外文案不能区别于 `ErrAuthBadCredentials`,
 	// 否则 attacker 用账号枚举工具能直接定位「用户存在但已禁用」名单 — 部分破坏了
 	// `AttemptLogin` 顶部承诺的「不暴露用户存在性」。修法:对外统一 BadCredentials 同
-	// 文案,**audit 仍写真实 reason**("账号已被禁用",由 handleLogin 的 `res.Err.Error()`
+	// 文案,**audit 仍写真实 reason**(账号被禁用那条,由 handleLogin 的 `res.Err.Error()`
 	// 落 detail.reason),运维内部可见、attacker 不可见,与 captcha_fail 同款设计。
 	//
 	// **第九轮深扫 LOW(账号枚举)**:`ErrAuthLocked` 亦并入本分支。此前锁定态给出区别于「凭证

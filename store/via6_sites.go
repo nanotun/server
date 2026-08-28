@@ -56,7 +56,7 @@ func (s *Store) GetOrAssignSiteID(ctx context.Context, deviceID int64) (uint16, 
 	if id <= 0 || id > 65535 {
 		// 越界:直接 return,defer Rollback 撤销这条脏行(不落库)。
 		return 0, i18nErr("store.via6.siteIDOverflow",
-			fmt.Sprintf("store: site_id %d 超出 uint16 范围(4via6 站点数已达上限)", id), id)
+			fmt.Sprintf("store: site_id %d exceeds the uint16 range (4via6 site limit reached)", id), id)
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("store: assign site_id (commit): %w", err)
@@ -79,7 +79,7 @@ func (s *Store) siteIDByDevice(ctx context.Context, deviceID int64) (uint16, err
 	// 直接截断成 uint16 会把两个站点映射到同一 4via6 地址段 —— 宁可报错。
 	if sid <= 0 || sid > 65535 {
 		return 0, i18nErr("store.via6.siteIDOverflow",
-			fmt.Sprintf("store: site_id %d 超出 uint16 范围(4via6 站点数已达上限)", sid), sid)
+			fmt.Sprintf("store: site_id %d exceeds the uint16 range (4via6 site limit reached)", sid), sid)
 	}
 	return uint16(sid), nil
 }

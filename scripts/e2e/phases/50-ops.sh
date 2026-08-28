@@ -323,14 +323,14 @@ _check_data_plane_keepalive_reaps_only_the_wedged_session() {
   # 等 4 个判活窗口。误杀的话这段时间里会被杀 3~4 次。
   sleep 45
   local warns
-  warns="$(s "journalctl -u nanotun --since @$since_healthy --no-pager | grep -c 僵尸连接" | tr -d '[:space:]')"
+  warns="$(s "journalctl -u nanotun --since @$since_healthy --no-pager | grep -c 'miss_window='" | tr -d '[:space:]')"
   [[ "$warns" =~ ^[0-9]+$ ]] || warns=0
   if [[ "$warns" == "0" ]] && both_clients_online; then
     _pass "数据面保活 · 健康会话不被误杀（4 个判活窗口内零告警、两个会话都在）"
   else
     _fail "数据面保活 · 健康会话被误杀了（客户端很可能压根不回 Pong，这个开关就是个地雷）" \
       "僵尸告警 ${warns} 次,在线会话 $(conn_count) 个
-$(s "journalctl -u nanotun --since @$since_healthy --no-pager | grep 僵尸连接 | tail -3")"
+$(s "journalctl -u nanotun --since @$since_healthy --no-pager | grep 'miss_window=' | tail -3")"
   fi
   # 只看「在线」抓不到「被杀了又立刻重连」——那种退化下每次取样都是「在线」。
   # 判据用 conn_id 是否还是同一个:被杀过必然换号。
@@ -399,7 +399,7 @@ $(adm 'connection list')"
   sleep 25
   if _keepalive_warned_for_a "$since_off"; then
     _fail "数据面保活 · 关掉开关后仍在判僵尸（上面那几条就不是这个开关驱动的）" \
-      "$(s "journalctl -u nanotun --since @$since_off --no-pager | grep 僵尸连接 | tail -3")"
+      "$(s "journalctl -u nanotun --since @$since_off --no-pager | grep 'miss_window=' | tail -3")"
   elif [[ "$(conn_count)" == "2" ]]; then
     _pass "数据面保活 · 关掉后同样的卡死不再被检出（确认由开关驱动）"
   else
@@ -417,7 +417,7 @@ $(adm 'connection list')"
 # 按 remote 里的 A 公网 IP 匹配,不按 user_id:后者是 u2 这种展示形式,和 E2E_A_USER
 # (登录名)对不上,按名字匹配会永远落空、静默变成一条恒绿的假断言。
 _keepalive_warned_for_a() {
-  s "journalctl -u nanotun --since @$1 --no-pager | grep 僵尸连接 | grep -c '$E2E_A_HOST'" \
+  s "journalctl -u nanotun --since @$1 --no-pager | grep 'miss_window=' | grep -c '$E2E_A_HOST'" \
     | tr -d '[:space:]' | grep -qvE '^0?$'
 }
 
@@ -733,7 +733,7 @@ _check_udp_relay_stays_disabled() {
   # 攻击面变大这件事必须在启动日志里说清楚,否则误开之后无人知晓。
   local log
   log="$(s "journalctl -u nanotun --since @$since --no-pager")"
-  if echo "$log" | grep -q "作为通用 UDP 代理使用"; then
+  if echo "$log" | grep -q "udp_relay_enabled=true"; then
     _pass "hy2 UDP 中转 · 开启时启动期就警告攻击面变大"
   else
     _fail "hy2 UDP 中转 · 开启时应在启动期警告「作为通用 UDP 代理使用」" "$(echo "$log" | grep -i hy2 | tail -5)"
@@ -1013,14 +1013,14 @@ $log"
   rc="$(s "systemctl show -p ExecMainStatus --value nanotun" | tr -d '[:space:]')"
   check "跳板机防火墙 · 退出码是配置语义错 ExitConfigSemantic(11)" "11" "$rc"
 
-  if echo "$log" | grep -q "受保护端口当前"; then
+  if echo "$log" | grep -q "protected_ports=unrestricted"; then
     _pass "跳板机防火墙 · 日志明说「受保护端口当前未受限」（运维据此知道现在是没保护的）"
   else
     _fail "跳板机防火墙 · 日志应明说受保护端口未受限" "$log"
   fi
 
   # 反向断言:不能是被「名单留空」那道更早的闸拦下的 —— 那样测的是另一回事。
-  if echo "$log" | grep -q "留空等于全网开放"; then
+  if echo "$log" | grep -q "jump_host_allowed_ips"; then
     _fail "跳板机防火墙 · 拦下它的是「名单留空」那道更早的闸，本条没测到运行期应用失败" "$log"
   else
     _pass "跳板机防火墙 · 拦下它的确实是运行期应用失败，不是名单校验"
@@ -2112,7 +2112,7 @@ _ms_reload_global_to() {
 }
 
 _ms_reload_logged() {
-  s "journalctl -u nanotun --since @$1 --no-pager | grep -F 'max_sessions_per_user 已热更'" \
+  s "journalctl -u nanotun --since @$1 --no-pager | grep -F '[reload] server.max_sessions_per_user'" \
     | grep -q "new=$2"
 }
 

@@ -61,7 +61,7 @@ func sweepMainIptablesRules(bin string) int {
 		}
 	}
 	if cleaned > 0 {
-		logrus.Infof("%s: sweep %s 共清理 %d 条残留规则", bin, mainIptComment, cleaned)
+		logrus.Infof("%s: sweep %s removed %d leftover rule(s)", bin, mainIptComment, cleaned)
 	}
 	return cleaned
 }

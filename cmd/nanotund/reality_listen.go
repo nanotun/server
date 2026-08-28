@@ -107,7 +107,7 @@ func bridgeRealityToPlainVPN(realityConn net.Conn, vpnListenAddr, vpnWsPath stri
 		var st net.Conn
 		st, err = smuxPool.OpenStream()
 		if err != nil {
-			logrus.WithError(err).Warn("REALITY 经 smux OpenStream 失败")
+			logrus.WithError(err).Warn("REALITY smux OpenStream failed")
 			_ = realityConn.Close()
 			return
 		}
@@ -115,7 +115,7 @@ func bridgeRealityToPlainVPN(realityConn net.Conn, vpnListenAddr, vpnWsPath stri
 		// 让环回 VPN 服务端按真实 IP 做 PoW/限流/失败计数/审计,而非全塌到 127.0.0.1。写失败必须关掉
 		// 本 stream —— 服务端对每条 loopback stream 都会先读一个头,缺头会把 VPN 帧误当头解析而错乱。
 		if werr := writeLoopbackProxyHeader(st, realityConn.RemoteAddr(), realityConn.LocalAddr()); werr != nil {
-			logrus.WithError(werr).Warn("REALITY 写 PROXY 头失败")
+			logrus.WithError(werr).Warn("REALITY failed to write the PROXY header")
 			_ = st.Close()
 			_ = realityConn.Close()
 			return
@@ -127,7 +127,7 @@ func bridgeRealityToPlainVPN(realityConn net.Conn, vpnListenAddr, vpnWsPath stri
 		var ws net.Conn
 		ws, err = util.DialVPNWebSocket(wsURL, 15*time.Second, loopbackWSTLS)
 		if err != nil {
-			logrus.WithError(err).WithField("dial", wsURL).Warn("REALITY 握手成功后环回 VPN WebSocket 失败")
+			logrus.WithError(err).WithField("dial", wsURL).Warn("REALITY handshake succeeded but the loopback to the VPN WebSocket failed")
 			_ = realityConn.Close()
 			return
 		}
@@ -211,9 +211,9 @@ func startRealityVPNListener(cfg *config.Config, smuxPool *loopbackSmuxPool, loo
 	vpnLoop := cfg.Server.ListenAddr
 	wsPath := cfg.Server.VPNWebSocketPath
 	tlsOn := serverVPNDataPlaneTLSActive(&cfg.Server)
-	logrus.Infof("VPN：REALITY 监听 %s（对齐 Xray-core v26.3.27），dest=%s；握手成功后环回 %s；node_login 上报 tcp_port=%d，handshake 超时 %s，并发上限 %d", r.ListenAddr, r.Dest, loopbackVPNWebSocketURL(vpnLoop, wsPath, tlsOn), tcpPort, realityHandshakeTimeout, realityMaxConcurrent)
+	logrus.Infof("VPN: REALITY listening on %s (aligned with Xray-core v26.3.27), dest=%s; after a successful handshake it loops back to %s; node_login reports tcp_port=%d, handshake timeout %s, concurrency limit %d", r.ListenAddr, r.Dest, loopbackVPNWebSocketURL(vpnLoop, wsPath, tlsOn), tcpPort, realityHandshakeTimeout, realityMaxConcurrent)
 	if ca := strings.TrimSpace(r.ClientAddr); ca != "" {
-		logrus.Infof("REALITY client_addr（仅文档/运维）: %s", ca)
+		logrus.Infof("REALITY client_addr (documentation / operations only): %s", ca)
 	}
 
 	startAccept = func() {
@@ -249,12 +249,12 @@ func runRealityAcceptLoop(ln net.Listener, handle func(net.Conn)) {
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				// 主动 Close 路径:静默退出,这是正常 shutdown。
-				logrus.Info("REALITY Accept: listener 已关闭,退出 accept loop")
+				logrus.Info("REALITY Accept: listener closed, leaving the accept loop")
 				return
 			}
 			// transient error:logrus.Warn 后短暂 backoff 再继续。
 			backoff = nextRealityAcceptBackoff(backoff)
-			logrus.WithError(err).Warnf("REALITY Accept 失败,%s 后重试(transient)", backoff)
+			logrus.WithError(err).Warnf("REALITY Accept failed, retrying in %s (transient)", backoff)
 			select {
 			case <-time.After(backoff):
 			case <-globalContext.Done():

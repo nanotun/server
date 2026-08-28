@@ -103,16 +103,16 @@ func startMagicDNSTCP(gw *gatewayState, listenAddr string) func() {
 	resolved := resolveMagicDNSConfig(gw.cfg.Server.MagicDNS)
 	ip := net.ParseIP(listenAddr)
 	if ip == nil {
-		logrus.WithField("listen_addr", listenAddr).Error("[magic-dns] TCP listen_addr 不是合法 IP,跳过")
+		logrus.WithField("listen_addr", listenAddr).Error("[magic-dns] TCP listen_addr is not a valid IP, skipping")
 		return func() {}
 	}
 	addr := net.TCPAddr{IP: ip, Port: int(resolved.port)}
 	ln, err := net.ListenTCP("tcp", &addr)
 	if err != nil {
-		logrus.WithError(err).WithField("addr", addr.String()).Error("[magic-dns] 启动 TCP DNS server 失败(UDP 不受影响)")
+		logrus.WithError(err).WithField("addr", addr.String()).Error("[magic-dns] failed to start the TCP DNS server (UDP is unaffected)")
 		return func() {}
 	}
-	logrus.WithField("addr", addr.String()).Info("[magic-dns] TCP/53 已启动(RFC 7766;截断应答的回落路径)")
+	logrus.WithField("addr", addr.String()).Info("[magic-dns] TCP/53 started (RFC 7766; the fallback path for truncated replies)")
 
 	go safeGlobalGoroutine("magicDNSTCP", globalContextCancel, func() {
 		runMagicDNSTCPAcceptLoop(globalContext, gw, ln, resolved)
@@ -137,7 +137,7 @@ func runMagicDNSTCPAcceptLoop(ctx context.Context, gw *gatewayState, ln *net.TCP
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				continue
 			}
-			logrus.WithError(err).Debug("[magic-dns] TCP Accept 错误")
+			logrus.WithError(err).Debug("[magic-dns] TCP Accept error")
 			continue
 		}
 		if magicDNSTCPConnCount.Add(1) > magicDNSTCPMaxConns {

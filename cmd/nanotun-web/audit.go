@@ -43,7 +43,7 @@ func (a *Auditor) Write(ctx context.Context, admin *store.WebAdmin, action, targ
 			"actor":  actor,
 			"action": action,
 			"target": target,
-		}).Warn("[web] audit 写入失败,业务路径已成功")
+		}).Warn("[web] audit write failed, the business path already succeeded")
 	}
 }
 

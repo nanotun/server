@@ -42,7 +42,7 @@ func warnIsolateBlocksApprovedRelays(ctx context.Context, gw *gatewayState) {
 	defer cancel()
 	routes, err := gw.store.ListRoutesByStatus(dbCtx, "approved")
 	if err != nil {
-		logrus.WithError(err).Debug("[isolate] 查已批准路由失败,跳过 isolate 兼容性提醒")
+		logrus.WithError(err).Debug("[isolate] failed to list the approved routes, skipping the isolate compatibility notice")
 		return
 	}
 	exitDevices, subnetRoutes := countIsolateBlockedApprovals(routes)
@@ -52,6 +52,6 @@ func warnIsolateBlocksApprovedRelays(ctx context.Context, gw *gatewayState) {
 	logrus.WithFields(logrus.Fields{
 		"exit_devices":  exitDevices,
 		"subnet_routes": subnetRoutes,
-	}).Warn("[isolate] exit_mode=isolate 会 DROP 所有客户端间转发:这些已批准的出口设备 / 子网路由在本模式下不会承载流量" +
-		"(要用它们请改 exit_mode=mesh;要维持隔离请用 nanotun-admin exit revoke / route delete 清掉,避免客户端装上黑洞路由)")
+	}).Warn("[isolate] exit_mode=isolate DROPs every client-to-client forward: these approved exit devices / subnet routes will carry no traffic in this mode " +
+		"(switch to exit_mode=mesh to use them; to keep the isolation, clear them with nanotun-admin exit revoke / route delete so clients do not install black-hole routes)")
 }

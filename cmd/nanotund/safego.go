@@ -26,7 +26,7 @@ func safeGoroutine(name string, fn func()) {
 				"goroutine": name,
 				"panic":     r,
 				"stack":     string(debug.Stack()),
-			}).Error("[safeGoroutine] goroutine panic,已捕获,**不**关闭进程")
+			}).Error("[safeGoroutine] goroutine panic recovered, **not** shutting down the process")
 		}
 	}()
 	fn()
@@ -48,7 +48,7 @@ func safeGlobalGoroutine(name string, cancel func(), fn func()) {
 				"goroutine": name,
 				"panic":     r,
 				"stack":     string(debug.Stack()),
-			}).Error("[safeGlobalGoroutine] 关键 goroutine panic,触发 graceful shutdown")
+			}).Error("[safeGlobalGoroutine] critical goroutine panic, triggering graceful shutdown")
 			if cancel != nil {
 				cancel()
 			}

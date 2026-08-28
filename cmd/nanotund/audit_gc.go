@@ -66,13 +66,13 @@ func runAuditGCLoop(ctx context.Context, st *store.Store, retention, interval ti
 		cutoff := time.Now().Add(-retention).Unix()
 		n, err := st.PruneAuditBefore(opCtx, cutoff)
 		if err != nil {
-			logrus.WithError(err).Warn("[audit-gc] prune audit_logs 失败,下次再试")
+			logrus.WithError(err).Warn("[audit-gc] prune audit_logs failed, will retry next round")
 			return
 		}
 		// 总量监控:超过阈值打 WARN,运维可以选择手动 VACUUM 或调短 retention。
 		total, errC := st.CountAudit(opCtx)
 		if errC != nil {
-			logrus.WithError(errC).Debug("[audit-gc] count audit_logs 失败(忽略)")
+			logrus.WithError(errC).Debug("[audit-gc] count audit_logs failed (ignored)")
 		}
 		fields := logrus.Fields{
 			"pruned":    n,
@@ -81,11 +81,11 @@ func runAuditGCLoop(ctx context.Context, st *store.Store, retention, interval ti
 			"cutoff":    cutoff,
 		}
 		if total >= auditMonitorBigSize {
-			logrus.WithFields(fields).Warnf("[audit-gc] audit_logs 行数已超过 %d,建议运维检查磁盘占用 / 缩短保留窗口", auditMonitorBigSize)
+			logrus.WithFields(fields).Warnf("[audit-gc] audit_logs row count exceeds %d, check disk usage or shorten the retention window", auditMonitorBigSize)
 		} else if n > 0 {
-			logrus.WithFields(fields).Info("[audit-gc] prune 完成")
+			logrus.WithFields(fields).Info("[audit-gc] prune done")
 		} else {
-			logrus.WithFields(fields).Debug("[audit-gc] 无需 prune")
+			logrus.WithFields(fields).Debug("[audit-gc] nothing to prune")
 		}
 	}
 	doOnce()
@@ -94,7 +94,7 @@ func runAuditGCLoop(ctx context.Context, st *store.Store, retention, interval ti
 	for {
 		select {
 		case <-ctx.Done():
-			logrus.Info("[audit-gc] ctx 已取消,退出 prune 循环")
+			logrus.Info("[audit-gc] ctx cancelled, exiting prune loop")
 			return
 		case <-t.C:
 			doOnce()

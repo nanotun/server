@@ -146,7 +146,7 @@ func TestIssueClientCert_RejectsInputsThatWouldProduceAnUnusableCert(t *testing.
 			if err == nil {
 				t.Fatalf("validDays=%d 应被拒", d)
 			}
-			if !strings.Contains(err.Error(), "上限") {
+			if !strings.Contains(err.Error(), "limit") {
 				t.Fatalf("错误里应点明上限: %v", err)
 			}
 		}
@@ -215,7 +215,7 @@ func TestIssueClientCert_RejectsInputsThatWouldProduceAnUnusableCert(t *testing.
 		if err == nil {
 			t.Fatal("配错的 cert/key 应当就地报错,而不是签出一张验不过的证书")
 		}
-		if !strings.Contains(err.Error(), "不匹配") {
+		if !strings.Contains(err.Error(), "does not match") {
 			t.Fatalf("错误要说清是配对问题: %v", err)
 		}
 	})
@@ -252,11 +252,11 @@ func TestIssueClientCertFromFiles_ReportsWhichFileItCouldNotRead(t *testing.T) {
 
 	missing := filepath.Join(dir, "没有这个文件")
 	err := IssueClientCertFromFilesErr(t, missing, k)
-	if !strings.Contains(err.Error(), "CA 证书") || !strings.Contains(err.Error(), missing) {
+	if !strings.Contains(err.Error(), "CA certificate") || !strings.Contains(err.Error(), missing) {
 		t.Fatalf("错误要点名是哪个文件读不到: %v", err)
 	}
 	err = IssueClientCertFromFilesErr(t, c, missing)
-	if !strings.Contains(err.Error(), "CA 私钥") {
+	if !strings.Contains(err.Error(), "CA private key") {
 		t.Fatalf("读不到私钥时应说是私钥: %v", err)
 	}
 }

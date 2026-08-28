@@ -322,7 +322,7 @@ func auditExitForwardOnce(c *Connection) {
 		"conn_id":        c.connIDStr,
 		"device_id":      c.deviceID,
 		"exit_device_id": c.egressDeviceID.Load(),
-	}).Info("[egress] 会话开始经出口节点转发公网流量(审计)")
+	}).Info("[egress] session started forwarding public-internet traffic through an exit node (audit)")
 }
 
 // notifyExitOfflineOnce 在选定出口首次离线丢包时,给使用方回一帧 EgressSelectAck{exit_offline}+WARN。
@@ -337,7 +337,7 @@ func notifyExitOfflineOnce(c *Connection) {
 	logrus.WithFields(logrus.Fields{
 		"user_id":        c.userID,
 		"exit_device_id": exitDev,
-	}).Warn("[egress] " + exitUnavailableCause(exitDev) + ",本会话公网流量 fail-closed 丢弃(已通知客户端)")
+	}).Warn("[egress] " + exitUnavailableCause(exitDev) + "; this session's public-internet traffic is being dropped fail-closed (the client has been notified)")
 	sendEgressSelectAck(c, util.EgressSelectAck{Accepted: false, Reason: "exit_offline"})
 }
 
@@ -348,9 +348,9 @@ func notifyExitOfflineOnce(c *Connection) {
 // 就在这上面白查了一轮。wire 上的 reason 仍是 exit_offline(客户端处置不变,不动协议)。
 func exitUnavailableCause(exitDeviceID int64) string {
 	if lookupActiveConnByDevice(exitDeviceID) != nil {
-		return "选定出口节点设备在线但当前会话未以出口模式运行(未带 --exit-node / 已撤回出口声明)"
+		return "the selected exit node's device is online but its current session is not running in exit mode (started without --exit-node, or it withdrew the exit advertisement)"
 	}
-	return "选定出口节点已离线"
+	return "the selected exit node is offline"
 }
 
 // deliverIPPacketToConn 把一个原始 IP 包投递到目标会话的 TunChan(池化 *util.TunPacket，
@@ -615,13 +615,13 @@ func startServerV6EgressProbe(stop <-chan struct{}) {
 			first := !serverV6EgressKnown.Swap(true)
 			if first || prev != has {
 				logrus.WithField("has_ipv6_egress", has).Info(
-					"[egress] server 自出口 v6 能力探测完成(无 v6 时对使用方公网 v6 回 ICMPv6 unreachable 秒回落 v4)")
+					"[egress] finished probing the server's own v6 egress capability (without v6, public v6 traffic from users gets an ICMPv6 unreachable so they fall back to v4 immediately)")
 				// 配置/能力脱节的显眼告警:配了 subnets_v6(已建 v6 网关,客户端会分到 v6 vIP)但本机实测无 v6 公网出网。
 				// sharedTUNGatewayV6 在 main 启动 TUN 时写、本 goroutine 之后才启动,读安全。
 				if !has && sharedTUNGatewayV6 != "" {
-					logrus.Warn("[egress] 配置了 [tun].subnets_v6 但本机无 IPv6 公网出网:客户端仍会分到 v6 vIP," +
-						"公网 v6 流量由数据面回 ICMPv6 unreachable 秒回落 v4,MagicDNS 剥 AAAA,公网 v6 DNS 不下发。" +
-						"若本机确无 v6 请清空 subnets_v6;若应有 v6 请检查网卡/路由(探测含端到端往返,仅有地址/路由不算)")
+					logrus.Warn("[egress] [tun].subnets_v6 is configured but this host has no public IPv6 egress: clients still get a v6 vIP, " +
+						"the data plane answers public v6 traffic with an ICMPv6 unreachable so they fall back to v4 immediately, MagicDNS strips AAAA, and no public v6 DNS is handed out. " +
+						"If this host really has no v6, clear subnets_v6; if it should have v6, check the interfaces and routes (the probe requires an end-to-end round trip — an address and a route alone do not count)")
 				}
 			}
 			// 探明有 v6 → 若启动时 ip6tables/NAT66 装失败,补装(见 v6SetupRetryFn 注释)。
@@ -706,7 +706,7 @@ func handleEgressSelectFrame(ctx context.Context, c *Connection, payload []byte)
 	es, err := util.ParseEgressSelect(payload)
 	if err != nil {
 		egressSelectFailed.Add(1)
-		logrus.WithError(err).WithField("user_id", c.userID).Warn("[egress] 解析失败,丢弃")
+		logrus.WithError(err).WithField("user_id", c.userID).Warn("[egress] parse failed, dropping the frame")
 		return
 	}
 
@@ -747,7 +747,7 @@ func handleEgressSelectFrame(ctx context.Context, c *Connection, payload []byte)
 		logrus.WithFields(logrus.Fields{
 			"user_id": c.userID,
 			"egress":  es.Egress,
-		}).Warn("[egress] exit_mode=isolate 禁止客户端互通,已拒绝经 peer 出口的选择(要用出口节点请改 exit_mode=mesh)")
+		}).Warn("[egress] exit_mode=isolate forbids client-to-client traffic, so the request to egress through a peer was rejected (switch to exit_mode=mesh to use exit nodes)")
 		sendEgressSelectAck(c, util.EgressSelectAck{Accepted: false, Reason: "isolate"})
 		return
 	}
@@ -803,7 +803,7 @@ func handleEgressSelectFrame(ctx context.Context, c *Connection, payload []byte)
 	logrus.WithFields(logrus.Fields{
 		"user_id":        c.userID,
 		"exit_device_id": deviceID,
-	}).Info("[egress] 会话出口已绑定到出口设备(已授权;在线即走、离线则阻断等待)")
+	}).Info("[egress] session egress bound to an exit device (authorized; traffic flows while it is online, and is blocked while it waits for it to come back)")
 	sendEgressSelectAck(c, util.EgressSelectAck{Accepted: true, Egress: es.Egress})
 }
 
@@ -831,7 +831,7 @@ func sendEgressSelectAck(c *Connection, ack util.EgressSelectAck) {
 		defer func() { _ = dl.SetWriteDeadline(time.Time{}) }()
 	}
 	if werr := util.WriteLinkFrame(c.linkConn, util.LinkTypeEgressSelectAck, body); werr != nil {
-		logrus.WithError(werr).WithField("user_id", c.userID).Debug("[egress] 回 Ack 失败")
+		logrus.WithError(werr).WithField("user_id", c.userID).Debug("[egress] failed to send the Ack back")
 	}
 }
 
@@ -881,7 +881,7 @@ func deviceHasApprovedExitRoute(ctx context.Context, deviceID int64) (approved b
 	}
 	rows, err := gw.store.ListRoutesByDevice(ctx, deviceID)
 	if err != nil {
-		logrus.WithError(err).WithField("device_id", deviceID).Warn("[egress] 查出口路由失败")
+		logrus.WithError(err).WithField("device_id", deviceID).Warn("[egress] failed to look up the exit routes")
 		return false, false // DB 错误 → 无法判定(调用方据此保守,不误判为「未批准」)
 	}
 	for _, r := range rows {
@@ -944,7 +944,7 @@ func restoreFailClosedBindings(ctx context.Context, pending []exitBinding) {
 			"user_id":        b.c.userID,
 			"conn_id":        b.c.connIDStr,
 			"exit_device_id": dev,
-		}).Info("[egress] 出口资格已获批准,本会话自动接回原选定出口(此前处于 fail-closed 阻断)")
+		}).Info("[egress] the exit is approved again, so this session was reattached to the exit it originally selected (it had been blocked fail-closed)")
 		sendEgressSelectAck(b.c, util.EgressSelectAck{Accepted: true, Egress: uuid})
 	}
 }
@@ -1020,7 +1020,7 @@ func revalidateExitBindings(ctx context.Context) int {
 				"user_id":        b.c.userID,
 				"conn_id":        b.c.connIDStr,
 				"exit_device_id": b.dev,
-			}).Warn("[egress] 出口资格被撤销,本会话公网流量已 fail-closed 阻断(未改走 server 自出口,待通知客户端)")
+			}).Warn("[egress] the exit's approval was revoked, so this session's public-internet traffic is now blocked fail-closed (it was not moved to the server's own egress; the client is about to be notified)")
 			resetConns = append(resetConns, b.c)
 		}
 	}

@@ -209,7 +209,7 @@ func persistDeviceLease(gw *gatewayState, res *loginAuthResult, assignments []ut
 				"device_id": res.Device.ID,
 				"vip_v4":    v4,
 				"vip_v6":    v6,
-			}).Error("upsert lease 撞 vIP UNIQUE 冲突 -> 拒登 -> 释放内存占用 vIP;请检查 alloc 路径是否把 db 中离线 lease 算入 used 集合(dbReservedVIPs / mergeUsedVIPs)")
+			}).Error("upsert lease hit a vIP UNIQUE conflict -> reject login -> release the in-memory vIP; check whether the alloc path counts offline leases from db into the used set (dbReservedVIPs / mergeUsedVIPs)")
 			return err
 		}
 		// 非冲突类故障:仅 Warn,但放行登录(返回 nil)。
@@ -217,7 +217,7 @@ func persistDeviceLease(gw *gatewayState, res *loginAuthResult, assignments []ut
 			"device_id": res.Device.ID,
 			"vip_v4":    v4,
 			"vip_v6":    v6,
-		}).Warn("upsert lease 失败(非 UNIQUE 冲突),下次登录会重新分配,不影响当前会话")
+		}).Warn("upsert lease failed (not a UNIQUE conflict), the next login will reallocate, current session unaffected")
 		return nil
 	}
 	return nil
@@ -241,7 +241,7 @@ func dbReservedVIPs(gw *gatewayState, exceptV4, exceptV6 []string) (map[string]b
 	defer cancel()
 	v4, v6, err := gw.store.AllUsedVIPs(ctx)
 	if err != nil {
-		logrus.WithError(err).Warn("加载 db lease used 失败，登录回落仅用内存 used 集分配 vIP")
+		logrus.WithError(err).Warn("failed to load the db lease used set, login falls back to allocating vIP from the in-memory used set only")
 		return nil, nil
 	}
 	for _, e := range exceptV4 {

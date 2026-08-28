@@ -100,7 +100,7 @@ func (s *Store) Audit(ctx context.Context, actor, action, target, detail string)
 		return fmt.Errorf("store: Audit on nil store")
 	}
 	if actor == "" || action == "" {
-		return i18nErr("store.audit.missingActorAction", "store: Audit 缺 actor / action")
+		return i18nErr("store.audit.missingActorAction", "store: Audit is missing actor / action")
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO audit_logs(actor, action, target, detail, at) VALUES(?,?,?,?,?)`,

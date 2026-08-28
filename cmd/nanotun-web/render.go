@@ -104,7 +104,7 @@ var flashHMACKey = mustRandomKey(32)
 func mustRandomKey(n int) []byte {
 	b := make([]byte, n)
 	if _, err := randRead(b); err != nil {
-		panic("nanotun-web: 初始化 flash hmac key 失败: " + err.Error())
+		panic("nanotun-web: failed to initialize the flash hmac key: " + err.Error())
 	}
 	return b
 }
@@ -187,7 +187,7 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 	// atomic.Bool 在写路径同步,这里先 KISS。
 	meshOn, err := s.store.GetMeshEnabled(r.Context())
 	if err != nil {
-		logrus.WithError(err).Warn("[web] GetMeshEnabled 失败,顶栏按 ON 兜底渲染")
+		logrus.WithError(err).Warn("[web] GetMeshEnabled failed, rendering the top bar with the ON fallback")
 		meshOn = true
 	}
 	data.Nav.MeshEnabled = meshOn
@@ -230,7 +230,7 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 		// 回落:老测试手工构造 Server 只填 tmpl,保持逐请求 Clone + 绑定语言 funcs。
 		c, err := s.tmpl.Clone()
 		if err != nil {
-			logrus.WithError(err).Error("[web] clone templates 失败")
+			logrus.WithError(err).Error("[web] failed to clone templates")
 			http.Error(w, "internal", http.StatusInternalServerError)
 			return
 		}
@@ -243,7 +243,7 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 	if err := clone.ExecuteTemplate(&buf, templateName, data); err != nil {
 		// 详情(含模板名 / 数据形状 / 内部错误)只进服务端日志;响应回固定通用文案。renderPage 也服务
 		// **未鉴权**页(login.html / setup.html),不能把 err.Error() 回显给匿名访客(第三轮深扫 L3)。
-		logrus.WithError(err).WithField("template", templateName).Error("[web] 渲染模板失败")
+		logrus.WithError(err).WithField("template", templateName).Error("[web] failed to render the template")
 		http.Error(w, "internal", http.StatusInternalServerError)
 		return
 	}

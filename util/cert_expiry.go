@@ -62,13 +62,13 @@ func LoadAndCheckTLSKeyPair(certPath, keyPath, role string) (tls.Certificate, er
 			"not_after": leaf.NotAfter.Format(time.RFC3339),
 			"remaining": remain.Round(time.Hour).String(),
 			"subject":   leaf.Subject.CommonName,
-		}).Warnf("[cert:%s] TLS 证书将在 %s 内过期,请尽快续签", role, remain.Round(time.Hour))
+		}).Warnf("[cert:%s] TLS certificate expires within %s; renew it soon", role, remain.Round(time.Hour))
 	} else {
 		logrus.WithFields(logrus.Fields{
 			"role":      role,
 			"not_after": leaf.NotAfter.Format(time.RFC3339),
 			"remaining": remain.Round(24 * time.Hour).String(),
-		}).Infof("[cert:%s] TLS 证书有效", role)
+		}).Infof("[cert:%s] TLS certificate is valid", role)
 	}
 	return cert, nil
 }
@@ -106,20 +106,22 @@ func loadAndValidateKeyPair(certPath, keyPath, role string) (tls.Certificate, *x
 	if leaf.NotBefore.After(now.Add(tlsNotBeforeSkew)) {
 		// 证书是「未来才生效」的,九成是本机时钟不对而不是证书签错了 —— 新装的 VPS
 		// 没跑 NTP、虚拟机从快照恢复,都会把系统时间甩到过去。先看一眼再折腾证书。
-		return cert, nil, fmt.Errorf("util: tls cert %s 尚未生效 (NotBefore=%s, now=%s)\n"+
-			"  证书要到 NotBefore 才生效,而本机现在停在 now —— 多半是这台机器的时钟不对,\n"+
-			"  不是证书签错了。先对时:timedatectl(或 date -u),校准后重启服务。",
+		return cert, nil, fmt.Errorf("util: tls cert %s is not valid yet (NotBefore=%s, now=%s)\n"+
+			"  The certificate only takes effect at NotBefore, while this host is still sitting at now.\n"+
+			"  Nine times out of ten that means this machine's clock is wrong, not that the certificate\n"+
+			"  was issued wrong. Fix the time first: timedatectl (or date -u), then restart the service.",
 			role, leaf.NotBefore.Format(time.RFC3339), now.Format(time.RFC3339))
 	}
 	if !leaf.NotAfter.After(now) {
 		// 说清楚下一步。两种来源要分开讲,而且必须点名哪一对**不能**动:profile 里
 		// 内嵌的客户端证书是 client-CA 签的,换掉 CA 等于已发出去的二维码全部作废,
 		// 而服务器证书这一对重签不影响它们。慌乱中 rm certs/* 是很自然的动作。
-		return cert, nil, fmt.Errorf("util: tls cert %s 已过期 (NotAfter=%s, now=%s)\n"+
-			"  自带证书(Let's Encrypt 之类)的话:续签后重启服务即可。\n"+
-			"  这是装机时自签的那对的话:删掉 %s 与 %s,再跑 nanotun-ensure-assets.sh 重签。\n"+
-			"  别顺手删 client-CA(certs/*client-ca*.pem)—— 已发出去的 profile 里的客户端证书\n"+
-			"  是它签的,换掉等于所有二维码作废,每个用户都得重发。",
+		return cert, nil, fmt.Errorf("util: tls cert %s has expired (NotAfter=%s, now=%s)\n"+
+			"  If it is a certificate you brought yourself (Let's Encrypt and the like): renew it and restart the service.\n"+
+			"  If it is the self-signed pair from install time: delete %s and %s, then run nanotun-ensure-assets.sh to reissue.\n"+
+			"  Do not sweep up the client-CA (certs/*client-ca*.pem) along the way: it signed the client\n"+
+			"  certificates inside the profiles already handed out, so replacing it voids every QR code\n"+
+			"  and each user has to be re-issued one.",
 			role, leaf.NotAfter.Format(time.RFC3339), now.Format(time.RFC3339), certPath, keyPath)
 	}
 	return cert, leaf, nil
@@ -142,6 +144,6 @@ func checkKeyFilePerm(keyPath, role string) {
 			"role": role,
 			"path": keyPath,
 			"mode": fmt.Sprintf("0o%o", mode),
-		}).Warnf("[cert:%s] TLS 私钥文件权限过宽(group/others 可读),建议 chmod 600 %s", role, keyPath)
+		}).Warnf("[cert:%s] TLS private key file is too permissive (readable by group/others); chmod 600 %s is recommended", role, keyPath)
 	}
 }

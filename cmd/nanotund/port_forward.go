@@ -261,13 +261,13 @@ func (m *portForwardManager) rebuildFRPTargetTable(ctx context.Context, rows []s
 		dev, ok := m.resolveDeviceID(ctx, pf.TargetDeviceUUID)
 		if !ok {
 			logrus.WithFields(logrus.Fields{"target_ip": pf.TargetIP, "device_uuid": pf.TargetDeviceUUID}).
-				Warn("[port-forward] LAN 目标设备 UUID 解析不到 deviceID，本条不进精确路由表（回落按子网解析）")
+				Warn("[port-forward] LAN target device UUID does not resolve to a deviceID, this row stays out of the exact route table (falls back to subnet lookup)")
 			continue
 		}
 		key := addr.Unmap()
 		if existing, dup := tbl[key]; dup && existing != dev {
 			logrus.WithFields(logrus.Fields{"target_ip": pf.TargetIP, "kept_device": existing, "ignored_device": dev}).
-				Warn("[port-forward] 同一 LAN 目标 IP 被指向不同设备（歧义），忽略后者；请删除冲突映射")
+				Warn("[port-forward] the same LAN target IP points at different devices (ambiguous), ignoring the later one; delete the conflicting mapping")
 			continue
 		}
 		tbl[key] = dev
@@ -312,7 +312,7 @@ func (m *portForwardManager) reload(ctx context.Context) {
 	defer m.reloadMu.Unlock()
 	rows, err := m.gw.store.ListEnabledPortForwards(ctx)
 	if err != nil {
-		logrus.WithError(err).Warn("[port-forward] 读取映射失败，保留现有监听（不改动）")
+		logrus.WithError(err).Warn("[port-forward] failed to read mappings, keeping the existing listeners (unchanged)")
 		return
 	}
 	desired := make(map[int]store.PortForward, len(rows))
@@ -396,8 +396,8 @@ func (m *portForwardManager) setStatus(pf store.PortForward, lan bool, state pfS
 func (m *portForwardManager) startEntry(pf store.PortForward) {
 	targetAddr, err := netip.ParseAddr(pf.TargetIP)
 	if err != nil {
-		logrus.WithError(err).WithField("target_ip", pf.TargetIP).Warn("[port-forward] target_ip 非法，跳过")
-		m.setStatus(pf, false, pfStateBindFailed, "target_ip 非法: "+err.Error())
+		logrus.WithError(err).WithField("target_ip", pf.TargetIP).Warn("[port-forward] invalid target_ip, skipping")
+		m.setStatus(pf, false, pfStateBindFailed, "invalid target_ip: "+err.Error())
 		return
 	}
 	lan := m.isLANTarget(targetAddr)
@@ -407,11 +407,11 @@ func (m *portForwardManager) startEntry(pf store.PortForward) {
 	}
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", pf.PublicPort)) // I/O：可能阻塞
 	if err != nil {
-		logrus.WithError(err).WithField("public_port", pf.PublicPort).Warn("[port-forward] 监听公网端口失败（端口占用？）")
+		logrus.WithError(err).WithField("public_port", pf.PublicPort).Warn("[port-forward] failed to listen on the public port (port already in use?)")
 		if lan {
 			m.delRoute(targetAddr)
 		}
-		m.setStatus(pf, lan, pfStateBindFailed, "监听失败: "+err.Error())
+		m.setStatus(pf, lan, pfStateBindFailed, "listen failed: "+err.Error())
 		return
 	}
 	// 自动在防火墙放行该公网端口（默认 INPUT DROP + UFW 的机器上，这是外部可达的前提）。best-effort，失败不阻断监听。
@@ -429,7 +429,7 @@ func (m *portForwardManager) startEntry(pf store.PortForward) {
 	errMsg := ""
 	if routeFailed {
 		state = pfStateRouteFailed
-		errMsg = "LAN 目标主机路由未装上（LAN 目标可能不可达）"
+		errMsg = "LAN target host route was not installed (the LAN target may be unreachable)"
 	}
 	// 仅 map 写入用短锁：I/O 均已在锁外完成。
 	m.mu.Lock()
@@ -452,7 +452,7 @@ func (m *portForwardManager) startEntry(pf store.PortForward) {
 		"target":      net.JoinHostPort(pf.TargetIP, strconv.Itoa(pf.TargetPort)),
 		"device_uuid": pf.TargetDeviceUUID,
 		"lan_target":  lan,
-	}).Info("[port-forward] 已启动公网端口转发监听")
+	}).Info("[port-forward] public port forward listener started")
 }
 
 // stopEntry 停一条监听：cancel（关 accept + 在途连接）+ 关 listener + 收防火墙 + 按引用计数删主机路由（均为
@@ -473,7 +473,7 @@ func (m *portForwardManager) stopEntry(ent *portForwardEntry) {
 	delete(m.active, ent.pf.PublicPort)
 	delete(m.status, ent.pf.PublicPort)
 	m.mu.Unlock()
-	logrus.WithField("public_port", ent.pf.PublicPort).Info("[port-forward] 已停止公网端口转发监听")
+	logrus.WithField("public_port", ent.pf.PublicPort).Info("[port-forward] public port forward listener stopped")
 }
 
 // stopAll 停所有监听（cleanup 用）。持 reloadMu 串行化（与 reload 互斥、独占 routeRef），短锁快照 active 后锁外逐个停。
@@ -504,9 +504,9 @@ func (m *portForwardManager) addRoute(ip netip.Addr) bool {
 	if err := hostRouteCmd("add", ip, m.tunDev); err != nil {
 		// 「已存在」不算失败（幂等）：进程重启 / 手工装过时 `ip route add` 会报 File exists，路由其实是好的。
 		if strings.Contains(strings.ToLower(err.Error()), "exists") {
-			logrus.WithField("ip", key).Debug("[port-forward] LAN 目标主机路由已存在（视为就位）")
+			logrus.WithField("ip", key).Debug("[port-forward] LAN target host route already exists (treated as in place)")
 		} else {
-			logrus.WithError(err).WithField("ip", key).Warn("[port-forward] 装 LAN 目标主机路由失败（LAN 目标可能不可达）")
+			logrus.WithError(err).WithField("ip", key).Warn("[port-forward] failed to install the LAN target host route (the LAN target may be unreachable)")
 			ok = false
 		}
 		// 仍记引用计数，停时对称清理；失败不阻断监听。
@@ -522,7 +522,7 @@ func (m *portForwardManager) delRoute(ip netip.Addr) {
 	if n <= 1 {
 		delete(m.routeRef, key)
 		if err := hostRouteCmd("del", ip, m.tunDev); err != nil {
-			logrus.WithError(err).WithField("ip", key).Debug("[port-forward] 删 LAN 目标主机路由失败（可能已不存在）")
+			logrus.WithError(err).WithField("ip", key).Debug("[port-forward] failed to delete the LAN target host route (it may already be gone)")
 		}
 		return
 	}
@@ -589,7 +589,7 @@ func openFirewallPort(port int) {
 		delFirewallRuleAll(bin, port)
 		if out, err := pfExec(bin, firewallRuleArgs("-I", port)...); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{"bin": bin, "port": port, "out": strings.TrimSpace(string(out))}).
-				Warn("[port-forward] 放行公网端口失败（外部可能连不上，请手动放行或检查 iptables）")
+				Warn("[port-forward] failed to open the public port in the firewall (outside clients may not connect, open it manually or check iptables)")
 		}
 	}
 }
@@ -699,11 +699,11 @@ func acceptPortForward(ctx context.Context, ln net.Listener, m *portForwardManag
 				if tempDelay > time.Second {
 					tempDelay = time.Second
 				}
-				logrus.WithError(err).WithField("public_port", publicPort).Debug("[port-forward] Accept 瞬时错误，退避重试")
+				logrus.WithError(err).WithField("public_port", publicPort).Debug("[port-forward] transient Accept error, backing off and retrying")
 				time.Sleep(tempDelay)
 				continue
 			}
-			logrus.WithError(err).WithField("public_port", publicPort).Debug("[port-forward] Accept 结束")
+			logrus.WithError(err).WithField("public_port", publicPort).Debug("[port-forward] Accept loop ended")
 			return
 		}
 		tempDelay = 0
@@ -713,7 +713,7 @@ func acceptPortForward(ctx context.Context, ln net.Listener, m *portForwardManag
 		case sem <- struct{}{}:
 		default:
 			_ = c.Close()
-			logrus.WithField("public_port", publicPort).Debug("[port-forward] 并发连接数超上限，拒绝新连接")
+			logrus.WithField("public_port", publicPort).Debug("[port-forward] concurrent connection limit reached, rejecting the new connection")
 			continue
 		}
 		go safeGoroutine("portForwardConn:"+strconv.Itoa(publicPort), func() {
@@ -724,7 +724,7 @@ func acceptPortForward(ctx context.Context, ln net.Listener, m *portForwardManag
 			if !ok {
 				_ = c.Close()
 				logrus.WithFields(logrus.Fields{"public_port": publicPort, "device_uuid": pf.TargetDeviceUUID}).
-					Debug("[port-forward] 无法解析目标当前 vIP，拒绝连接（fail-close）")
+					Debug("[port-forward] cannot resolve the target current vIP, rejecting the connection (fail-close)")
 				return
 			}
 			handlePortForwardConn(ctx, c, target)
@@ -740,7 +740,7 @@ func handlePortForwardConn(ctx context.Context, in net.Conn, target string) {
 	d := net.Dialer{Timeout: 10 * time.Second, KeepAlive: portForwardKeepAlive}
 	out, err := d.DialContext(ctx, "tcp", target)
 	if err != nil {
-		logrus.WithError(err).WithField("target", target).Debug("[port-forward] 拨号 mesh 目标失败")
+		logrus.WithError(err).WithField("target", target).Debug("[port-forward] failed to dial the mesh target")
 		return
 	}
 	defer out.Close()
@@ -824,7 +824,7 @@ func (m *portForwardManager) resolveDialTarget(pf store.PortForward) (string, bo
 			"device_uuid": pf.TargetDeviceUUID,
 			"configured":  pf.TargetIP,
 			"current_vip": cur,
-		}).Debug("[port-forward] node 目标 vIP 已漂移，改拨设备当前 vIP")
+		}).Debug("[port-forward] node target vIP has drifted, dialing the device current vIP instead")
 	}
 	return net.JoinHostPort(cur, strconv.Itoa(pf.TargetPort)), true
 }

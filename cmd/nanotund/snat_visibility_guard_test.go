@@ -28,7 +28,7 @@ func TestSNATLog_NamesIfaceAndPinnedSource(t *testing.T) {
 	}
 	body := string(raw)
 
-	i := strings.Index(body, "已添加 NAT SNAT")
+	i := strings.Index(body, "added NAT SNAT")
 	if i < 0 {
 		t.Fatal("找不到 SNAT 那条日志,这个测试的定位假设已经失效")
 	}
@@ -38,10 +38,10 @@ func TestSNATLog_NamesIfaceAndPinnedSource(t *testing.T) {
 	}
 
 	for _, c := range []struct{ needle, why string }{
-		{"出口 %s", "得说出走的是哪张网卡 —— 多网卡机器上这是第一个要确认的事"},
-		{"源地址钉为 %s", "得说出钉住的源地址,拿它跟 ip -4 addr 一比就能确认是不是这个原因"},
-		{"客户端连得上但出不了网", "得把症状写出来 —— 查的人是带着这个症状来的,他要能对上号"},
-		{"重启 nanotun", "得给出解法:重启会重新探测"},
+		{"egress %s", "得说出走的是哪张网卡 —— 多网卡机器上这是第一个要确认的事"},
+		{"source address pinned to %s", "得说出钉住的源地址,拿它跟 ip -4 addr 一比就能确认是不是这个原因"},
+		{"clients connect but cannot reach the internet", "得把症状写出来 —— 查的人是带着这个症状来的,他要能对上号"},
+		{"restart nanotun", "得给出解法:重启会重新探测"},
 	} {
 		if !strings.Contains(line, c.needle) {
 			t.Errorf("SNAT 日志里没有 %q —— %s\n当前那行:%s", c.needle, c.why, line)

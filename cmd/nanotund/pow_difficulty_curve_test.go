@@ -208,7 +208,7 @@ func TestNewPoWService_RejectsNegativeFailuresEnable(t *testing.T) {
 	if err == nil {
 		t.Fatal("failures_enable=-1 必须拒绝启动")
 	}
-	if !strings.Contains(err.Error(), "1=从第 1 次失败即 ramp") {
+	if !strings.Contains(err.Error(), "1=ramp from the very first failure") {
 		t.Errorf("错误信息该告诉运维怎么写才对,得到: %v", err)
 	}
 }

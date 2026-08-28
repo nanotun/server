@@ -60,7 +60,7 @@ func startLeaseGCLoop(gw *gatewayState, idleDays, intervalHours int, startupGrac
 	}
 	if idleDays <= 0 {
 		// 显式关闭。打一条 INFO 留痕,运维事后查日志能确认。
-		logrus.Info("[lease-gc] 已通过 [server].lease_gc_idle_days 负值显式关闭定时回收,如需启用请设为正数天数")
+		logrus.Info("[lease-gc] periodic reclamation is explicitly disabled by a negative [server].lease_gc_idle_days; set it to a positive number of days to enable it")
 		return func() {}
 	}
 	if intervalHours <= 0 {
@@ -79,7 +79,7 @@ func startLeaseGCLoop(gw *gatewayState, idleDays, intervalHours int, startupGrac
 		"idle":          idle.String(),
 		"interval":      interval.String(),
 		"startup_grace": startupGrace.String(),
-	}).Info("[lease-gc] 定时回收已启用")
+	}).Info("[lease-gc] periodic reclamation enabled")
 	go safeGlobalGoroutine("leaseGC", globalContextCancel, func() {
 		runLeaseGCLoop(globalContext, gw.store, idle, interval, startupGrace)
 	})
@@ -101,12 +101,12 @@ func runLeaseGCLoop(ctx context.Context, st *store.Store, idle, interval, startu
 		// 失败不致命,只是这一轮可能会误回收,下一轮自然恢复。
 		if active := activeDeviceIDsSnapshot(); len(active) > 0 {
 			if err := st.BatchTouchDevices(opCtx, active); err != nil {
-				logrus.WithError(err).WithField("count", len(active)).Warn("[lease-gc] 刷新 active device last_seen_at 失败,本轮回收可能误伤")
+				logrus.WithError(err).WithField("count", len(active)).Warn("[lease-gc] failed to refresh last_seen_at for active devices, this round may reclaim leases it should not")
 			}
 		}
 		n, err := st.GcOrphanLeases(opCtx, int64(idle.Seconds()))
 		if err != nil {
-			logrus.WithError(err).WithField("idle", idle.String()).Warn("[lease-gc] 回收 lease 失败,下次再试")
+			logrus.WithError(err).WithField("idle", idle.String()).Warn("[lease-gc] failed to reclaim leases, will retry next round")
 			return
 		}
 		if n > 0 {
@@ -115,9 +115,9 @@ func runLeaseGCLoop(ctx context.Context, st *store.Store, idle, interval, startu
 				"reclaimed":    n,
 				"idle":         idle.String(),
 				"total_so_far": leaseGCCount.Load(),
-			}).Info("[lease-gc] 回收完成")
+			}).Info("[lease-gc] reclamation done")
 		} else {
-			logrus.WithField("idle", idle.String()).Debug("[lease-gc] 无可回收的 lease")
+			logrus.WithField("idle", idle.String()).Debug("[lease-gc] no leases to reclaim")
 		}
 	}
 	// 首轮延后:等客户端重连上来,doOnce 里那段 E1 防误伤才有会话可顶(理由见
@@ -127,7 +127,7 @@ func runLeaseGCLoop(ctx context.Context, st *store.Store, idle, interval, startu
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			logrus.Info("[lease-gc] 启动宽限期内 ctx 已取消,首轮回收未执行")
+			logrus.Info("[lease-gc] ctx cancelled during the startup grace period, the first round did not run")
 			return
 		case <-timer.C:
 		}
@@ -138,7 +138,7 @@ func runLeaseGCLoop(ctx context.Context, st *store.Store, idle, interval, startu
 	for {
 		select {
 		case <-ctx.Done():
-			logrus.Info("[lease-gc] ctx 已取消,退出回收循环")
+			logrus.Info("[lease-gc] ctx cancelled, exiting the reclamation loop")
 			return
 		case <-t.C:
 			doOnce()

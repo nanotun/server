@@ -51,7 +51,7 @@ subnets = ["不是网段"]
 		if err == nil {
 			t.Fatal("非法网段必须在启动期报错,而不是让该族地址池静默为空")
 		}
-		if !strings.Contains(err.Error(), "语义校验") {
+		if !strings.Contains(err.Error(), "semantic validation") {
 			t.Errorf("报错应说明是语义校验未通过,got %v", err)
 		}
 	})

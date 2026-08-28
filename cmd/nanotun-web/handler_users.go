@@ -203,7 +203,7 @@ func (s *Server) handleUserNew(w http.ResponseWriter, r *http.Request) {
 			// create 路径有 username unique 兜底(刷新二次 POST 必然失败),但用户已经
 			// 创建在 DB 里,admin 看到「创建失败」会误以为没建,反复尝试更糟。改成
 			// 500 + audit + 提示「用户已创建,可去重置 PSK 获取凭证」,语义清晰。
-			logrus.WithError(err).Error("[web] stash credentials flash (create) 失败 - 拒绝 inline 渲染")
+			logrus.WithError(err).Error("[web] stash credentials flash (create) failed - refusing to render inline")
 			s.audit.WriteFromRequest(r, "user_create_stash_failed",
 				FormatTarget("user", u.ID),
 				FormatDetail("username", u.Username, "err", err.Error()))
@@ -482,7 +482,7 @@ func (s *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 			// 改成 500 + audit + 不渲染 PSK:admin 看到错误页会去 reset-psk-result
 			// 或重新发起,不会拿一张「随时被刷新作废」的 QR 给用户。crypto/rand 故障
 			// 极罕见(<<1e-9),走 500 比走「看起来正常但实际危险」的退化路径更可解释。
-			logrus.WithError(err).Error("[web] stash credentials flash (reset-psk) 失败 - 拒绝 inline 渲染")
+			logrus.WithError(err).Error("[web] stash credentials flash (reset-psk) failed - refusing to render inline")
 			s.audit.WriteFromRequest(r, "user_reset_psk_stash_failed",
 				FormatTarget("user", id),
 				FormatDetail("username", freshU.Username, "err", err.Error()))

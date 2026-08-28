@@ -156,7 +156,7 @@ func readLoopbackClientAddr(st net.Conn) net.Conn {
 	_ = st.SetReadDeadline(time.Time{})
 	if err != nil {
 		// 本进程另一侧应当总会写一个头;读失败多为 stream 早断。回退环回地址,交由 handleVPNLink 处理后续。
-		logrus.WithError(err).Debug("环回 smux stream 读取 PROXY 头失败,回退环回源地址")
+		logrus.WithError(err).Debug("failed to read the PROXY header on the loopback smux stream, falling back to the loopback source address")
 		return &proxyAddrConn{Conn: st, br: br}
 	}
 	if src, _, ok := hdr.TCPAddrs(); ok && src != nil {

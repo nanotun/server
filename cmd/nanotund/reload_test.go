@@ -140,7 +140,7 @@ func TestApplyConfigReload_JumpHostAllowedIPs_FirewallOffDeferred(t *testing.T) 
 	if slices.Contains(applied, "server.jump_host_allowed_ips") {
 		t.Fatalf("关闭 firewall 时不应 applied,got %v", applied)
 	}
-	if !slices.Contains(deferred, "server.jump_host_firewall(开关切换需重启)") {
+	if !slices.Contains(deferred, "server.jump_host_firewall(toggling it requires a restart)") {
 		t.Fatalf("应该在 deferred 列出 jump_host_firewall 开关切换提示,got %v", deferred)
 	}
 }

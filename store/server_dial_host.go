@@ -20,7 +20,7 @@ import (
 //   - DNS server 异常(此场景偶发,admin 可换网络重试)。
 //
 // 用 errors.Is(err, ErrServerDialHostDNS) 来判定。
-var ErrServerDialHostDNS = errors.New("server_dial_host: DNS 解析失败")
+var ErrServerDialHostDNS = errors.New("server_dial_host: DNS resolution failed")
 
 // ErrServerDialHostICMPSoftFail 表示 DNS OK 但 ICMP ping 0 回包。
 //
@@ -33,7 +33,7 @@ var ErrServerDialHostDNS = errors.New("server_dial_host: DNS 解析失败")
 //   - admin 勾选后传 force=true,跳过本检测直接 SetServerDialHost。
 //
 // 用 errors.Is(err, ErrServerDialHostICMPSoftFail) 来判定。
-var ErrServerDialHostICMPSoftFail = errors.New("server_dial_host: ICMP 不可达(可能服务器 firewall 阻断 ping)")
+var ErrServerDialHostICMPSoftFail = errors.New("server_dial_host: ICMP unreachable (server firewall may block ping)")
 
 // ServerDialHostKey 是 app_settings 表里持久化「客户端实际拨号的服务器地址」的 key。
 //
@@ -80,7 +80,7 @@ func (s *Store) SetServerDialHost(ctx context.Context, host string) error {
 	host = strings.TrimSpace(host)
 	if len(host) > 253 {
 		return i18nErr("store.dialHost.setterTooLong",
-			fmt.Sprintf("server_dial_host 长度 %d 超过 RFC 1035 上限 253", len(host)), len(host))
+			fmt.Sprintf("server_dial_host length %d exceeds the RFC 1035 limit of 253", len(host)), len(host))
 	}
 	return s.SettingsSet(ctx, ServerDialHostKey, host)
 }
@@ -115,21 +115,21 @@ func ValidateServerDialHost(host string) error {
 	}
 	if len(h) > 253 {
 		return i18nErr("store.host.tooLong",
-			fmt.Sprintf("长度 %d 超过 RFC 1035 上限 253", len(h)), len(h))
+			fmt.Sprintf("Length %d exceeds the RFC 1035 limit of 253", len(h)), len(h))
 	}
 	if strings.ContainsAny(h, "\n\r\t\x00") {
-		return i18nErr("store.host.controlChars", "不允许换行 / TAB / NUL 等控制字符")
+		return i18nErr("store.host.controlChars", "Newline / TAB / NUL and other control characters are not allowed")
 	}
 	lo := strings.ToLower(h)
 	if strings.HasPrefix(lo, "http://") || strings.HasPrefix(lo, "https://") ||
 		strings.HasPrefix(lo, "ws://") || strings.HasPrefix(lo, "wss://") {
-		return i18nErr("store.host.scheme", "请只填裸地址 / 域名,不要带 scheme(如 https://)")
+		return i18nErr("store.host.scheme", "Enter only the bare address / domain, without a scheme (e.g. https://)")
 	}
 	if strings.ContainsAny(h, "/?#") {
-		return i18nErr("store.host.pathChars", "不允许 path / query / fragment 字符(/、?、#)")
+		return i18nErr("store.host.pathChars", "path / query / fragment characters (/, ?, #) are not allowed")
 	}
 	if strings.Contains(h, "]:") {
-		return i18nErr("store.host.portBracket", "不允许嵌入端口号 — profile 端口字段与 host 是分开的")
+		return i18nErr("store.host.portBracket", "Embedded port number is not allowed — the profile's port field is separate from host")
 	}
 
 	// (a) IPv4 / IPv6 字面量(含可选 `[]` 包裹的 IPv6)。
@@ -139,11 +139,11 @@ func ValidateServerDialHost(host string) error {
 		// 0.0.0.0 / 169.254.x / 多播段等也可能被 kernel routing 处理成假"可达",
 		// 让客户端拿到这些字符串后必然连不上。
 		//
-		// reason 本身含 IP 类别关键词(loopback / link-local / …)+ 中文注解,
-		// 作为 %s 参数透传给 web 翻译(技术细节保留中文,首句翻译)。
+		// reason 本身含 IP 类别关键词(loopback / link-local / …)+ 英文注解,
+		// 作为 %s 参数透传给 web 翻译(技术细节原样,首句翻译)。
 		if reasonErr := rejectedSpecialIP(ip); reasonErr != nil {
 			return i18nErr("store.dialHost.specialIP",
-				fmt.Sprintf("%s — 该地址客户端无法对外拨号", reasonErr.Error()), reasonErr)
+				fmt.Sprintf("%s — clients cannot dial this address externally", reasonErr.Error()), reasonErr)
 		}
 		return nil
 	}
@@ -153,7 +153,7 @@ func ValidateServerDialHost(host string) error {
 		if strings.Count(h, ":") == 1 {
 			parts := strings.SplitN(h, ":", 2)
 			if isAllDigit(parts[1]) {
-				return i18nErr("store.host.portColon", "不允许嵌入端口号 — 检测到 host:port 形式")
+				return i18nErr("store.host.portColon", "Embedded port number is not allowed — detected host:port form")
 			}
 		}
 	}
@@ -165,7 +165,7 @@ func ValidateServerDialHost(host string) error {
 		// 传 err 对象(而非 err.Error()):若 err 携带 LocaleKey(label 语法诊断),
 		// 上层 translate 会按目标语言递归翻译这个 %s 参数;否则退回其 Error()。
 		return i18nErr("store.dialHost.notValidHost",
-			fmt.Sprintf("不是合法 IPv4 / IPv6 / 域名(末段含字母): %s", err.Error()), err)
+			fmt.Sprintf("Not a valid IPv4 / IPv6 / domain (last label must contain a letter): %s", err.Error()), err)
 	}
 	return nil
 }
@@ -194,28 +194,28 @@ func validateRFC1035Hostname(s string) error {
 	for i, lab := range labels {
 		if len(lab) == 0 {
 			return i18nErr("store.hostlabel.empty",
-				fmt.Sprintf("label %d 为空(连续的 '.' 或首尾 '.')", i), i)
+				fmt.Sprintf("label %d is empty (consecutive '.' or leading/trailing '.')", i), i)
 		}
 		if len(lab) > 63 {
 			return i18nErr("store.hostlabel.tooLong",
-				fmt.Sprintf("label %d 长度 %d > 63", i, len(lab)), i, len(lab))
+				fmt.Sprintf("label %d length %d > 63", i, len(lab)), i, len(lab))
 		}
 		first, last := lab[0], lab[len(lab)-1]
 		if first == '-' || last == '-' {
 			return i18nErr("store.hostlabel.dashEdge",
-				fmt.Sprintf("label %d %q 首尾不能为 '-'", i, lab), i, lab)
+				fmt.Sprintf("label %d %q cannot start or end with '-'", i, lab), i, lab)
 		}
 		for _, r := range lab {
 			if !isHostnameChar(r) {
 				return i18nErr("store.hostlabel.badChar",
-					fmt.Sprintf("label %d %q 含非法字符 %q", i, lab, r), i, lab, r)
+					fmt.Sprintf("label %d %q contains an illegal character %q", i, lab, r), i, lab, r)
 			}
 		}
 	}
 	last := labels[len(labels)-1]
 	if !labelHasLetter(last) {
 		return i18nErr("store.hostlabel.tldNoLetter",
-			fmt.Sprintf("末段 label %q 必须含至少一个字母(拒纯数字 TLD,RFC 952/3696)", last), last)
+			fmt.Sprintf("last label %q must contain at least one letter (numeric-only TLD rejected, RFC 952/3696)", last), last)
 	}
 	return nil
 }
@@ -291,22 +291,23 @@ func labelHasLetter(s string) bool {
 // 这样 IPv4 / IPv6 / 映射形态全自动覆盖。
 // 返回值改造(多语言):此前返回裸 string(中文技术细节),被上层当 %s 参数透传
 // 到 store.dialHost.specialIP / store.probe.dnsResolvedTo,英文界面下会混出中文。
+// 现在技术细节本身也是英文了,两种界面下都一致。
 // 现返回携带 LocaleKey 的 LocalizedError(Error() 仍是原中文,供 CLI/日志/测试),
 // 上层 translate 会按目标语言递归翻译;通过返 nil 表示「不拒」。
 func rejectedSpecialIP(ip net.IP) error {
 	switch {
 	case ip.IsUnspecified():
 		return i18nErr("store.specialip.unspecified",
-			fmt.Sprintf("unspecified address %q(0.0.0.0 / :: 表示任意接口,不是真实端点)", ip.String()), ip.String())
+			fmt.Sprintf("unspecified address %q (0.0.0.0 / :: means any interface, not a real endpoint)", ip.String()), ip.String())
 	case ip.IsLoopback():
 		return i18nErr("store.specialip.loopback",
-			fmt.Sprintf("loopback %q(127.x / ::1,客户端拨到自己机器)", ip.String()), ip.String())
+			fmt.Sprintf("loopback %q (127.x / ::1, client would dial its own machine)", ip.String()), ip.String())
 	case ip.IsLinkLocalUnicast():
 		return i18nErr("store.specialip.linkLocal",
-			fmt.Sprintf("link-local %q(169.254.x / fe80::/10,只在本网段可达)", ip.String()), ip.String())
+			fmt.Sprintf("link-local %q (169.254.x / fe80::/10, reachable only on the local segment)", ip.String()), ip.String())
 	case ip.IsLinkLocalMulticast() || ip.IsMulticast():
 		return i18nErr("store.specialip.multicast",
-			fmt.Sprintf("multicast %q(224.0.0.0/4 / ff00::/8,客户端 TCP 不能拨)", ip.String()), ip.String())
+			fmt.Sprintf("multicast %q (224.0.0.0/4 / ff00::/8, clients cannot dial via TCP)", ip.String()), ip.String())
 	case ip.IsInterfaceLocalMulticast():
 		return i18nErr("store.specialip.ifaceLocalMcast",
 			fmt.Sprintf("interface-local multicast %q", ip.String()), ip.String())
@@ -315,7 +316,7 @@ func rejectedSpecialIP(ip net.IP) error {
 	if v4 := ip.To4(); v4 != nil {
 		if v4[0] == 255 && v4[1] == 255 && v4[2] == 255 && v4[3] == 255 {
 			return i18nErr("store.specialip.broadcast",
-				fmt.Sprintf("broadcast %q(255.255.255.255,TCP 不可拨)", ip.String()), ip.String())
+				fmt.Sprintf("broadcast %q (255.255.255.255, cannot dial via TCP)", ip.String()), ip.String())
 		}
 	}
 	return nil
@@ -342,7 +343,7 @@ func CheckResolvedDialIPs(host string, ips []net.IPAddr) error {
 			// 让 errors.Is 照常成立;首句(sentinel)经 web trErr 按语言翻译。
 			// reasonErr 为动态技术细节(自带 LocaleKey),作参数透传,上层按语言递归翻译。
 			return i18nErrWrap("store.probe.dnsResolvedTo",
-				fmt.Sprintf("%s: 域名 %q 解析到 %s — %s", ErrServerDialHostDNS.Error(), host, ipAddr.IP, reasonErr.Error()),
+				fmt.Sprintf("%s: domain %q resolved to %s — %s", ErrServerDialHostDNS.Error(), host, ipAddr.IP, reasonErr.Error()),
 				ErrServerDialHostDNS, host, ipAddr.IP.String(), reasonErr)
 		}
 	}
@@ -416,12 +417,12 @@ func ProbeServerDialHost(ctx context.Context, host string) error {
 				return ctx.Err()
 			}
 			return i18nErrWrap("store.probe.dnsNoResolve",
-				fmt.Sprintf("%s: 域名 %q 无法解析为 IP(请确认拼写 / DNS / 网络): %v", ErrServerDialHostDNS.Error(), naked, err),
+				fmt.Sprintf("%s: domain %q could not be resolved to an IP (check spelling / DNS / network): %v", ErrServerDialHostDNS.Error(), naked, err),
 				ErrServerDialHostDNS, naked, err.Error())
 		}
 		if len(ips) == 0 {
 			return i18nErrWrap("store.probe.dnsNoRecord",
-				fmt.Sprintf("%s: 域名 %q 无 A/AAAA 记录", ErrServerDialHostDNS.Error(), naked),
+				fmt.Sprintf("%s: domain %q has no A/AAAA record", ErrServerDialHostDNS.Error(), naked),
 				ErrServerDialHostDNS, naked)
 		}
 		// 2026-05-26 第八轮扫描修:**DNS 解析结果也走特殊段黑名单**,防止
@@ -455,7 +456,7 @@ func ProbeServerDialHost(ctx context.Context, host string) error {
 		// lastErr 传对象(而非 .Error()):pingOnce 返回携带 LocaleKey 的错误,
 		// 上层 translate 按目标语言递归翻译这段 ping 明细。
 		return i18nErrWrap("store.probe.icmpAllFailed",
-			fmt.Sprintf("%s: 所有 %d 个解析 IP ping 均失败 — 最后一个错: %v", ErrServerDialHostICMPSoftFail.Error(), len(pingTargets), lastErr),
+			fmt.Sprintf("%s: all %d resolved IPs failed ping — last error: %v", ErrServerDialHostICMPSoftFail.Error(), len(pingTargets), lastErr),
 			ErrServerDialHostICMPSoftFail, len(pingTargets), lastErr)
 	}
 	return nil
@@ -470,7 +471,7 @@ func pingOnce(ctx context.Context, target string) error {
 	pinger, err := probing.NewPinger(target)
 	if err != nil {
 		return i18nErrWrap("store.ping.newPinger",
-			fmt.Sprintf("%s: 初始化 pinger 失败 — %v", ErrServerDialHostICMPSoftFail.Error(), err),
+			fmt.Sprintf("%s: failed to initialize pinger — %v", ErrServerDialHostICMPSoftFail.Error(), err),
 			ErrServerDialHostICMPSoftFail, err.Error())
 	}
 	pinger.SetPrivileged(false)
@@ -486,7 +487,7 @@ func pingOnce(ctx context.Context, target string) error {
 	case runErr := <-done:
 		if runErr != nil {
 			return i18nErrWrap("store.ping.runFail",
-				fmt.Sprintf("%s: ping %s 执行失败 — 可能 Linux 需要 `sysctl net.ipv4.ping_group_range=\"0 65535\"` 解锁 unprivileged UDP ping:%v",
+				fmt.Sprintf("%s: ping %s failed to run — on Linux you may need `sysctl net.ipv4.ping_group_range=\"0 65535\"` to unlock unprivileged UDP ping: %v",
 					ErrServerDialHostICMPSoftFail.Error(), target, runErr),
 				ErrServerDialHostICMPSoftFail, target, runErr.Error())
 		}
@@ -498,7 +499,7 @@ func pingOnce(ctx context.Context, target string) error {
 	stats := pinger.Statistics()
 	if stats.PacketsRecv == 0 {
 		return i18nErrWrap("store.ping.noReply",
-			fmt.Sprintf("%s: ping %s 未收到任何回包(发 %d / 收 0)— 服务器可能离线或 firewall 阻断 ICMP",
+			fmt.Sprintf("%s: ping %s received no reply (sent %d / received 0) — server may be offline or the firewall blocks ICMP",
 				ErrServerDialHostICMPSoftFail.Error(), target, stats.PacketsSent),
 			ErrServerDialHostICMPSoftFail, target, stats.PacketsSent)
 	}

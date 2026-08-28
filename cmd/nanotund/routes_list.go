@@ -126,7 +126,7 @@ func sendRoutesListTo(c *Connection, routes []util.SubnetRouteInfo) {
 		defer func() { _ = dl.SetWriteDeadline(time.Time{}) }()
 	}
 	if werr := util.WriteLinkFrame(c.linkConn, util.LinkTypeRoutesList, body); werr != nil {
-		logrus.WithError(werr).WithField("user_id", c.userID).Debug("[routes] 推送子网路由列表失败")
+		logrus.WithError(werr).WithField("user_id", c.userID).Debug("[routes] failed to push the subnet route list")
 	}
 }
 

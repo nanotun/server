@@ -151,19 +151,19 @@ func applyFlagPrecedence(cfg *Config, setFlags map[string]bool, ov flagOverrides
 
 func main() {
 	cfg := defaultConfig()
-	flag.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "监听地址 host:port,默认 0.0.0.0:7443")
-	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite 数据库路径(与 nanotund 共享)")
-	flag.StringVar(&cfg.ControlSocketPath, "control-socket", cfg.ControlSocketPath, "nanotund control socket 路径")
-	flag.StringVar(&cfg.CertDir, "cert-dir", cfg.CertDir, "TLS 证书目录(cert.pem + key.pem)")
-	extraSANs := flag.String("extra-sans", "", "证书 SAN 额外条目,逗号分隔,如 admin.example.com,1.2.3.4")
-	flag.Int64Var(&cfg.SessionTTLSec, "session-ttl", cfg.SessionTTLSec, "session 滑动过期窗口(秒)")
-	flag.Int64Var(&cfg.MaxLoginFailures, "max-login-failures", cfg.MaxLoginFailures, "连续登录失败 N 次后锁定")
-	flag.Int64Var(&cfg.LockoutSeconds, "lockout-seconds", cfg.LockoutSeconds, "锁定时长(秒)")
-	noAutoReload := flag.Bool("no-auto-reload", false, "ACL 改动后不自动通知 server reload(默认自动)")
-	trustedProxies := flag.String("trusted-proxies", "", "可信前置反代 IP/CIDR 列表(逗号分隔),如 127.0.0.1,10.0.0.0/8;仅当直连对端落在此集合内才解析 X-Forwarded-For。默认空=不信任 XFF")
-	flag.BoolVar(&cfg.AllowSetup, "allow-setup", cfg.AllowSetup, "允许首次初始化向导 /setup 创建首个管理员;管理员建好后设为 false 可彻底关闭 setup(防公网抢占)")
-	verbose := flag.Bool("v", false, "更详细的日志(debug 级)")
-	showVersion := flag.Bool("version", false, "打印版本并退出")
+	flag.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "listen address host:port, default 0.0.0.0:7443")
+	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path (shared with nanotund)")
+	flag.StringVar(&cfg.ControlSocketPath, "control-socket", cfg.ControlSocketPath, "nanotund control socket path")
+	flag.StringVar(&cfg.CertDir, "cert-dir", cfg.CertDir, "TLS certificate directory (cert.pem + key.pem)")
+	extraSANs := flag.String("extra-sans", "", "extra certificate SAN entries, comma-separated, e.g. admin.example.com,1.2.3.4")
+	flag.Int64Var(&cfg.SessionTTLSec, "session-ttl", cfg.SessionTTLSec, "session sliding expiry window (seconds)")
+	flag.Int64Var(&cfg.MaxLoginFailures, "max-login-failures", cfg.MaxLoginFailures, "lock the account after N consecutive login failures")
+	flag.Int64Var(&cfg.LockoutSeconds, "lockout-seconds", cfg.LockoutSeconds, "lockout duration (seconds)")
+	noAutoReload := flag.Bool("no-auto-reload", false, "do not notify the server to reload after ACL changes (automatic by default)")
+	trustedProxies := flag.String("trusted-proxies", "", "trusted front reverse-proxy IP/CIDR list (comma-separated), e.g. 127.0.0.1,10.0.0.0/8; X-Forwarded-For is parsed only when the direct peer falls inside this set. Empty (default) = do not trust XFF")
+	flag.BoolVar(&cfg.AllowSetup, "allow-setup", cfg.AllowSetup, "allow the first-run /setup wizard to create the first administrator; set to false once an administrator exists to close setup for good (prevents takeover from the public internet)")
+	verbose := flag.Bool("v", false, "more verbose logging (debug level)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -208,13 +208,13 @@ func main() {
 		extraSANs:      *extraSANs,
 	})
 	if err := cfg.Validate(); err != nil {
-		logrus.WithError(err).Fatal("[web] 配置校验失败,退出")
+		logrus.WithError(err).Fatal("[web] config validation failed, exiting")
 	}
 	// clientIP 的 XFF 信任集合在此固定(Validate 已解析并校验)。默认空=不信任 XFF。
 	setTrustedProxies(cfg.trustedProxyNets)
 	if len(cfg.trustedProxyNets) > 0 {
 		logrus.WithField("trusted_proxies", cfg.TrustedProxies).
-			Info("[web] 已启用 X-Forwarded-For 解析(仅信任列出的前置反代)")
+			Info("[web] X-Forwarded-For parsing enabled (only the listed reverse proxies are trusted)")
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -223,21 +223,21 @@ func main() {
 		"db":       cfg.DBPath,
 		"control":  cfg.ControlSocketPath,
 		"cert_dir": cfg.CertDir,
-	}).Info("[web] 启动 nanotun-web")
+	}).Info("[web] starting nanotun-web")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	st, err := store.Open(ctx, cfg.DBPath, store.Options{})
 	if err != nil {
-		logrus.WithError(err).Fatal("[web] 打开数据库失败")
+		logrus.WithError(err).Fatal("[web] failed to open the database")
 	}
 	defer func() { _ = st.Close() }()
 
 	// 执行迁移。与 nanotund 同一个 migrate 流程,跨进程 flock 保证安全。
 	// 若 nanotund 已经迁移到 N,这里会变 no-op。
 	if err := st.Migrate(ctx); err != nil {
-		logrus.WithError(err).Fatal("[web] 数据库迁移失败")
+		logrus.WithError(err).Fatal("[web] database migration failed")
 	}
 
 	// 库文件被掉包时立刻退出(unit 是 Restart=on-failure,重启即打开新文件)。
@@ -249,7 +249,7 @@ func main() {
 	// 这里直接 Fatal 而非优雅退出:此刻在途请求写的也是那个死文件,把它们「优雅」地
 	// 写完毫无意义,只会多丢一批数据并多给用户几条虚假的成功回执。
 	go st.WatchFileIdentity(ctx, 15*time.Second, func(err error) {
-		logrus.WithError(err).Fatal("[web] 数据库文件已被替换(多半是刚做过 restore / 手工覆盖) — 立刻退出,由 systemd 重启以打开新文件")
+		logrus.WithError(err).Fatal("[web] the database file has been replaced (most likely a restore / manual overwrite just happened) — exiting immediately so systemd restarts us onto the new file")
 	})
 
 	// 2026-05-27 第十四轮(B1):startup readiness 检测 server_dial_host 配置。
@@ -261,7 +261,7 @@ func main() {
 	// 检测**只读**(GetServerDialHost),不影响启动流程 — 即使未配置,web 进程
 	// 仍正常启动(其它功能如用户管理 / dashboard 都还能用),只是 QR 生成会 412。
 	if dialHost, _ := st.GetServerDialHost(ctx); dialHost == "" {
-		logrus.Warn("[web] server_dial_host 未配置 — 服务器 QR 生成功能不可用,请到 /settings 页配置真实拨号目标(IPv4/IPv6/RFC1035 域名)")
+		logrus.Warn("[web] server_dial_host is not configured — server QR generation is unavailable; set a real dial host on the /settings page (IPv4/IPv6/RFC1035 domain)")
 	}
 
 	// M4:全新安装(尚无任何管理员)+ setup 向导开启 + 监听非环回地址 = 「首次运行 TOFU 抢占」窗口:
@@ -270,9 +270,9 @@ func main() {
 	if n, _ := st.CountWebAdmins(ctx); n == 0 {
 		if cfg.AllowSetup {
 			if listenAddrIsPublic(cfg.ListenAddr) {
-				logrus.WithField("listen", cfg.ListenAddr).Warn(
-					"[web] 安全提示:尚无管理员且 setup 向导对公网开放 — 任何网络访客可能抢占首个管理员。" +
-						"建议先绑 127.0.0.1 或用防火墙限制来源,尽快完成 /setup;或用 nanotun-admin 预置管理员后以 -allow-setup=false 关闭向导")
+				logrus.WithField("listen", cfg.ListenAddr).WithField("setup_gate", "open").Warn(
+					"[web] security notice: no administrator exists yet and the setup wizard is open to the public internet — any network visitor could claim the first administrator. " +
+						"Bind 127.0.0.1 or restrict the source with a firewall first, and complete /setup as soon as possible; or provision an administrator with nanotun-admin and then close the wizard with -allow-setup=false")
 			}
 		} else {
 			// 反过来这一半也要说:门关着、又一个管理员都没有 = 谁都登不进后台。
@@ -284,19 +284,19 @@ func main() {
 			//
 			// 症状里没有一处指向原因:服务 active,日志干净,页面也正常打开。少了这行
 			// 告警,人只能对着一个"看起来完全健康"的后台猜为什么进不去。
-			logrus.Warn("[web] 一个管理员都没有,而 /setup 抢占入口是关的 — 现在没人能登进 Web 后台。" +
-				"常见于换机器恢复备份(新机器的 web.env 留着,库里却没有管理员)或 purge 后重装。" +
-				"用 CLI 建一个即可:nanotun-admin webadmin create <名字>")
+			logrus.Warn("[web] there is no administrator at all and the /setup entry point is closed — nobody can log into the web dashboard right now. " +
+				"Common after restoring a backup onto a new machine (the new machine's web.env survives while the database has no administrator) or after a purge and reinstall. " +
+				"Creating one from the CLI is enough: nanotun-admin webadmin create <name>")
 		}
 	}
 
 	tmpl, err := loadTemplates()
 	if err != nil {
-		logrus.WithError(err).Fatal("[web] 模板加载失败")
+		logrus.WithError(err).Fatal("[web] failed to load templates")
 	}
 	tmplByLang, err := buildLangTemplates(tmpl)
 	if err != nil {
-		logrus.WithError(err).Fatal("[web] 语言模板集构建失败")
+		logrus.WithError(err).Fatal("[web] failed to build the per-language template set")
 	}
 
 	credFlashStop := make(chan struct{})
@@ -329,7 +329,7 @@ func main() {
 
 	certPath, keyPath, err := ensureTLSCert(cfg.CertDir, cfg.ExtraSANs)
 	if err != nil {
-		logrus.WithError(err).Fatal("[web] TLS 证书初始化失败")
+		logrus.WithError(err).Fatal("[web] TLS certificate initialization failed")
 	}
 
 	httpSrv := &http.Server{
@@ -357,7 +357,7 @@ func main() {
 	go func() {
 		defer signal.Stop(sigCh)
 		<-sigCh
-		logrus.Info("[web] 收到退出信号,开始优雅退出")
+		logrus.Info("[web] shutdown signal received, starting graceful shutdown")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = httpSrv.Shutdown(shutdownCtx)
@@ -366,12 +366,12 @@ func main() {
 	logrus.WithFields(logrus.Fields{
 		"addr": cfg.ListenAddr,
 		"cert": certPath,
-	}).Info("[web] TLS 服务就绪,等待请求")
+	}).Info("[web] TLS service ready, waiting for requests")
 
 	if err := httpSrv.ListenAndServeTLS(certPath, keyPath); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logrus.WithError(err).Fatal("[web] HTTP server 异常退出")
+		logrus.WithError(err).Fatal("[web] HTTP server exited unexpectedly")
 	}
-	logrus.Info("[web] 已退出")
+	logrus.Info("[web] exited")
 }
 
 // loadTemplates 把 templates/ 下所有 .html 一次性 parse,attach common funcs。
@@ -447,11 +447,11 @@ func (s *Server) runSessionGC(ctx context.Context) {
 			n, err := s.store.PruneExpiredWebSessions(cctx)
 			cancel()
 			if err != nil {
-				logrus.WithError(err).Warn("[web] 清理过期 session 失败")
+				logrus.WithError(err).Warn("[web] failed to prune expired sessions")
 				continue
 			}
 			if n > 0 {
-				logrus.WithField("removed", n).Info("[web] 清理过期 session")
+				logrus.WithField("removed", n).Info("[web] pruned expired sessions")
 			}
 		}
 	}

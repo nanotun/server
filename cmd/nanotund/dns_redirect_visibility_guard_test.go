@@ -29,15 +29,15 @@ func TestDNSRedirectLog_NamesPinnedResolver(t *testing.T) {
 	}
 	body := string(raw)
 
-	if !strings.Contains(body, "出口 DNS 已接管 →") {
+	if !strings.Contains(body, "egress DNS taken over →") {
 		t.Fatal("装完 DNS DNAT 之后没有日志说接管到了哪个解析器 —— " +
 			"查「连得上但域名解析不了」的人第一件事就是 journalctl,那时最该看见的正是这个值")
 	}
 	for _, c := range []struct{ needle, why string }{
-		{"auto:启动时读 /etc/resolv.conf 探到的", "得说清这个值是探来的而不是配的 —— 否则人不会想到它会过期"},
-		{"域名却解析不了", "得把症状写出来,查的人是带着症状来的"},
-		{"重启 nanotun", "得给出解法:重启会重新探测"},
-		{"未接管出口 DNS", "off / 探不到解析器时也要留一行 —— 否则「没接管」和「接管了但没打日志」分不开"},
+		{"auto: detected by reading /etc/resolv.conf at startup", "得说清这个值是探来的而不是配的 —— 否则人不会想到它会过期"},
+		{"domain names do not resolve", "得把症状写出来,查的人是带着症状来的"},
+		{"restart nanotun", "得给出解法:重启会重新探测"},
+		{"egress DNS not taken over", "off / 探不到解析器时也要留一行 —— 否则「没接管」和「接管了但没打日志」分不开"},
 	} {
 		if !strings.Contains(body, c.needle) {
 			t.Errorf("DNS 接管日志里没有 %q —— %s", c.needle, c.why)

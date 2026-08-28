@@ -60,7 +60,7 @@ type vpnSmuxStreamOutbound struct {
 
 func (o *vpnSmuxStreamOutbound) TCP(reqAddr string) (net.Conn, error) {
 	if o.pool == nil {
-		return nil, fmt.Errorf("smux pool 未初始化")
+		return nil, fmt.Errorf("smux pool is not initialized")
 	}
 	// 注意:reqAddr 只用于取 relay token,**绝不**用作 dial 目标 —— hy2 出口恒环回本机 VPN
 	// 数据面,这是「hy2 不得被当作任意 TCP 开放代理」的硬约束。
@@ -153,11 +153,11 @@ func buildHysteriaServerConfig(hc *config.HysteriaConfig, cert tls.Certificate, 
 	if caPath := hc.TLSClientCAFile; caPath != "" {
 		pem, err := os.ReadFile(caPath)
 		if err != nil {
-			return nil, fmt.Errorf("hysteria 读取 tls_client_ca_file: %w", err)
+			return nil, fmt.Errorf("hysteria read tls_client_ca_file: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("hysteria: tls_client_ca_file 中无有效 PEM 证书")
+			return nil, fmt.Errorf("hysteria: tls_client_ca_file contains no valid PEM certificate")
 		}
 		tlsCfg.ClientCAs = pool
 	}
@@ -190,7 +190,7 @@ func buildHysteriaServerConfig(hc *config.HysteriaConfig, cert tls.Certificate, 
 		// 应当只承担 hy2-tunnel 流量。开启 UDPRelayEnabled 会把 hy2 作为通用
 		// SOCKS5 UDP 代理使用,任何 hy2 客户端都能借此从本机发出任意 UDP 流量
 		// (DNS amplification / 内网横移 / 等)。仅在确认需要纯代理用途时才开启。
-		logrus.Warn("[hy2] config.udp_relay_enabled=true,nanotun 当前作为通用 UDP 代理使用;若仅作 VPN 入口请关闭以减小攻击面")
+		logrus.Warn("[hy2] config.udp_relay_enabled=true, so nanotun is currently acting as a general-purpose UDP proxy; if it is only meant to be a VPN entry point, turn this off to shrink the attack surface")
 	}
 
 	out := &hyserver.Config{
@@ -241,10 +241,10 @@ func udpPortFromPacketConn(c net.PacketConn) (int, error) {
 	addr := c.LocalAddr()
 	u, ok := addr.(*net.UDPAddr)
 	if !ok || u == nil {
-		return 0, fmt.Errorf("hysteria: 本地地址非 UDP: %T", addr)
+		return 0, fmt.Errorf("hysteria: local address is not UDP: %T", addr)
 	}
 	if u.Port < 1 || u.Port > 65535 {
-		return 0, fmt.Errorf("hysteria: 无效 UDP 端口 %d", u.Port)
+		return 0, fmt.Errorf("hysteria: invalid UDP port %d", u.Port)
 	}
 	return u.Port, nil
 }
@@ -265,7 +265,7 @@ var sweepHy2PortHopFn = sweepHy2UDPPortHopByComment
 // sweepOrphanHy2PortHopRules 收掉「本次不再安装跳跃」时可能残留的 nanotun_hy2_porthop 规则;>0 时 Info。
 func sweepOrphanHy2PortHopRules() {
 	if n := sweepHy2PortHopFn(); n > 0 {
-		logrus.Infof("Hy2 端口跳跃未启用：清理了 %d 条残留 PREROUTING REDIRECT 规则（nanotun_hy2_porthop）", n)
+		logrus.Infof("Hy2 port hopping is not enabled: cleaned up %d leftover PREROUTING REDIRECT rule(s) (nanotun_hy2_porthop)", n)
 	}
 }
 
@@ -286,7 +286,7 @@ func startEmbeddedHysteria(cfg *config.Config, vpnListenAddr string, loopbackWSU
 	}
 	cert, err := util.LoadAndCheckTLSKeyPair(hc.TLSCertFile, hc.TLSKeyFile, "hy2")
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("hysteria TLS 加载证书: %w", err)
+		return nil, 0, nil, fmt.Errorf("hysteria TLS load certificate: %w", err)
 	}
 	udpAddr := hc.ListenAddr
 	if udpAddr == "" {
@@ -303,14 +303,14 @@ func startEmbeddedHysteria(cfg *config.Config, vpnListenAddr string, loopbackWSU
 	listenPrimary := util.FormatUDPListenAddr(udpHost, primaryPort)
 	packetConn, err := net.ListenPacket("udp", listenPrimary)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("hysteria UDP 监听 %s: %w", listenPrimary, err)
+		return nil, 0, nil, fmt.Errorf("hysteria UDP listen %s: %w", listenPrimary, err)
 	}
 	var hopCleanup func()
 	if util.UDPPortUnionNeedsHop(portUnion) {
 		cleanup, hopErr := setupHy2PortHopFn(primaryPort, portUnion, hc.PortHopIface)
 		if hopErr != nil {
 			_ = packetConn.Close()
-			return nil, 0, nil, fmt.Errorf("hysteria 端口跳跃: %w", hopErr)
+			return nil, 0, nil, fmt.Errorf("hysteria port hopping: %w", hopErr)
 		}
 		hopCleanup = cleanup
 	} else {
@@ -364,18 +364,18 @@ func startEmbeddedHysteria(cfg *config.Config, vpnListenAddr string, loopbackWSU
 	}
 	udpLog := packetConn.LocalAddr().String()
 	if util.UDPPortUnionNeedsHop(portUnion) {
-		logrus.Infof("Hysteria 2：UDP 主端口 %s，客户端端口并集 %q（port hopping）", udpLog, portUnion)
+		logrus.Infof("Hysteria 2: UDP primary port %s, client port union %q (port hopping)", udpLog, portUnion)
 	}
 	if smuxPool != nil {
 		if strings.TrimSpace(hc.ObfsSalamanderPassword) != "" {
-			logrus.Infof("Hysteria 2：UDP %s（Salamander obfs），认证后 TCP 经 smux 多路复用至 %s", udpLog, loopbackWSURL)
+			logrus.Infof("Hysteria 2: UDP %s (Salamander obfs); after authentication TCP is multiplexed over smux to %s", udpLog, loopbackWSURL)
 		} else {
-			logrus.Infof("Hysteria 2：UDP %s，认证后 TCP 经 smux 多路复用至 %s", udpLog, loopbackWSURL)
+			logrus.Infof("Hysteria 2: UDP %s; after authentication TCP is multiplexed over smux to %s", udpLog, loopbackWSURL)
 		}
 	} else if strings.TrimSpace(hc.ObfsSalamanderPassword) != "" {
-		logrus.Infof("Hysteria 2：UDP %s（Salamander obfs），认证后 TCP 转至 WebSocket %s（每流一条连接）", udpLog, loopbackWSURL)
+		logrus.Infof("Hysteria 2: UDP %s (Salamander obfs); after authentication TCP is forwarded to WebSocket %s (one connection per stream)", udpLog, loopbackWSURL)
 	} else {
-		logrus.Infof("Hysteria 2：UDP %s，认证后 TCP 转至 WebSocket %s（每流一条连接）", udpLog, loopbackWSURL)
+		logrus.Infof("Hysteria 2: UDP %s; after authentication TCP is forwarded to WebSocket %s (one connection per stream)", udpLog, loopbackWSURL)
 	}
 	return srv, udpPortNum, hopCleanup, nil
 }

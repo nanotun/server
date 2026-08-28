@@ -11,7 +11,7 @@ import (
 func setupHy2UDPPortHopRedirect(primaryPort uint16, portUnion, iface string) (func(), error) {
 	_ = iface
 	if util.UDPPortUnionNeedsHop(portUnion) {
-		logrus.Warnf("Hy2 端口跳跃：非 Linux 主机，跳过 iptables REDIRECT（主端口 %d；并集 %q）", primaryPort, portUnion)
+		logrus.Warnf("Hy2 port hopping: not a Linux host, skipping the iptables REDIRECT (primary port %d; union %q)", primaryPort, portUnion)
 	}
 	return func() {}, nil
 }

@@ -48,13 +48,13 @@ func readPersistedMeshGateways(dbPath string) []string {
 	defer cancel()
 	st, err := store.Open(ctx, dbPath, store.Options{ReadOnly: true})
 	if err != nil {
-		logrus.WithError(err).Debug("[tun-subnet] 只读探测上次 mesh 网段失败,按无偏好处理")
+		logrus.WithError(err).Debug("[tun-subnet] read-only probe of the previous mesh subnet failed, treating it as no preference")
 		return nil
 	}
 	defer func() { _ = st.Close() }()
 	cidrs, err := st.GetMeshCIDRs(ctx)
 	if err != nil {
-		logrus.WithError(err).Debug("[tun-subnet] 读 mesh_cidrs 失败,按无偏好处理")
+		logrus.WithError(err).Debug("[tun-subnet] reading mesh_cidrs failed, treating it as no preference")
 		return nil
 	}
 	return cidrs
@@ -140,8 +140,8 @@ func warnFixedVIPOutOfMesh(res *loginAuthResult) {
 			"fixed_vip":   p.pin,
 			"mesh":        p.gateway,
 			"family":      p.family,
-		}).Warn("[tun-subnet] 设备的 fixed vIP 不在当前 mesh 网段内,本次登录已改为自动分配 " +
-			"(device list 仍会显示这个钉住的值;要恢复请 `nanotun-admin device set-fixed-vip` 改到网段内)")
+		}).Warn("[tun-subnet] the device's fixed vIP is outside the current mesh subnet, so this login fell back to automatic allocation " +
+			"(device list still shows the pinned value; to restore it, use `nanotun-admin device set-fixed-vip` to move it inside the subnet)")
 	}
 }
 
@@ -167,7 +167,7 @@ func logMeshSubnetMoved(prevGateways []string, newGatewayV4, newGatewayV6 string
 		logrus.WithFields(logrus.Fields{
 			"previous": strings.Join(prevGateways, ","),
 			"current":  cur,
-		}).Warn("[tun-subnet] mesh 网段与上次启动不同:全部 lease 将重新分配,掉出新网段的 fixed vIP 会被跳过 " +
-			"(多为本机新增了与旧网段冲突的接口,或 [tun] subnets 列表被改动)")
+		}).Warn("[tun-subnet] the mesh subnet differs from the last startup: every lease will be reallocated, and any fixed vIP that falls outside the new subnet will be skipped " +
+			"(usually because this host gained an interface that conflicts with the old subnet, or the [tun] subnets list was changed)")
 	}
 }

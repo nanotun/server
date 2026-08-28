@@ -147,20 +147,20 @@ func TestDeliverIPPacketToConn_OpenTunChanDelivers(t *testing.T) {
 func TestExitUnavailableCause_DistinguishesOfflineFromNotRunningExit(t *testing.T) {
 	const dev = int64(9101)
 
-	if got := exitUnavailableCause(dev); got != "选定出口节点已离线" {
+	if got := exitUnavailableCause(dev); got != "the selected exit node is offline" {
 		t.Errorf("无任何会话时应判为离线,got %q", got)
 	}
 
 	// 设备在线,但这条会话没有 advertisedExit(没带 --exit-node / 已撤回声明)。
 	c := &Connection{connIDStr: "plain-session", deviceID: dev}
 	installDeviceConn(t, c)
-	if got := exitUnavailableCause(dev); got == "选定出口节点已离线" {
+	if got := exitUnavailableCause(dev); got == "the selected exit node is offline" {
 		t.Errorf("设备在线(仅未跑出口)不应报「已离线」,got %q", got)
 	}
 
 	// 会话被接管/踢掉后,该设备就算真的没人了 → 回到「已离线」。
 	c.takenOver.Store(true)
-	if got := exitUnavailableCause(dev); got != "选定出口节点已离线" {
+	if got := exitUnavailableCause(dev); got != "the selected exit node is offline" {
 		t.Errorf("会话已被接管应判为离线,got %q", got)
 	}
 }

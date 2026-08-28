@@ -43,12 +43,12 @@ const (
 func (p PoWConfig) Validate() error {
 	var errs []string
 	if p.FailuresEnable < 0 {
-		errs = append(errs, fmt.Sprintf("[server.pow].failures_enable=%d 不能为负(0=从第 1 次失败即 ramp)", p.FailuresEnable))
+		errs = append(errs, fmt.Sprintf("[server.pow].failures_enable=%d must not be negative (0 = ramp starting from the 1st failure)", p.FailuresEnable))
 	}
 	// 各难度字段:==0 视作未配(用默认);其余(含负数)必须落在 [PoWMinDifficulty, PoWMaxDifficulty]。
 	checkRange := func(name string, v, def int) {
 		if v != 0 && (v < PoWMinDifficulty || v > PoWMaxDifficulty) {
-			errs = append(errs, fmt.Sprintf("[server.pow].%s=%d 越界(须 %d..%d;0=用默认 %d)",
+			errs = append(errs, fmt.Sprintf("[server.pow].%s=%d out of range (must be %d..%d; 0 = use the default %d)",
 				name, v, PoWMinDifficulty, PoWMaxDifficulty, def))
 		}
 	}
@@ -56,13 +56,13 @@ func (p PoWConfig) Validate() error {
 	checkRange("ramp_difficulty", p.RampDifficulty, 14)
 	checkRange("adaptive_ceiling", p.AdaptiveCeiling, 22)
 	if p.StepPerFailure < 0 {
-		errs = append(errs, fmt.Sprintf("[server.pow].step_per_failure=%d 不能为负(0=用默认 2)", p.StepPerFailure))
+		errs = append(errs, fmt.Sprintf("[server.pow].step_per_failure=%d must not be negative (0 = use the default 2)", p.StepPerFailure))
 	}
 	if p.TTLSec < 0 {
-		errs = append(errs, fmt.Sprintf("[server.pow].ttl_sec=%d 不能为负(0=用默认 300)", p.TTLSec))
+		errs = append(errs, fmt.Sprintf("[server.pow].ttl_sec=%d must not be negative (0 = use the default 300)", p.TTLSec))
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("[server.pow] 配置非法:\n  - %s", strings.Join(errs, "\n  - "))
+		return fmt.Errorf("[server.pow] invalid configuration:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	// 顺序约束在「零值→默认」解析后的值上做(与 NewPoWService 一致):倒置意味着
 	// 「失败后难度反而更低」,让自适应升级失效。
@@ -70,13 +70,13 @@ func (p PoWConfig) Validate() error {
 	ramp := powValOrDefault(p.RampDifficulty, 14)
 	ceil := powValOrDefault(p.AdaptiveCeiling, 22)
 	if ramp < base {
-		errs = append(errs, fmt.Sprintf("[server.pow].ramp_difficulty(%d) 必须 ≥ base_difficulty(%d)", ramp, base))
+		errs = append(errs, fmt.Sprintf("[server.pow].ramp_difficulty(%d) must be >= base_difficulty(%d)", ramp, base))
 	}
 	if ceil < ramp {
-		errs = append(errs, fmt.Sprintf("[server.pow].adaptive_ceiling(%d) 必须 ≥ ramp_difficulty(%d)", ceil, ramp))
+		errs = append(errs, fmt.Sprintf("[server.pow].adaptive_ceiling(%d) must be >= ramp_difficulty(%d)", ceil, ramp))
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("[server.pow] 配置非法:\n  - %s", strings.Join(errs, "\n  - "))
+		return fmt.Errorf("[server.pow] invalid configuration:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
 }
@@ -98,7 +98,7 @@ func (s ServerConfig) ValidateTLSPair() error {
 	cert := strings.TrimSpace(s.TLSCertFile)
 	key := strings.TrimSpace(s.TLSKeyFile)
 	if (cert != "") != (key != "") {
-		return fmt.Errorf("[server] tls_cert_file 与 tls_key_file 须同时配置或同时留空")
+		return fmt.Errorf("[server] tls_cert_file and tls_key_file must both be set or both be left empty")
 	}
 	return nil
 }
@@ -111,7 +111,7 @@ func (s ServerConfig) ValidateJumpHostFirewall() error {
 		return nil
 	}
 	if len(s.JumpHostAllowedIPs) == 0 {
-		return fmt.Errorf("[server] 启用 jump_host_firewall 必须在 [server].jump_host_allowed_ips 提供跳板机 IPv4 名单(留空等于全网开放,这通常不是你想要的)。要么填名单,要么把 jump_host_firewall 设为 false。")
+		return fmt.Errorf("[server] enabling jump_host_firewall requires a jump host IPv4 allowlist in [server].jump_host_allowed_ips (leaving it empty is the same as opening up to the whole internet, which is usually not what you want). Either fill in the allowlist, or set jump_host_firewall to false.")
 	}
 	// 第十二轮深扫 MED:逐条校验必须是可解析的 **IPv4 地址**(runtime sanitizeJumpHostIPv4s 只认 net.ParseIP
 	// 的 IPv4:CIDR / 主机名 / IPv6 一律静默丢弃)。此前只查 len==0 → 配 ["not-an-ip"] 能过 lint 与启动,运行期
@@ -125,17 +125,17 @@ func (s ServerConfig) ValidateJumpHostFirewall() error {
 			continue
 		}
 		if ip := net.ParseIP(e); ip == nil || ip.To4() == nil {
-			errs = append(errs, fmt.Sprintf("%q 不是合法 IPv4 地址(不支持 CIDR / 主机名 / IPv6)", raw))
+			errs = append(errs, fmt.Sprintf("%q is not a valid IPv4 address (CIDR / hostname / IPv6 are not accepted)", raw))
 			continue
 		}
 		valid++
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("[server].jump_host_allowed_ips 存在非法条目(runtime 会静默丢弃 → 预期跳板机被挡死;请改成合法 IPv4 或移除):\n  - %s",
+		return fmt.Errorf("[server].jump_host_allowed_ips has invalid entries (the runtime silently drops them, so the jump host you meant to allow ends up locked out; fix them to valid IPv4 or remove them):\n  - %s",
 			strings.Join(errs, "\n  - "))
 	}
 	if valid == 0 {
-		return fmt.Errorf("[server].jump_host_allowed_ips 全是空白项,启用 jump_host_firewall 时等于只允许 127.0.0.1(预期跳板机会被挡死)。请填至少一个合法 IPv4,或把 jump_host_firewall 设为 false。")
+		return fmt.Errorf("[server].jump_host_allowed_ips holds nothing but blank entries, which with jump_host_firewall enabled allows 127.0.0.1 only (the jump host you meant to allow ends up locked out). Add at least one valid IPv4, or set jump_host_firewall to false.")
 	}
 	return nil
 }
@@ -165,7 +165,7 @@ func (s ServerConfig) ValidateJumpHostProtectedPorts() error {
 		}
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("[server].jump_host_protected_ports 存在非法条目(启用 jump_host_firewall 时不允许静默跳过,否则 hy2/REALITY 端口会被漏保护;要么改对、要么清空沿用默认只保护 listen_addr TCP):\n  - %s",
+		return fmt.Errorf("[server].jump_host_protected_ports has invalid entries (with jump_host_firewall enabled they must not be silently skipped, otherwise the hy2/REALITY ports are left unprotected; either fix them, or clear the list to keep the default of protecting only listen_addr TCP):\n  - %s",
 			strings.Join(errs, "\n  - "))
 	}
 	return nil
@@ -190,7 +190,7 @@ func (t TUNConfig) ValidateTUNSubnets() error {
 		return n
 	}
 	if countNonBlank(t.Subnets) == 0 && countNonBlank(t.SubnetsV6) == 0 {
-		return fmt.Errorf("[tun] subnets 与 subnets_v6 至少配置一项(两者皆空 → 数据面无地址池,server 启动即 Fatal)")
+		return fmt.Errorf("[tun] at least one of subnets and subnets_v6 must be set (with both empty the data plane has no address pool and the server goes Fatal on startup)")
 	}
 	var errs []string
 	for i, s := range t.Subnets {
@@ -203,7 +203,7 @@ func (t TUNConfig) ValidateTUNSubnets() error {
 			continue // CIDR 语法错交给 Config.Validate.checkCIDRs
 		}
 		if ip.To4() == nil {
-			errs = append(errs, fmt.Sprintf("[tun].subnets[%d]=%q 是 IPv6 CIDR,应放到 [tun].subnets_v6", i, s))
+			errs = append(errs, fmt.Sprintf("[tun].subnets[%d]=%q is an IPv6 CIDR and belongs in [tun].subnets_v6", i, s))
 			continue
 		}
 		// v4-mapped 写法(`::ffff:10.0.0.1/24`):地址解析出来是 v4,但前缀长度是在 **128 位**空间里算的。
@@ -211,7 +211,7 @@ func (t TUNConfig) ValidateTUNSubnets() error {
 		// 这条以前能过校验(To4() 非空 → 当成合法 v4 网段),要到第一个客户端登录才发作。
 		if strings.Contains(e, ":") {
 			errs = append(errs, fmt.Sprintf(
-				"[tun].subnets[%d]=%q 用了 IPv4-mapped 写法,前缀长度会按 128 位解释(掩码下发成 0.0.0.0、地址池分不出地址),请直接写点分十进制如 %q",
+				"[tun].subnets[%d]=%q uses the IPv4-mapped form, so the prefix length is interpreted in 128-bit space (the netmask goes out as 0.0.0.0 and the address pool cannot hand out a single address); write plain dotted decimal instead, such as %q",
 				i, s, ip.String()+"/24"))
 		}
 	}
@@ -225,11 +225,11 @@ func (t TUNConfig) ValidateTUNSubnets() error {
 			continue
 		}
 		if ip.To4() != nil {
-			errs = append(errs, fmt.Sprintf("[tun].subnets_v6[%d]=%q 是 IPv4 CIDR,应放到 [tun].subnets", i, s))
+			errs = append(errs, fmt.Sprintf("[tun].subnets_v6[%d]=%q is an IPv4 CIDR and belongs in [tun].subnets", i, s))
 		}
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("[tun] 网段族错配(runtime 会放进错误的地址池 → 该族无可用网段 → 启动 Fatal):\n  - %s",
+		return fmt.Errorf("[tun] subnet address family mismatch (the runtime feeds them to the wrong address pool, that family is left with no usable subnet, and startup goes Fatal):\n  - %s",
 			strings.Join(errs, "\n  - "))
 	}
 	return nil
@@ -240,12 +240,12 @@ func (t TUNConfig) ValidateTUNSubnets() error {
 func jumpHostPortSpecError(s string) string {
 	idx := strings.Index(s, "/")
 	if idx <= 0 || idx == len(s)-1 {
-		return "格式应为 proto/port 或 proto/start-end"
+		return "format must be proto/port or proto/start-end"
 	}
 	proto := s[:idx]
 	portPart := s[idx+1:]
 	if proto != "tcp" && proto != "udp" {
-		return "proto 必须是 tcp 或 udp"
+		return "proto must be tcp or udp"
 	}
 	startStr, endStr := portPart, ""
 	if strings.ContainsAny(portPart, "-:") {
@@ -257,11 +257,11 @@ func jumpHostPortSpecError(s string) string {
 		startStr, endStr = parts[0], parts[1]
 	}
 	if n, err := strconv.Atoi(startStr); err != nil || n < 1 || n > 65535 {
-		return "起始端口非法(须 1..65535)"
+		return "invalid start port (must be 1..65535)"
 	}
 	if endStr != "" {
 		if n, err := strconv.Atoi(endStr); err != nil || n < 1 || n > 65535 {
-			return "结束端口非法(须 1..65535)"
+			return "invalid end port (must be 1..65535)"
 		}
 	}
 	return ""

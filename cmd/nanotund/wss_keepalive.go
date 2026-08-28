@@ -55,7 +55,7 @@ func startWSSDataPlaneKeepalive(ctx context.Context, c *Connection, w io.Writer,
 			"remote":  remote,
 			"got":     interval.String(),
 			"clamped": minPingInterval.String(),
-		}).Warn("[keepalive] data_plane_ping_interval 小于 1ms,已夹到 1ms(疑似漏写单位导致次毫秒自旋)")
+		}).Warn("[keepalive] data_plane_ping_interval is below 1ms, clamped to 1ms (unit suffix was probably left out, causing sub-millisecond spinning)")
 		interval = minPingInterval
 	}
 	if missThreshold <= 0 {
@@ -81,7 +81,7 @@ func startWSSDataPlaneKeepalive(ctx context.Context, c *Connection, w io.Writer,
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
 				"remote": remote, "seq": seq,
-			}).WithError(err).Debug("[keepalive] Ping 写失败,退出 keepalive goroutine(上层 read/write loop 会清理)")
+			}).WithError(err).Debug("[keepalive] Ping write failed, exiting the keepalive goroutine (the upper read/write loop will clean up)")
 			return false
 		}
 		return true
@@ -122,7 +122,7 @@ func startWSSDataPlaneKeepalive(ctx context.Context, c *Connection, w io.Writer,
 					"last_pong":   lastPongAgo,
 					"miss_window": time.Duration(missWindow).String(),
 					"ping_seq":    seq,
-				}).Warn("[keepalive] 数据面 WSS 连续 N 次 Ping 无 Pong,判定僵尸连接,主动 Close 触发客户端重连")
+				}).Warn("[keepalive] data-plane WSS saw no Pong for N consecutive Pings, treating it as a zombie connection and closing it to make the client reconnect")
 				// 深扫第十轮 MED(既有):linkConn 是 interface,读必须走 linkWrMu(与登录路径
 				// `c.linkConn = rwc` 赋值同步)。此前锁外裸读并 Close 与之 data race,且和 kick/
 				// shutdown 路径「锁内快照 → 锁外 Close」的口径不一致。改用 safeLinkConn() 快照。

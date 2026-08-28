@@ -417,7 +417,7 @@ func TestPrepareControlSocketPath_FailsClosedOnUnsafeLocations(t *testing.T) {
 			t.Fatal("在人人可写且无 sticky 的目录里放无鉴权 socket 应被拒绝 —— " +
 				"本地任何用户都能 unlink 掉再 squat 一个,管理员的 kick/reload 就发给攻击者了")
 		}
-		if !strings.Contains(err.Error(), "权限不安全") {
+		if !strings.Contains(err.Error(), "unsafe permissions") {
 			t.Fatalf("错误应说明是权限问题: %v", err)
 		}
 	})

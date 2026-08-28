@@ -203,7 +203,7 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 	// (label 缺失客户端会 fallback 展示 dial host)。
 	advertisedHost, ahErr := s.store.GetAdvertisedHost(ctx)
 	if ahErr != nil {
-		logrus.WithError(ahErr).Warn("[server-qr] 读 advertised_host 失败,QR 将不带 label")
+		logrus.WithError(ahErr).Warn("[server-qr] failed to read advertised_host, the QR will carry no label")
 		advertisedHost = ""
 	}
 
@@ -227,7 +227,7 @@ func (s *Server) handleServerQRReveal(w http.ResponseWriter, r *http.Request) {
 		if verr != nil {
 			// hash 解析失败属罕见 path,但不应改 reason 让 attacker 区分。
 			// log warn 让运维知道,audit detail 用统一 reason。
-			logrus.WithError(verr).Warn("[server-qr] VerifyWebPassword 解析失败")
+			logrus.WithError(verr).Warn("[server-qr] VerifyWebPassword failed to parse the stored hash")
 		}
 		s.audit.WriteFromRequest(r, "server_profile_qr_password_fail",
 			FormatTarget("web_admin", admin.ID),
@@ -454,7 +454,7 @@ func (s *Server) buildServerProfileQRAndURL(ctx context.Context, dialHost, adver
 	if err := cmd.Run(); err != nil {
 		logrus.WithError(err).WithField("stderr", stderr.String()).
 			WithField("bin", binPath).
-			Error("[server-qr] nanotun-admin profile show 失败")
+			Error("[server-qr] nanotun-admin profile show failed")
 		// 截短 stderr 第一行作为错误信息,避免泄露磁盘路径等。
 		firstLine := strings.SplitN(stderr.String(), "\n", 2)[0]
 		if len(firstLine) > 120 {
@@ -483,7 +483,7 @@ func (s *Server) buildServerProfileQRAndURL(ctx context.Context, dialHost, adver
 				qerr.Error(), lowErr.Error(), len(urlText))
 		}
 		logrus.WithField("url_bytes", len(urlText)).
-			Warn("[server-qr] PNG 渲染降级到 Low 纠错(URL 超 Medium 容量;扫码可靠度仍够屏幕直显,跨屏拍摄请留意光照与对焦)")
+			Warn("[server-qr] PNG rendering fell back to Low error correction (the URL exceeds Medium capacity; still reliable enough to scan straight off the screen, but watch lighting and focus when photographing another screen)")
 	}
 
 	return urlText, png, nil

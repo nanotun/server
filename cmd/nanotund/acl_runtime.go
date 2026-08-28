@@ -167,7 +167,7 @@ func reloadACLSnapshotFromStore(st *store.Store) (int, error) {
 				// CLI `setting set acl_default_action` 也已加 write 校验(见 cmd_setting.go),
 				// 正常路径拼错根本落不了库,这里是最后一道兜底。
 				logrus.WithField("acl_default_action", v).Warn(
-					"[acl] 无法识别的 acl_default_action 值,按 fail-closed 处理为 deny;请改回 allow/deny")
+					"[acl] unrecognized acl_default_action value, treating it as deny (fail-closed); set it back to allow/deny")
 				def = store.ACLDeny
 			}
 		}

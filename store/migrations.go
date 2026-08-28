@@ -64,11 +64,11 @@ func (s *Store) Migrate(ctx context.Context) (retErr error) {
 			// 提示出现的时机,恰恰是人已经把机器降级、正着急的时候。现在装机脚本会在每次
 			// 升级前留一份(VACUUM INTO 快照,最近 3 份),所以这里能指出确切位置。
 			return fmt.Errorf(
-				"%w:库的 schema 版本是 %d,本程序只认到 %d。"+
-					"这台机器上装过更新的 nanotun,降级回来不安全 —— 请换回原来的版本;"+
-					"要留在这个旧版本的话,用升级前的备份把库换回去:"+
-					"/var/lib/nanotun/backups/ 下最近那份 nanotun-<时间戳>.db"+
-					"(停掉 nanotun 服务后覆盖 /var/lib/nanotun/nanotun.db,再启动)",
+				"%w: the database schema version is %d, this build only knows up to %d. "+
+					"A newer nanotun was installed on this machine, and downgrading back is not safe — switch back to that version; "+
+					"to stay on this older version, put the pre-upgrade backup in place instead: "+
+					"the most recent nanotun-<timestamp>.db under /var/lib/nanotun/backups/ "+
+					"(stop the nanotun service, overwrite /var/lib/nanotun/nanotun.db, then start it again)",
 				ErrSchemaFromFuture, current, newest)
 		}
 	}

@@ -53,7 +53,7 @@ type ServerTLSOptions struct {
 // 在启动阶段就 fail,而不是握手到一半才报错。
 func NewServerTLSConfig(opts ServerTLSOptions) *tls.Config {
 	if len(opts.Certificates) == 0 {
-		panic("util: NewServerTLSConfig 调用时 Certificates 为空,必须至少提供一份证书")
+		panic("util: NewServerTLSConfig called with empty Certificates; at least one certificate must be provided")
 	}
 
 	minV := uint16(tls.VersionTLS12)

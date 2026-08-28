@@ -820,7 +820,7 @@ func (c *Config) Validate() error {
 
 	checkRate := func(field string, v int64) {
 		if v < 0 {
-			errs = append(errs, fmt.Sprintf("%s 不能为负(%d);0 表示不限速", field, v))
+			errs = append(errs, fmt.Sprintf("%s must not be negative (%d); 0 means no rate limit", field, v))
 		}
 	}
 	checkRate("[server].upload_rate", int64(c.Server.UploadRate))
@@ -842,7 +842,7 @@ func (c *Config) Validate() error {
 				continue // 容忍 TOML 里的空串 / 占位项
 			}
 			if _, _, err := net.ParseCIDR(t); err != nil {
-				errs = append(errs, fmt.Sprintf("%s[%d]=%q 不是合法 CIDR: %v", field, i, s, err))
+				errs = append(errs, fmt.Sprintf("%s[%d]=%q is not a valid CIDR: %v", field, i, s, err))
 			}
 		}
 	}
@@ -853,13 +853,13 @@ func (c *Config) Validate() error {
 	// 重叠(重叠会让池地址被当 vIP demux,数据面语义直接错乱 → 启动即拦)。默认值属常量,不走此分支。
 	if v := strings.TrimSpace(c.Server.MagicDNS.Via4Pool); v != "" && !strings.EqualFold(v, "off") {
 		if _, pn, err := net.ParseCIDR(v); err != nil || pn.IP.To4() == nil {
-			errs = append(errs, fmt.Sprintf("[server.magic_dns].via4_pool=%q 不是合法 IPv4 CIDR", v))
+			errs = append(errs, fmt.Sprintf("[server.magic_dns].via4_pool=%q is not a valid IPv4 CIDR", v))
 		} else if ones, _ := pn.Mask.Size(); ones > 28 {
-			errs = append(errs, fmt.Sprintf("[server.magic_dns].via4_pool=%q 前缀须 ≤ /28(池至少 14 个地址)", v))
+			errs = append(errs, fmt.Sprintf("[server.magic_dns].via4_pool=%q prefix must be <= /28 (the pool needs at least 14 addresses)", v))
 		} else {
 			for _, s := range c.TUN.Subnets {
 				if _, mn, merr := net.ParseCIDR(strings.TrimSpace(s)); merr == nil && (mn.Contains(pn.IP) || pn.Contains(mn.IP)) {
-					errs = append(errs, fmt.Sprintf("[server.magic_dns].via4_pool=%q 与 [tun].subnets 的 %q 重叠", v, s))
+					errs = append(errs, fmt.Sprintf("[server.magic_dns].via4_pool=%q overlaps %q in [tun].subnets", v, s))
 				}
 			}
 		}
@@ -876,7 +876,7 @@ func (c *Config) Validate() error {
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("配置校验失败:\n  - %s", strings.Join(errs, "\n  - "))
+		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
 }
@@ -889,32 +889,32 @@ func (c *Config) Validate() error {
 // 启动即拦截,给出清晰报错。零值字段一律跳过(表示"用默认")。
 func validateSmux(s *SmuxConfig, errs *[]string) {
 	if s.Version != 0 && s.Version != 1 && s.Version != 2 {
-		*errs = append(*errs, fmt.Sprintf("[smux].version=%d 非法(仅 1 或 2;0=用默认)", s.Version))
+		*errs = append(*errs, fmt.Sprintf("[smux].version=%d is invalid (only 1 or 2; 0 = use the default)", s.Version))
 	}
 	if s.KeepAliveIntervalSec < 0 {
-		*errs = append(*errs, fmt.Sprintf("[smux].keepalive_interval_s=%d 不能为负", s.KeepAliveIntervalSec))
+		*errs = append(*errs, fmt.Sprintf("[smux].keepalive_interval_s=%d must not be negative", s.KeepAliveIntervalSec))
 	}
 	if s.KeepAliveTimeoutSec < 0 {
-		*errs = append(*errs, fmt.Sprintf("[smux].keepalive_timeout_s=%d 不能为负", s.KeepAliveTimeoutSec))
+		*errs = append(*errs, fmt.Sprintf("[smux].keepalive_timeout_s=%d must not be negative", s.KeepAliveTimeoutSec))
 	}
 	// 两者都显式设置时,interval 必须 < timeout(smux 硬约束;否则 keepalive 判死逻辑失效)。
 	if s.KeepAliveIntervalSec > 0 && s.KeepAliveTimeoutSec > 0 && s.KeepAliveIntervalSec >= s.KeepAliveTimeoutSec {
-		*errs = append(*errs, fmt.Sprintf("[smux].keepalive_interval_s(%d) 必须 < keepalive_timeout_s(%d)",
+		*errs = append(*errs, fmt.Sprintf("[smux].keepalive_interval_s(%d) must be < keepalive_timeout_s(%d)",
 			s.KeepAliveIntervalSec, s.KeepAliveTimeoutSec))
 	}
 	// max_frame_size 上限 65535(smux 帧长字段为 16bit);0=用默认。
 	if s.MaxFrameSize < 0 || s.MaxFrameSize > 65535 {
-		*errs = append(*errs, fmt.Sprintf("[smux].max_frame_size=%d 非法(须 1..65535;0=用默认)", s.MaxFrameSize))
+		*errs = append(*errs, fmt.Sprintf("[smux].max_frame_size=%d is invalid (must be 1..65535; 0 = use the default)", s.MaxFrameSize))
 	}
 	if s.MaxReceiveBuffer < 0 {
-		*errs = append(*errs, fmt.Sprintf("[smux].max_receive_buffer=%d 不能为负", s.MaxReceiveBuffer))
+		*errs = append(*errs, fmt.Sprintf("[smux].max_receive_buffer=%d must not be negative", s.MaxReceiveBuffer))
 	}
 	if s.MaxStreamBuffer < 0 {
-		*errs = append(*errs, fmt.Sprintf("[smux].max_stream_buffer=%d 不能为负", s.MaxStreamBuffer))
+		*errs = append(*errs, fmt.Sprintf("[smux].max_stream_buffer=%d must not be negative", s.MaxStreamBuffer))
 	}
 	// 两者都显式设置时,stream buffer 不得超过 receive buffer(smux VerifyConfig 硬约束)。
 	if s.MaxStreamBuffer > 0 && s.MaxReceiveBuffer > 0 && s.MaxStreamBuffer > s.MaxReceiveBuffer {
-		*errs = append(*errs, fmt.Sprintf("[smux].max_stream_buffer(%d) 不能大于 max_receive_buffer(%d)",
+		*errs = append(*errs, fmt.Sprintf("[smux].max_stream_buffer(%d) must not exceed max_receive_buffer(%d)",
 			s.MaxStreamBuffer, s.MaxReceiveBuffer))
 	}
 }
@@ -936,11 +936,11 @@ func validateListenAddrFormatAllowZero(addr string) error {
 func validateListenAddrPort(addr string, minPort int) error {
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("无法解析为 host:port(%v)", err)
+		return fmt.Errorf("cannot be parsed as host:port (%v)", err)
 	}
 	p, perr := strconv.Atoi(port)
 	if perr != nil || p < minPort || p > 65535 {
-		return fmt.Errorf("端口 %q 非法(需 %d..65535)", port, minPort)
+		return fmt.Errorf("port %q is invalid (must be %d..65535)", port, minPort)
 	}
 	return nil
 }

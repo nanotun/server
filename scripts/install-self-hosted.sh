@@ -763,14 +763,16 @@ step_t "2. Enable IP forwarding + unprivileged ICMP ping" \
 # 两边 sysctl --system 都读,建出来就行。
 mkdir -p /etc/sysctl.d
 cat > /etc/sysctl.d/99-nanotun.conf <<'SYSCTL'
-# nanotun 自托管 VPN 网关：转发数据包给客户端访问公网 / 互访
+# nanotun self-hosted VPN gateway: forward packets so clients can reach the internet
+# and each other
 net.ipv4.ip_forward = 1
 net.ipv4.conf.all.forwarding = 1
 net.ipv6.conf.all.forwarding = 1
-# nanotun-web 在保存 server_dial_host 时跑 unprivileged ICMP ping(pro-bing)
-# 做可达性检测。Linux 默认 ping_group_range=0 0,非 root 无法创建 ping socket →
-# pro-bing 初始化失败 → admin 被迫永远勾「跳过 ICMP 可达性检测」绕过。
-# 放开为全范围让任意 group 都能跑 unprivileged ping。
+# When saving server_dial_host, nanotun-web runs an unprivileged ICMP ping (pro-bing)
+# as a reachability check. Linux defaults to ping_group_range=0 0, so a non-root process
+# cannot create a ping socket -> pro-bing fails to initialize -> the admin is forced to
+# tick "skip the ICMP reachability check" forever just to get past it.
+# Opening the full range lets any group run an unprivileged ping.
 net.ipv4.ping_group_range = 0 2147483647
 SYSCTL
 # -e:遇到内核里不存在的键只警告,不作为错误。

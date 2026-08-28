@@ -84,7 +84,7 @@ func TestLoadAndCheckTLSKeyPair_RefusesCertsThatWouldFailAtHandshakeTime(t *test
 		if err == nil {
 			t.Fatal("过期证书应在启动期就被拒,而不是等所有客户端握手集体失败")
 		}
-		if !strings.Contains(err.Error(), "过期") {
+		if !strings.Contains(err.Error(), "has expired") {
 			t.Fatalf("错误里要点明是过期: %v", err)
 		}
 	})
@@ -95,7 +95,7 @@ func TestLoadAndCheckTLSKeyPair_RefusesCertsThatWouldFailAtHandshakeTime(t *test
 		if err == nil {
 			t.Fatal("未生效证书应被拒")
 		}
-		if !strings.Contains(err.Error(), "尚未生效") {
+		if !strings.Contains(err.Error(), "is not valid yet") {
 			t.Fatalf("错误里要点明是未生效: %v", err)
 		}
 	})

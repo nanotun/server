@@ -114,7 +114,7 @@ func (l *powIPLimiter) AllowChallenge(remoteAddr string) (bool, string) {
 						"cap_exceeded_total":  l.capExceeded,
 						"deny_in_last_window": acc,
 						"window":              powIPRLWarnThrottle.String(),
-					}).Warn("[pow-ratelimit] per-IP 出题状态表已满,拒绝新 IP 出题")
+					}).Warn("[pow-ratelimit] the per-IP challenge state table is full, refusing to issue challenges to new IPs")
 				}
 				return false, host
 			}
@@ -135,7 +135,7 @@ func (l *powIPLimiter) AllowChallenge(remoteAddr string) (bool, string) {
 				"rate_per_60s":        int(60 * float64(powIPRLRate)),
 				"deny_in_last_window": acc,
 				"window":              powIPRLWarnThrottle.String(),
-			}).Warn("[pow-ratelimit] per-IP 出题尝试超频,拒绝")
+			}).Warn("[pow-ratelimit] per-IP challenge attempts exceeded the allowed rate, rejected")
 		}
 		return false, host
 	}

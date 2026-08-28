@@ -192,7 +192,7 @@ func flushACLDropAggregates(ctx context.Context, st *store.Store) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].count > items[j].count })
 
-	logrus.WithField("bucket_count", len(items)).Debug("[acl-drop-audit] flush 聚合")
+	logrus.WithField("bucket_count", len(items)).Debug("[acl-drop-audit] flushing aggregated drops")
 	for _, it := range items {
 		detail := fmt.Sprintf("src=%d dst=%d proto=%s port=%d kind=%s count=%d first=%d last=%d",
 			it.key.srcUserID, it.key.dstUserID, it.key.proto, it.key.dstPort, it.key.kind,
@@ -201,7 +201,7 @@ func flushACLDropAggregates(ctx context.Context, st *store.Store) {
 		err := st.Audit(opCtx, "acl-runtime", "acl_drop_agg", aclDropAuditTarget(it.key), detail)
 		cancel()
 		if err != nil {
-			logrus.WithError(err).Debug("[acl-drop-audit] 写 audit 失败,丢弃当批")
+			logrus.WithError(err).Debug("[acl-drop-audit] failed to write audit, dropping this batch")
 		}
 	}
 }

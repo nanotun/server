@@ -41,7 +41,7 @@ func initNotify() {
 	notifyOnce.Do(func() {
 		addr := os.Getenv("NOTIFY_SOCKET")
 		if addr == "" {
-			notifyErr = errors.New("NOTIFY_SOCKET 未设置(未运行在 systemd Type=notify 下)")
+			notifyErr = errors.New("NOTIFY_SOCKET is not set (not running under systemd Type=notify)")
 			return
 		}
 		ua := &net.UnixAddr{Net: "unixgram"}
@@ -69,7 +69,7 @@ func sdNotifyReady() {
 		return
 	}
 	if _, err := notifyConn.Write([]byte("READY=1\nSTATUS=ready\n")); err != nil {
-		logrus.WithError(err).Debug("[sdnotify] READY 写入失败")
+		logrus.WithError(err).Debug("[sdnotify] failed to write READY")
 	}
 }
 
@@ -118,14 +118,14 @@ func startSDWatchdog(ctx context.Context) bool {
 		logrus.WithFields(logrus.Fields{
 			"interval":      interval.String(),
 			"watchdog_usec": usec,
-		}).Info("[sdnotify] systemd watchdog 已启用,本进程会定时上报心跳")
+		}).Info("[sdnotify] systemd watchdog enabled; this process will send heartbeats on a timer")
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
 				if _, err := notifyConn.Write([]byte("WATCHDOG=1\n")); err != nil {
-					logrus.WithError(err).Warn("[sdnotify] WATCHDOG 写入失败")
+					logrus.WithError(err).Warn("[sdnotify] failed to write WATCHDOG")
 				}
 			}
 		}

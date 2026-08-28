@@ -31,13 +31,13 @@ const healthAllowPublicEnv = "NANOTUN_HEALTH_ALLOW_PUBLIC"
 // 返回 cleanup func,main 中加入 defer 链。listener 起失败仅 Warn(健康检查丢了不阻塞业务)。
 func startHealthHTTPServer(addr string, gw *gatewayState) (cleanup func()) {
 	if strings.TrimSpace(addr) == "" {
-		logrus.Info("[health] health_listen_addr 为空,health endpoint 未启用")
+		logrus.Info("[health] health_listen_addr is empty, health endpoint not enabled")
 		return func() {}
 	}
 
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		logrus.Warnf("[health] health_listen_addr %q 无法解析,健康检查端点未启动: %v", addr, err)
+		logrus.Warnf("[health] health_listen_addr %q cannot be parsed, health endpoint not started: %v", addr, err)
 		return func() {}
 	}
 	if !isLoopbackHost(host) {
@@ -45,10 +45,10 @@ func startHealthHTTPServer(addr string, gw *gatewayState) (cleanup func()) {
 			logrus.WithFields(logrus.Fields{
 				"addr": addr,
 				"env":  healthAllowPublicEnv,
-			}).Error("[health] 拒绝在非环回地址启动 /health(P1-9 加固);如确需暴露,设环境变量 NANOTUN_HEALTH_ALLOW_PUBLIC=1,但强烈建议改用 127.0.0.1:port + 内部反代")
+			}).Error("[health] refusing to start /health on a non-loopback address (P1-9 hardening); if exposure is really required set NANOTUN_HEALTH_ALLOW_PUBLIC=1, but 127.0.0.1:port + an internal reverse proxy is strongly recommended instead")
 			return func() {}
 		}
-		logrus.Warnf("[health] health 端点监听非环回地址 %s（通过 %s 强制开启）—— 外网可探测 TUN/store 就绪状态,建议改为 127.0.0.1:port + 内部反代", addr, healthAllowPublicEnv)
+		logrus.Warnf("[health] health endpoint listening on non-loopback address %s (force-enabled via %s): the public internet can probe TUN/store readiness, prefer 127.0.0.1:port + an internal reverse proxy", addr, healthAllowPublicEnv)
 	}
 
 	srv := &http.Server{
@@ -60,9 +60,9 @@ func startHealthHTTPServer(addr string, gw *gatewayState) (cleanup func()) {
 	}
 
 	go safeGlobalGoroutine("healthHTTP", globalContextCancel, func() {
-		logrus.Infof("[health] /health endpoint 监听 %s", addr)
+		logrus.Infof("[health] /health endpoint listening on %s", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logrus.WithError(err).Warn("[health] HTTP 服务退出")
+			logrus.WithError(err).Warn("[health] HTTP server exited")
 		}
 	})
 

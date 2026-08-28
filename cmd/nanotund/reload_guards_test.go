@@ -44,7 +44,7 @@ func TestApplyConfigReload_AFailedFirewallApplyIsNeitherAppliedNorForgotten(t *t
 		t.Fatal("刷规则失败却记成了已应用 —— 运维据此认为受保护端口已限制到名单内,实际对全网敞开")
 	}
 	if !slices.ContainsFunc(deferred, func(s string) bool {
-		return strings.Contains(s, "jump_host_allowed_ips") && strings.Contains(s, "应用失败")
+		return strings.Contains(s, "jump_host_allowed_ips") && strings.Contains(s, "apply failed")
 	}) {
 		t.Fatalf("deferred 里应说明是应用失败: %v", deferred)
 	}
@@ -83,7 +83,7 @@ func TestApplyConfigReload_AnInvalidAllowlistIsRefusedNotSilentlySanitized(t *te
 		t.Fatal("一份全是非法条目的名单被当成热更新成功了")
 	}
 	if !slices.ContainsFunc(deferred, func(s string) bool {
-		return strings.Contains(s, "jump_host_allowed_ips") && strings.Contains(s, "校验未通过")
+		return strings.Contains(s, "jump_host_allowed_ips") && strings.Contains(s, "validation failed")
 	}) {
 		t.Fatalf("deferred 里应说明是校验未通过: %v", deferred)
 	}
@@ -112,7 +112,7 @@ func TestApplyConfigReload_WithoutAFirewallTheListChangeIsDeferred(t *testing.T)
 		t.Fatal("jumpFW 没启用时不该记成已应用")
 	}
 	if !slices.ContainsFunc(deferred, func(s string) bool {
-		return strings.Contains(s, "jumpFW 未启用")
+		return strings.Contains(s, "jumpFW not enabled")
 	}) {
 		t.Fatalf("应提示需要重启: %v", deferred)
 	}

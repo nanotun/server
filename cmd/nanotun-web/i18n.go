@@ -112,10 +112,11 @@ func tr(r *http.Request, key string, args ...any) string {
 
 // localizedError 是「我们自己定义、且要给用户看」的错误的可本地化契约。
 //
-// 后端错误创建时拿不到请求语言(store / server / util 等深层包更是与 CLI、日志、
-// 中文断言测试共用同一份 err.Error() 文案),所以本项目不把 lang 往下游穿透,而是:
+// 后端错误创建时拿不到请求语言(store / server / util 等深层包更是与 CLI、日志
+// 共用同一份 err.Error() 文案),所以本项目不把 lang 往下游穿透,而是:
 //   - 错误值实现 LocaleKey() 暴露「翻译 key + 参数」;
-//   - Error() 仍返回中文(供 CLI / 日志 / errors.Is 之外的落盘保持不变);
+//   - Error() 返回英文(CLI / 日志 / 落盘都用这一份 —— 守护进程的日志一律英文,
+//     理由见 docs 里那条决定:日志要能被 grep、被贴进 issue、被搜到);
 //   - web 层用 trErr(r, err) 在响应边界按当前请求语言翻译。
 //
 // 这样加多语言不改变任何 err.Error() 既有行为,CLI 与既有测试断言不受影响。

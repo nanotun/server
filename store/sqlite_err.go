@@ -83,11 +83,11 @@ func diskFullHint(dbPath string, err error) error {
 		return err
 	}
 	return fmt.Errorf("%w\n"+
-		"  写不进 %s —— 这个文件系统满了(或者配额用尽)。\n"+
-		"  SQLite 这时报的是「disk I/O error」,看着像硬盘坏了,其实清出空间就好:\n"+
+		"  Cannot write to %s — this filesystem is full (or the quota is exhausted).\n"+
+		"  SQLite reports \"disk I/O error\" here, which looks like a failing disk; freeing space is all it takes:\n"+
 		"    df -h %s\n"+
-		"    du -xh %s | sort -h | tail   # 谁占的\n"+
-		"  日志把盘吃满是最常见的一种,journalctl --vacuum-size=200M 往往就够。", err, dir, dir, dir)
+		"    du -xh %s | sort -h | tail   # what is using it\n"+
+		"  Logs eating the disk is the most common cause; journalctl --vacuum-size=200M is usually enough.", err, dir, dir, dir)
 }
 
 // dirWritable 试着在 dir 里写 64 KB 再删掉,报告成功与否。

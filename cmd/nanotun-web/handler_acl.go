@@ -214,7 +214,7 @@ func (s *Server) aclChangeFlashQuery(r *http.Request, baseKey string) string {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		if _, err := s.control.ReloadACL(ctx); err != nil {
-			logrus.WithError(err).Warn("[web] ACL 变更后同步 reload 失败 — 数据面仍按旧规则运行")
+			logrus.WithError(err).Warn("[web] synchronous reload after the ACL change failed — the data plane still runs the old rules")
 			msg, kind = base+tr(r, "flash.aclReloadFailed"), "warn"
 		} else {
 			msg, kind = base+tr(r, "flash.aclReloadedOK"), "ok"

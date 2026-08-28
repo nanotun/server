@@ -99,7 +99,7 @@ func runUserInvalidationLoop(ctx context.Context, gw *gatewayState, interval tim
 	for {
 		select {
 		case <-ctx.Done():
-			logrus.Info("[user-invalidate] ctx 已取消,退出扫描循环")
+			logrus.Info("[user-invalidate] ctx cancelled, exiting the scan loop")
 			return
 		case <-t.C:
 			doOnce()
@@ -217,7 +217,7 @@ func userInvalidStatus(ctx context.Context, st *store.Store, userID int64) (u *s
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, "user_deleted", true
 		}
-		logrus.WithError(err).WithField("user_id", userID).Warn("[user-invalidate] 查 user 失败,跳过本轮")
+		logrus.WithError(err).WithField("user_id", userID).Warn("[user-invalidate] failed to query user, skipping this round")
 		return nil, "", false
 	}
 	if u.DisabledAt != 0 {
@@ -273,7 +273,7 @@ func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connect
 				"conn_id": c.connIDStr,
 				"user_id": userID,
 				"reason":  reason,
-			}).Warn("[user-invalidate] 沿接管链回溯超过跳数上限,放弃本次踢除(下一轮扫描会重试)")
+			}).Warn("[user-invalidate] walking the takeover chain exceeded the hop limit, giving up this kick (the next scan round will retry)")
 			return false
 		}
 		connIDMapMu.RLock()
@@ -294,7 +294,7 @@ func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connect
 					"want_uid": userID,
 					"got_uid":  curUID,
 					"reason":   reason,
-				}).Warn("[user-invalidate] 接管后的会话已不属目标 user,放弃踢除")
+				}).Warn("[user-invalidate] the session after takeover no longer belongs to the target user, giving up the kick")
 				return false
 			}
 		}
@@ -308,7 +308,7 @@ func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connect
 	c.superseded.Store(true)
 	closeBody, err := util.MarshalCloseJSON(closeCodeForInvalidateReason(reason), userInvalidateClientMsg(reason))
 	if err != nil {
-		logrus.WithError(err).Warn("[user-invalidate] 构造 CloseMsg 失败,直接 Close linkConn")
+		logrus.WithError(err).Warn("[user-invalidate] failed to build CloseMsg, closing linkConn directly")
 	}
 
 	// 第二十轮深扫 MED:抢 c.linkWrMu 之前先取消其 tunnel ctx,逼停可能卡在限速器 WaitN(持该锁)的下行 demux。
@@ -337,7 +337,7 @@ func kickConnForUserInvalidate(ctx context.Context, gw *gatewayState, c *Connect
 		"conn_id": c.connIDStr,
 		"reason":  reason,
 		"age":     time.Since(c.createdAt).Round(time.Second).String(),
-	}).Warn("[user-invalidate] 主动踢线")
+	}).Warn("[user-invalidate] kicking session")
 
 	// audit: 自动失效记 actor="user-invalidate",管理员主动踢记 actor="admin-kick"。
 	// 之前一律写前者 —— `audit list` 里 admin kick 与「后台扫描发现账号失效」长得一模一样,

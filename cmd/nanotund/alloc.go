@@ -77,7 +77,7 @@ func AllocClientIP(gatewayCIDR string, used map[string]bool, exclude map[string]
 	// 明确拒绝,见 config.ValidateTUNSubnets)。
 	if gatewayAddr.Is4() != networkAddr.Is4() {
 		return ClientNetConfig{}, fmt.Errorf(
-			"gateway %s 与网段 %s 的地址族不一致(v4-mapped 写法会让前缀长度按 128 位解释),请把网段写成点分十进制",
+			"gateway %s and subnet %s have mismatched address families (v4-mapped notation makes the prefix length be read as 128-bit), write the subnet in dotted-decimal form",
 			gatewayStr, gatewayCIDR)
 	}
 
@@ -146,5 +146,5 @@ func logrusWarnPoolFull(cidr string, used, total int) {
 		"used":  used,
 		"total": total,
 		"pct":   float64(used) / float64(total),
-	}).Warn("[ip-pool] vIP 池容量 ≥ 90%,建议扩容网段或跑 `nanotun-admin lease gc --idle 30d` 回收孤儿 lease")
+	}).Warn("[ip-pool] vIP pool usage >= 90%, grow the subnet or run `nanotun-admin lease gc --idle 30d` to reclaim orphan leases")
 }

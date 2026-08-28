@@ -46,7 +46,7 @@ func TestCheckFileIdentity_DetectsSwap(t *testing.T) {
 	if err == nil {
 		t.Fatal("文件已被替换却没检出")
 	}
-	if !strings.Contains(err.Error(), "已被替换") {
+	if !strings.Contains(err.Error(), "has been replaced") {
 		t.Fatalf("错误信息应说明被替换,got %v", err)
 	}
 }

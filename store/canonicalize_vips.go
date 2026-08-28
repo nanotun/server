@@ -165,7 +165,7 @@ func (s *Store) canonicalizeStoredVIPs(ctx context.Context) error {
 					"id":        r.id,
 					"raw":       r.val,
 					"canonical": canonical,
-				}).Warn("[store] VIP 规范化跳过:规范形已被占用(存量双占/跨表),请人工核对释放冲突方")
+				}).Warn("[store] VIP canonicalization skipped: canonical form already taken (pre-existing double-hold / cross-table) — review manually and release the conflicting side")
 				continue
 			}
 			//nolint:gosec // identifiers are compile-time constants, not user input
@@ -192,7 +192,7 @@ func (s *Store) canonicalizeStoredVIPs(ctx context.Context) error {
 		logrus.WithFields(logrus.Fields{
 			"rewritten": rewritten,
 			"skipped":   skipped,
-		}).Info("[store] 存量 VIP 规范化完成(一次性)")
+		}).Info("[store] canonicalized pre-existing VIPs (one-time)")
 	}
 	return nil
 }

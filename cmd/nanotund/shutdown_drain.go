@@ -73,17 +73,17 @@ func broadcastShutdownClose(drainTimeout time.Duration) {
 	connIDMapMu.RUnlock()
 
 	if len(conns) == 0 {
-		logrus.Info("[shutdown-drain] 无 active session,跳过 Close 广播")
+		logrus.Info("[shutdown-drain] no active session, skipping the Close broadcast")
 		return
 	}
 
 	closeBody, err := util.MarshalCloseJSON(CloseCodeShutdown, ShutdownReason)
 	if err != nil {
-		logrus.WithError(err).Warn("[shutdown-drain] 构造 CloseMsg 失败,跳过广播")
+		logrus.WithError(err).Warn("[shutdown-drain] failed to build CloseMsg, skipping the broadcast")
 		return
 	}
 
-	logrus.Infof("[shutdown-drain] 向 %d 个 active session 广播 LinkTypeClose(code=%d)...",
+	logrus.Infof("[shutdown-drain] broadcasting LinkTypeClose to %d active sessions (code=%d)...",
 		len(conns), CloseCodeShutdown)
 
 	// 步骤 2:并发写。每条 conn 一个 goroutine,避免单条慢连接拖死整个广播。
@@ -134,11 +134,11 @@ func broadcastShutdownClose(drainTimeout time.Duration) {
 
 	// 等所有 write goroutine 完成(每条 1s 写 deadline,最坏 1s + 调度延迟)。
 	wg.Wait()
-	logrus.Infof("[shutdown-drain] Close 帧广播完成: 成功 %d / 失败 %d", sentN, failN)
+	logrus.Infof("[shutdown-drain] Close frame broadcast done: %d sent / %d failed", sentN, failN)
 
 	// 步骤 3:drain timeout 给客户端收帧 + 关 raw 的时间。0 = 不等。
 	if drainTimeout > 0 {
-		logrus.Infof("[shutdown-drain] 等待 %s 让客户端 graceful close...", drainTimeout)
+		logrus.Infof("[shutdown-drain] waiting %s for clients to graceful close...", drainTimeout)
 		time.Sleep(drainTimeout)
 	}
 }

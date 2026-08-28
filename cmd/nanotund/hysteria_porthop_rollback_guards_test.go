@@ -112,7 +112,7 @@ func TestStartEmbeddedHysteria_PortHopFailureReleasesThePortAndSaysSo(t *testing
 		}
 		t.Fatal("装不上跳跃规则却启动成功了 —— 客户端会按并集里的端口发包,那些包没人接")
 	}
-	if !containsAll(err.Error(), "端口跳跃", "权限") {
+	if !containsAll(err.Error(), "port hopping", "权限") {
 		t.Errorf("错误没点出是端口跳跃装不上: %v", err)
 	}
 	if srv != nil || gotPort != 0 || cleanup != nil {

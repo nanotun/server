@@ -167,7 +167,7 @@ func (s *Server) collectSessionsForView(ctx context.Context, opts ...StatusOptio
 				v.Username = u.Username
 			} else if err != nil {
 				logrus.WithError(err).WithField("user_id", uid).
-					Debug("[web] sessions join: GetUser 失败,留空 username")
+					Debug("[web] sessions join: GetUser failed, leaving username empty")
 			}
 		}
 		if row.DeviceID > 0 {
@@ -178,7 +178,7 @@ func (s *Server) collectSessionsForView(ctx context.Context, opts ...StatusOptio
 				v.FixedVIPv6 = d.FixedVIPv6
 			} else if err != nil {
 				logrus.WithError(err).WithField("device_id", row.DeviceID).
-					Debug("[web] sessions join: GetDevice 失败,留空 device_name")
+					Debug("[web] sessions join: GetDevice failed, leaving device_name empty")
 			}
 		}
 		out = append(out, v)

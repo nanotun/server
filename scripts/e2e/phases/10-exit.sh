@@ -195,14 +195,14 @@ _check_exit_mode_isolate_drops_relay_but_keeps_the_server_reachable() {
   # 拒绝要在日志里说明是 isolate 造成的 —— 客户端侧只会显示「出口已离线」,运维查不到真因。
   local log
   log="$(s "journalctl -u nanotun --since @$since --no-pager")"
-  if echo "$log" | grep -q "exit_mode=isolate 禁止客户端互通"; then
+  if echo "$log" | grep -qF "[egress] exit_mode=isolate"; then
     _pass "isolate · 拒绝经 peer 出口时日志点明是 isolate（客户端侧只显示「出口已离线」）"
   else
     _fail "isolate · 应有「exit_mode=isolate 禁止客户端互通」的拒绝日志" "$log"
   fi
 
   # 启动期那条 WARN 是运维唯一的线索:库里的 approved 记录在 isolate 下是哑弹,列表上却照样显示已批准。
-  if echo "$log" | grep -q "在本模式下不会承载流量"; then
+  if echo "$log" | grep -qF "[isolate] exit_mode=isolate"; then
     _pass "isolate · 启动期就警告「已批准的出口/子网在本模式下不承载流量」（否则审批看着有效实则失效）"
   else
     _fail "isolate · 启动期应警告库里已批准的中转类审批在本模式下失效" "$log"
@@ -212,7 +212,7 @@ _check_exit_mode_isolate_drops_relay_but_keeps_the_server_reachable() {
   # 不拿「WARN 存在」当前置条件:那样一旦 WARN 整条消失,这句会静默不执行 ——
   # 消失的断言比红的断言危险,它在汇总里看不见。
   check_contains "isolate · 提醒里出口设备按机器去重（C 的 v4+v6 两条 = 1 台）" "exit_devices=1" \
-    "$(echo "$log" | grep "在本模式下不会承载流量" || echo "(日志里没有这条提醒)")"
+    "$(echo "$log" | grep -F "[isolate] exit_mode=isolate" || echo "(日志里没有这条提醒)")"
 
   # 还原:写死 mesh 而不是拷快照 —— 快照式还原会把上一轮留下的脏状态一路传下去(见阶段 2 的教训)。
   _restore_exit_mode_mesh
@@ -337,7 +337,7 @@ _check_exit_mode_off_shuts_the_door_to_wan_only() {
   log="$(s "journalctl -u nanotun --since @$since --no-pager")"
   check_contains "off · 启动日志点明已 DROP tun→WAN（运维据此确认档位真的生效）" \
     "已 DROP FORWARD device->WAN" \
-    "$(printf '%s' "$log" | grep '已 DROP FORWARD device->WAN' | head -1 || echo '(日志里没有这一句)')"
+    "$(printf '%s' "$log" | grep 'DROP FORWARD device->WAN' | head -1 || echo '(日志里没有这一句)')"
 
   # ⑥ 语义:off 只关「经本机 WAN 出网」,经 peer 中转仍然可用。
   # 这条容易被误读成「off = 没人能上网」,写死在断言里免得日后按错误的理解去改。

@@ -195,7 +195,7 @@ func (l *loginIPLimiter) AllowLogin(remoteAddr string) (bool, string) {
 						"cap_exceeded_total":  l.capExceeded,
 						"deny_in_last_window": acc,
 						"window":              loginRLWarnThrottle.String(),
-					}).Warn("[login-ratelimit] per-IP 状态表已满,拒绝新 IP 登录(可能遭遇 IPv6 灌包)")
+					}).Warn("[login-ratelimit] per-IP state table is full, rejecting logins from new IPs (possible IPv6 address flooding)")
 				}
 				return false, host
 			}
@@ -218,7 +218,7 @@ func (l *loginIPLimiter) AllowLogin(remoteAddr string) (bool, string) {
 				"rate_per_min":        rpm,
 				"deny_in_last_window": acc,
 				"window":              loginRLWarnThrottle.String(),
-			}).Warn("[login-ratelimit] per-IP 登录尝试超频,拒绝")
+			}).Warn("[login-ratelimit] per-IP login attempt rate exceeded, denied")
 		}
 		return false, host
 	}

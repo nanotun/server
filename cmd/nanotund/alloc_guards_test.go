@@ -195,7 +195,7 @@ func TestAllocClientIP_V4MappedGatewayReportsInsteadOfPanicking(t *testing.T) {
 		}
 		return
 	}
-	if !strings.Contains(err.Error(), "地址族不一致") {
+	if !strings.Contains(err.Error(), "mismatched address families") {
 		t.Errorf("应明确报族不一致,而不是含糊的池满 / 崩溃,got %v", err)
 	}
 }

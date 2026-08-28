@@ -56,7 +56,7 @@ func (s *Store) SetAdvertisedHost(ctx context.Context, host string) error {
 	host = strings.TrimSpace(host)
 	if len(host) > 253 {
 		return i18nErr("store.advHost.setterTooLong",
-			fmt.Sprintf("advertised_host 长度 %d 超过 RFC 1035 上限 253", len(host)), len(host))
+			fmt.Sprintf("advertised_host length %d exceeds the RFC 1035 limit of 253", len(host)), len(host))
 	}
 	return s.SettingsSet(ctx, AdvertisedHostKey, host)
 }
@@ -92,24 +92,24 @@ func ValidateAdvertisedHost(host string) error {
 	}
 	if len(h) > 253 {
 		return i18nErr("store.host.tooLong",
-			fmt.Sprintf("长度 %d 超过 RFC 1035 上限 253", len(h)), len(h))
+			fmt.Sprintf("Length %d exceeds the RFC 1035 limit of 253", len(h)), len(h))
 	}
 	if strings.ContainsAny(h, "\n\r\t\x00") {
-		return i18nErr("store.host.controlChars", "不允许换行 / TAB / NUL 等控制字符")
+		return i18nErr("store.host.controlChars", "Newline / TAB / NUL and other control characters are not allowed")
 	}
 	lo := strings.ToLower(h)
 	if strings.HasPrefix(lo, "http://") || strings.HasPrefix(lo, "https://") ||
 		strings.HasPrefix(lo, "ws://") || strings.HasPrefix(lo, "wss://") {
-		return i18nErr("store.host.scheme", "请只填裸地址 / 域名,不要带 scheme(如 https://)")
+		return i18nErr("store.host.scheme", "Enter only the bare address / domain, without a scheme (e.g. https://)")
 	}
 	if strings.ContainsAny(h, "/?#") {
-		return i18nErr("store.host.pathChars", "不允许 path / query / fragment 字符(/、?、#)")
+		return i18nErr("store.host.pathChars", "path / query / fragment characters (/, ?, #) are not allowed")
 	}
 	// IPv6 方括号包裹的情况是 OK 的,只要里面没有 ":port" 后缀
 	// 简化处理:IPv6 字面量内部可以有冒号,但 IPv6 + 端口的形如 `[::1]:8080`
 	// 才是 host:port,这里我们检测 `]:` 子串。
 	if strings.Contains(h, "]:") {
-		return i18nErr("store.host.portBracket", "不允许嵌入端口号 — profile 端口字段与 host 是分开的")
+		return i18nErr("store.host.portBracket", "Embedded port number is not allowed — the profile's port field is separate from host")
 	}
 	// 对非 IPv6(无 `[`)的情况,出现冒号就大概率是 host:port 或 IPv6 字面量未加括号。
 	// 后者(纯 IPv6 文本)地址段中包含冒号但通常 >= 2 个,host:port 只有 1 个冒号且后半段全数字。
@@ -117,7 +117,7 @@ func ValidateAdvertisedHost(host string) error {
 		if cnt := strings.Count(h, ":"); cnt == 1 {
 			parts := strings.SplitN(h, ":", 2)
 			if isAllDigit(parts[1]) {
-				return i18nErr("store.host.portColon", "不允许嵌入端口号 — 检测到 host:port 形式")
+				return i18nErr("store.host.portColon", "Embedded port number is not allowed — detected host:port form")
 			}
 		}
 	}

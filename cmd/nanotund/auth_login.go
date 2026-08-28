@@ -46,10 +46,10 @@ func authenticateLogin(gw *gatewayState, loginReq *util.LoginReq, connIDStr stri
 
 func authenticatePSK(gw *gatewayState, loginReq *util.LoginReq) (*loginAuthResult, *loginAuthError) {
 	if gw == nil || gw.authVerifier == nil || gw.store == nil {
-		return nil, &loginAuthError{code: util.CodeServerError, message: "PSK 模式未初始化"}
+		return nil, &loginAuthError{code: util.CodeServerError, message: "PSK mode not initialized"}
 	}
 	if loginReq.Name == "" || loginReq.Token == "" {
-		return nil, &loginAuthError{code: util.CodeTokenInvalid, message: "缺少用户名或 PSK"}
+		return nil, &loginAuthError{code: util.CodeTokenInvalid, message: "missing username or PSK"}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -59,14 +59,14 @@ func authenticatePSK(gw *gatewayState, loginReq *util.LoginReq) (*loginAuthResul
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrUnknownUser):
-			return nil, &loginAuthError{code: util.CodeUserNotFound, message: "用户不存在"}
+			return nil, &loginAuthError{code: util.CodeUserNotFound, message: "user does not exist"}
 		case errors.Is(err, auth.ErrBadPSK):
-			return nil, &loginAuthError{code: util.CodeTokenInvalid, message: "认证失败"}
+			return nil, &loginAuthError{code: util.CodeTokenInvalid, message: "authentication failed"}
 		case errors.Is(err, auth.ErrUserDisabled):
-			return nil, &loginAuthError{code: util.CodeUserBlacklisted, message: "用户已禁用"}
+			return nil, &loginAuthError{code: util.CodeUserBlacklisted, message: "user is disabled"}
 		default:
-			logrus.WithError(err).Error("PSK 校验内部错误")
-			return nil, &loginAuthError{code: util.CodeServerError, message: "服务器内部错误"}
+			logrus.WithError(err).Error("PSK verification failed with an internal error")
+			return nil, &loginAuthError{code: util.CodeServerError, message: "internal server error"}
 		}
 	}
 
@@ -82,10 +82,10 @@ func authenticatePSK(gw *gatewayState, loginReq *util.LoginReq) (*loginAuthResul
 			"user_id":           user.ID,
 			"platform":          loginReq.Platform,
 			"allowed_platforms": user.AllowedPlatforms,
-		}).Warn("[login] 上报平台不在账号白名单,拒绝登录(910)")
+		}).Warn("[login] reported platform is not on the account allowlist, rejecting the login (910)")
 		return nil, &loginAuthError{
 			code:    util.CodePlatformNotAllowed,
-			message: "平台不被允许: " + loginReq.Platform,
+			message: "platform not allowed: " + loginReq.Platform,
 		}
 	}
 
@@ -104,7 +104,7 @@ func authenticatePSK(gw *gatewayState, loginReq *util.LoginReq) (*loginAuthResul
 			logrus.WithFields(logrus.Fields{
 				"user_id":     user.ID,
 				"device_uuid": loginReq.DeviceUUID,
-			}).Warn("device_uuid 不是合法 RFC 4122 v4,按未提供处理,vIP 走临时分配")
+			}).Warn("device_uuid is not a valid RFC 4122 v4, treating it as not provided; the vIP falls back to a temporary allocation")
 		} else {
 			dev, err := upsertLoginDevice(ctx, gw, user.ID, normalizedUUID, loginReq.DeviceName, loginReq.Platform)
 			if err != nil {
@@ -124,8 +124,8 @@ func authenticatePSK(gw *gatewayState, loginReq *util.LoginReq) (*loginAuthResul
 				logrus.WithError(err).WithFields(logrus.Fields{
 					"user_id":     user.ID,
 					"device_uuid": normalizedUUID,
-				}).Warn("upsert device 失败,拒绝本次登录让客户端退避重试(匿名降级会静默丢失固定 vIP / 出口身份)")
-				return nil, &loginAuthError{code: util.CodeServerError, message: "upsert device 失败: " + err.Error()}
+				}).Warn("upsert device failed, rejecting this login so the client backs off and retries (falling back to anonymous would silently lose the pinned vIP / exit node identity)")
+				return nil, &loginAuthError{code: util.CodeServerError, message: "upsert device failed: " + err.Error()}
 			}
 			out.Device = dev
 		}
@@ -142,7 +142,7 @@ func authenticatePSK(gw *gatewayState, loginReq *util.LoginReq) (*loginAuthResul
 		logrus.WithFields(logrus.Fields{
 			"user_id":  user.ID,
 			"platform": loginReq.Platform,
-		}).Info("[login] 客户端未上报 device_uuid,vIP 仅在内存,重启 / 重连后不保证沿用同一 vIP")
+		}).Info("[login] client reported no device_uuid; the vIP lives in memory only and is not guaranteed to be reused after a restart / reconnect")
 	}
 
 	return out, nil
@@ -173,7 +173,7 @@ func upsertLoginDevice(ctx context.Context, gw *gatewayState, userID int64, uuid
 			"user_id":     userID,
 			"device_uuid": uuid,
 			"first_err":   truncateForLog(err.Error(), 200),
-		}).Info("upsert device 首次失败,原地重试成功(瞬态 DB busy 已吸收)")
+		}).Info("upsert device failed on the first try, the in-place retry succeeded (transient DB busy absorbed)")
 		return dev, nil
 	}
 	return nil, err2
@@ -381,8 +381,8 @@ func noteLoginUserNotFound(nowFn func() time.Time) (triggered bool) {
 				"count":        c,
 				"window_start": windowStart,
 				"window_sec":   now - windowStart,
-				"hint":         "若刚部署/换 DB 路径,先查 nanotun-admin user list;典型场景见 K1 install-self-hosted.sh 检查",
-			}).Error("[audit] login.fail.user_not_found 速率异常,疑似 DB 路径漂移 / 整库被清空")
+				"hint":         "if you just deployed or changed the DB path, run nanotun-admin user list first; see the K1 install-self-hosted.sh check for the typical case",
+			}).Error("[audit] abnormal login.fail.user_not_found rate, the DB path may have drifted or the whole database may have been wiped")
 			triggered = true
 		}
 	}
@@ -408,14 +408,14 @@ func initAuthBackend(ctx context.Context, gw *gatewayState) (cleanup func(), err
 	}
 	gw.store = st
 	gw.authVerifier = auth.NewVerifier(st)
-	logrus.WithField("db_path", dbPath).Info("已启用 PSK 模式(自托管)")
+	logrus.WithField("db_path", dbPath).Info("PSK mode enabled (self-hosted)")
 
 	// 库文件被掉包(restore / 手工 cp 都是换 inode)时立刻退出,由 systemd 重启打开新文件。
 	// 本进程若继续跑,写的是那个已被 unlink 的旧文件:租约、审计、设备全部落进无人可读的
 	// 孤儿 inode,而登录鉴权读到的又是同一份陈旧快照 —— 全程零报错。同样的守护在
 	// nanotun-web 里也有一份,两个进程共享这一个文件。见 store/file_identity.go。
 	go st.WatchFileIdentity(ctx, 15*time.Second, func(werr error) {
-		logrus.WithError(werr).Fatal("[store] 数据库文件已被替换(多半是刚做过 restore / 手工覆盖) — 立刻退出,由 systemd 重启以打开新文件")
+		logrus.WithError(werr).Fatal("[store] the database file has been replaced (most likely a restore or a manual overwrite) — exiting now so systemd restarts the process against the new file")
 	})
 	return func() { _ = st.Close() }, nil
 }

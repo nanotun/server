@@ -131,7 +131,7 @@ func (s *Store) UpsertLease(ctx context.Context, deviceID int64, vipV4, vipV6 st
 		// 现在显式归一化为 ErrDuplicate,让调用方 errors.Is 后拒登/重新分配。
 		if isUniqueConstraintErr(err) {
 			return nil, i18nErrWrap("store.lease.vipConflict",
-				fmt.Sprintf("store: upsert lease vIP 冲突 (device=%d v4=%q v6=%q): %s", deviceID, vipV4, vipV6, ErrDuplicate.Error()),
+				fmt.Sprintf("store: upsert lease vIP conflict (device=%d v4=%q v6=%q): %s", deviceID, vipV4, vipV6, ErrDuplicate.Error()),
 				ErrDuplicate, deviceID, vipV4, vipV6, ErrDuplicate.Error())
 		}
 		return nil, fmt.Errorf("store: upsert lease: %w", err)
@@ -151,7 +151,7 @@ func (s *Store) UpsertLease(ctx context.Context, deviceID int64, vipV4, vipV6 st
 			deviceID, nullableString(vipV4), nullableString(vipV6)).Scan(&dummy)
 		if qerr == nil {
 			return nil, i18nErrWrap("store.lease.vipConflict",
-				fmt.Sprintf("store: upsert lease vIP 与他设备 fixed_vip 冲突 (device=%d v4=%q v6=%q): %s", deviceID, vipV4, vipV6, ErrDuplicate.Error()),
+				fmt.Sprintf("store: upsert lease vIP conflicts with another device's fixed_vip (device=%d v4=%q v6=%q): %s", deviceID, vipV4, vipV6, ErrDuplicate.Error()),
 				ErrDuplicate, deviceID, vipV4, vipV6, ErrDuplicate.Error())
 		} else if !errors.Is(qerr, sql.ErrNoRows) {
 			return nil, fmt.Errorf("store: upsert lease cross-table check: %w", qerr)
@@ -193,7 +193,7 @@ func (s *Store) UpsertManualLeasePreservingEmpty(ctx context.Context, deviceID i
 	); err != nil {
 		if isUniqueConstraintErr(err) {
 			return nil, i18nErrWrap("store.lease.vipConflict",
-				fmt.Sprintf("store: upsert lease(preserve) vIP 冲突 (device=%d v4=%q v6=%q): %s", deviceID, vipV4, vipV6, ErrDuplicate.Error()),
+				fmt.Sprintf("store: upsert lease(preserve) vIP conflict (device=%d v4=%q v6=%q): %s", deviceID, vipV4, vipV6, ErrDuplicate.Error()),
 				ErrDuplicate, deviceID, vipV4, vipV6, ErrDuplicate.Error())
 		}
 		return nil, fmt.Errorf("store: upsert lease(preserve): %w", err)
@@ -210,7 +210,7 @@ func (s *Store) UpsertManualLeasePreservingEmpty(ctx context.Context, deviceID i
 			deviceID, nullableString(vipV4), nullableString(vipV6)).Scan(&dummy)
 		if qerr == nil {
 			return nil, i18nErrWrap("store.lease.vipConflict",
-				fmt.Sprintf("store: upsert lease(preserve) vIP 与他设备 fixed_vip 冲突 (device=%d v4=%q v6=%q): %s", deviceID, vipV4, vipV6, ErrDuplicate.Error()),
+				fmt.Sprintf("store: upsert lease(preserve) vIP conflicts with another device's fixed_vip (device=%d v4=%q v6=%q): %s", deviceID, vipV4, vipV6, ErrDuplicate.Error()),
 				ErrDuplicate, deviceID, vipV4, vipV6, ErrDuplicate.Error())
 		} else if !errors.Is(qerr, sql.ErrNoRows) {
 			return nil, fmt.Errorf("store: upsert lease(preserve) cross-table check: %w", qerr)
@@ -319,7 +319,7 @@ func (s *Store) AllUsedVIPs(ctx context.Context) (v4 map[string]bool, v6 map[str
 // 返回被删的 lease 个数。idle <= 0 时直接 no-op(防止误用 idle=0 把所有 lease 全删)。
 func (s *Store) GcOrphanLeases(ctx context.Context, idle int64) (int64, error) {
 	if idle <= 0 {
-		return 0, i18nErr("store.lease.gcIdlePositive", "store: GcOrphanLeases idle 必须 > 0 秒")
+		return 0, i18nErr("store.lease.gcIdlePositive", "store: GcOrphanLeases idle must be > 0 seconds")
 	}
 	cutoff := nowUnix() - idle
 	res, err := s.db.ExecContext(ctx, `DELETE FROM leases WHERE`+orphanLeaseWhereSQL, cutoff)

@@ -507,7 +507,7 @@ func (s *Server) handleRuntimeMeshToggle(w http.ResponseWriter, r *http.Request)
 		return err
 	}()
 	if reloadErr != nil {
-		logrus.WithError(reloadErr).Warn("[web] mesh toggle 已落库,但通知 server 重载失败——数据面仍按旧状态运行")
+		logrus.WithError(reloadErr).Warn("[web] mesh toggle is persisted, but notifying the server to reload failed — the data plane still runs the old state")
 	}
 	s.audit.WriteFromRequest(r, "mesh_toggle", "",
 		FormatDetail("from", current, "to", target, "reload_ok", reloadErr == nil))

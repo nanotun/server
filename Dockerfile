@@ -105,7 +105,7 @@ ARG NANOTUN_GIT_SHA=""
 # 包页面既不显示 README 也没有指回源码的链接,对一个要人信任的 VPN 网关镜像来说
 # 是硬伤。其余几条让 `docker inspect` 能答出「这是什么、什么许可、哪个版本」。
 LABEL org.opencontainers.image.title="nanotun" \
-      org.opencontainers.image.description="自托管组网网关(nanotund + nanotun-web + nanotun-admin)" \
+      org.opencontainers.image.description="Self-hosted mesh VPN gateway (nanotund + nanotun-web + nanotun-admin)" \
       org.opencontainers.image.source="https://github.com/nanotun/server" \
       org.opencontainers.image.documentation="https://github.com/nanotun/server/blob/main/docs/DOCKER.md" \
       org.opencontainers.image.licenses="Apache-2.0" \

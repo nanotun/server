@@ -1,5 +1,5 @@
 [Unit]
-Description=nanotun pre-start (xtables.lock; 清理旧版遗留 TUN)
+Description=nanotun pre-start (xtables.lock; clean up stale TUN devices from older versions)
 After=network-online.target
 Wants=network-online.target
 

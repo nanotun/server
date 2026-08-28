@@ -60,7 +60,7 @@ func (c *controlClient) do(ctx context.Context, method, path string, body any) (
 	// 症状是解引用 panic 而非一句「控制面不可用」。守卫放在 do 而不是逐个方法上:
 	// 所有调用最终都经过这里,新增方法自动受保护。
 	if c == nil {
-		return nil, 0, fmt.Errorf("control socket 未配置")
+		return nil, 0, fmt.Errorf("control socket is not configured")
 	}
 	var reqBody io.Reader
 	if body != nil {
@@ -169,10 +169,10 @@ func tryReloadExitsBackground(c *controlClient) {
 		defer cancel()
 		n, err := c.ReloadExits(ctx)
 		if err != nil {
-			logrus.WithError(err).Warn("[web] 自动 reload 出口节点失败,客户端待重连/下次出口变化收敛")
+			logrus.WithError(err).Warn("[web] automatic exit node reload failed, clients converge on reconnect / next exit change")
 			return
 		}
-		logrus.WithField("rebound_to_server", n).Info("[web] 已通知 server 复核出口节点")
+		logrus.WithField("rebound_to_server", n).Info("[web] asked the server to re-check exit nodes")
 	}()
 }
 
@@ -241,10 +241,10 @@ func tryReloadPortForwardsBackground(c *controlClient) {
 		defer cancel()
 		n, err := c.ReloadPortForwards(ctx)
 		if err != nil {
-			logrus.WithError(err).Warn("[web] 自动 reload 端口转发失败,需要 systemctl reload 或待下次变更收敛")
+			logrus.WithError(err).Warn("[web] automatic port forward reload failed, needs systemctl reload or converges on the next change")
 			return
 		}
-		logrus.WithField("active", n).Info("[web] 已通知 server 重载端口转发")
+		logrus.WithField("active", n).Info("[web] asked the server to reload port forwards")
 	}()
 }
 
@@ -449,7 +449,7 @@ func (c *controlClient) DeviceSessions(ctx context.Context, deviceID int64) ([]D
 	// nil 就是解引用崩。返回 error 而非 panic,调用方的 `derr != nil` 分支正好是文档写明的
 	// 「保守地不踢」。今天 main.go 恒装非 nil client 走不到这儿,属于补一致性、不是修线上。
 	if c == nil {
-		return nil, fmt.Errorf("control socket 未配置")
+		return nil, fmt.Errorf("control socket is not configured")
 	}
 	path := fmt.Sprintf("/status?device_id=%d", deviceID)
 	body, _, err := c.do(ctx, http.MethodGet, path, nil)
@@ -536,11 +536,11 @@ func tryRateRefreshBackground(c *controlClient, deviceID int64) {
 		n, err := c.RateRefresh(ctx, deviceID)
 		if err != nil {
 			logrus.WithError(err).WithField("device_id", deviceID).
-				Warn("[web] 自动 rate-refresh 失败,active conn 待下次重连生效")
+				Warn("[web] automatic rate-refresh failed, active connections pick it up on the next reconnect")
 			return
 		}
 		logrus.WithFields(logrus.Fields{"device_id": deviceID, "refreshed": n}).
-			Info("[web] 已通知 server 热更限速")
+			Info("[web] asked the server to hot reload rate limits")
 	}()
 }
 
@@ -555,10 +555,10 @@ func tryReloadACLBackground(c *controlClient) {
 		defer cancel()
 		n, err := c.ReloadACL(ctx)
 		if err != nil {
-			logrus.WithError(err).Warn("[web] 自动 reload ACL 失败,需要 systemctl reload nanotun")
+			logrus.WithError(err).Warn("[web] automatic ACL reload failed, needs systemctl reload nanotun")
 			return
 		}
-		logrus.WithField("rules", n).Info("[web] 已通知 server 重载 ACL")
+		logrus.WithField("rules", n).Info("[web] asked the server to reload the ACL")
 	}()
 }
 
@@ -573,9 +573,9 @@ func tryReloadRoutesBackground(c *controlClient) {
 		defer cancel()
 		n, err := c.ReloadRoutes(ctx)
 		if err != nil {
-			logrus.WithError(err).Warn("[web] 自动 reload 子网路由失败,需要 systemctl reload 或待下次路由变更收敛")
+			logrus.WithError(err).Warn("[web] automatic subnet route reload failed, needs systemctl reload or converges on the next route change")
 			return
 		}
-		logrus.WithField("routes", n).Info("[web] 已通知 server 重建子网路由表")
+		logrus.WithField("routes", n).Info("[web] asked the server to rebuild the subnet route table")
 	}()
 }

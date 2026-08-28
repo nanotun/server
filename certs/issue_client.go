@@ -51,45 +51,45 @@ func ClientCAKeyPath(caCertPath string) string {
 func IssueClientCert(caCertPEM, caKeyPEM, commonName string, validDays int) (*IssuedClientCert, error) {
 	commonName = strings.TrimSpace(commonName)
 	if commonName == "" {
-		return nil, errors.New("commonName 不能为空")
+		return nil, errors.New("commonName must not be empty")
 	}
 	if validDays <= 0 {
-		return nil, fmt.Errorf("validDays 须 > 0，得到 %d", validDays)
+		return nil, fmt.Errorf("validDays must be > 0, got %d", validDays)
 	}
 	// 上限防溢出:NotAfter 用 time.Duration(validDays)*24h,而 time.Duration 是 int64 纳秒
 	// (上限 ~106751 天 ≈ 292 年)。--hy2-client-cert-days 是无符号 flag,运维误传超大值会让
 	// 乘法溢出成负 / 小 duration → NotAfter 落到过去,签出「刚签发即过期」的废证。100 年上限既
 	// 覆盖一切合理用法,又远离溢出边界。
 	if validDays > maxClientCertValidDays {
-		return nil, fmt.Errorf("validDays 过大(%d)，上限 %d 天", validDays, maxClientCertValidDays)
+		return nil, fmt.Errorf("validDays too large (%d), the limit is %d days", validDays, maxClientCertValidDays)
 	}
 
 	caCert, err := parseCertificatePEM(caCertPEM)
 	if err != nil {
-		return nil, fmt.Errorf("解析 CA 证书: %w", err)
+		return nil, fmt.Errorf("parse CA certificate: %w", err)
 	}
 	if !caCert.IsCA {
-		return nil, errors.New("CA 证书缺少 CA:TRUE（basicConstraints）")
+		return nil, errors.New("CA certificate is missing CA:TRUE (basicConstraints)")
 	}
 	// 第四轮深扫 MED:若 CA 证书带了 KeyUsage 扩展,必须包含 keyCertSign;否则它根本没被授权签发证书,用它签出的
 	// 客户端证书会被严格校验方(RFC 5280)拒绝(建链失败),等到运维部署时才发现。KeyUsage==0 = 未声明该扩展,
 	// 按 X.509 惯例视为不限,放行(与既有仅 IsCA 的宽松度一致)。
 	if caCert.KeyUsage != 0 && caCert.KeyUsage&x509.KeyUsageCertSign == 0 {
-		return nil, errors.New("CA 证书 KeyUsage 缺少 keyCertSign（无签发证书权限）")
+		return nil, errors.New("CA certificate KeyUsage is missing keyCertSign (not permitted to issue certificates)")
 	}
 	// 拒绝**已过期 / 尚未生效**的 CA:用它签出的客户端证书链在校验时必然失败(签发者证书本身无效)。及早报错
 	// 好过让运维拿到一张「客户端一连就被拒」的 profile。
 	now := time.Now().UTC()
 	if now.After(caCert.NotAfter) {
-		return nil, fmt.Errorf("CA 证书已过期(NotAfter=%s)", caCert.NotAfter.Format(time.RFC3339))
+		return nil, fmt.Errorf("CA certificate has expired (NotAfter=%s)", caCert.NotAfter.Format(time.RFC3339))
 	}
 	if now.Before(caCert.NotBefore) {
-		return nil, fmt.Errorf("CA 证书尚未生效(NotBefore=%s)", caCert.NotBefore.Format(time.RFC3339))
+		return nil, fmt.Errorf("CA certificate is not valid yet (NotBefore=%s)", caCert.NotBefore.Format(time.RFC3339))
 	}
 
 	caKey, err := parsePrivateKeyPEM(caKeyPEM)
 	if err != nil {
-		return nil, fmt.Errorf("解析 CA 私钥: %w", err)
+		return nil, fmt.Errorf("parse CA private key: %w", err)
 	}
 
 	// 第十六轮深扫 LOW:校验 CA 私钥与 CA 证书**成对**(私钥公钥 == 证书公钥)。此前证书与私钥各自独立解析,
@@ -98,15 +98,15 @@ func IssueClientCert(caCertPEM, caKeyPEM, commonName string, validDays int) (*Is
 	// 就地比对公钥,配错立即 fail-fast,报「密钥对错配」而非签出一张废证。stdlib 各类公钥都实现 Equal(crypto.PublicKey)。
 	signer, ok := caKey.(crypto.Signer)
 	if !ok {
-		return nil, errors.New("CA 私钥不支持签名(非 crypto.Signer)")
+		return nil, errors.New("CA private key does not support signing (not a crypto.Signer)")
 	}
 	if eq, ok := signer.Public().(interface{ Equal(crypto.PublicKey) bool }); !ok || !eq.Equal(caCert.PublicKey) {
-		return nil, errors.New("CA 私钥与 CA 证书不匹配(公钥不一致,请核对 cert 与 key 文件是否配对)")
+		return nil, errors.New("CA private key does not match the CA certificate (public keys differ; check that the cert and key files are a pair)")
 	}
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("生成客户端 Ed25519 密钥: %w", err)
+		return nil, fmt.Errorf("generate client Ed25519 key: %w", err)
 	}
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
@@ -137,12 +137,12 @@ func IssueClientCert(caCertPEM, caKeyPEM, commonName string, validDays int) (*Is
 
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, pub, caKey)
 	if err != nil {
-		return nil, fmt.Errorf("签发客户端证书: %w", err)
+		return nil, fmt.Errorf("sign client certificate: %w", err)
 	}
 
 	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
 	if err != nil {
-		return nil, fmt.Errorf("编码客户端私钥 (PKCS8): %w", err)
+		return nil, fmt.Errorf("encode client private key (PKCS8): %w", err)
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
@@ -156,11 +156,11 @@ func IssueClientCert(caCertPEM, caKeyPEM, commonName string, validDays int) (*Is
 func IssueClientCertFromFiles(caCertPath, caKeyPath, commonName string, validDays int) (*IssuedClientCert, error) {
 	caCertPEM, err := os.ReadFile(caCertPath)
 	if err != nil {
-		return nil, fmt.Errorf("读取 CA 证书 %q: %w", caCertPath, err)
+		return nil, fmt.Errorf("read CA certificate %q: %w", caCertPath, err)
 	}
 	caKeyPEM, err := os.ReadFile(caKeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("读取 CA 私钥 %q: %w", caKeyPath, err)
+		return nil, fmt.Errorf("read CA private key %q: %w", caKeyPath, err)
 	}
 	return IssueClientCert(string(caCertPEM), string(caKeyPEM), commonName, validDays)
 }
@@ -181,7 +181,7 @@ func parseCertificatePEM(pemData string) (*x509.Certificate, error) {
 		// 客户端证书 Issuer 与实际签名密钥(key 文件对应的证书)不符 → 客户端建链 / 校验失败。
 		return x509.ParseCertificate(block.Bytes)
 	}
-	return nil, errors.New("PEM 中无 CERTIFICATE 块")
+	return nil, errors.New("no CERTIFICATE block in PEM")
 }
 
 // GenerateTestCA 写入自签测试用客户端 CA（仅单测 / profile 测试 fixture）。
@@ -215,7 +215,7 @@ func GenerateTestCA(certPath, keyPath string) error {
 func parsePrivateKeyPEM(pemData string) (interface{}, error) {
 	block, _ := pem.Decode([]byte(pemData))
 	if block == nil {
-		return nil, errors.New("PEM 中无私钥块")
+		return nil, errors.New("no private key block in PEM")
 	}
 	switch block.Type {
 	case "RSA PRIVATE KEY":
@@ -223,6 +223,6 @@ func parsePrivateKeyPEM(pemData string) (interface{}, error) {
 	case "PRIVATE KEY":
 		return x509.ParsePKCS8PrivateKey(block.Bytes)
 	default:
-		return nil, fmt.Errorf("不支持的私钥类型 %q", block.Type)
+		return nil, fmt.Errorf("unsupported private key type %q", block.Type)
 	}
 }

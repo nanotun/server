@@ -145,7 +145,7 @@ nanotun-admin lease set 7 --v4 100.64.0.50 --manual    # 钉死，不被自动�
 > kill -HUP $(pidof nanotund)     # 或 systemctl reload nanotun
 > ```
 >
-> `journalctl -u nanotun` 会看到 `[reload] acl 规则集已刷新 rule_count=N`；
+> `journalctl -u nanotun` 会看到 `[reload] acl_rules hot-reloaded rule_count=N`；
 > 同时 `audit_logs` 写入一条 `config.reload applied=[acl_rules]` 便于追溯。
 
 `acl_pairs` 表里没规则时 nanotun 默认全网放行。**加规则并不会自动转成白名单** —— 没命中的

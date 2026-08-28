@@ -31,7 +31,7 @@ func detectWANPrivatePrefixes(wanIface string, v6 bool) []netip.Prefix {
 	if ifi, err := net.InterfaceByName(wanIface); err == nil {
 		addrs, aerr := ifi.Addrs()
 		if aerr != nil {
-			logrus.WithError(aerr).Debug("[exit-guard] 读出网网卡地址失败,跳过该来源")
+			logrus.WithError(aerr).Debug("[exit-guard] failed to read the egress interface's addresses, skipping that source")
 		}
 		for _, a := range addrs {
 			ipnet, ok := a.(*net.IPNet)
@@ -52,7 +52,7 @@ func detectWANPrivatePrefixes(wanIface string, v6 bool) []netip.Prefix {
 			}
 		}
 	} else {
-		logrus.WithError(err).Debug("[exit-guard] 找不到出网网卡,跳过接口地址来源")
+		logrus.WithError(err).Debug("[exit-guard] egress interface not found, skipping the interface-address source")
 	}
 
 	args := []string{"route", "show", "dev", wanIface}
@@ -62,7 +62,7 @@ func detectWANPrivatePrefixes(wanIface string, v6 bool) []netip.Prefix {
 	if raw, err := exec.Command("ip", args...).Output(); err == nil {
 		out = append(out, parseIPRouteDests(string(raw))...)
 	} else {
-		logrus.WithError(err).Debug("[exit-guard] ip route show dev 失败,跳过路由表来源")
+		logrus.WithError(err).Debug("[exit-guard] ip route show dev failed, skipping the routing-table source")
 	}
 	return out
 }
@@ -125,8 +125,8 @@ func iptablesLikeInsertChain(bin, chain string, ruleArgs []string) error {
 // 运维改了 exit_deny_private 或换了云环境后,应当能只看启动日志就知道闸门落在哪。
 func logExitDenyPrivate(bin, mode string, prefixes []string) {
 	if mode == config.TUNExitDenyPrivateOff {
-		logrus.WithField("bin", bin).Warn("[exit-guard] exit_deny_private=off:出口不拦私网/链路本地 —— " +
-			"VPN 用户可经本机访问云元数据(169.254.169.254)与服务器所处内网,确认这是本部署想要的")
+		logrus.WithField("bin", bin).Warn("[exit-guard] exit_deny_private=off: egress does not block private / link-local destinations — " +
+			"VPN users can reach cloud metadata (169.254.169.254) and whatever internal network this server sits in through this host; make sure that is what this deployment wants")
 		return
 	}
 	if len(prefixes) == 0 {
@@ -140,9 +140,9 @@ func logExitDenyPrivate(bin, mode string, prefixes []string) {
 	//
 	// 所以这行把「这是启动快照」写明:哪天内网拓扑变过,拿它跟现在的 `ip route show dev
 	// <出网网卡>` 一比就知道该不该重启。日志里这么一句,比事后追查便宜得多。
-	msg := "[exit-guard] 已拦截出口方向的链路本地/私网目的地(含云元数据地址)"
+	msg := "[exit-guard] blocked link-local / private destinations on the egress path (including the cloud metadata address)"
 	if mode == "auto" {
-		msg += ";这份网段是启动时探的快照,之后这台机器若接入了新的内网(VPC peering / 加网卡 / 子网扩段),新那段不会被自动拦下,重启 nanotun 才会重新探"
+		msg += "; this set of prefixes is a snapshot taken at startup — if this host later joins a new internal network (VPC peering / an extra interface / a widened subnet), the new range will not be blocked automatically; only restarting nanotun re-probes it"
 	}
 	logrus.WithFields(logrus.Fields{
 		"bin":      bin,

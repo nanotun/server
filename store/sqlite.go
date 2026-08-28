@@ -41,13 +41,13 @@ func lockedHint(path, op string, err error) error {
 		return diskFullHint(path, fmt.Errorf("store: %s: %w", op, err))
 	}
 	return fmt.Errorf("store: %s: %w\n"+
-		"  这个库正被另一个进程占着 —— 多半是 nanotun 或 nanotun-web 还在跑。\n"+
-		"  恢复备份时两个服务都要停,只停一个就会是现在这样:\n"+
+		"  This database is held open by another process — most likely nanotun or nanotun-web is still running.\n"+
+		"  Restoring a backup means stopping both services; stopping only one lands you exactly here:\n"+
 		"    systemctl stop nanotun nanotun-web\n"+
-		"    cp <备份> %s && chmod 600 %s\n"+
+		"    cp <backup> %s && chmod 600 %s\n"+
 		"    systemctl start nanotun nanotun-web\n"+
-		"  已经在没停全的时候拷过一次了的话,照上面重做一遍:那个没停的进程手里是换之前的库,\n"+
-		"  不重启它,两边的数据对不上。", op, err, path, path)
+		"  If you already copied while one was still up, redo the steps above: the process that stayed up holds\n"+
+		"  the pre-copy database, and until it restarts the two sides will not agree.", op, err, path, path)
 }
 
 // isLockedErr 判断这个错误是不是「库被别人占着」。

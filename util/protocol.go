@@ -443,42 +443,42 @@ func ParseLoginReqLinkPayload(data []byte) (*LoginReq, error) {
 		return nil, err
 	}
 	if n := len(req.Name); n > maxLoginReqName {
-		return nil, fmt.Errorf("login_req: name 字段过长(%d > %d)", n, maxLoginReqName)
+		return nil, fmt.Errorf("login_req: name field too long (%d > %d)", n, maxLoginReqName)
 	}
 	if n := len(req.Token); n > maxLoginReqToken {
-		return nil, fmt.Errorf("login_req: token 字段过长(%d > %d)", n, maxLoginReqToken)
+		return nil, fmt.Errorf("login_req: token field too long (%d > %d)", n, maxLoginReqToken)
 	}
 	if n := len(req.TakeoverSecret); n > maxLoginReqTakeoverSecret {
-		return nil, fmt.Errorf("login_req: takeover_secret 字段过长(%d > %d)", n, maxLoginReqTakeoverSecret)
+		return nil, fmt.Errorf("login_req: takeover_secret field too long (%d > %d)", n, maxLoginReqTakeoverSecret)
 	}
 	if n := len(req.TakeoverSessionID); n > maxLoginReqTakeoverSessionID {
-		return nil, fmt.Errorf("login_req: takeover_session_id 字段过长(%d > %d)", n, maxLoginReqTakeoverSessionID)
+		return nil, fmt.Errorf("login_req: takeover_session_id field too long (%d > %d)", n, maxLoginReqTakeoverSessionID)
 	}
 	if n := len(req.DeviceUUID); n > maxLoginReqDeviceUUID {
-		return nil, fmt.Errorf("login_req: device_uuid 字段过长(%d > %d)", n, maxLoginReqDeviceUUID)
+		return nil, fmt.Errorf("login_req: device_uuid field too long (%d > %d)", n, maxLoginReqDeviceUUID)
 	}
 	if n := len(req.DeviceName); n > maxLoginReqDeviceName {
-		return nil, fmt.Errorf("login_req: device_name 字段过长(%d > %d)", n, maxLoginReqDeviceName)
+		return nil, fmt.Errorf("login_req: device_name field too long (%d > %d)", n, maxLoginReqDeviceName)
 	}
 	if n := len(req.Platform); n > maxLoginReqShortEnum {
-		return nil, fmt.Errorf("login_req: platform 字段过长(%d > %d)", n, maxLoginReqShortEnum)
+		return nil, fmt.Errorf("login_req: platform field too long (%d > %d)", n, maxLoginReqShortEnum)
 	}
 	if n := len(req.Transport); n > maxLoginReqShortEnum {
-		return nil, fmt.Errorf("login_req: transport 字段过长(%d > %d)", n, maxLoginReqShortEnum)
+		return nil, fmt.Errorf("login_req: transport field too long (%d > %d)", n, maxLoginReqShortEnum)
 	}
 	if n := len(req.Purpose); n > maxLoginReqShortEnum {
-		return nil, fmt.Errorf("login_req: purpose 字段过长(%d > %d)", n, maxLoginReqShortEnum)
+		return nil, fmt.Errorf("login_req: purpose field too long (%d > %d)", n, maxLoginReqShortEnum)
 	}
 	// P2#16:PoW 子字段长度校验。语义校验(签名/数学)在 server PoWService.VerifyPoWProof 做,
 	// 这里只挡过长字段防止解析阶段被恶意填充塞内存。
 	if n := len(req.Pow.ChallengeID); n > maxLoginReqPowCID {
-		return nil, fmt.Errorf("login_req: pow.cid 字段过长(%d > %d)", n, maxLoginReqPowCID)
+		return nil, fmt.Errorf("login_req: pow.cid field too long (%d > %d)", n, maxLoginReqPowCID)
 	}
 	if n := len(req.Pow.Salt); n > maxLoginReqPowSalt {
-		return nil, fmt.Errorf("login_req: pow.salt 字段过长(%d > %d)", n, maxLoginReqPowSalt)
+		return nil, fmt.Errorf("login_req: pow.salt field too long (%d > %d)", n, maxLoginReqPowSalt)
 	}
 	if n := len(req.Pow.Signature); n > maxLoginReqPowSignature {
-		return nil, fmt.Errorf("login_req: pow.signature 字段过长(%d > %d)", n, maxLoginReqPowSignature)
+		return nil, fmt.Errorf("login_req: pow.signature field too long (%d > %d)", n, maxLoginReqPowSignature)
 	}
 	return &req, nil
 }

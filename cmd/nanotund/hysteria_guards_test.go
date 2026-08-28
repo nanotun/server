@@ -227,7 +227,7 @@ func TestHysteriaUDPProxyConn_ReportsEmptyAddrWhenThereIsNone(t *testing.T) {
 func TestUdpPortFromPacketConn_RejectsOutOfRangePort(t *testing.T) {
 	if _, err := udpPortFromPacketConn(zeroPortPacketConn{}); err == nil {
 		t.Fatal("端口 0 必须报错,不能上报给控制面")
-	} else if !strings.Contains(err.Error(), "端口") {
+	} else if !strings.Contains(err.Error(), "port") {
 		t.Errorf("错误里该说明是端口的问题: %v", err)
 	}
 }

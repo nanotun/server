@@ -141,7 +141,7 @@ func (r *hy2ClientAddrRelay) put(token string, addr net.Addr) {
 		if len(r.pending) >= hy2PendingMax {
 			// 放弃记录而不是无界增长:这条 stream 退回按环回归因,行为等同修复前。
 			logrus.WithField("pending", len(r.pending)).
-				Warn("[hy2] 真实客户端地址中转表已满,本条 stream 回退环回归因")
+				Warn("[hy2] the real-client-address relay table is full; this stream falls back to attributing the loopback address")
 			return
 		}
 	}

@@ -51,7 +51,7 @@ func StrictCheck(data []byte) error {
 		var sErr *toml.StrictMissingError
 		if errors.As(err, &sErr) {
 			// StrictMissingError.String() 含未知字段的完整路径与位置,直接用。
-			return fmt.Errorf("未知字段(疑似拼写错误或废弃配置):\n%s", sErr.String())
+			return fmt.Errorf("unknown field (likely a typo or a setting that has been retired):\n%s", sErr.String())
 		}
 		// 其它解析错误(语法错 / 类型错):理论上 lenient 已经报过,这里二次报无害。
 		return err

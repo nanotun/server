@@ -240,7 +240,7 @@ func NewPoWService(
 	if len(key) == 0 {
 		key = make([]byte, 32)
 		if _, err := powRandRead(key); err != nil {
-			return nil, fmt.Errorf("pow: 生成 HMAC key 失败: %w", err)
+			return nil, fmt.Errorf("pow: failed to generate the HMAC key: %w", err)
 		}
 	}
 	if failures == nil {
@@ -271,53 +271,53 @@ func NewPoWService(
 	if failuresEnable == 0 {
 		failuresEnable = config.PoWDefaultFailuresEnable // 头 3 次(含 0 次失败)只要 base_difficulty
 	} else if failuresEnable < 0 {
-		perrs = append(perrs, fmt.Sprintf("[server.pow].failures_enable=%d 不能为负(0=用默认 3;1=从第 1 次失败即 ramp)", failuresEnable))
+		perrs = append(perrs, fmt.Sprintf("[server.pow].failures_enable=%d must not be negative (0=use the default 3; 1=ramp from the very first failure)", failuresEnable))
 	}
 	// 各难度字段:==0 视作未配 → 用默认;其余(含负数)必须落在 [powMinDifficulty, powMaxDifficulty]。
 	if baseDifficulty == 0 {
 		baseDifficulty = config.PoWDefaultBaseDifficulty // ~5ms M1 客户端
 	} else if baseDifficulty < powMinDifficulty || baseDifficulty > powMaxDifficulty {
-		perrs = append(perrs, fmt.Sprintf("[server.pow].base_difficulty=%d 越界(须 %d..%d;0=用默认 8)",
+		perrs = append(perrs, fmt.Sprintf("[server.pow].base_difficulty=%d is out of range (must be %d..%d; 0=use the default 8)",
 			baseDifficulty, powMinDifficulty, powMaxDifficulty))
 	}
 	if rampDifficulty == 0 {
 		rampDifficulty = config.PoWDefaultRampDifficulty // ~50ms 跳档
 	} else if rampDifficulty < powMinDifficulty || rampDifficulty > powMaxDifficulty {
-		perrs = append(perrs, fmt.Sprintf("[server.pow].ramp_difficulty=%d 越界(须 %d..%d;0=用默认 14)",
+		perrs = append(perrs, fmt.Sprintf("[server.pow].ramp_difficulty=%d is out of range (must be %d..%d; 0=use the default 14)",
 			rampDifficulty, powMinDifficulty, powMaxDifficulty))
 	}
 	if stepPerFailure == 0 {
 		stepPerFailure = config.PoWDefaultStepPerFailure
 	} else if stepPerFailure < 0 {
-		perrs = append(perrs, fmt.Sprintf("[server.pow].step_per_failure=%d 不能为负(0=用默认 2)", stepPerFailure))
+		perrs = append(perrs, fmt.Sprintf("[server.pow].step_per_failure=%d must not be negative (0=use the default 2)", stepPerFailure))
 	}
 	if adaptiveCeiling == 0 {
 		adaptiveCeiling = config.PoWDefaultAdaptiveCeiling // ~10s 封顶
 	} else if adaptiveCeiling < powMinDifficulty || adaptiveCeiling > powMaxDifficulty {
-		perrs = append(perrs, fmt.Sprintf("[server.pow].adaptive_ceiling=%d 越界(须 %d..%d;0=用默认 22)",
+		perrs = append(perrs, fmt.Sprintf("[server.pow].adaptive_ceiling=%d is out of range (must be %d..%d; 0=use the default 22)",
 			adaptiveCeiling, powMinDifficulty, powMaxDifficulty))
 	}
 	if ttlSec == 0 {
 		ttlSec = config.PoWDefaultTTLSec
 	} else if ttlSec < 0 {
-		perrs = append(perrs, fmt.Sprintf("[server.pow].ttl_sec=%d 不能为负(0=用默认 300)", ttlSec))
+		perrs = append(perrs, fmt.Sprintf("[server.pow].ttl_sec=%d must not be negative (0=use the default 300)", ttlSec))
 	}
 	// 区间错误先行返回,避免用被污染的值再做顺序校验产生二次误导。
 	if len(perrs) > 0 {
-		return nil, fmt.Errorf("pow: 配置非法:\n  - %s", strings.Join(perrs, "\n  - "))
+		return nil, fmt.Errorf("pow: invalid configuration:\n  - %s", strings.Join(perrs, "\n  - "))
 	}
 	// 顺序约束(在已解析出的值上):base ≤ ramp ≤ ceiling。倒置意味着"失败后难度反而更低",
 	// 让自适应升级失效 —— 同样 fail-fast 而非悄悄抬高。
 	if rampDifficulty < baseDifficulty {
-		perrs = append(perrs, fmt.Sprintf("[server.pow].ramp_difficulty(%d) 必须 ≥ base_difficulty(%d)",
+		perrs = append(perrs, fmt.Sprintf("[server.pow].ramp_difficulty(%d) must be >= base_difficulty(%d)",
 			rampDifficulty, baseDifficulty))
 	}
 	if adaptiveCeiling < rampDifficulty {
-		perrs = append(perrs, fmt.Sprintf("[server.pow].adaptive_ceiling(%d) 必须 ≥ ramp_difficulty(%d)",
+		perrs = append(perrs, fmt.Sprintf("[server.pow].adaptive_ceiling(%d) must be >= ramp_difficulty(%d)",
 			adaptiveCeiling, rampDifficulty))
 	}
 	if len(perrs) > 0 {
-		return nil, fmt.Errorf("pow: 配置非法:\n  - %s", strings.Join(perrs, "\n  - "))
+		return nil, fmt.Errorf("pow: invalid configuration:\n  - %s", strings.Join(perrs, "\n  - "))
 	}
 	return &PoWService{
 		hmacKey:         key,
@@ -383,13 +383,13 @@ func (s *PoWService) IssueChallenge(d int) (PoWChallenge, error) {
 	}
 	cidBuf := make([]byte, 16)
 	if _, err := powRandRead(cidBuf); err != nil {
-		return PoWChallenge{}, fmt.Errorf("pow: 生成 challenge_id 失败: %w", err)
+		return PoWChallenge{}, fmt.Errorf("pow: failed to generate challenge_id: %w", err)
 	}
 	cid := base64.RawURLEncoding.EncodeToString(cidBuf)
 
 	salt := make([]byte, powSaltBytes)
 	if _, err := powRandRead(salt); err != nil {
-		return PoWChallenge{}, fmt.Errorf("pow: 生成 salt 失败: %w", err)
+		return PoWChallenge{}, fmt.Errorf("pow: failed to generate the salt: %w", err)
 	}
 	saltB64 := base64.StdEncoding.EncodeToString(salt)
 	exp := time.Now().Unix() + s.ttlSec
@@ -545,7 +545,7 @@ func (s *PoWService) pruneExpired() {
 		return true
 	})
 	if removed > 0 {
-		logrus.WithField("removed", removed).Debug("[pow] GC 已过期 challenge")
+		logrus.WithField("removed", removed).Debug("[pow] GC removed expired challenges")
 	}
 }
 

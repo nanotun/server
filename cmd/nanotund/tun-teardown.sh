@@ -3,6 +3,19 @@
 
 set -e
 
+# ── 语言 ─────────────────────────────────────────────────────────────────────
+# 与 tun-setup.sh 同一套:默认英文,NANOTUN_LANG > /etc/nanotun/lang > en。
+# 本脚本由 systemd 在停机/卸载时跑,输出进 journal。
+NT_LANG=en
+case "$(printf '%s' "${NANOTUN_LANG:-}" | tr '[:upper:]' '[:lower:]')" in
+  zh|zh[-_]*|chinese|cn) NT_LANG=zh ;;
+  en|en[-_]*|english)    NT_LANG=en ;;
+  *) case "$(head -1 /etc/nanotun/lang 2>/dev/null | tr '[:upper:]' '[:lower:]')" in
+       zh|zh[-_]*) NT_LANG=zh ;;
+     esac ;;
+esac
+tsel() { if [ "$NT_LANG" = zh ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
 removed=0
 
 # nanotund 自己那张（[tun].device_name，默认 tun0）。
@@ -32,7 +45,7 @@ for i in $(seq 1 14); do
   ip -o -4 addr show dev "$dev" 2>/dev/null | grep -qF " $legacy_addr " || continue
 
   ip link set "$dev" down 2>/dev/null || true
-  ip tuntap del dev "$dev" mode tun 2>/dev/null && { echo "removed ${dev}（旧版遗留）"; removed=$((removed+1)); }
+  ip tuntap del dev "$dev" mode tun 2>/dev/null && { echo "removed ${dev}$(tsel " (stale, from an older version)" "（旧版遗留）")"; removed=$((removed+1)); }
 done
 
-echo "TUN teardown done（清掉 $removed 张）"
+echo "TUN teardown done$(tsel " (${removed} removed)" "（清掉 ${removed} 张）")"

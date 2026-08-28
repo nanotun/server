@@ -300,7 +300,7 @@ func TestWebBinary_VersionExitsCleanlyWithoutTouchingAnything(t *testing.T) {
 	if !strings.Contains(out, "nanotun-web") {
 		t.Fatalf("没打印版本: %q", out)
 	}
-	if strings.Contains(out, "打开数据库") || strings.Contains(out, "TLS") {
+	if strings.Contains(out, "open the database") || strings.Contains(out, "TLS") {
 		t.Fatalf("-version 顺手做了别的事: %q", out)
 	}
 }
@@ -327,7 +327,7 @@ func TestWebBinary_RefusesToStartOnBadConfig(t *testing.T) {
 			if code == 0 {
 				t.Fatalf("坏配置却启动成功了\n%s", out)
 			}
-			if !strings.Contains(out, "配置校验失败") {
+			if !strings.Contains(out, "config validation failed") {
 				t.Fatalf("退出原因不是配置校验: %q", out)
 			}
 		})
@@ -356,7 +356,7 @@ func TestWebBinary_FatalStartupFailuresExitNonZero(t *testing.T) {
 		if code == 0 {
 			t.Fatalf("库打不开却启动成功\n%s", out)
 		}
-		if !strings.Contains(out, "打开数据库") && !strings.Contains(out, "迁移") {
+		if !strings.Contains(out, "open the database") && !strings.Contains(out, "migration") {
 			t.Fatalf("退出原因看不出是数据库问题: %q", out)
 		}
 	})
@@ -374,7 +374,7 @@ func TestWebBinary_FatalStartupFailuresExitNonZero(t *testing.T) {
 		if code == 0 {
 			t.Fatalf("证书建不出来却启动成功\n%s", out)
 		}
-		if !strings.Contains(out, "TLS 证书") {
+		if !strings.Contains(out, "TLS certificate") {
 			t.Fatalf("退出原因看不出是证书问题: %q", out)
 		}
 	})
@@ -429,7 +429,7 @@ func TestWebBinary_RefusesToStartWhenMigrationCannotApply(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("迁移撞车却启动成功\n%s", out)
 	}
-	if !strings.Contains(out, "迁移") {
+	if !strings.Contains(out, "migration") {
 		t.Fatalf("退出原因看不出是迁移失败: %q", out)
 	}
 }
@@ -457,7 +457,7 @@ func TestWebBinary_WarnsAboutPublicSetupOnAFreshInstall(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("这一路本该在建证书时退出\n%s", out)
 	}
-	if !strings.Contains(out, "抢占首个管理员") {
+	if !strings.Contains(out, "claim the first administrator") {
 		t.Fatalf("没有 TOFU 抢占告警:\n%s", out)
 	}
 	// server_dial_host 未配置的启动告警同理:漏了它,QR 功能瘫痪却只有
@@ -488,7 +488,7 @@ func TestWebBinary_VerboseAndTrustedProxiesTakeEffect(t *testing.T) {
 	}
 	// -v 这一路本身没有 debug 输出可断言(启动期都是 info 级),这里只保证它
 	// 不改变启动判定:同一份坏配置带不带 -v 都必须被拒。
-	if !strings.Contains(out, "配置校验失败") {
+	if !strings.Contains(out, "config validation failed") {
 		t.Fatalf("带 -v 之后连拒绝原因都变了: %q", out)
 	}
 
@@ -545,7 +545,7 @@ func TestWebBinary_VerboseAndTrustedProxiesTakeEffect(t *testing.T) {
 }
 
 // 完整启动一次:自签证书要现场生成、TLS 要真能握手、/healthz 要通,
-// 收到 SIGTERM 要干净退出(exit 0 + "已退出")。
+// 收到 SIGTERM 要干净退出(exit 0 + "[web] exited")。
 //
 // 这是唯一覆盖「装机后第一次启动」的测试。这条路径上任何一步坏掉,症状都是
 // 服务起不来或起来了握不上手,而在单测里全都看不见。
@@ -642,7 +642,7 @@ func TestWebBinary_StartsServesTLSAndShutsDownOnSIGTERM(t *testing.T) {
 		t.Fatalf("收到 SIGTERM 后 20 秒还没退出\n%s", logs())
 	}
 	_ = pw.Close()
-	if !strings.Contains(logs(), "已退出") {
+	if !strings.Contains(logs(), "[web] exited") {
 		t.Errorf("退出日志里没有收尾标记:\n%s", logs())
 	}
 }
@@ -702,10 +702,10 @@ func TestWebBinary_ExitsWhenTheDatabaseFileIsSwappedUnderneath(t *testing.T) {
 
 	// 等它真的起来(库已打开)。
 	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) && !strings.Contains(logs(), "等待请求") {
+	for time.Now().Before(deadline) && !strings.Contains(logs(), "waiting for requests") {
 		time.Sleep(100 * time.Millisecond)
 	}
-	if !strings.Contains(logs(), "等待请求") {
+	if !strings.Contains(logs(), "waiting for requests") {
 		t.Fatalf("30 秒内没起起来:\n%s", logs())
 	}
 
@@ -735,7 +735,7 @@ func TestWebBinary_ExitsWhenTheDatabaseFileIsSwappedUnderneath(t *testing.T) {
 	case <-time.After(45 * time.Second):
 		t.Fatalf("库被掉包 45 秒后进程还在跑,继续往死文件里写:\n%s", logs())
 	}
-	if !strings.Contains(logs(), "已被替换") {
+	if !strings.Contains(logs(), "has been replaced") {
 		t.Errorf("退出原因没说清是库被替换:\n%s", logs())
 	}
 }

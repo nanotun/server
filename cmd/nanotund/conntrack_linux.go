@@ -27,11 +27,11 @@ func ReleaseConntrackForIP(clientIP string) (uint, error) {
 	}
 	deleted, err := netlink.ConntrackDeleteFilters(netlink.ConntrackTable, family, filter)
 	if err != nil {
-		logrus.WithError(err).WithField("clientIP", clientIP).Warn("清理 conntrack 失败")
+		logrus.WithError(err).WithField("clientIP", clientIP).Warn("failed to clear conntrack entries")
 		return deleted, err
 	}
 	if deleted > 0 {
-		logrus.WithField("clientIP", clientIP).WithField("deleted", deleted).Info("已清理 conntrack 条目")
+		logrus.WithField("clientIP", clientIP).WithField("deleted", deleted).Info("cleared conntrack entries")
 	}
 	return deleted, nil
 }

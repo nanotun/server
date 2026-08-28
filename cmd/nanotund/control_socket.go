@@ -49,12 +49,12 @@ const (
 func startControlSocket(path string, gw *gatewayState) func() {
 	path, off := resolveControlSocketPath(path)
 	if off {
-		logrus.Info("[control] control_socket_path=off,管理面已关闭")
+		logrus.Info("[control] control_socket_path=off, the admin surface is disabled")
 		return func() {}
 	}
 
 	if err := prepareControlSocketPath(path); err != nil {
-		logrus.WithError(err).WithField("path", path).Warn("[control] 准备 socket 路径失败,管理面未启动(reload/kick/list 不可用)")
+		logrus.WithError(err).WithField("path", path).Warn("[control] failed to prepare the socket path, the admin surface did not start (reload/kick/list unavailable)")
 		return func() {}
 	}
 
@@ -66,7 +66,7 @@ func startControlSocket(path string, gw *gatewayState) func() {
 	ln, err := net.Listen("unix", path)
 	restoreUmask(prev)
 	if err != nil {
-		logrus.WithError(err).WithField("path", path).Warn("[control] 监听 unix socket 失败,管理面未启动")
+		logrus.WithError(err).WithField("path", path).Warn("[control] failed to listen on the unix socket, the admin surface did not start")
 		return func() {}
 	}
 	if err := enforceControlSocketPerm(ln, path); err != nil {
@@ -99,9 +99,9 @@ func startControlSocket(path string, gw *gatewayState) func() {
 	}
 
 	go safeGlobalGoroutine("controlSocket", globalContextCancel, func() {
-		logrus.WithField("path", path).Info("[control] 管理面 socket 已就绪")
+		logrus.WithField("path", path).Info("[control] admin surface socket is ready")
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			logrus.WithError(err).Warn("[control] socket Serve 退出")
+			logrus.WithError(err).Warn("[control] socket Serve exited")
 		}
 	})
 
@@ -146,7 +146,7 @@ var controlSocketStatForPermCheck = os.Stat
 func enforceControlSocketPerm(ln net.Listener, path string) error {
 	if err := os.Chmod(path, controlSocketFileMode); err != nil {
 		logrus.WithError(err).WithField("path", path).
-			Error("[control] chmod socket 失败,管理面拒绝启动(fail-closed:无法保证 socket 仅 owner 可访问,不提供无鉴权特权面)")
+			Error("[control] chmod on the socket failed, refusing to start the admin surface (fail-closed: the socket cannot be guaranteed owner-only, so no unauthenticated privileged surface is exposed)")
 		_ = ln.Close()
 		_ = os.Remove(path)
 		return err
@@ -159,13 +159,13 @@ func enforceControlSocketPerm(ln net.Listener, path string) error {
 			perm = info.Mode().Perm().String()
 		}
 		logrus.WithField("path", path).WithField("perm", perm).WithError(err).
-			Error("[control] socket 权限复核未通过(group/other 仍可访问),管理面拒绝启动(fail-closed)")
+			Error("[control] socket permission re-check failed (group/other can still reach it), refusing to start the admin surface (fail-closed)")
 		_ = ln.Close()
 		_ = os.Remove(path)
 		if err != nil {
 			return err
 		}
-		return fmt.Errorf("control socket %s 权限复核未通过(%s)", path, perm)
+		return fmt.Errorf("control socket %s failed the permission re-check (%s)", path, perm)
 	}
 	return nil
 }
@@ -203,8 +203,8 @@ func prepareControlSocketPath(path string) error {
 			return fmt.Errorf("stat control socket dir %s: %w", dir, serr)
 		}
 		if !controlSocketDirPermSafe(info.Mode()) {
-			return fmt.Errorf("control socket 父目录 %s 权限不安全(%s):group/other 可写且未设 sticky 位,"+
-				"拒绝在其中放置无鉴权管理面 socket(改成 owner-only 0700,或用带 sticky 的目录)", dir, info.Mode())
+			return fmt.Errorf("control socket parent directory %s has unsafe permissions (%s): group/other writable with no sticky bit, "+
+				"refusing to place an unauthenticated admin socket there (make it owner-only 0700, or use a directory with the sticky bit)", dir, info.Mode())
 		}
 	}
 	// 上次没退干净留下的 socket 文件:Listen("unix") 会因 EADDRINUSE 失败;
@@ -469,7 +469,7 @@ func controlHandleStatus(gw *gatewayState) http.HandlerFunc {
 		if q := r.URL.Query().Get("device_id"); q != "" {
 			v, err := stringToInt64(q)
 			if err != nil || v < 0 {
-				http.Error(w, "device_id 必须是非负整数,空 = 全量返回", http.StatusBadRequest)
+				http.Error(w, "device_id must be a non-negative integer; empty = return all", http.StatusBadRequest)
 				return
 			}
 			filterDeviceID = v
@@ -488,7 +488,7 @@ func controlHandleStatus(gw *gatewayState) http.HandlerFunc {
 		if q := r.URL.Query().Get("offset"); q != "" {
 			v, err := stringToInt64(q)
 			if err != nil || v < 0 {
-				http.Error(w, "offset 必须是非负整数", http.StatusBadRequest)
+				http.Error(w, "offset must be a non-negative integer", http.StatusBadRequest)
 				return
 			}
 			offset = int(v)
@@ -497,7 +497,7 @@ func controlHandleStatus(gw *gatewayState) http.HandlerFunc {
 		if q := r.URL.Query().Get("limit"); q != "" {
 			v, err := stringToInt64(q)
 			if err != nil || v <= 0 {
-				http.Error(w, "limit 必须是正整数;不传 = 全量", http.StatusBadRequest)
+				http.Error(w, "limit must be a positive integer; omit it for all", http.StatusBadRequest)
 				return
 			}
 			limit = int(v)
@@ -509,7 +509,7 @@ func controlHandleStatus(gw *gatewayState) http.HandlerFunc {
 		// 必须配合 limit 才有翻页含义;不配 limit 全量返回的话,offset 字段被静默吞,
 		// 客户端看 sessions_offset=0 误以为没生效。显式 400 比 silent 好。
 		if offsetGiven && offset > 0 && limit == 0 {
-			http.Error(w, "offset 必须配合 limit 一起传(独传 offset 没有翻页语义)", http.StatusBadRequest)
+			http.Error(w, "offset must be sent together with limit (offset on its own has no paging meaning)", http.StatusBadRequest)
 			return
 		}
 
@@ -849,7 +849,7 @@ func controlHandleKick(gw *gatewayState) http.HandlerFunc {
 			// kick;CLI `nanotun-admin kick device <id>` 也走这条路径。
 			raw := strings.TrimSpace(req.ID)
 			if raw == "" {
-				http.Error(w, "device id 不能为空", http.StatusBadRequest)
+				http.Error(w, "device id must not be empty", http.StatusBadRequest)
 				return
 			}
 			match := func(c *Connection) bool { return c.deviceUUID == strings.ToLower(raw) }
@@ -1166,7 +1166,7 @@ func controlHandleRateRefresh(gw *gatewayState) http.HandlerFunc {
 			if q := r.URL.Query().Get("device_id"); q != "" {
 				v, err := stringToInt64(q)
 				if err != nil || v < 0 {
-					http.Error(w, "device_id 必须是非负整数,空 = 全量刷", http.StatusBadRequest)
+					http.Error(w, "device_id must be a non-negative integer; empty = refresh all", http.StatusBadRequest)
 					return
 				}
 				req.DeviceID = v
@@ -1290,14 +1290,14 @@ func controlHandleUserRateRefresh(gw *gatewayState) http.HandlerFunc {
 			if q := r.URL.Query().Get("user_id"); q != "" {
 				v, err := stringToInt64(q)
 				if err != nil || v < 0 {
-					http.Error(w, "user_id 必须是正整数", http.StatusBadRequest)
+					http.Error(w, "user_id must be a positive integer", http.StatusBadRequest)
 					return
 				}
 				req.UserID = v
 			}
 		}
 		if req.UserID <= 0 {
-			http.Error(w, "user_id 必须 > 0(全量刷请用 /rate/refresh)", http.StatusBadRequest)
+			http.Error(w, "user_id must be > 0 (use /rate/refresh to refresh all)", http.StatusBadRequest)
 			return
 		}
 

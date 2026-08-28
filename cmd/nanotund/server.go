@@ -146,7 +146,7 @@ func lazyPoWService() *PoWService {
 		// 全部失败 / 全部成功(取决于 key 的零值行为)。直接 Fatal 让 systemd 拉起
 		// 而非保留一个语义未定义的半残对象(P0:之前 svc=&PoWService{} 会让
 		// handleVPNLink 后续 powSvc.failures.Count(ipHost) nil-deref panic)。
-		logrus.WithError(err).Fatal("[pow] lazy fallback 初始化失败,熵源不可用,进程退出")
+		logrus.WithError(err).Fatal("[pow] lazy fallback init failed, the entropy source is unavailable, exiting")
 	}
 	lazyPoWFallback = svc
 	return lazyPoWFallback
@@ -583,7 +583,7 @@ func applyTunChanRegisterAction(m map[netip.Addr]chan *util.TunPacket, action re
 		delete(m, action.ip)
 		return
 	}
-	logrus.WithField("vip", action.ip.String()).Debug("[tunchan] 跳过 unregister:同 vIP 已被新连接接管,保留新 chan")
+	logrus.WithField("vip", action.ip.String()).Debug("[tunchan] skipping unregister: the same vIP was taken over by a new connection, keeping the new chan")
 }
 
 type registerTunReadChanAction struct {
@@ -641,18 +641,18 @@ func loadConfig(path string) (config.Config, error) {
 	// 默认 WARN 不 fail;NANOTUN_CONFIG_STRICT=1 升级为 fatal。
 	if strictErr := config.StrictCheck(data); strictErr != nil {
 		if config.StrictModeEnabled() {
-			return cfg, fmt.Errorf("config strict mode 拒绝(unset %s 可降级为 WARN): %w",
+			return cfg, fmt.Errorf("config strict mode rejected it (unset %s to downgrade this to a WARN): %w",
 				config.StrictEnvVar, strictErr)
 		}
 		logrus.WithError(strictErr).Warnf(
-			"[config] 配置中存在未知字段(可能是拼写错误或已废弃);设 %s=1 升级为 fatal",
+			"[config] the config has unknown fields (typos or deprecated keys); set %s=1 to make this fatal",
 			config.StrictEnvVar)
 	}
 
 	// 语义校验:负速率 / 非法 CIDR / 非法 listen_addr 等在启动期 fail-fast(见 config.Config.Validate)。
 	// 这类错误若拖到运行期才暴露(net.Listen 失败 / 限速器异常 / 网段静默跳过),排查成本高得多。
 	if verr := cfg.Validate(); verr != nil {
-		return cfg, fmt.Errorf("配置语义校验未通过: %w", verr)
+		return cfg, fmt.Errorf("config failed semantic validation: %w", verr)
 	}
 	return cfg, nil
 }
@@ -758,11 +758,11 @@ func parseListenPortValue(listenAddr, defaultAddr string) (int, error) {
 	if err != nil {
 		// ":8080" 走不到这里(SplitHostPort 对它返回 port="8080" 且无错);
 		// 落到这里的是冒号过多之类的畸形值,直接报错。
-		return 0, fmt.Errorf("无法从 listen 地址 %q 解析端口: %w", listenAddr, err)
+		return 0, fmt.Errorf("cannot parse a port out of listen address %q: %w", listenAddr, err)
 	}
 	p, err := strconv.Atoi(port)
 	if err != nil || p < 1 || p > 65535 {
-		return 0, fmt.Errorf("无效端口 %q", port)
+		return 0, fmt.Errorf("invalid port %q", port)
 	}
 	return p, nil
 }
@@ -809,18 +809,18 @@ func validateVPNListenAddr(listenAddr string) {
 		return
 	case vpnListenUnparsable:
 		util.FatalExit(util.ExitConfigParse, logrus.Fields{"listen_addr": listenAddr},
-			"[server] 无法解析 listen 地址 %q", listenAddr)
+			"[server] cannot parse listen address %q", listenAddr)
 	case vpnListenHostNotIP:
 		util.FatalExit(util.ExitConfigParse, logrus.Fields{"listen_addr": listenAddr, "host": host},
-			"[server] listen 地址 host %q 不是合法 IP;请用 127.0.0.1(推荐)/ 0.0.0.0 / :: / 省略 host / localhost", host)
+			"[server] listen address host %q is not a valid IP; use 127.0.0.1 (recommended) / 0.0.0.0 / :: / omit the host / localhost", host)
 	case vpnListenOtherLoopback:
 		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"listen_addr": listenAddr, "host": host},
-			"[server] listen_addr 绑到回环地址 %q,但内部 hy2/REALITY 环回桥接固定拨 127.0.0.1,"+
-				"该地址收不到该拨号 → 数据面会静默中断;请改用 127.0.0.1:<port>", host)
+			"[server] listen_addr is bound to loopback address %q, but the internal hy2/REALITY loopback bridge always dials 127.0.0.1, "+
+				"which that address never receives → the data plane breaks silently; use 127.0.0.1:<port> instead", host)
 	default:
 		util.FatalExit(util.ExitConfigSemantic, logrus.Fields{"listen_addr": listenAddr, "host": host},
-			"[server] listen_addr 绑到非回环具体 IP %q,会导致 hy2/REALITY 环回桥接(拨 127.0.0.1)连接被拒;"+
-				"请改用 127.0.0.1:<port>(推荐)或 0.0.0.0:<port>", host)
+			"[server] listen_addr is bound to the specific non-loopback IP %q, so the hy2/REALITY loopback bridge (which dials 127.0.0.1) gets refused; "+
+				"use 127.0.0.1:<port> (recommended) or 0.0.0.0:<port>", host)
 	}
 }
 
@@ -889,9 +889,9 @@ func probeLoopbackVPNReachable(listenAddr string, port int) {
 	}
 	util.FatalExit(util.ExitConfigSemantic,
 		logrus.Fields{"listen_addr": listenAddr, "probe_addr": addr, "err": fmt.Sprintf("%v", lastErr)},
-		"[server] 环回自检失败:无法拨通 %s(%v)。hy2/REALITY 终结后固定回连 127.0.0.1,"+
-			"当前 listen_addr=%q 的绑定收不到该拨号(常见于 [::]:port 且内核 bindv6only=1);"+
-			"请把 listen_addr 改为 127.0.0.1:<port> 或 0.0.0.0:<port>", addr, lastErr, listenAddr)
+		"[server] loopback self-check failed: cannot dial %s (%v). Once hy2/REALITY terminates a connection it always dials back to 127.0.0.1, "+
+			"and the current listen_addr=%q binding never receives that dial (common with [::]:port plus kernel bindv6only=1); "+
+			"change listen_addr to 127.0.0.1:<port> or 0.0.0.0:<port>", addr, lastErr, listenAddr)
 }
 
 func main() {
@@ -900,9 +900,9 @@ func main() {
 	// 横幅是 logrus 打到 stderr 的一行带时间戳的 INFO,混在前面会让
 	// `nanotund --version | head -1` 这类用法拿到垃圾。flag.Parse 本身无副作用,
 	// 提前跑还顺带让「参数敲错」在启动任何东西之前就以 exit 2 收场。
-	configPath := flag.String("config", "config.toml", "配置文件路径")
-	addrOverride := flag.String("addr", "", "监听地址（覆盖配置文件中的 listen_addr）")
-	showVersion := flag.Bool("version", false, "打印版本并退出")
+	configPath := flag.String("config", "config.toml", "path to the config file")
+	addrOverride := flag.String("addr", "", "listen address (overrides listen_addr from the config file)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -923,7 +923,7 @@ func main() {
 					"goroutine": "demux",
 					"panic":     r,
 					"stack":     string(debug.Stack()),
-				}).Error("demux goroutine panic,触发 graceful shutdown")
+				}).Error("demux goroutine panicked, triggering graceful shutdown")
 				if globalContextCancel != nil {
 					globalContextCancel()
 				}
@@ -977,7 +977,7 @@ func main() {
 					select {
 					case channel <- pkt:
 					default:
-						logrus.WithField("ip", destKey.String()).Trace("TUN 写入通道已满")
+						logrus.WithField("ip", destKey.String()).Trace("TUN write channel is full")
 						tunReadBufPool.Put(pkt.Buf)
 						tunPacketPool.Put(pkt)
 					}
@@ -1001,11 +1001,11 @@ func main() {
 		"version":    serverVersion,
 		"build_time": serverBuildTime,
 		"git_sha":    serverGitSHA,
-	}).Info("nanotund 启动")
+	}).Info("nanotund starting")
 
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
-		util.FatalExit(util.ExitConfigParse, logrus.Fields{"config_path": *configPath}, "加载配置 %s: %v", *configPath, err)
+		util.FatalExit(util.ExitConfigParse, logrus.Fields{"config_path": *configPath}, "loading config %s: %v", *configPath, err)
 	}
 
 	// 配置文件里有 REALITY 私钥和 hy2 口令,组/其他可读就等于摊给机器上任何本地用户。
@@ -1020,9 +1020,9 @@ func main() {
 	// 现状和那一条命令,不去做注定失败的补救。
 	if fi, statErr := os.Stat(*configPath); statErr == nil {
 		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
-			logrus.Warnf("[config] %s 权限是 %04o —— 里面有 REALITY 私钥和 hy2 口令,"+
-				"这台机器上任何本地用户都能读。收紧:chmod 600 %s"+
-				"(这段时间里读过的人已经读到了,真在意就轮换密钥)",
+			logrus.Warnf("[config] %s has mode %04o — it holds the REALITY private key and the hy2 password, "+
+				"so any local user on this machine can read it. Tighten it: chmod 600 %s"+
+				" (whoever read it in the meantime already has it; rotate the keys if that matters)",
 				*configPath, perm, *configPath)
 		}
 	}
@@ -1030,7 +1030,7 @@ func main() {
 	if cfg.Log.Level != "" {
 		lvl, err := logrus.ParseLevel(cfg.Log.Level)
 		if err != nil {
-			logrus.Warnf("无效的 log.level %q，使用 info: %v", cfg.Log.Level, err)
+			logrus.Warnf("invalid log.level %q, falling back to info: %v", cfg.Log.Level, err)
 			logrus.SetLevel(logrus.InfoLevel)
 		} else {
 			logrus.SetLevel(lvl)
@@ -1119,20 +1119,20 @@ func main() {
 			var usableSubnets []string
 			localSubnets, errLocal := GetLocalSubnets()
 			if errLocal != nil {
-				logrus.WithError(errLocal).Warn("获取本机网段失败，将不进行冲突过滤")
+				logrus.WithError(errLocal).Warn("failed to read the local subnets, conflict filtering will be skipped")
 				usableSubnets = cfg.TUN.Subnets
 			} else {
 				for i := 0; i < tunCount; i++ {
 					subnet, errParse := parseCIDR(cfg.TUN.Subnets[i])
 					if errParse != nil {
-						logrus.WithError(errParse).WithField("subnet", cfg.TUN.Subnets[i]).Warn("网段解析失败，跳过")
+						logrus.WithError(errParse).WithField("subnet", cfg.TUN.Subnets[i]).Warn("subnet parse failed, skipping")
 						continue
 					}
 					conflict := false
 					for _, local := range localSubnets {
 						if SubnetOverlaps(subnet, local) {
 							conflict = true
-							logrus.WithField("subnet", cfg.TUN.Subnets[i]).Info("网段与本机冲突，跳过")
+							logrus.WithField("subnet", cfg.TUN.Subnets[i]).Info("subnet conflicts with a local one, skipping")
 							break
 						}
 					}
@@ -1142,16 +1142,16 @@ func main() {
 				}
 			}
 			if len(usableSubnets) == 0 {
-				logrus.Warn("无可用 IPv4 网段（均与本机冲突），跳过 IPv4")
+				logrus.Warn("no usable IPv4 subnet (all conflict with local ones), skipping IPv4")
 			} else {
 				var sticky bool
 				chosenSubnet, sticky = chooseTUNSubnet(usableSubnets, prevMeshGateways, true)
 				logrus.WithFields(logrus.Fields{
 					"subnet": chosenSubnet, "reused_last": sticky, "usable": len(usableSubnets),
-				}).Info("[tun-subnet] 已选定 IPv4 mesh 网段")
+				}).Info("[tun-subnet] IPv4 mesh subnet selected")
 				gw, errGW := gatewayCIDRFromSubnet(chosenSubnet)
 				if errGW != nil {
-					logrus.WithError(errGW).Warn("IPv4 网关 CIDR 解析失败，跳过 IPv4")
+					logrus.WithError(errGW).Warn("failed to derive the IPv4 gateway CIDR, skipping IPv4")
 				} else {
 					gatewayCIDR = gw
 				}
@@ -1164,20 +1164,20 @@ func main() {
 			var usableSubnetsV6 []string
 			localSubnetsV6, errLocalV6 := GetLocalSubnetsV6()
 			if errLocalV6 != nil {
-				logrus.WithError(errLocalV6).Warn("获取本机 IPv6 网段失败，将不进行冲突过滤")
+				logrus.WithError(errLocalV6).Warn("failed to read the local IPv6 subnets, conflict filtering will be skipped")
 				usableSubnetsV6 = cfg.TUN.SubnetsV6
 			} else {
 				for _, subnetStr := range cfg.TUN.SubnetsV6 {
 					subnet, errParse := parseCIDR(subnetStr)
 					if errParse != nil {
-						logrus.WithError(errParse).WithField("subnet", subnetStr).Warn("IPv6 网段解析失败，跳过")
+						logrus.WithError(errParse).WithField("subnet", subnetStr).Warn("IPv6 subnet parse failed, skipping")
 						continue
 					}
 					conflict := false
 					for _, local := range localSubnetsV6 {
 						if SubnetOverlaps(subnet, local) {
 							conflict = true
-							logrus.WithField("subnet", subnetStr).Info("IPv6 网段与本机冲突，跳过")
+							logrus.WithField("subnet", subnetStr).Info("IPv6 subnet conflicts with a local one, skipping")
 							break
 						}
 					}
@@ -1191,20 +1191,20 @@ func main() {
 				chosenSubnetV6, stickyV6 = chooseTUNSubnet(usableSubnetsV6, prevMeshGateways, false)
 				logrus.WithFields(logrus.Fields{
 					"subnet": chosenSubnetV6, "reused_last": stickyV6, "usable": len(usableSubnetsV6),
-				}).Info("[tun-subnet] 已选定 IPv6 mesh 网段")
+				}).Info("[tun-subnet] IPv6 mesh subnet selected")
 				gwV6, errGWv6 := gatewayCIDRFromSubnet(chosenSubnetV6)
 				if errGWv6 != nil {
-					logrus.WithError(errGWv6).Warn("IPv6 网关 CIDR 解析失败，跳过 IPv6")
+					logrus.WithError(errGWv6).Warn("failed to derive the IPv6 gateway CIDR, skipping IPv6")
 				} else {
 					gatewayCIDRv6 = gwV6
 				}
 			} else {
-				logrus.Warn("无可用 IPv6 网段（均与本机冲突或无效），跳过 IPv6")
+				logrus.Warn("no usable IPv6 subnet (all conflict with local ones or are invalid), skipping IPv6")
 			}
 		}
 
 		if gatewayCIDR == "" && gatewayCIDRv6 == "" {
-			util.FatalExit(util.ExitConfigSemantic, nil, "IPv4 和 IPv6 均无可用网段，TUN 转发将不可用")
+			util.FatalExit(util.ExitConfigSemantic, nil, "no usable IPv4 or IPv6 subnet, TUN forwarding will be unavailable")
 		}
 		// 网段真漂了就明确告警：全部 lease 作废 + 掉出新网段的 fixed vIP 会被跳过，运维必须知道。
 		logMeshSubnetMoved(prevMeshGateways, gatewayCIDR, gatewayCIDRv6)
@@ -1215,7 +1215,7 @@ func main() {
 		requireTUN := isProductionLinuxRoot()
 		failTUN := func(err error, msg string) {
 			if requireTUN {
-				util.FatalExit(util.ExitNetworkSetup, logrus.Fields{"err": err.Error()}, "%s (Linux root 模式拒绝 silent skip,数据面不可用)", msg)
+				util.FatalExit(util.ExitNetworkSetup, logrus.Fields{"err": err.Error()}, "%s (Linux root mode refuses to skip this silently; the data plane is unavailable)", msg)
 			}
 			logrus.WithError(err).Warn(msg)
 		}
@@ -1227,14 +1227,14 @@ func main() {
 			util.FatalExit(util.ExitConfigSemantic, logrus.Fields{
 				"device_name": deviceName,
 				"state_file":  clientTUNStatePath,
-			}, "[tun].device_name = %q 正是本机 nanotun 客户端正在使用的网卡。"+
-				"服务端启动会先删掉同名网卡再重建,等于每次启动都掐断客户端的数据面。"+
-				"请把 [tun].device_name 换成别的名字(默认 tun0 与客户端不冲突)。", deviceName)
+			}, "[tun].device_name = %q is the very interface the local nanotun client is using. "+
+				"Server startup deletes the interface with that name and recreates it, so every start cuts the client's data plane. "+
+				"Pick a different [tun].device_name (the default tun0 does not clash with the client).", deviceName)
 		}
 		DeleteExistingTUN(deviceName)
 		ifce, errOpen := openTUN(deviceName, gatewayCIDR, gatewayCIDRv6)
 		if errOpen != nil {
-			failTUN(errOpen, "创建虚拟网卡失败")
+			failTUN(errOpen, "failed to create the virtual interface")
 		} else {
 			sharedTUN = ifce
 			sharedTUNGateway = gatewayCIDR
@@ -1261,7 +1261,7 @@ func main() {
 					magicPort = int(resolveMagicDNSConfig(cfg.Server.MagicDNS).port)
 				}
 				if err := EnableIPForward(); err != nil {
-					failTUN(err, "开启 ip_forward 失败")
+					failTUN(err, "failed to enable ip_forward")
 				} else if wanIface, wanIP, errWan := GetWAN(); errWan != nil {
 					// GetWAN 失败要分两类,分错方向相反(见 hasIPv4DefaultRoute)。有 v4 默认路由
 					// 却探不到出口 = 真故障,保持 fail-closed 硬退;没有 v4 默认路由 = 纯 IPv6 主机,
@@ -1269,14 +1269,14 @@ func main() {
 					// 与下方 v6 分支「缺 v6 WAN 仅 Warn」对称。客户端在这类机器上只有 IPv6 出网
 					// (v4-only 目的地够不着,是主机本身没有 v4 出口的固有属性,非本进程可弥补)。
 					if hasIPv4DefaultRoute() {
-						failTUN(errWan, "获取 WAN 失败,跳过 iptables")
+						failTUN(errWan, "failed to detect the WAN, skipping iptables")
 					} else {
-						logrus.WithError(errWan).Warn("未探测到 IPv4 默认路由 —— 本机疑似纯 IPv6 主机,跳过 IPv4 NAT/iptables;客户端将只有 IPv6 出网")
+						logrus.WithError(errWan).Warn("no IPv4 default route detected — this host looks IPv6-only, skipping IPv4 NAT/iptables; clients will only have IPv6 egress")
 					}
 				} else if err := SetupIptables(deviceName, wanIface, wanIP, []string{chosenSubnet}, tcpConnlimit, udpConnlimit,
 					cfg.TUN.ForwardBlockBT, cfg.TUN.ForwardBlockTracker6969, cfg.TUN.ForwardBlockSMTP25, cfg.TUN.ResolveExitMode(), cfg.TUN.ExitDNSRedirect,
 					cfg.TUN.ResolveExitDenyPrivate(), magicGwV4, magicPort); err != nil {
-					failTUN(err, "配置 iptables 失败")
+					failTUN(err, "failed to configure iptables")
 				} else {
 					iptablesInstalled = true
 				}
@@ -1293,18 +1293,18 @@ func main() {
 				}
 				installV6Rules := func() bool {
 					if err := EnableIPv6Forward(); err != nil {
-						logrus.WithError(err).Warn("开启 IPv6 转发失败")
+						logrus.WithError(err).Warn("failed to enable IPv6 forwarding")
 						return false
 					}
 					wanIfaceV6, wanIPv6, errWan := GetWANv6()
 					if errWan != nil {
-						logrus.WithError(errWan).Warn("获取 IPv6 WAN 失败,跳过 ip6tables")
+						logrus.WithError(errWan).Warn("failed to detect the IPv6 WAN, skipping ip6tables")
 						return false
 					}
 					if err := SetupIp6tables(deviceName, wanIfaceV6, wanIPv6, []string{chosenSubnetV6}, tcpConnlimit, udpConnlimit,
 						cfg.TUN.ForwardBlockBT, cfg.TUN.ForwardBlockTracker6969, cfg.TUN.ForwardBlockSMTP25, cfg.TUN.ResolveExitMode(), cfg.TUN.ExitDNSRedirect,
 						cfg.TUN.ResolveExitDenyPrivate(), magicGwV6, magicPortV6); err != nil {
-						logrus.WithError(err).Warn("配置 ip6tables 失败")
+						logrus.WithError(err).Warn("failed to configure ip6tables")
 						return false
 					}
 					return true
@@ -1319,7 +1319,7 @@ func main() {
 					// 故这里单独补装一次;若稍后 v6 出网探明、installV6Rules 重跑,其内部 sweep 会先清掉本条,
 					// 再由 SetupIp6tables 第 5 步以同样内容装回,不会重复堆叠。
 					if err := SetupMagicDNSV6Exception(deviceName, magicGwV6, magicPortV6); err != nil {
-						logrus.WithError(err).Warn("单独补装 v6 MagicDNS 端口例外失败(v6 magic 名字可能解析不到)")
+						logrus.WithError(err).Warn("failed to install the standalone v6 MagicDNS port exception (v6 magic names may not resolve)")
 					} else if magicGwV6 != "" {
 						// 下面的 v6SetupRetryArmed 其实已经足以让 teardown 注册;这里仍显式置位,
 						// 是为了不把「规则已落地」的清理责任寄托在另一段逻辑的副作用上。
@@ -1332,7 +1332,7 @@ func main() {
 					armV6SetupRetry(func() bool {
 						ok := installV6Rules()
 						if ok {
-							logrus.Info("[egress] 探明 v6 出网后补装 ip6tables/NAT66 成功(启动时曾失败)")
+							logrus.Info("[egress] installed ip6tables/NAT66 after v6 egress was confirmed (it had failed at startup)")
 						}
 						return ok
 					})
@@ -1344,7 +1344,7 @@ func main() {
 			// 浪费一次 fork-exec。
 			if iptablesInstalled || v6SetupRetryArmed {
 				defer func() {
-					logrus.Info("[shutdown] 撤销 nanotun 安装的 iptables / ip6tables 规则")
+					logrus.Info("[shutdown] removing the iptables / ip6tables rules nanotun installed")
 					teardownMainIptablesRules()
 				}()
 			}
@@ -1353,7 +1353,7 @@ func main() {
 			// 之间有合理顺序。
 			defer func() {
 				if sharedTUN != nil {
-					logrus.Info("[shutdown] 关闭 TUN")
+					logrus.Info("[shutdown] closing TUN")
 					_ = sharedTUN.Close()
 				}
 			}()
@@ -1367,23 +1367,23 @@ func main() {
 			})
 			var logParts []string
 			if gatewayCIDR != "" {
-				logParts = append(logParts, fmt.Sprintf("IPv4 网段 %s 网关 %s", chosenSubnet, gatewayCIDR))
+				logParts = append(logParts, fmt.Sprintf("IPv4 subnet %s gateway %s", chosenSubnet, gatewayCIDR))
 			}
 			if gatewayCIDRv6 != "" {
-				logParts = append(logParts, fmt.Sprintf("IPv6 网段 %s 网关 %s", chosenSubnetV6, gatewayCIDRv6))
+				logParts = append(logParts, fmt.Sprintf("IPv6 subnet %s gateway %s", chosenSubnetV6, gatewayCIDRv6))
 			}
-			logrus.Infof("TUN 已创建 %s，%s", deviceName, strings.Join(logParts, "，"))
+			logrus.Infof("TUN created %s, %s", deviceName, strings.Join(logParts, ", "))
 		}
 	}
 
 	if err := cfg.Hysteria.ValidateHysteriaCredentials(); err != nil {
-		util.FatalExit(util.ExitConfigSemantic, nil, "配置: %v", err)
+		util.FatalExit(util.ExitConfigSemantic, nil, "config: %v", err)
 	}
 
 	certPath := strings.TrimSpace(cfg.Server.TLSCertFile)
 	keyPath := strings.TrimSpace(cfg.Server.TLSKeyFile)
 	if (certPath != "") != (keyPath != "") {
-		util.FatalExit(util.ExitConfigSemantic, nil, "[server] tls_cert_file 与 tls_key_file 须同时配置或同时留空")
+		util.FatalExit(util.ExitConfigSemantic, nil, "[server] tls_cert_file and tls_key_file must both be set or both be left empty")
 	}
 
 	vpnTCPPort := parseListenPort(cfg.Server.ListenAddr, ":8080")
@@ -1398,7 +1398,7 @@ func main() {
 	if cfg.Server.ExitForwardRateBPS > 0 {
 		exitForwardRateBPS.Store(cfg.Server.ExitForwardRateBPS)
 		logrus.WithField("exit_forward_rate_bps", cfg.Server.ExitForwardRateBPS).
-			Info("[egress] 已启用出口转发速率帽(per-session)")
+			Info("[egress] exit forwarding rate cap enabled (per-session)")
 	}
 
 	// P2#16(2026-05-24):VPN 登录前置 PoW 服务。**始终启用**。
@@ -1416,7 +1416,7 @@ func main() {
 		pcfg.TTLSec,
 	)
 	if errPoW != nil {
-		util.FatalExit(util.ExitConfigSemantic, nil, "初始化 PoW 服务失败: %v", errPoW)
+		util.FatalExit(util.ExitConfigSemantic, nil, "failed to initialize the PoW service: %v", errPoW)
 	}
 	gw.powService = powSvc
 	// PoW 服务 GC goroutine:每 60s 扫一遍已过期 challenge_id + IP 失败窗口。
@@ -1435,9 +1435,9 @@ func main() {
 	globalLoginIPLimiter.SetRatePerMin(cfg.Server.LoginRateLimitPerMin)
 	if cfg.Server.LoginRateLimitPerMin > 0 {
 		logrus.WithField("login_rate_limit_per_min", cfg.Server.LoginRateLimitPerMin).
-			Info("[login-ratelimit] per-IP 登录限速已启用")
+			Info("[login-ratelimit] per-IP login rate limiting enabled")
 	} else {
-		logrus.Info("[login-ratelimit] per-IP 登录限速已关闭(login_rate_limit_per_min=0,不限制)")
+		logrus.Info("[login-ratelimit] per-IP login rate limiting disabled (login_rate_limit_per_min=0, unlimited)")
 	}
 
 	// PSK 自托管模式:打开 SQLite、跑迁移、挂 authVerifier。失败直接 Fatal,
@@ -1453,7 +1453,7 @@ func main() {
 		// 不再往 fields 里塞一份 err:消息里已经有整条了,两份等于同一段话说两遍。
 		// 平时那是两行冗余,不显眼;而开不了库的错误现在会带一段「盘满了怎么办」的多行提示,
 		// 复制一份就是十几行 —— 真要看的那句话反而更难找了。
-		util.FatalExit(code, nil, "初始化 auth 后端失败: %v", err)
+		util.FatalExit(code, nil, "failed to initialize the auth backend: %v", err)
 	}
 	defer authCleanup()
 
@@ -1482,7 +1482,7 @@ func main() {
 	if tlsOn {
 		cert, errTLS := util.LoadAndCheckTLSKeyPair(certPath, keyPath, "vpn-wss")
 		if errTLS != nil {
-			util.FatalExit(util.ExitTLSCert, logrus.Fields{"cert": certPath, "key": keyPath}, "VPN TLS 加载证书 %s / %s: %v", certPath, keyPath, errTLS)
+			util.FatalExit(util.ExitTLSCert, logrus.Fields{"cert": certPath, "key": keyPath}, "VPN TLS loading certificate %s / %s: %v", certPath, keyPath, errTLS)
 		}
 		tlsSrv := util.NewServerTLSConfig(util.ServerTLSOptions{
 			Certificates: []tls.Certificate{cert},
@@ -1490,7 +1490,7 @@ func main() {
 			// SessionTicketsEnabled 留零值 = 禁用 ticket(工厂安全默认);VPN 长连接无 resumption 需求。
 		})
 		vpnLn = tls.NewListener(vpnLn, tlsSrv)
-		logrus.Infof("VPN：已在 %s 启用 TLS（WSS），证书 %s，握手超时 %s", cfg.Server.ListenAddr, certPath, wssHandshakeTimeout)
+		logrus.Infof("VPN: TLS (WSS) enabled on %s, certificate %s, handshake timeout %s", cfg.Server.ListenAddr, certPath, wssHandshakeTimeout)
 	}
 
 	var loopbackWSTLS *tls.Config
@@ -1507,9 +1507,9 @@ func main() {
 	if muxEnabled {
 		muxOptsForAccept = buildSmuxConfigFrom(cfg.Smux)
 		loopbackSmuxPoolRef = newLoopbackSmuxPool(loopbackWSURL, muxOptsForAccept, loopbackWSTLS)
-		logrus.Infof("VPN：%s；已启用环回 smux（hy2/REALITY 经 WebSocket 至多路 stream）", cfg.Server.ListenAddr)
+		logrus.Infof("VPN: %s; loopback smux enabled (hy2/REALITY reaches multiplexed streams over WebSocket)", cfg.Server.ListenAddr)
 	} else {
-		logrus.Infof("VPN：%s，WebSocket 二进制链路帧", cfg.Server.ListenAddr)
+		logrus.Infof("VPN: %s, WebSocket binary link frames", cfg.Server.ListenAddr)
 	}
 
 	hySrv, hyUDPPort, hyPortHopCleanup, errHy := startEmbeddedHysteria(&cfg, cfg.Server.ListenAddr, loopbackWSURL, loopbackSmuxPoolRef, loopbackWSTLS)
@@ -1563,7 +1563,7 @@ func main() {
 			// %s 占位:err 文案含用户配置片段(如非法 IP),不能当格式串直接传(vet: non-constant format)。
 			util.FatalExit(util.ExitConfigSemantic, nil, "%s", err.Error())
 		}
-		logrus.WithField("count", len(allowed)).Info("[server] 从 jump_host_allowed_ips 静态注入跳板机名单")
+		logrus.WithField("count", len(allowed)).Info("[server] statically injected the jump host allowlist from jump_host_allowed_ips")
 		// 第二十三轮深扫 HIGH:应用失败必须 Fatal,与上面「名单空 = 全网开放 → Fatal」同一口径。此前 Replace
 		// 的失败只打一行日志,启动照常继续 → 运维以为受保护端口已限制到跳板机名单,实际对全网敞开(ipset/iptables
 		// 未装、无权限、内核缺模块都会走到这)。fail-closed:宁可起不来让运维立刻发现,不可静默裸奔。
@@ -1583,7 +1583,7 @@ func main() {
 	shutdownOnce := sync.Once{}
 	triggerShutdown := func(reason string) {
 		shutdownOnce.Do(func() {
-			logrus.Warnf("[shutdown] 触发优雅退出: %s", reason)
+			logrus.Warnf("[shutdown] triggering graceful shutdown: %s", reason)
 			// shutdown drain (Batch J):
 			//   1. 先广播 LinkTypeClose 给所有 active session,让客户端 graceful 收尾,
 			//      UI 上可显示「服务器维护中」而不是「突然断线」;
@@ -1617,9 +1617,9 @@ func main() {
 	// 可保留(进程刚起)。此处 store 刚完成迁移、必然可读,再读失败即真实 DB 故障 ——
 	// 直接退出,交给 systemd Restart= 重拉,绝不带着错误的 allow-all 快照服务流量。
 	if n, err := reloadACLSnapshotFromStore(gw.store); err != nil {
-		logrus.WithError(err).Fatal("[acl] 启动期 ACL 规则集装载失败,拒绝以默认放行姿态上线,进程退出")
+		logrus.WithError(err).Fatal("[acl] failed to load the ACL rule set at startup, refusing to come up in a default-allow posture, exiting")
 	} else {
-		logrus.WithField("rule_count", n).WithFields(aclSummaryForLog()).Info("[acl] 规则集已装载")
+		logrus.WithField("rule_count", n).WithFields(aclSummaryForLog()).Info("[acl] rule set loaded")
 	}
 	// J1(2026-05-22):cap=2 而非 1。Notify 注册了 3 个不同信号(INT/TERM/HUP),
 	// 若 SIGHUP 与 SIGINT/SIGTERM 同时投递且 chan 满,Go signal 文档明确说会丢一个;
@@ -1644,10 +1644,10 @@ func main() {
 		for sig := range sigCh {
 			switch sig {
 			case syscall.SIGHUP:
-				logrus.Info("[reload] 收到 SIGHUP,开始 hot reload")
+				logrus.Info("[reload] received SIGHUP, starting hot reload")
 				_, _ = applyConfigReload(reload, loadConfig)
 			default:
-				triggerShutdown(fmt.Sprintf("收到信号 %v", sig))
+				triggerShutdown(fmt.Sprintf("received signal %v", sig))
 				return
 			}
 		}
@@ -1740,7 +1740,7 @@ func main() {
 			meshCIDRs = append(meshCIDRs, sharedTUNGatewayV6)
 		}
 		if serr := gw.store.SetMeshCIDRs(context.Background(), meshCIDRs); serr != nil {
-			logrus.WithError(serr).Warn("[subnet-route] 落库 mesh 网段快照失败(批准期重叠检查暂不可用,数据面兜底仍在)")
+			logrus.WithError(serr).Warn("[subnet-route] failed to persist the mesh subnet snapshot (the overlap check at approval time is unavailable for now; the data plane fallback is still in place)")
 		}
 	}
 
@@ -1761,7 +1761,7 @@ func main() {
 	// 直到 Serve 在已关闭的 vpnLn 上返回才收摊。此处直接 return,交给已注册的 LIFO defer 链正常撤销
 	// (撤 iptables / 关 TUN / DB checkpoint 等),与正常停机路径完全一致。
 	if globalContext.Err() != nil {
-		logrus.Warn("[server] 启动收尾阶段已收到停机信号,跳过监听启动,直接进入 teardown")
+		logrus.Warn("[server] a shutdown signal arrived during the final startup phase, skipping listener startup and going straight to teardown")
 		return
 	}
 
@@ -1792,9 +1792,9 @@ func main() {
 				// 用 globalContext 判断而不是比对错误文案:关停一定先 cancel 它,
 				// 而库那边的 sentinel / 措辞换个版本就可能变。
 				if globalContext != nil && globalContext.Err() != nil {
-					logrus.WithError(err).Info("Hysteria Serve 已随进程关停退出")
+					logrus.WithError(err).Info("Hysteria Serve exited as part of the process shutdown")
 				} else {
-					logrus.WithError(err).Error("Hysteria Serve 退出")
+					logrus.WithError(err).Error("Hysteria Serve exited")
 				}
 			}
 		})
@@ -1819,9 +1819,9 @@ func main() {
 	// 返回,那是 systemctl restart / stop 的正常尾声。判据用 globalContext 而不是错误
 	// 文案 —— 关停一定先 cancel 它,而 net 包那句措辞不属于任何导出的 sentinel。
 	if globalContext != nil && globalContext.Err() != nil {
-		logrus.WithError(errAcc).Info("VPN HTTP 服务已随进程关停退出")
+		logrus.WithError(errAcc).Info("VPN HTTP server exited as part of the process shutdown")
 	} else {
-		logrus.WithError(errAcc).Warn("VPN HTTP 服务退出")
+		logrus.WithError(errAcc).Warn("VPN HTTP server exited")
 	}
 }
 
@@ -1870,9 +1870,9 @@ func tunReadLoop(dev tun.Device) {
 		if err != nil {
 			// ctx 已取消时 dev.Close 触发的 Read err 是预期路径,Debug 即可。
 			if gctx != nil && gctx.Err() != nil {
-				logrus.WithError(err).Debug("TUN 读循环退出(ctx cancelled)")
+				logrus.WithError(err).Debug("TUN read loop exited (ctx cancelled)")
 			} else {
-				logrus.WithError(err).Warn("TUN 读循环退出")
+				logrus.WithError(err).Warn("TUN read loop exited")
 			}
 			return
 		}
@@ -1883,7 +1883,7 @@ func tunReadLoop(dev tun.Device) {
 			select {
 			case tunReadChan <- pkt:
 			default:
-				logrus.Warn("TUN 读循环通道已满")
+				logrus.Warn("TUN read loop channel is full")
 				tunReadBufPool.Put(pkt.Buf)
 				tunPacketPool.Put(pkt)
 			}
@@ -1948,7 +1948,7 @@ func tunWriteLoop(dev tun.Device) {
 		flush:
 			if len(writeBufs) > 0 {
 				if _, err := dev.Write(writeBufs, virtioNetHdrLen); err != nil {
-					logrus.WithError(err).Debug("TUN 写入失败")
+					logrus.WithError(err).Debug("TUN write failed")
 				}
 				for _, b := range fullBufs {
 					tunWriteBufPool.Put(b)
@@ -2176,7 +2176,7 @@ readLoop:
 		typ, payload, err := util.ReadLinkFrame(rw)
 		if err != nil {
 			if err != io.EOF {
-				logrus.WithField("remote", remote).WithError(err).Debug("链路读结束")
+				logrus.WithField("remote", remote).WithError(err).Debug("link read ended")
 			}
 			break
 		}
@@ -2306,7 +2306,7 @@ readLoop:
 		case util.LinkTypePing:
 			// 数据面 keepalive 常态高频(每会话每隔数秒一次),Info 级会淹没日志——降到 Trace,
 			// 需要排障时再开 trace。
-			logrus.WithFields(logrus.Fields{"remote": remote, "payload_len": len(payload)}).Trace("收到链路 Ping，回复 Pong")
+			logrus.WithFields(logrus.Fields{"remote": remote, "payload_len": len(payload)}).Trace("received a link Ping, replying with Pong")
 			// 回 Pong 时**限体积 + 加写超时**:否则恶意/卡死客户端用 64KB Ping 或干脆停止读取,能让 Pong 写在
 			// 持有 linkWrMu 时永久阻塞——而 kick / supersede-evict / keepalive 判死都要先拿 linkWrMu 才能 Close,
 			// 于是该已认证会话的 vIP / 会话配额被永久占住,admin 也踢不动(锁被写操作顶死)。Ping 载荷本是小 seq+nonce,
@@ -2341,7 +2341,7 @@ readLoop:
 			// best-effort:仅设置本会话 egressDeviceID + 回 Ack,不影响 IP 帧通路。
 			handleEgressSelectFrame(ctx, c, payload)
 		default:
-			logrus.WithFields(logrus.Fields{"remote": remote, "type": typ}).Trace("链路上忽略非 IP 类型帧")
+			logrus.WithFields(logrus.Fields{"remote": remote, "type": typ}).Trace("ignoring a non-IP frame type on the link")
 		}
 	}
 	cancel()
@@ -2354,7 +2354,7 @@ func openTUN(name, gatewayCIDR, gatewayCIDRv6 string) (tun.Device, error) {
 	const defaultMTU = 1500
 	dev, err := tun.CreateTUN(name, defaultMTU)
 	if err != nil {
-		logrus.WithError(err).WithField("tun", name).Warn("打开 TUN 失败")
+		logrus.WithError(err).WithField("tun", name).Warn("failed to open TUN")
 		return nil, err
 	}
 	devName := name
@@ -2364,21 +2364,21 @@ func openTUN(name, gatewayCIDR, gatewayCIDRv6 string) (tun.Device, error) {
 	// 配置 IPv4 地址（可选）
 	if gatewayCIDR != "" {
 		if err := exec.Command("ip", "addr", "add", gatewayCIDR, "dev", devName).Run(); err != nil {
-			logrus.WithError(err).WithField("tun", devName).WithField("ip", gatewayCIDR).Debug("配置 IPv4 失败或已存在")
+			logrus.WithError(err).WithField("tun", devName).WithField("ip", gatewayCIDR).Debug("configuring IPv4 failed or it already exists")
 		} else {
-			logrus.WithField("tun", devName).WithField("ip", gatewayCIDR).Info("TUN 已配置 IPv4")
+			logrus.WithField("tun", devName).WithField("ip", gatewayCIDR).Info("TUN IPv4 configured")
 		}
 	}
 	// 配置 IPv6 地址（可选）
 	if gatewayCIDRv6 != "" {
 		if err := exec.Command("ip", "-6", "addr", "add", gatewayCIDRv6, "dev", devName).Run(); err != nil {
-			logrus.WithError(err).WithField("tun", devName).WithField("ip", gatewayCIDRv6).Debug("配置 IPv6 失败或已存在")
+			logrus.WithError(err).WithField("tun", devName).WithField("ip", gatewayCIDRv6).Debug("configuring IPv6 failed or it already exists")
 		} else {
-			logrus.WithField("tun", devName).WithField("ip", gatewayCIDRv6).Info("TUN 已配置 IPv6")
+			logrus.WithField("tun", devName).WithField("ip", gatewayCIDRv6).Info("TUN IPv6 configured")
 		}
 	}
 	if err := exec.Command("ip", "link", "set", "dev", devName, "up").Run(); err != nil {
-		logrus.WithError(err).WithField("tun", devName).Debug("ip link set up 失败（可忽略）")
+		logrus.WithError(err).WithField("tun", devName).Debug("ip link set up failed (can be ignored)")
 	}
 	return dev, nil
 }
@@ -2720,7 +2720,7 @@ var takeoverSecretRandRead = crand.Read
 func generateTakeoverSecret() string {
 	var b [32]byte
 	if _, err := takeoverSecretRandRead(b[:]); err != nil {
-		logrus.WithError(err).Error("[takeover] crypto/rand 不可用,放弃生成 secret —— 当次登录将不下发 takeover_secret,客户端无法接管")
+		logrus.WithError(err).Error("[takeover] crypto/rand is unavailable, giving up on generating a secret — this login will carry no takeover_secret and the client cannot take over")
 		return ""
 	}
 	return hex.EncodeToString(b[:])
@@ -2854,7 +2854,7 @@ func cleanupConnection(c *Connection) {
 	logrus.WithFields(logrus.Fields{
 		"conn_id_str": c.connIDStr,
 		"conv_id":     c.connID,
-	}).Info("[takeover] 老链路已被接管，跳过 vip / TunChan / SessionRelease 清理")
+	}).Info("[takeover] the old link was already taken over, skipping vip / TunChan / SessionRelease cleanup")
 }
 
 // preLoginIdleTimeout 覆盖整个握手期(PoWChallengeReq → PoWChallenge → LoginReq →
@@ -2880,7 +2880,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 				"remote":    raw.RemoteAddr().String(),
 				"panic":     r,
 				"stack":     string(debug.Stack()),
-			}).Error("[handleVPNLink] panic 已捕获,本连接断开,进程继续")
+			}).Error("[handleVPNLink] panic recovered, dropping this connection, the process continues")
 		}
 	}()
 	enableTCPKeepAlive(raw)
@@ -2903,7 +2903,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	// keepalive 心跳);异常路径 defer raw.Close() 兜底。
 	preLoginDeadline := time.Now().Add(preLoginIdleTimeout)
 	if errDl := raw.SetDeadline(preLoginDeadline); errDl != nil {
-		logrus.WithField("remote", remote).WithError(errDl).Debug("[login] 设 pre-login deadline 失败,继续(底层 conn 可能不支持)")
+		logrus.WithField("remote", remote).WithError(errDl).Debug("[login] failed to set the pre-login deadline, continuing (the underlying conn may not support it)")
 	}
 
 	powSvc := gw.effectivePoWService()
@@ -2913,7 +2913,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	// 不影响后续 IP 包(最大 ~ MTU,远低于 64KB)。
 	typ, payload, err := util.ReadLinkFramePreLogin(raw)
 	if err != nil {
-		logrus.WithField("remote", remote).WithError(err).Debug("读取首帧失败")
+		logrus.WithField("remote", remote).WithError(err).Debug("failed to read the first frame")
 		return
 	}
 
@@ -2927,7 +2927,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		logrus.WithFields(logrus.Fields{
 			"remote": remote,
 			"typ":    typ,
-		}).Debug("[login] 首帧类型非 PoWChallengeReq(预期老客户端 / 端口扫描),静默断开")
+		}).Debug("[login] first frame is not PoWChallengeReq (expected from old clients / port scans), disconnecting silently")
 		return
 	}
 	// PoWChallengeReq body 当前必须为空,但 server **不校验**(2026-05-24 round-4 scan
@@ -2950,7 +2950,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	}
 	// 全局出题速率限制(1000/秒, burst 100)— 跨 IP DoS 防御。
 	if !AllowGlobalIssue() {
-		logrus.WithField("remote", remote).Warn("[pow] 全局出题速率超限,拒绝出题")
+		logrus.WithField("remote", remote).Warn("[pow] global challenge issue rate exceeded, refusing to issue one")
 		writeCloseAndReturn(raw, util.CodePowFailed, "")
 		return
 	}
@@ -2960,7 +2960,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	difficulty := powSvc.ComputeDifficulty(failures)
 	challenge, errIssue := powSvc.IssueChallenge(difficulty)
 	if errIssue != nil {
-		logrus.WithError(errIssue).WithField("remote", remote).Error("[pow] 出题失败")
+		logrus.WithError(errIssue).WithField("remote", remote).Error("[pow] failed to issue a challenge")
 		writeCloseAndReturn(raw, util.CodeServerError, "")
 		return
 	}
@@ -2968,12 +2968,12 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		challenge.ChallengeID, challenge.Salt, challenge.Difficulty, challenge.ExpiresAt, challenge.Signature,
 	)
 	if errCh != nil {
-		logrus.WithError(errCh).WithField("remote", remote).Error("[pow] 序列化 challenge 失败")
+		logrus.WithError(errCh).WithField("remote", remote).Error("[pow] failed to serialize the challenge")
 		writeCloseAndReturn(raw, util.CodeServerError, "")
 		return
 	}
 	if errW := util.WriteLinkFrame(raw, util.LinkTypePoWChallenge, chBody); errW != nil {
-		logrus.WithError(errW).WithField("remote", remote).Debug("[pow] 写 challenge 失败")
+		logrus.WithError(errW).WithField("remote", remote).Debug("[pow] failed to write the challenge")
 		return
 	}
 
@@ -2981,14 +2981,14 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	// 二次 PoWChallengeReq,防滥用单连接反复出题)。
 	typ, payload, err = util.ReadLinkFramePreLogin(raw)
 	if err != nil {
-		logrus.WithField("remote", remote).WithError(err).Debug("[login] 读 LoginReq 失败")
+		logrus.WithField("remote", remote).WithError(err).Debug("[login] failed to read LoginReq")
 		return
 	}
 	if typ != util.LinkTypeLoginReq {
 		logrus.WithFields(logrus.Fields{
 			"remote": remote,
 			"typ":    typ,
-		}).Debug("[login] 第二帧非 LoginReq(状态机违规),断开")
+		}).Debug("[login] second frame is not LoginReq (state machine violation), disconnecting")
 		writeCloseAndReturn(raw, util.CodePowFailed, "")
 		return
 	}
@@ -3007,7 +3007,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		logrus.WithFields(logrus.Fields{
 			"remote": remote,
 			"err":    truncateForLog(err.Error(), 200),
-		}).Warn("[pow] LoginReq 解析失败")
+		}).Warn("[pow] failed to parse LoginReq")
 		writeCloseAndReturn(raw, util.CodePowFailed, "")
 		return
 	}
@@ -3037,14 +3037,14 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 			"failures":   failures,
 			"difficulty": difficulty,
 			"reason":     errPoW.Error(),
-		}).Debug("[pow] 校验失败")
+		}).Debug("[pow] verification failed")
 		writeCloseAndReturn(raw, util.CodePowFailed, "")
 		return
 	}
 
 	// PoW 通过 — 清掉 pre-login deadline(后续 authenticateLogin / 数据面有自己的超时)。
 	if errDl := raw.SetDeadline(time.Time{}); errDl != nil {
-		logrus.WithField("remote", remote).WithError(errDl).Debug("[login] 清 pre-login deadline 失败,继续")
+		logrus.WithField("remote", remote).WithError(errDl).Debug("[login] failed to clear the pre-login deadline, continuing")
 	}
 
 	// per-IP 登录速率限制(P0-2 配套):takeover 路径也要走限速,否则攻击者只要持续发
@@ -3069,7 +3069,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	if connIDStr == "" {
 		// crypto/rand 故障:不接受这条连接进入活跃集合,客户端会重连重试。
 		// 不写 connIDMap、不分配 vIP,直接拒绝。
-		logrus.WithField("remote", remote).Error("[login] 生成 connIDStr 失败,熵源不可用,拒绝登录")
+		logrus.WithField("remote", remote).Error("[login] failed to generate connIDStr, the entropy source is unavailable, rejecting the login")
 		_ = writeLinkLoginResp(raw, util.CodeServerError, clientLoginMessageForCode(util.CodeServerError), "")
 		return
 	}
@@ -3078,7 +3078,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		"remote":    remote,
 		"platform":  loginReq.Platform,
 		"transport": loginReq.Transport,
-	}).Info("收到登录请求")
+	}).Info("login request received")
 
 	// 限速代次要在认证**之前**记:device/user 两层的限速就是在 authenticateLogin 里
 	// 快照到 Connection 上的,晚于此处取的代次会漏掉「快照之后、装 limiter 之前」这段
@@ -3093,7 +3093,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 			"remote":  remote,
 			"code":    authErr.code,
 			"raw_msg": truncateForLog(authErr.message, 200),
-		}).Warn("登录验证失败")
+		}).Warn("login authentication failed")
 		// G4: 登录失败写 audit_logs。actor 写 remote IP(不写 name 避免被拿来枚举用户),
 		// detail 写 code,**不**记录 raw message(可能含 SQL 片段)。
 		// K2(2026-05-21 事故后):action 名按 code 细分(login.fail.user_not_found /
@@ -3248,14 +3248,14 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 		}
 		if isSupersede {
 			fields["device_uuid"] = victim.deviceUUID
-			logrus.WithFields(fields).Warn("[supersede] 同 device_uuid 重登,踢掉旧 conn")
+			logrus.WithFields(fields).Warn("[supersede] same device_uuid logged in again, kicking the old conn")
 			if gw != nil && gw.store != nil {
 				_ = gw.store.Audit(context.Background(), remote, "kick_device_supersede", userID,
 					"old_conn="+victim.connIDStr+",device_uuid="+victim.deviceUUID)
 			}
 			sessionSupersedeCount.Add(1)
 		} else {
-			logrus.WithFields(fields).Warn("[per-user-limit] 同账号会话数超限,踢最老的一条")
+			logrus.WithFields(fields).Warn("[per-user-limit] session count for this account is over the cap, kicking the oldest one")
 			// 0021 深扫:supersede 分支写 audit 而这里此前不写,admin 排查「会话为什么
 			// 掉线」缺线索(尤其配了账号级上限后被动踢线变成常态化事件)。补齐同口径。
 			if gw != nil && gw.store != nil {
@@ -3396,7 +3396,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 						}
 						clientIPUsedMu.Unlock()
 						connectionsMu.Unlock()
-						logrus.WithField("remote", remote).Warnf("IPv4 虚拟 IP 原子分配失败：requested=%d assigned=%d", len(ipv4LocalIPs), len(assignments))
+						logrus.WithField("remote", remote).Warnf("atomic IPv4 virtual IP allocation failed: requested=%d assigned=%d", len(ipv4LocalIPs), len(assignments))
 						// 深扫第十二轮 MED:成功帧已后移,这里在丢连前显式回一条 code=1 失败,
 						// 避免客户端只看到「连接被静默关闭」而无法区分是拒登还是网络抖动。
 						_ = writeLinkLoginResp(raw, util.CodeServerError, clientLoginMessageForCode(util.CodeServerError), "")
@@ -3415,7 +3415,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 						netCfgV6, errAllocV6 = AllocClientIP(sharedTUNGatewayV6, mergeUsedVIPs(clientIPUsed, dbResvV6), nil)
 					}
 					if errAllocV6 != nil {
-						logrus.WithField("remote", remote).WithError(errAllocV6).Warn("IPv6 虚拟 IP 分配失败，继续仅 IPv4")
+						logrus.WithField("remote", remote).WithError(errAllocV6).Warn("IPv6 virtual IP allocation failed, continuing with IPv4 only")
 					} else {
 						vipV6 := netCfgV6.ClientIP
 						clientIPUsed[vipV6] = true
@@ -3458,7 +3458,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 			_ = writeLinkLoginResp(raw, 1, "服务器繁忙，请稍后重试", "")
 			logrus.WithField("remote", remote).
 				WithError(err).
-				Error("[alloc] vIP 持久化撞 UNIQUE 冲突,已拒登并释放内存占用")
+				Error("[alloc] persisting the vIP hit a UNIQUE conflict, login rejected and the in-memory reservation released")
 			return
 		}
 	}
@@ -3477,7 +3477,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	}
 
 	if convID == 0 || c == nil {
-		logrus.WithField("remote", remote).Error("无法分配 convID")
+		logrus.WithField("remote", remote).Error("cannot allocate a convID")
 		return
 	}
 
@@ -3499,7 +3499,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	// handleTakeoverLogin)。10s 对健康链路小帧绰绰有余,又把异常停读封在有界区间;成功后清掉,数据面写不受此约束。
 	_ = raw.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := writeLinkLoginRespFull(raw, 0, "登录成功", userID, connIDStr, takeoverSecret); err != nil {
-		logrus.WithField("remote", remote).WithError(err).Warn("发送登录响应失败")
+		logrus.WithField("remote", remote).WithError(err).Warn("failed to send the login response")
 		return
 	}
 
@@ -3568,7 +3568,7 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	}
 	saltBody, err := util.MarshalConvSaltLiteJSON(assignmentsForMsg, dnsV4, dnsV6, magicDNSSuffixForClient(gw), c.deviceName)
 	if err != nil {
-		logrus.WithField("remote", remote).WithError(err).Warn("构造 ConvSaltLite 失败")
+		logrus.WithField("remote", remote).WithError(err).Warn("failed to build ConvSaltLite")
 		return
 	}
 	// 刷新写超时(GetRateDefaults 等本地 DB 读理论上耗时可忽略,但重设避免其吃掉 LoginResp 时设的预算)。
@@ -3577,12 +3577,12 @@ func handleVPNLink(raw net.Conn, gw *gatewayState) {
 	err = util.WriteLinkFrame(rwc, util.LinkTypeConvSaltMsg, saltBody)
 	c.linkWrMu.Unlock()
 	if err != nil {
-		logrus.WithField("remote", remote).WithError(err).Warn("下发 ConvSaltLite 失败")
+		logrus.WithField("remote", remote).WithError(err).Warn("failed to deliver ConvSaltLite")
 		return
 	}
 	// 握手两次写已完成:清掉有界写超时,后续数据面写走各自的超时/无超时语义,不受此约束。
 	_ = rwc.SetWriteDeadline(time.Time{})
-	logrus.WithField("remote", remote).WithField("conv_id", convID).Info("已下发 ConvSaltLite，进入链路隧道")
+	logrus.WithField("remote", remote).WithField("conv_id", convID).Info("ConvSaltLite delivered, entering the link tunnel")
 
 	tunnelCtx := globalContext
 	if tunnelCtx == nil {
@@ -3651,7 +3651,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 
 	sid := loginReq.TakeoverSessionID
 	if sid == "" {
-		logrus.WithField("remote", remote).Warn("[takeover] LoginReq.takeover_session_id 为空")
+		logrus.WithField("remote", remote).Warn("[takeover] LoginReq.takeover_session_id is empty")
 		// P1-5: takeover 各失败分支统一写 audit_logs。actor=remote IP,target 留空,
 		// detail 写失败原因。**不**写 secret/sid 全文,避免攻击者通过 audit log 反向
 		// 枚举 / 验证已知 sid。
@@ -3664,7 +3664,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	oldConn, ok := connIDMap[sid]
 	connIDMapMu.RUnlock()
 	if !ok || oldConn == nil {
-		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] 未找到对应 oldConn")
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] no matching oldConn found")
 		auditTakeoverFail(gw, remote, "session_not_found", "")
 		// session_id 枚举攻击 → 升 PoW 难度。
 		markTakeoverAsIPFailure()
@@ -3704,14 +3704,14 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	connIDMapMu.RUnlock()
 	if !still || cur != oldConn {
 		unlockTakeover()
-		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn 已被清理(链路先于接管断开),拒绝接管")
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn was already cleaned up (the link dropped before the takeover), refusing the takeover")
 		auditTakeoverFail(gw, remote, "session_cleaned", oldConn.userID)
 		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
 	}
 	if oldConn.takenOver.Load() {
 		unlockTakeover()
-		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn 已被接管")
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn was already taken over")
 		auditTakeoverFail(gw, remote, "already_taken_over", oldConn.userID)
 		// 多发竞态:不算攻击。
 		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
@@ -3725,7 +3725,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// 退回全新 primary login,不计 PoW 惩罚。
 	if oldConn.superseded.Load() {
 		unlockTakeover()
-		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn 已被 supersede(同设备新登录抢先),拒绝接管")
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn was superseded (a new login from the same device got there first), refusing the takeover")
 		auditTakeoverFail(gw, remote, "session_superseded", oldConn.userID)
 		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
@@ -3736,7 +3736,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// 已经成功的正常 server 上永远不会触发,只是兜底防 entropy-broken 机器。
 	if oldConn.takeoverSecret == "" || loginReq.TakeoverSecret == "" {
 		unlockTakeover()
-		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] secret 为空,拒绝接管")
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] secret is empty, refusing the takeover")
 		auditTakeoverFail(gw, remote, "empty_secret", oldConn.userID)
 		// 试空字符串 secret 是典型 fuzz / bypass 尝试 → 升难度。
 		markTakeoverAsIPFailure()
@@ -3748,7 +3748,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		[]byte(loginReq.TakeoverSecret),
 	) != 1 {
 		unlockTakeover()
-		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] secret 不匹配")
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] secret mismatch")
 		auditTakeoverFail(gw, remote, "secret_mismatch", oldConn.userID)
 		// 试错 secret → 升难度。secret 256-bit 暴破毫无意义,但代码上统一。
 		markTakeoverAsIPFailure()
@@ -3788,7 +3788,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 			"remote": remote,
 			"sid":    sid,
 			"code":   authErr.code,
-		}).Warn("[takeover] PSK 二次校验失败,拒绝接管")
+		}).Warn("[takeover] the second PSK verification failed, refusing the takeover")
 		auditTakeoverFail(gw, remote, "psk_verify_fail", oldConn.userID)
 		// PSK 试错 → 升难度。豁免与 primary login 对齐(见 handleVPNLink):
 		//   - CodeServerError:server 自身故障;
@@ -3807,7 +3807,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 			"sid":         sid,
 			"want_userID": oldConn.userID,
 			"got_userID":  authResult.UserID,
-		}).Warn("[takeover] PSK 通过但 userID 与 oldConn 不一致,拒绝跨用户接管")
+		}).Warn("[takeover] PSK passed but the userID does not match oldConn, refusing a cross-user takeover")
 		auditTakeoverFail(gw, remote, "user_mismatch", oldConn.userID)
 		// 跨用户接管尝试 → 升难度(典型攻击模式)。
 		markTakeoverAsIPFailure()
@@ -3825,7 +3825,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	connIDMapMu.RUnlock()
 	if !stillAfter || curAfter != oldConn || oldConn.takenOver.Load() || oldConn.superseded.Load() {
 		unlockTakeover()
-		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] argon2 期间 oldConn 状态变更(清理/接管/supersede),拒绝接管")
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Warn("[takeover] oldConn changed state during argon2 (cleanup/takeover/supersede), refusing the takeover")
 		auditTakeoverFail(gw, remote, "session_gone_after_verify", oldConn.userID)
 		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
@@ -3845,7 +3845,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	newSecret := generateTakeoverSecret()
 	if newSecret == "" {
 		unlockTakeover()
-		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Error("[takeover] 轮换 secret 失败(熵源故障?),拒绝接管")
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).Error("[takeover] failed to rotate the secret (entropy source broken?), refusing the takeover")
 		_ = writeLinkLoginResp(raw, 1, takeoverFailWireMsg, "")
 		return
 	}
@@ -4052,7 +4052,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// 使后续数据面写不受此握手超时约束。
 	_ = rwc.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := writeLinkLoginRespFull(rwc, 0, "takeover ok", newConn.userID, newConn.connIDStr, newConn.takeoverSecret); err != nil {
-		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).WithError(err).Warn("[takeover] 写 LoginResp 失败，回滚")
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).WithError(err).Warn("[takeover] failed to write LoginResp, rolling back")
 		unlockTakeover()
 		return
 	}
@@ -4072,7 +4072,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	// S1(2026-05-26):takeover 路径 newConn.clientIPs 已 Store(line ~2438),Load 必非 nil。
 	saltBody, err := util.MarshalConvSaltLiteJSON(newConn.safeClientIPs(), dnsV4, dnsV6, magicDNSSuffixForClient(gw), newConn.deviceName)
 	if err != nil {
-		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).WithError(err).Warn("[takeover] 构造 ConvSaltLite 失败，回滚")
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).WithError(err).Warn("[takeover] failed to build ConvSaltLite, rolling back")
 		unlockTakeover()
 		return
 	}
@@ -4080,7 +4080,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 	err = util.WriteLinkFrame(rwc, util.LinkTypeConvSaltMsg, saltBody)
 	newConn.linkWrMu.Unlock()
 	if err != nil {
-		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).WithError(err).Warn("[takeover] 下发 ConvSaltLite 失败，回滚")
+		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).WithError(err).Warn("[takeover] failed to deliver ConvSaltLite, rolling back")
 		unlockTakeover()
 		return
 	}
@@ -4144,7 +4144,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		connIDMapMu.Unlock()
 		unlockTakeover()
 		logrus.WithFields(logrus.Fields{"remote": remote, "sid": sid}).
-			Warn("[takeover] 提交前发现 oldConn 已被踢除(admin kick / PSK 失效等),放弃接管")
+			Warn("[takeover] oldConn turned out to be kicked right before commit (admin kick / PSK invalidation etc.), abandoning the takeover")
 		auditTakeoverFail(gw, remote, "session_kicked_before_commit", oldConn.userID)
 		return
 	}
@@ -4213,14 +4213,14 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 			// demux,再等一段 grace;仍不退出才作为最后手段继续(极端 pathological:某 goroutine 无视 cancel)。
 			logrus.WithFields(logrus.Fields{
 				"remote": remote, "sid": sid,
-			}).Warn("[takeover] 老链路 5s 内未退出 runLinkTunnel；主动 cancel 其 tunnel ctx 后再等")
+			}).Warn("[takeover] the old link did not leave runLinkTunnel within 5s; cancelling its tunnel ctx and waiting again")
 			forceCancelTunnel(oldConn)
 			select {
 			case <-oldConn.tunnelDone:
 			case <-time.After(takeoverOldTunnelCancelGrace):
 				logrus.WithFields(logrus.Fields{
 					"remote": remote, "sid": sid,
-				}).Error("[takeover] cancel 后老链路仍未退出 runLinkTunnel；作为最后手段启动新 demux（可能短暂下行丢包）")
+				}).Error("[takeover] the old link still has not left runLinkTunnel after the cancel; starting the new demux as a last resort (may briefly drop downstream packets)")
 			}
 		}
 	}
@@ -4233,7 +4233,7 @@ func handleTakeoverLogin(raw net.Conn, gw *gatewayState, loginReq *util.LoginReq
 		"old_convid": oldConn.connID,
 		"new_convid": newConn.connID,
 		"transport":  loginReq.Transport,
-	}).Info("[takeover] 接管成功，进入新链路 runLinkTunnel")
+	}).Info("[takeover] takeover succeeded, entering runLinkTunnel on the new link")
 
 	// 深扫第四轮 B:闭合「撤销恰好撞上接管」的窄竞态。若 newConn 继承了出口绑定(egressDeviceID!=0):接管已落定
 	// (newConn 已入 connIDMap + oldConn 已 takenOver)后异步补一次复核——继承来的出口此刻若已被 admin 撤销,而撤销侧

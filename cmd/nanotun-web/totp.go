@@ -217,8 +217,8 @@ func decodeTOTPSecret(secretBase32 string) ([]byte, error) {
 // 错误集合。
 var (
 	// 这几个是「我们自己定义、且会展示给用户」的错误:用 newLocErr 让 Error()
-	// 返回默认语言(zh,供 CLI/日志/errors.Is 之外的场景与旧行为一致),web 层
-	// 通过 trErr(r, err) 按请求语言翻译。仍是 sentinel:调用方 `errors.Is` /
+	// 返回英文(CLI / 日志 / 落盘都用这一份),web 层再通过 trErr(r, err) 按请求
+	// 语言翻译。仍是 sentinel:调用方 `errors.Is` /
 	// `err == ErrTOTPBadFormat`(见 totp_test.go)比较的是同一个变量,不受影响。
 	ErrTOTPBadFormat   = newLocErr("totp.badFormat")
 	ErrTOTPMismatch    = newLocErr("totp.mismatch")

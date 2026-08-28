@@ -83,7 +83,7 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 
 	newCfg, err := loader(rs.configPath)
 	if err != nil {
-		logrus.WithError(err).WithField("config_path", rs.configPath).Error("[reload] 加载新配置失败,保留旧配置")
+		logrus.WithError(err).WithField("config_path", rs.configPath).Error("[reload] failed to load the new config, keeping the old one")
 		return nil, nil
 	}
 
@@ -94,10 +94,10 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 		if newCfg.Log.Level != "" {
 			lvl, errLv := logrus.ParseLevel(newCfg.Log.Level)
 			if errLv != nil {
-				logrus.WithError(errLv).WithField("requested", newCfg.Log.Level).Warn("[reload] log.level 无效,保留旧值")
+				logrus.WithError(errLv).WithField("requested", newCfg.Log.Level).Warn("[reload] log.level is invalid, keeping the old value")
 			} else {
 				logrus.SetLevel(lvl)
-				logrus.WithFields(logrus.Fields{"old": old.Log.Level, "new": newCfg.Log.Level}).Info("[reload] log.level 已热更新")
+				logrus.WithFields(logrus.Fields{"old": old.Log.Level, "new": newCfg.Log.Level}).Info("[reload] log.level hot-reloaded")
 				old.Log.Level = newCfg.Log.Level
 				applied = append(applied, "log.level")
 			}
@@ -110,10 +110,10 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 	if !sameStringSetSorted(newCfg.Server.JumpHostAllowedIPs, old.Server.JumpHostAllowedIPs) {
 		switch {
 		case rs.jumpFW == nil:
-			deferred = append(deferred, "server.jump_host_allowed_ips(jumpFW 未启用,需重启)")
+			deferred = append(deferred, "server.jump_host_allowed_ips(jumpFW not enabled, restart required)")
 		case !newCfg.Server.JumpHostFirewall:
 			// 配置改成关闭 jump_host_firewall:这是 enabled 切换,属于非热更新路径
-			deferred = append(deferred, "server.jump_host_firewall(开关切换需重启)")
+			deferred = append(deferred, "server.jump_host_firewall(toggling it requires a restart)")
 		default:
 			// 第二十三轮深扫 MED:SIGHUP 路径必须自己重跑 ValidateJumpHostFirewall。冷启动与 `config lint` 都会跑它
 			// (拒「名单空」「条目全非法/全空白」),但 SIGHUP 走的 loadConfig 只做 Validate() —— 于是把名单改成
@@ -121,8 +121,8 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 			// ensureLoopbackIPv4Allowlist 补的 127.0.0.1 → 真正的跳板机在受保护端口上被静默挡死(自锁)。
 			// 同一份配置冷启动会直接 Fatal,热更新却悄悄生效,口径必须一致:校验不过就不应用,保留现名单。
 			if verr := newCfg.Server.ValidateJumpHostFirewall(); verr != nil {
-				logrus.WithError(verr).Error("[reload] server.jump_host_allowed_ips 校验未通过,保留原名单不应用")
-				deferred = append(deferred, "server.jump_host_allowed_ips(校验未通过,保留原名单)")
+				logrus.WithError(verr).Error("[reload] server.jump_host_allowed_ips failed validation, keeping the current allowlist instead of applying it")
+				deferred = append(deferred, "server.jump_host_allowed_ips(validation failed, current allowlist kept)")
 				break
 			}
 			// 第二十三轮深扫 HIGH:应用失败(ipset/iptables 不可用等)时**不得**标记为已应用。此前无条件记
@@ -130,14 +130,14 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 			// 更糟的是内存里的 old 名单已被更新,下一次相同的 SIGHUP 会因 sameStringSetSorted 相等而整段跳过,
 			// 敞开状态一直维持到重启。保持 old 不变,让下一次 reload 仍会重试。
 			if rerr := rs.jumpFW.Replace(newCfg.Server.JumpHostAllowedIPs); rerr != nil {
-				logrus.WithError(rerr).Error("[reload] server.jump_host_allowed_ips 应用失败(受保护端口当前未受限),未标记为已应用")
-				deferred = append(deferred, "server.jump_host_allowed_ips(应用失败,见日志)")
+				logrus.WithError(rerr).Error("[reload] server.jump_host_allowed_ips apply failed (protected ports are currently unrestricted), not marked as applied")
+				deferred = append(deferred, "server.jump_host_allowed_ips(apply failed, see log)")
 				break
 			}
 			logrus.WithFields(logrus.Fields{
 				"old_count": len(old.Server.JumpHostAllowedIPs),
 				"new_count": len(newCfg.Server.JumpHostAllowedIPs),
-			}).Info("[reload] server.jump_host_allowed_ips 已热更新")
+			}).Info("[reload] server.jump_host_allowed_ips hot-reloaded")
 			hotReloadCfgMu.Lock()
 			old.Server.JumpHostAllowedIPs = append([]string(nil), newCfg.Server.JumpHostAllowedIPs...)
 			hotReloadCfgMu.Unlock()
@@ -151,10 +151,10 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 	// 在日志里看到 drops_so_far 增量,不需要单独埋 /metrics 端点。
 	if rs.store != nil {
 		if n, err := reloadACLSnapshotFromStore(rs.store); err != nil {
-			logrus.WithError(err).Warn("[reload] acl 规则集刷新失败,保留旧快照")
+			logrus.WithError(err).Warn("[reload] acl_rules refresh failed, keeping the old snapshot")
 			deferred = append(deferred, "acl_rules(load_error)")
 		} else {
-			logrus.WithField("rule_count", n).WithFields(aclSummaryForLog()).Info("[reload] acl 规则集已刷新")
+			logrus.WithField("rule_count", n).WithFields(aclSummaryForLog()).Info("[reload] acl_rules hot-reloaded")
 			applied = append(applied, "acl_rules")
 		}
 	}
@@ -165,7 +165,7 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 		logrus.WithFields(logrus.Fields{
 			"old": old.Server.MaxSessionsPerUser,
 			"new": newCfg.Server.MaxSessionsPerUser,
-		}).Info("[reload] server.max_sessions_per_user 已热更(仅对未来登录生效;现役会话不会被回踢)")
+		}).Info("[reload] server.max_sessions_per_user hot-reloaded (applies to future logins only; live sessions are not kicked)")
 		hotReloadCfgMu.Lock()
 		old.Server.MaxSessionsPerUser = newCfg.Server.MaxSessionsPerUser
 		hotReloadCfgMu.Unlock()
@@ -181,7 +181,7 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 		logrus.WithFields(logrus.Fields{
 			"old": old.Server.LoginRateLimitPerMin,
 			"new": newCfg.Server.LoginRateLimitPerMin,
-		}).Info("[reload] server.login_rate_limit_per_min 已热更(0=不限制立即生效;N>0 对新建 per-IP entry 生效)")
+		}).Info("[reload] server.login_rate_limit_per_min hot-reloaded (0=unlimited takes effect at once; N>0 applies to newly created per-IP entries)")
 		old.Server.LoginRateLimitPerMin = newCfg.Server.LoginRateLimitPerMin
 		applied = append(applied, "server.login_rate_limit_per_min")
 	}
@@ -201,7 +201,7 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 		hotReloadCfgMu.Unlock()
 		logrus.WithFields(logrus.Fields{
 			"platform_count": len(cp),
-		}).Info("[reload] server.rate_limit_by_platform 已热更(仅对未来登录生效)")
+		}).Info("[reload] server.rate_limit_by_platform hot-reloaded (applies to future logins only)")
 		applied = append(applied, "server.rate_limit_by_platform")
 	}
 
@@ -220,13 +220,13 @@ func applyConfigReload(rs *reloadState, loader func(path string) (config.Config,
 	}
 
 	if len(applied) == 0 && len(deferred) == 0 {
-		logrus.Info("[reload] 配置无任何变化,no-op")
+		logrus.Info("[reload] config unchanged, no-op")
 		return
 	}
 	logrus.WithFields(logrus.Fields{
 		"applied":  applied,
 		"deferred": deferred,
-	}).Info("[reload] 完成。deferred 列表内的字段需 systemctl restart 才生效")
+	}).Info("[reload] done; fields in the deferred list need systemctl restart to take effect")
 	return
 }
 
@@ -268,11 +268,11 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 	// tls_client_ca_file 是原样当文件名开的,前后空格会真的改变行为,故按原值比;
 	// ws 路径的 ""→内置默认、缺前导斜杠→补斜杠 两条归一化都发生在启动路径上,按归一化后比。
 	if strings.TrimSpace(newCfg.Hysteria.ObfsSalamanderPassword) != strings.TrimSpace(old.Hysteria.ObfsSalamanderPassword) {
-		logrus.Error("[reload] hysteria.obfs_salamander_password 不可热更(hy2 服务器启动时构建),需重启 server;在此之前旧口令仍然有效")
+		logrus.Error("[reload] hysteria.obfs_salamander_password cannot be hot-reloaded (the hy2 server is built at startup), restart the server; until then the old password still works")
 		out = append(out, "hysteria.obfs_salamander_password")
 	}
 	if newCfg.Hysteria.TLSClientCAFile != old.Hysteria.TLSClientCAFile {
-		logrus.Error("[reload] hysteria.tls_client_ca_file 不可热更(hy2 服务器启动时构建),需重启 server;在此之前旧 CA 仍被信任")
+		logrus.Error("[reload] hysteria.tls_client_ca_file cannot be hot-reloaded (the hy2 server is built at startup), restart the server; until then the old CA is still trusted")
 		out = append(out, "hysteria.tls_client_ca_file")
 	}
 	// vpn_websocket_path 由数据面 WSS 监听与 REALITY 前端在启动期各捕获一次。
@@ -283,7 +283,7 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 		logrus.WithFields(logrus.Fields{
 			"old": oldPath,
 			"new": newPath,
-		}).Error("[reload] server.vpn_websocket_path 不可热更(监听启动时捕获),需重启 server;在此之前新签的 profile 会连不上")
+		}).Error("[reload] server.vpn_websocket_path cannot be hot-reloaded (captured when the listener starts), restart the server; until then newly issued profiles cannot connect")
 		out = append(out, "server.vpn_websocket_path")
 	}
 	if newCfg.Reality.ListenAddr != old.Reality.ListenAddr {
@@ -299,7 +299,7 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 			"field": "server.upload_rate",
 			"old":   old.Server.UploadRate,
 			"new":   newCfg.Server.UploadRate,
-		}).Error("[reload] 带宽限速不可热更,新值仅对 restart 后新建连接生效")
+		}).Error("[reload] bandwidth rate limit cannot be hot-reloaded, the new value only applies to connections created after a restart")
 		out = append(out, "server.upload_rate")
 	}
 	if newCfg.Server.DownloadRate != old.Server.DownloadRate {
@@ -307,54 +307,54 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 			"field": "server.download_rate",
 			"old":   old.Server.DownloadRate,
 			"new":   newCfg.Server.DownloadRate,
-		}).Error("[reload] 带宽限速不可热更,新值仅对 restart 后新建连接生效")
+		}).Error("[reload] bandwidth rate limit cannot be hot-reloaded, the new value only applies to connections created after a restart")
 		out = append(out, "server.download_rate")
 	}
 	if newCfg.Server.UserInvalidateIntervalSec != old.Server.UserInvalidateIntervalSec {
 		logrus.WithFields(logrus.Fields{
 			"old": old.Server.UserInvalidateIntervalSec,
 			"new": newCfg.Server.UserInvalidateIntervalSec,
-		}).Error("[reload] server.user_invalidate_interval_sec 不可热更(loop ticker 启动时塞死),需重启 server")
+		}).Error("[reload] server.user_invalidate_interval_sec cannot be hot-reloaded (the loop ticker is fixed at startup), restart the server")
 		out = append(out, "server.user_invalidate_interval_sec")
 	}
 	if newCfg.Server.LeaseGCIdleDays != old.Server.LeaseGCIdleDays {
 		logrus.WithFields(logrus.Fields{
 			"old": old.Server.LeaseGCIdleDays,
 			"new": newCfg.Server.LeaseGCIdleDays,
-		}).Error("[reload] server.lease_gc_idle_days 不可热更,需重启 server")
+		}).Error("[reload] server.lease_gc_idle_days cannot be hot-reloaded, restart the server")
 		out = append(out, "server.lease_gc_idle_days")
 	}
 	if newCfg.Server.LeaseGCIntervalHours != old.Server.LeaseGCIntervalHours {
 		logrus.WithFields(logrus.Fields{
 			"old": old.Server.LeaseGCIntervalHours,
 			"new": newCfg.Server.LeaseGCIntervalHours,
-		}).Error("[reload] server.lease_gc_interval_hours 不可热更,需重启 server")
+		}).Error("[reload] server.lease_gc_interval_hours cannot be hot-reloaded, restart the server")
 		out = append(out, "server.lease_gc_interval_hours")
 	}
 	if newCfg.Server.LeaseGCStartupGraceSec != old.Server.LeaseGCStartupGraceSec {
 		logrus.WithFields(logrus.Fields{
 			"old": old.Server.LeaseGCStartupGraceSec,
 			"new": newCfg.Server.LeaseGCStartupGraceSec,
-		}).Error("[reload] server.lease_gc_startup_grace_sec 不可热更(只在进程启动时读一次),需重启 server")
+		}).Error("[reload] server.lease_gc_startup_grace_sec cannot be hot-reloaded (read once at process startup), restart the server")
 		out = append(out, "server.lease_gc_startup_grace_sec")
 	}
 	if time.Duration(newCfg.Server.DataPlanePingInterval) != time.Duration(old.Server.DataPlanePingInterval) {
-		logrus.Error("[reload] server.data_plane_ping_interval 不可热更(WSS 启动时塞死),需重启 server")
+		logrus.Error("[reload] server.data_plane_ping_interval cannot be hot-reloaded (fixed when the WSS link starts), restart the server")
 		out = append(out, "server.data_plane_ping_interval")
 	}
 	if newCfg.Server.DataPlanePingMissThreshold != old.Server.DataPlanePingMissThreshold {
-		logrus.Error("[reload] server.data_plane_ping_miss_threshold 不可热更,需重启 server")
+		logrus.Error("[reload] server.data_plane_ping_miss_threshold cannot be hot-reloaded, restart the server")
 		out = append(out, "server.data_plane_ping_miss_threshold")
 	}
 	if newCfg.Server.ControlSocketPath != old.Server.ControlSocketPath {
-		logrus.Error("[reload] server.control_socket_path 不可热更(unix listener 启动时塞死),需重启 server")
+		logrus.Error("[reload] server.control_socket_path cannot be hot-reloaded (the unix listener is fixed at startup), restart the server")
 		out = append(out, "server.control_socket_path")
 	}
 	if newCfg.TUN.ResolveExitMode() != old.TUN.ResolveExitMode() {
 		logrus.WithFields(logrus.Fields{
 			"old": old.TUN.ResolveExitMode(),
 			"new": newCfg.TUN.ResolveExitMode(),
-		}).Error("[reload] tun.exit_mode 不可热更(SNAT + FORWARD 链涉及活跃连接 conntrack),需重启 server")
+		}).Error("[reload] tun.exit_mode cannot be hot-reloaded (the SNAT + FORWARD chains hold conntrack state for live connections), restart the server")
 		out = append(out, "tun.exit_mode")
 	}
 	// 深扫第十轮 LOW:exit_dns_redirect 与 exit_mode 同为出口 DNS 拦截 iptables 规则,
@@ -366,7 +366,7 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 		logrus.WithFields(logrus.Fields{
 			"old": old.TUN.ExitDNSRedirect,
 			"new": newCfg.TUN.ExitDNSRedirect,
-		}).Error("[reload] tun.exit_dns_redirect 不可热更(出口 DNS 拦截 iptables 规则启动时落链),需重启 server")
+		}).Error("[reload] tun.exit_dns_redirect cannot be hot-reloaded (the exit DNS intercept iptables rules are installed at startup), restart the server")
 		out = append(out, "tun.exit_dns_redirect")
 	}
 	// exit_deny_private 同族:私网/链路本地 DROP 也是启动时一次性落链。比较前归一化,
@@ -375,7 +375,7 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 		logrus.WithFields(logrus.Fields{
 			"old": old.TUN.ResolveExitDenyPrivate(),
 			"new": newCfg.TUN.ResolveExitDenyPrivate(),
-		}).Error("[reload] tun.exit_deny_private 不可热更(出口私网 DROP 规则启动时落链),需重启 server")
+		}).Error("[reload] tun.exit_deny_private cannot be hot-reloaded (the exit private-network DROP rules are installed at startup), restart the server")
 		out = append(out, "tun.exit_deny_private")
 	}
 	// [server.pow] 段:hmac_key 启动随机,公式参数初始化时塞死,reload 不重建
@@ -386,42 +386,42 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 		logrus.WithFields(logrus.Fields{
 			"old": oldV,
 			"new": newV,
-		}).Error("[reload] server.pow.failures_enable 不可热更(PoWService 启动时塞死),需重启 server")
+		}).Error("[reload] server.pow.failures_enable cannot be hot-reloaded (PoWService is fixed at startup), restart the server")
 		out = append(out, "server.pow.failures_enable")
 	}
 	if oldV, newV := old.Server.Pow.ResolveBaseDifficulty(), newCfg.Server.Pow.ResolveBaseDifficulty(); oldV != newV {
 		logrus.WithFields(logrus.Fields{
 			"old": oldV,
 			"new": newV,
-		}).Error("[reload] server.pow.base_difficulty 不可热更(PoWService 启动时塞死),需重启 server")
+		}).Error("[reload] server.pow.base_difficulty cannot be hot-reloaded (PoWService is fixed at startup), restart the server")
 		out = append(out, "server.pow.base_difficulty")
 	}
 	if oldV, newV := old.Server.Pow.ResolveRampDifficulty(), newCfg.Server.Pow.ResolveRampDifficulty(); oldV != newV {
 		logrus.WithFields(logrus.Fields{
 			"old": oldV,
 			"new": newV,
-		}).Error("[reload] server.pow.ramp_difficulty 不可热更(PoWService 启动时塞死),需重启 server")
+		}).Error("[reload] server.pow.ramp_difficulty cannot be hot-reloaded (PoWService is fixed at startup), restart the server")
 		out = append(out, "server.pow.ramp_difficulty")
 	}
 	if oldV, newV := old.Server.Pow.ResolveStepPerFailure(), newCfg.Server.Pow.ResolveStepPerFailure(); oldV != newV {
 		logrus.WithFields(logrus.Fields{
 			"old": oldV,
 			"new": newV,
-		}).Error("[reload] server.pow.step_per_failure 不可热更(PoWService 启动时塞死),需重启 server")
+		}).Error("[reload] server.pow.step_per_failure cannot be hot-reloaded (PoWService is fixed at startup), restart the server")
 		out = append(out, "server.pow.step_per_failure")
 	}
 	if oldV, newV := old.Server.Pow.ResolveAdaptiveCeiling(), newCfg.Server.Pow.ResolveAdaptiveCeiling(); oldV != newV {
 		logrus.WithFields(logrus.Fields{
 			"old": oldV,
 			"new": newV,
-		}).Error("[reload] server.pow.adaptive_ceiling 不可热更(PoWService 启动时塞死),需重启 server")
+		}).Error("[reload] server.pow.adaptive_ceiling cannot be hot-reloaded (PoWService is fixed at startup), restart the server")
 		out = append(out, "server.pow.adaptive_ceiling")
 	}
 	if oldV, newV := old.Server.Pow.ResolveTTLSec(), newCfg.Server.Pow.ResolveTTLSec(); oldV != newV {
 		logrus.WithFields(logrus.Fields{
 			"old": oldV,
 			"new": newV,
-		}).Error("[reload] server.pow.ttl_sec 不可热更(PoWService 启动时塞死),需重启 server")
+		}).Error("[reload] server.pow.ttl_sec cannot be hot-reloaded (PoWService is fixed at startup), restart the server")
 		out = append(out, "server.pow.ttl_sec")
 	}
 	// 三个端口封堵开关与上面 exit_mode / exit_dns_redirect / exit_deny_private 是同一族:
@@ -442,7 +442,7 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 				"field": f.name,
 				"old":   f.from,
 				"new":   f.to,
-			}).Error("[reload] 端口封堵开关不可热更(FORWARD DROP 规则启动时落链),需重启 server")
+			}).Error("[reload] port blocking switches cannot be hot-reloaded (the FORWARD DROP rules are installed at startup), restart the server")
 			out = append(out, f.name)
 		}
 	}
@@ -468,7 +468,7 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 				"field": f.name,
 				"old":   f.from,
 				"new":   f.to,
-			}).Error("[reload] 每虚拟 IP 并发上限不可热更(connlimit 规则启动时落链),需重启 server")
+			}).Error("[reload] per-vIP concurrency caps cannot be hot-reloaded (the connlimit rules are installed at startup), restart the server")
 			out = append(out, f.name)
 		}
 	}
@@ -485,7 +485,7 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 		logrus.WithFields(logrus.Fields{
 			"old": old.Server.JumpHostProtectedPorts,
 			"new": newCfg.Server.JumpHostProtectedPorts,
-		}).Error("[reload] server.jump_host_protected_ports 不可热更(受保护端口的 INPUT 规则启动时落链),需重启 server")
+		}).Error("[reload] server.jump_host_protected_ports cannot be hot-reloaded (the INPUT rules for protected ports are installed at startup), restart the server")
 		out = append(out, "server.jump_host_protected_ports")
 	}
 	// hysteria.udp_relay_enabled:同段的 password / listen_addr 都已覆盖,这一项没有。
@@ -495,7 +495,7 @@ func classifyDeferredFields(old, newCfg *config.Config) []string {
 		logrus.WithFields(logrus.Fields{
 			"old": old.Hysteria.UDPRelayEnabled,
 			"new": newCfg.Hysteria.UDPRelayEnabled,
-		}).Error("[reload] hysteria.udp_relay_enabled 不可热更(hy2 出站在启动时构建),需重启 server")
+		}).Error("[reload] hysteria.udp_relay_enabled cannot be hot-reloaded (the hy2 outbound is built at startup), restart the server")
 		out = append(out, "hysteria.udp_relay_enabled")
 	}
 	return out

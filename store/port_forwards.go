@@ -56,7 +56,7 @@ func (s *Store) CreatePortForward(ctx context.Context, pf PortForward) (*PortFor
 			// i18nErrWrap:Error() 与原 `%w` 输出逐字节一致(%v == %w 的 .Error()),
 			// 且 Unwrap→ErrDuplicate 让 errors.Is(err, ErrDuplicate) 照常成立。
 			return nil, i18nErrWrap("store.pf.portOccupied",
-				fmt.Sprintf("store: public_port %d 已被占用: %v", pf.PublicPort, ErrDuplicate),
+				fmt.Sprintf("store: public_port %d is already in use: %v", pf.PublicPort, ErrDuplicate),
 				ErrDuplicate, pf.PublicPort)
 		}
 		return nil, fmt.Errorf("store: create port_forward: %w", err)

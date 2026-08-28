@@ -53,7 +53,7 @@ func (r *RealityConfig) Validate() error {
 	// 此前 Validate 不查、listener 又把它 byte(r.Xver) 直传底层 —— 写成 3 会静默让 PROXY
 	// 头行为未定义(既非关闭也非合法版本)。这里启动期 fail-fast。
 	if r.Xver < 0 || r.Xver > 2 {
-		return fmt.Errorf("xver 须为 0(关闭)/1(PROXY v1)/2(PROXY v2),得 %d", r.Xver)
+		return fmt.Errorf("xver must be 0 (off) / 1 (PROXY v1) / 2 (PROXY v2), got %d", r.Xver)
 	}
 	if _, err := DecodeRealityPrivateKey(r.PrivateKey); err != nil {
 		return fmt.Errorf("private_key: %w", err)
@@ -66,14 +66,14 @@ func (r *RealityConfig) Validate() error {
 		}
 	}
 	if len(r.ServerNames) == 0 {
-		return fmt.Errorf("server_names 至少一项")
+		return fmt.Errorf("server_names needs at least one entry")
 	}
 	if len(r.ShortIds) == 0 {
-		return fmt.Errorf("short_ids 至少一项（可含空字符串表示允许全 0 shortId）")
+		return fmt.Errorf("short_ids needs at least one entry (an empty string is allowed, meaning the all-zero shortId is accepted)")
 	}
 	for _, sn := range r.ServerNames {
 		if strings.TrimSpace(sn) == "" {
-			return fmt.Errorf("server_names 含空项")
+			return fmt.Errorf("server_names contains an empty entry")
 		}
 	}
 	for i, sid := range r.ShortIds {
@@ -97,21 +97,21 @@ func (r *RealityConfig) Validate() error {
 func validateRealityDest(dest string) error {
 	dest = strings.TrimSpace(dest)
 	if dest == "" {
-		return fmt.Errorf("不能为空")
+		return fmt.Errorf("must not be empty")
 	}
 	host, port, err := net.SplitHostPort(dest)
 	if err != nil {
-		return fmt.Errorf("须为 host:port 形式,例如 www.microsoft.com:443: %w", err)
+		return fmt.Errorf("must be in host:port form, for example www.microsoft.com:443: %w", err)
 	}
 	if host == "" {
-		return fmt.Errorf("host 段为空(fallback 到本机会引发回环)")
+		return fmt.Errorf("host part is empty (the fallback would point at this machine and loop back on itself)")
 	}
 	pn, err := net.LookupPort("tcp", port)
 	if err != nil {
-		return fmt.Errorf("port 段非法: %w", err)
+		return fmt.Errorf("port part is invalid: %w", err)
 	}
 	if pn <= 0 || pn > 65535 {
-		return fmt.Errorf("port 越界: %d", pn)
+		return fmt.Errorf("port out of range: %d", pn)
 	}
 	return nil
 }
@@ -130,10 +130,10 @@ func ParseRealityShortID(s string) ([8]byte, error) {
 		return out, nil
 	}
 	if len(s)%2 != 0 {
-		return out, fmt.Errorf("十六进制长度须为偶数")
+		return out, fmt.Errorf("hex length must be even")
 	}
 	if len(s) > 16 {
-		return out, fmt.Errorf("至多 8 字节（16 个十六进制字符）")
+		return out, fmt.Errorf("at most 8 bytes (16 hex characters)")
 	}
 	dec, err := hex.DecodeString(s)
 	if err != nil {
@@ -154,7 +154,7 @@ func DecodeRealityPrivateKey(s string) ([]byte, error) {
 func DecodeRealityMldsa65Seed(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return nil, fmt.Errorf("不能为空")
+		return nil, fmt.Errorf("must not be empty")
 	}
 	for _, enc := range []*base64.Encoding{
 		base64.RawURLEncoding,
@@ -166,13 +166,13 @@ func DecodeRealityMldsa65Seed(s string) ([]byte, error) {
 			return b, nil
 		}
 	}
-	return nil, fmt.Errorf("须解码为 32 字节")
+	return nil, fmt.Errorf("must decode to 32 bytes")
 }
 
 func decodeRealityPrivateKey(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return nil, fmt.Errorf("不能为空")
+		return nil, fmt.Errorf("must not be empty")
 	}
 	encodings := []*base64.Encoding{
 		base64.RawURLEncoding,
@@ -186,5 +186,5 @@ func decodeRealityPrivateKey(s string) ([]byte, error) {
 			return b, nil
 		}
 	}
-	return nil, fmt.Errorf("须为解码后 32 字节的 Base64 私钥")
+	return nil, fmt.Errorf("must be a Base64 private key that decodes to 32 bytes")
 }

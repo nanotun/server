@@ -45,30 +45,30 @@ func TestValidateServerDialHost_Reject(t *testing.T) {
 		reason string // 期待错误信息片段(子串匹配)
 	}{
 		// 本轮核心案例:用户实际配的伪 hostname,末段 .158 纯数字 TLD。
-		{"test-203.0.113.10", "末段"},
+		{"test-203.0.113.10", "last label"},
 		// 末段纯数字 TLD 的更多变体。
-		{"foo.123", "末段"},
-		{"prod-jp-1.5.6.7", "末段"},
+		{"foo.123", "last label"},
+		{"prod-jp-1.5.6.7", "last label"},
 		// scheme / path / port / control char
 		{"https://vpn.example.com", "scheme"},
 		{"http://1.2.3.4", "scheme"},
 		{"vpn.example.com/path", "path"},
 		{"vpn.example.com?q=1", "path"},
-		{"vpn.example.com:8080", "端口"},
-		{"[::1]:443", "端口"},
-		{"bad\nhost", "控制字符"},
+		{"vpn.example.com:8080", "port number"},
+		{"[::1]:443", "port number"},
+		{"bad\nhost", "control characters"},
 		// label 首尾 -
-		{"-leading-dash.com", "首尾不能为 '-'"},
-		{"trailing-.com", "首尾不能为 '-'"},
+		{"-leading-dash.com", "cannot start or end with '-'"},
+		{"trailing-.com", "cannot start or end with '-'"},
 		// 空 label / 连续点
-		{"foo..bar", "label 1 为空"},
-		{".leading.dot", "label 0 为空"},
+		{"foo..bar", "label 1 is empty"},
+		{".leading.dot", "label 0 is empty"},
 		// 长度
-		{strings.Repeat("a", 254), "长度"},
+		{strings.Repeat("a", 254), "Length"},
 		// 非法字符(中文)
-		{"测试.example.com", "非法字符"},
+		{"测试.example.com", "illegal character"},
 		// 单 label 全数字(不是合法 IPv4 也不是合法 hostname)
-		{"12345", "末段"},
+		{"12345", "last label"},
 		// 特殊 IP 黑名单(2026-05-26 第七轮加):语法合法但客户端不可拨号。
 		// 这条防线在 ping 探活之前 — 127.0.0.1 在 server 机器上 ping 必然通,
 		// 让客户端拿到也连不上自己 loopback。

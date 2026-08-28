@@ -101,12 +101,12 @@ type AuthResult struct {
 
 // 错误集合,导出供 handler 文案匹配。
 var (
-	ErrAuthBadCredentials = errors.New("用户名或密码错误")
-	ErrAuthLocked         = errors.New("账号已暂时锁定")
-	ErrAuthDisabled       = errors.New("账号已被禁用")
+	ErrAuthBadCredentials = errors.New("incorrect username or password")
+	ErrAuthLocked         = errors.New("account is temporarily locked")
+	ErrAuthDisabled       = errors.New("account is disabled")
 	// ErrAuthUnavailable:argon2 verify 因容量/ctx 超时未能执行(auth.ErrVerifyUnavailable)。第十二轮深扫 MED:
 	// 属「暂时不可用」而非「密码错」——handler 据此**不**累加 ipFailures / 账号锁定,回 503 让用户重试。
-	ErrAuthUnavailable = errors.New("登录暂时不可用,请稍后重试")
+	ErrAuthUnavailable = errors.New("login is temporarily unavailable, please retry shortly")
 )
 
 // AttemptLogin 是登录的统一入口。

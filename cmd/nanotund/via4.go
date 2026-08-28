@@ -148,7 +148,7 @@ func resolveVia4Pool(c config.MagicDNSConfig) (netip.Prefix, bool) {
 	}
 	p, err := netip.ParsePrefix(s)
 	if err != nil || !p.Addr().Is4() || p.Bits() > 28 {
-		logrus.WithField("via4_pool", c.Via4Pool).Warn("[via4] 池配置非法（应为 IPv4 CIDR 且 ≤ /28），via4 关闭")
+		logrus.WithField("via4_pool", c.Via4Pool).Warn("[via4] invalid pool config (must be an IPv4 CIDR with prefix length <= 28), via4 disabled")
 		return netip.Prefix{}, false
 	}
 	return p.Masked(), true
@@ -169,7 +169,7 @@ func initVia4(c config.MagicDNSConfig, meshCIDRs []string) {
 		if mp, err := netip.ParsePrefix(cs); err == nil && mp.Addr().Is4() {
 			if mp.Overlaps(pool) {
 				logrus.WithFields(logrus.Fields{"via4_pool": pool.String(), "mesh": cs}).
-					Error("[via4] 池与 mesh 网段重叠，via4 关闭（请换池网段）")
+					Error("[via4] pool overlaps the mesh subnet, via4 disabled (pick a different pool subnet)")
 				via4State.Store(nil)
 				return
 			}
@@ -182,7 +182,7 @@ func initVia4(c config.MagicDNSConfig, meshCIDRs []string) {
 		cursor: pool.Addr(),
 	}
 	via4State.Store(t)
-	logrus.WithField("pool", pool.String()).Info("[via4] 4via6 A 记录合成（DNS46+NAT46）已启用")
+	logrus.WithField("pool", pool.String()).Info("[via4] 4via6 A record synthesis (DNS46+NAT46) enabled")
 }
 
 // via4PoolPrefix 返回启用中的池前缀（routes-list 下发用）。

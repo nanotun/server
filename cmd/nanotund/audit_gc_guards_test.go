@@ -221,7 +221,7 @@ func TestRunAuditGCLoop_SaysSoWhenTheTableGetsHuge(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("行数过阈值时告警 %d 次,want 1 —— 表在悄悄涨到磁盘写满,没人知道", len(msgs))
 	}
-	if !strings.Contains(msgs[0], "audit_logs 行数已超过") {
+	if !strings.Contains(msgs[0], "audit_logs row count exceeds") {
 		t.Fatalf("告警文案没说清是什么超了: %q", msgs[0])
 	}
 }

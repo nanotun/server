@@ -207,7 +207,7 @@ func waitConnsCleanup(victims []*Connection) {
 				"victim_conn_id_str": v.connIDStr,
 				"victim_device_uuid": v.deviceUUID,
 				"timeout":            supersedeWaitTimeout.String(),
-			}).Warn("[supersede] 等老 conn cleanup 超时,继续登录(新 conn 可能拿到不同 vIP,与无 supersede 行为退化等价)")
+			}).Warn("[supersede] timed out waiting for the old conn cleanup, continuing the login (the new conn may get a different vIP, degrading to the same behavior as no supersede)")
 		}
 	}
 }

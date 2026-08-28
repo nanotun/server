@@ -137,7 +137,7 @@ if [ -n "$WEB_URL" ]; then
     # 这不是回归,是这条装法的真实代价 —— 断言它,是为了它哪天变了有人知道。
     check "没有 web.env,/setup 如实重新敞开" "$([ "$code" = 200 ] && echo 0 || echo 1)" "HTTP $code"
     check "nanotun-web 为此警告过" \
-      "$(dex journalctl -u nanotun-web -n 40 --no-pager 2>/dev/null | grep -q '抢占\|setup 向导对公网开放' && echo 0 || echo 1)"
+      "$(dex journalctl -u nanotun-web -n 40 --no-pager 2>/dev/null | grep -q 'setup_gate=open' && echo 0 || echo 1)"
   fi
 else
   echo "  (没给 --base,跳过 /setup 这一段)"

@@ -35,19 +35,19 @@ func (h *HysteriaConfig) ValidateHysteriaCredentials() error {
 		n++
 	}
 	if n != 0 && n != 3 {
-		return fmt.Errorf("hysteria: password、tls_cert_file、tls_key_file 须同时配置或同时留空")
+		return fmt.Errorf("hysteria: password, tls_cert_file and tls_key_file must all be set or all be left empty")
 	}
 	if n == 3 && len(p) < HysteriaPasswordMinLen {
-		return fmt.Errorf("hysteria: password 至少 %d 字节(当前 %d);弱口令容易被刷",
+		return fmt.Errorf("hysteria: password must be at least %d bytes (currently %d); a weak password invites brute-forcing",
 			HysteriaPasswordMinLen, len(p))
 	}
 	obfsPW := strings.TrimSpace(h.ObfsSalamanderPassword)
 	if obfsPW != "" {
 		if n != 3 {
-			return fmt.Errorf("hysteria: 启用 obfs_salamander_password 须先配齐 password、tls_cert_file、tls_key_file")
+			return fmt.Errorf("hysteria: enabling obfs_salamander_password requires password, tls_cert_file and tls_key_file to be set first")
 		}
 		if len(obfsPW) < 4 {
-			return fmt.Errorf("hysteria: obfs_salamander_password 须至少 4 字节")
+			return fmt.Errorf("hysteria: obfs_salamander_password must be at least 4 bytes")
 		}
 	}
 	return nil
@@ -69,39 +69,39 @@ func (h *HysteriaConfig) HysteriaActive() bool {
 func (h *HysteriaConfig) ValidateTuning() error {
 	const minWindow = 16384
 	if h.QUICInitialStreamRecvWindow != 0 && h.QUICInitialStreamRecvWindow < minWindow {
-		return fmt.Errorf("hysteria: quic_initial_stream_recv_window 须为 0 或 ≥ %d", minWindow)
+		return fmt.Errorf("hysteria: quic_initial_stream_recv_window must be 0 or >= %d", minWindow)
 	}
 	if h.QUICMaxStreamRecvWindow != 0 && h.QUICMaxStreamRecvWindow < minWindow {
-		return fmt.Errorf("hysteria: quic_max_stream_recv_window 须为 0 或 ≥ %d", minWindow)
+		return fmt.Errorf("hysteria: quic_max_stream_recv_window must be 0 or >= %d", minWindow)
 	}
 	if h.QUICInitialConnRecvWindow != 0 && h.QUICInitialConnRecvWindow < minWindow {
-		return fmt.Errorf("hysteria: quic_initial_conn_recv_window 须为 0 或 ≥ %d", minWindow)
+		return fmt.Errorf("hysteria: quic_initial_conn_recv_window must be 0 or >= %d", minWindow)
 	}
 	if h.QUICMaxConnRecvWindow != 0 && h.QUICMaxConnRecvWindow < minWindow {
-		return fmt.Errorf("hysteria: quic_max_conn_recv_window 须为 0 或 ≥ %d", minWindow)
+		return fmt.Errorf("hysteria: quic_max_conn_recv_window must be 0 or >= %d", minWindow)
 	}
 	if h.QUICMaxIdleTimeoutSec != 0 {
 		if h.QUICMaxIdleTimeoutSec < 4 || h.QUICMaxIdleTimeoutSec > 120 {
-			return fmt.Errorf("hysteria: quic_max_idle_timeout_sec 须为 0 或 4～120")
+			return fmt.Errorf("hysteria: quic_max_idle_timeout_sec must be 0 or 4..120")
 		}
 	}
 	if h.QUICMaxIncomingStreams != 0 && h.QUICMaxIncomingStreams < 8 {
-		return fmt.Errorf("hysteria: quic_max_incoming_streams 须为 0 或 ≥ 8")
+		return fmt.Errorf("hysteria: quic_max_incoming_streams must be 0 or >= 8")
 	}
 	const minBps = 65536
 	if h.BandwidthMaxTxBps != 0 && h.BandwidthMaxTxBps < minBps {
-		return fmt.Errorf("hysteria: bandwidth_max_tx_bps 须为 0 或 ≥ %d", minBps)
+		return fmt.Errorf("hysteria: bandwidth_max_tx_bps must be 0 or >= %d", minBps)
 	}
 	if h.BandwidthMaxRxBps != 0 && h.BandwidthMaxRxBps < minBps {
-		return fmt.Errorf("hysteria: bandwidth_max_rx_bps 须为 0 或 ≥ %d", minBps)
+		return fmt.Errorf("hysteria: bandwidth_max_rx_bps must be 0 or >= %d", minBps)
 	}
 	if h.UDPRelayEnabled && h.UDPIdleTimeoutSec != 0 {
 		if h.UDPIdleTimeoutSec < 2 || h.UDPIdleTimeoutSec > 600 {
-			return fmt.Errorf("hysteria: udp_idle_timeout_sec 须为 0 或 2～600")
+			return fmt.Errorf("hysteria: udp_idle_timeout_sec must be 0 or 2..600")
 		}
 	}
 	if h.MTU != 0 && (h.MTU < 1200 || h.MTU > 9216) {
-		return fmt.Errorf("hysteria: mtu 须为 0 或 1200～9216")
+		return fmt.Errorf("hysteria: mtu must be 0 or 1200..9216")
 	}
 	return nil
 }

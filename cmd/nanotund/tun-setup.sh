@@ -29,6 +29,24 @@
 
 set -e
 
+# ── 语言 ─────────────────────────────────────────────────────────────────────
+# 默认英文。优先级:NANOTUN_LANG > /etc/nanotun/lang(装机时落下的)> en。
+#
+# 本脚本由 systemd 在开机时跑(nanotun-tun-setup.service),输出进 journal —— 而装机
+# 收尾恰恰让人去敲 journalctl。它没有参数可言,所以不设 --lang:读环境变量和落盘那份就够。
+#
+# 文案两种语言并排在调用处,与 scripts/ 下那几个脚本同一套做法,理由见
+# scripts/install.sh 里「语言」那节。
+NT_LANG=en
+case "$(printf '%s' "${NANOTUN_LANG:-}" | tr '[:upper:]' '[:lower:]')" in
+  zh|zh[-_]*|chinese|cn) NT_LANG=zh ;;
+  en|en[-_]*|english)    NT_LANG=en ;;
+  *) case "$(head -1 /etc/nanotun/lang 2>/dev/null | tr '[:upper:]' '[:lower:]')" in
+       zh|zh[-_]*) NT_LANG=zh ;;
+     esac ;;
+esac
+tsel() { if [ "$NT_LANG" = zh ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
 # 清理老版本(v0.1.14 及之前)留下的 tun1–tun14。
 #
 # 它们是 persist on 的，进程退了也不会消失，光升级二进制不会让它们走 —— 不主动删就
@@ -64,11 +82,13 @@ for i in $(seq 0 14); do
 
   ip link set "$dev" down 2>/dev/null || true
   if ip tuntap del dev "$dev" mode tun 2>/dev/null; then
-    echo "已清除旧版遗留的空网卡 ${dev}（${legacy_addr}，从未被使用，可能挡住本机路由）"
+    echo "$(tsel "removed a stale empty device left by an older version: ${dev} (${legacy_addr}, never used, may shadow this host's routes)" \
+              "已清除旧版遗留的空网卡 ${dev}（${legacy_addr}，从未被使用，可能挡住本机路由）")"
   fi
 done
 
-echo "TUN 预处理完成:不预建网卡,nanotund 会自己建 [tun].device_name 那一张"
+echo "$(tsel "TUN pre-start done: no device is pre-created; nanotund creates the one named by [tun].device_name itself" \
+              "TUN 预处理完成:不预建网卡,nanotund 会自己建 [tun].device_name 那一张")"
 
 # 清掉旧版「客户端隔离」shell 脚本(NANOTUN_TUN_ISOLATE=1)留下的规则。
 #
@@ -91,5 +111,6 @@ if command -v ipset >/dev/null 2>&1 && ipset list vpn_client_ips >/dev/null 2>&1
       -m set --match-set vpn_client_ips dst -j DROP 2>/dev/null || break
   done
   ipset destroy vpn_client_ips 2>/dev/null || true
-  echo "已清除旧版客户端隔离残留（那套机制不起作用且会断服，已移除；要隔离请用 exit_mode = \"isolate\"）"
+  echo "$(tsel "removed leftovers of the old client-isolation mechanism (it did not work and broke service, so it was dropped; for isolation use exit_mode = \"isolate\")" \
+              "已清除旧版客户端隔离残留（那套机制不起作用且会断服，已移除；要隔离请用 exit_mode = \"isolate\"）")"
 fi

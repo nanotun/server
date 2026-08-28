@@ -35,7 +35,7 @@ func resolveExitDNSRedirect(setting string) string {
 		// 调用方绕过 Validate,也宁可「不启用 DNS 拦截」,不把误配(如 "of" 想写 "off")
 		// 静默升级成 auto 接管 DNS。
 		logrus.WithField("exit_dns_redirect", setting).Error(
-			"iptables: exit_dns_redirect 不是合法 IPv4(应已被启动期校验拦截);按 fail-safe 不接管 DNS")
+			"iptables: exit_dns_redirect is not a valid IPv4 address (startup validation should have rejected it); fail-safe: not taking over DNS")
 		return ""
 	}
 }
@@ -91,7 +91,7 @@ func setupExitDNSRedirect(bin, deviceName, dnsIP string) error {
 		}
 	}
 	logrus.WithFields(logrus.Fields{"bin": bin, "dev": deviceName, "dns": dnsIP}).Info(
-		"iptables: 已装出口 DNS 接管(:53 → 本机可达解析器)")
+		"iptables: installed egress DNS takeover (:53 → a resolver reachable from this host)")
 	return nil
 }
 
@@ -155,10 +155,10 @@ func setupMagicDNSException(bin, deviceName, gwAddr string, port int) error {
 	}
 	installed := "filter INPUT ACCEPT + nat PREROUTING RETURN"
 	if bin == "ip6tables" {
-		installed = "filter INPUT ACCEPT(v6 无出口 DNS DNAT,不需 nat RETURN)"
+		installed = "filter INPUT ACCEPT (no egress DNS DNAT on v6, so no nat RETURN is needed)"
 	}
 	logrus.WithFields(logrus.Fields{"bin": bin, "dev": deviceName, "gw": gwAddr, "port": port}).Infof(
-		"%s: 已装 MagicDNS 端口例外(%s)", bin, installed)
+		"%s: installed MagicDNS port exception (%s)", bin, installed)
 	return nil
 }
 
@@ -210,7 +210,7 @@ func DeleteExistingTUNs(prefix string, n int) {
 		name := prefix + strconv.Itoa(i)
 		_ = exec.Command("ip", "link", "delete", name).Run()
 	}
-	logrus.Infof("已清理虚拟网卡 %s0~%s%d（若存在）", prefix, prefix, n-1)
+	logrus.Infof("removed virtual interfaces %s0~%s%d (if they existed)", prefix, prefix, n-1)
 }
 
 // DeleteExistingTUN 删除指定名称的虚拟网卡（若存在）；程序启动时先删再建
@@ -219,7 +219,7 @@ func DeleteExistingTUN(name string) {
 		return
 	}
 	_ = exec.Command("ip", "link", "delete", name).Run()
-	logrus.Infof("已清理虚拟网卡 %s（若存在）", name)
+	logrus.Infof("removed virtual interface %s (if it existed)", name)
 }
 
 // sysctlSet 写一个 `键=值` 形式的 sysctl 项。写失败时**回读一次实际值**,
@@ -262,12 +262,12 @@ func ensureLooseRPFilter(deviceName string) {
 	switch {
 	case err != nil:
 		logrus.WithError(err).
-			Warnf("sysctl %s 失败;若发行版 rp_filter 默认 strict,出口回程会被内核丢弃", entry)
+			Warnf("sysctl %s failed; if this distro defaults rp_filter to strict, the kernel will drop exit return traffic", entry)
 	case preset:
 		logrus.WithField("sysctl", entry).Info(
-			"sysctl 写入被拒但该项已经是目标值(容器里 /proc/sys 常为只读,值由外部预置),按已设置处理")
+			"sysctl write was denied but the value already matches the target (inside containers /proc/sys is usually read-only and the value is preset from outside); treating it as set")
 	default:
-		logrus.Infof("已设置 %s(出口回程 hairpin 需要 loose 反向路由校验)", entry)
+		logrus.Infof("set %s (exit return hairpin needs loose reverse-path validation)", entry)
 	}
 }
 
@@ -298,12 +298,12 @@ func suppressICMPRedirects(deviceName string) {
 		switch {
 		case err != nil:
 			logrus.WithError(err).
-				Warnf("sysctl %s 失败;mesh peer 互访时网关会向客户端发 ICMP Redirect(功能不受影响,但客户端路由缓存变脏、ping 记为 error)", entry)
+				Warnf("sysctl %s failed; on mesh peer-to-peer traffic the gateway will send ICMP Redirects to clients (no loss of function, but the client route cache gets polluted and ping counts them as errors)", entry)
 		case preset:
 			logrus.WithField("sysctl", entry).Info(
-				"sysctl 写入被拒但该项已经是目标值(容器里 /proc/sys 常为只读,值由外部预置),按已设置处理")
+				"sysctl write was denied but the value already matches the target (inside containers /proc/sys is usually read-only and the value is preset from outside); treating it as set")
 		default:
-			logrus.Infof("已设置 %s(mesh hairpin 转发不再向客户端发 ICMP Redirect)", entry)
+			logrus.Infof("set %s (mesh hairpin forwarding no longer sends ICMP Redirects to clients)", entry)
 		}
 	}
 }
@@ -364,7 +364,7 @@ func installConnlimitRules(bin, deviceName, wanIface string, subnets []string, t
 		}
 	}
 	if tcpConnlimit > 0 || udpConnlimit > 0 {
-		logrus.Infof("%s: 已添加 connlimit TCP=%d/每IP UDP=%d/每IP", bin, tcpConnlimit, udpConnlimit)
+		logrus.Infof("%s: added connlimit TCP=%d/per-IP UDP=%d/per-IP", bin, tcpConnlimit, udpConnlimit)
 	}
 	return nil
 }
@@ -381,10 +381,10 @@ func enableForwardSysctl(key, label string) error {
 	}
 	if preset {
 		logrus.WithField("sysctl", key).Info(
-			"sysctl 写入被拒但该项已经是 1(容器里 /proc/sys 常为只读,值由外部预置),按已开启处理")
+			"sysctl write was denied but the value is already 1 (inside containers /proc/sys is usually read-only and the value is preset from outside); treating it as enabled")
 		return nil
 	}
-	logrus.Infof("已开启 %s=1", key)
+	logrus.Infof("enabled %s=1", key)
 	return nil
 }
 
@@ -492,7 +492,7 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 		"exit_mode":      exitMode,
 		"client_isolate": clientIsolate,
 		"allow_exit_wan": allowExitWAN,
-	}).Info("iptables: 解析 TUN 出口策略")
+	}).Info("iptables: resolved TUN egress policy")
 
 	// 启动前 sweep:把上次本进程留下的同 comment 残留全部清掉,保证「重启 = 干净安装」。
 	// 不在乎本次和上次的 deviceName / wanIface 是否一致 —— comment 已经精确标记是本进程装的。
@@ -515,14 +515,14 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 		removeAcceptArgs := withMainComment([]string{"-i", deviceName, "-o", deviceName, "-j", "ACCEPT"})
 		for exec.Command("iptables", append([]string{"-C", "FORWARD"}, removeAcceptArgs...)...).Run() == nil {
 			if err := exec.Command("iptables", append([]string{"-D", "FORWARD"}, removeAcceptArgs...)...).Run(); err != nil {
-				logrus.WithError(err).Warn("iptables: 清理历史 device->device ACCEPT 规则失败")
+				logrus.WithError(err).Warn("iptables: failed to remove a leftover device->device ACCEPT rule")
 				break
 			}
 		}
 		if err := iptablesInsertForward([]string{"-i", deviceName, "-o", deviceName, "-j", "DROP"}); err != nil {
 			return err
 		}
-		logrus.Info("iptables: 已添加客户端隔离 (device -> device DROP)")
+		logrus.Info("iptables: added client isolation (device -> device DROP)")
 	} else {
 		// mesh 模式：清掉历史 DROP，并主动 ACCEPT 同 TUN 互访。
 		// 主动 ACCEPT 是必须的——许多发行版默认 -P FORWARD DROP，或 ufw / firewalld 把转发链
@@ -531,7 +531,7 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 		removed := false
 		for exec.Command("iptables", append([]string{"-C", "FORWARD"}, removeDropArgs...)...).Run() == nil {
 			if err := exec.Command("iptables", append([]string{"-D", "FORWARD"}, removeDropArgs...)...).Run(); err != nil {
-				logrus.WithError(err).Warn("iptables: 清理历史 device->device DROP 规则失败")
+				logrus.WithError(err).Warn("iptables: failed to remove a leftover device->device DROP rule")
 				break
 			}
 			removed = true
@@ -540,9 +540,9 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 			return err
 		}
 		if removed {
-			logrus.Info("iptables: 已切换到 mesh（清理历史隔离 DROP，并 ACCEPT device <-> device）")
+			logrus.Info("iptables: switched to mesh (removed the previous isolation DROP and ACCEPTed device <-> device)")
 		} else {
-			logrus.Info("iptables: 已启用 mesh（ACCEPT device <-> device，同 TUN 客户端互通）")
+			logrus.Info("iptables: mesh enabled (ACCEPT device <-> device; clients on the same TUN can reach each other)")
 		}
 	}
 
@@ -554,7 +554,7 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 		if err := iptablesInsertForward([]string{"-i", wanIface, "-o", deviceName, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"}); err != nil {
 			return err
 		}
-		logrus.Info("iptables: 已添加 FORWARD device <-> WAN")
+		logrus.Info("iptables: added FORWARD device <-> WAN")
 	} else {
 		// P2#16 off 模式:确保不存在 device→wan ACCEPT(可能是上次 mesh 留下来的),
 		// 同时显式插入 DROP,让默认 ACCEPT 的发行版也不会泄到 WAN。
@@ -562,7 +562,7 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 		acceptToWAN := withMainComment([]string{"-i", deviceName, "-o", wanIface, "-j", "ACCEPT"})
 		for exec.Command("iptables", append([]string{"-C", "FORWARD"}, acceptToWAN...)...).Run() == nil {
 			if err := exec.Command("iptables", append([]string{"-D", "FORWARD"}, acceptToWAN...)...).Run(); err != nil {
-				logrus.WithError(err).Warn("iptables(off): 清理历史 device->wan ACCEPT 失败")
+				logrus.WithError(err).Warn("iptables(off): failed to remove a leftover device->wan ACCEPT")
 				break
 			}
 		}
@@ -573,7 +573,7 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 				return fmt.Errorf("iptables off FORWARD drop: %w", err)
 			}
 		}
-		logrus.Info("iptables: exit_mode=off,已 DROP FORWARD device->WAN(纯组网,无出口)")
+		logrus.Info("iptables: exit_mode=off, installed DROP FORWARD device->WAN (mesh only, no egress)")
 	}
 
 	// 3) connlimit（幂等），TCP/UDP 分别计数。必须排在第 2 步之后,见 installConnlimitRules。
@@ -612,11 +612,11 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 		// 原来这行只说「已添加 SNAT 共 N 个网段」,网卡和地址一个都不提。查这种故障的人
 		// 第一件事就是 journalctl,那时最该看见的正是「当初钉的是谁」——
 		// 拿它跟 `ip -4 addr` 一比,五秒钟就能确认是不是这个原因。
-		logrus.Infof("iptables: 已添加 NAT SNAT 共 %d 个网段(出口 %s,源地址钉为 %s ——"+
-			"本机 WAN 地址若变过,这条会指向一个不存在的源,客户端连得上但出不了网,重启 nanotun 即可重新探测)",
+		logrus.Infof("iptables: added NAT SNAT for %d subnet(s) (egress %s, source address pinned to %s — "+
+			"if this host's WAN address has changed since, this rule points at a source that no longer exists: clients connect but cannot reach the internet; restart nanotun to re-probe)",
 			len(subnets), wanIface, wanIP)
 	} else {
-		logrus.Info("iptables: exit_mode=off,跳过 NAT SNAT(无出口流量)")
+		logrus.Info("iptables: exit_mode=off, skipping NAT SNAT (no egress traffic)")
 	}
 
 	// 5) 出站目的端口 DROP（最后插入 -I FORWARD 1，位于 tun→wan ACCEPT 之前）。
@@ -646,15 +646,15 @@ func SetupIptables(deviceName, wanIface, wanIP string, subnets []string, tcpConn
 		// 查的人第一件事就是 journalctl。
 		switch {
 		case dnsIP == "":
-			logrus.Info("iptables: 未接管出口 DNS(exit_dns_redirect=off,或 auto 但没探到可用的系统解析器)")
+			logrus.Info("iptables: egress DNS not taken over (exit_dns_redirect=off, or auto but no usable system resolver was detected)")
 		default:
-			how := "显式配置"
+			how := "explicitly configured"
 			if s := strings.ToLower(strings.TrimSpace(exitDNSRedirect)); s == "" || s == "auto" {
-				how = "auto:启动时读 /etc/resolv.conf 探到的"
+				how = "auto: detected by reading /etc/resolv.conf at startup"
 			}
-			logrus.Infof("iptables: 出口 DNS 已接管 → %s:53(%s ——"+
-				"这台机器的系统解析器若换过,这条会把客户端的查询转给一个旧地址,"+
-				"表现是连得上、能拿到 IP、域名却解析不了,重启 nanotun 即可重新探测)", dnsIP, how)
+			logrus.Infof("iptables: egress DNS taken over → %s:53 (%s — "+
+				"if this host's system resolver has changed since, this rule forwards client queries to a stale address; "+
+				"the symptom is that clients connect and get an IP but domain names do not resolve; restart nanotun to re-probe)", dnsIP, how)
 		}
 	}
 
@@ -697,7 +697,7 @@ func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpCon
 		"exit_mode":      exitMode,
 		"client_isolate": clientIsolate,
 		"allow_exit_wan": allowExitWAN,
-	}).Info("ip6tables: 解析 TUN 出口策略")
+	}).Info("ip6tables: resolved TUN egress policy")
 
 	// 启动前 sweep:同上面 SetupIptables。
 	sweepMainIptablesRules("ip6tables")
@@ -707,20 +707,20 @@ func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpCon
 		removeAcceptArgs := withMainComment([]string{"-i", deviceName, "-o", deviceName, "-j", "ACCEPT"})
 		for exec.Command("ip6tables", append([]string{"-C", "FORWARD"}, removeAcceptArgs...)...).Run() == nil {
 			if err := exec.Command("ip6tables", append([]string{"-D", "FORWARD"}, removeAcceptArgs...)...).Run(); err != nil {
-				logrus.WithError(err).Warn("ip6tables: 清理历史 device->device ACCEPT 规则失败")
+				logrus.WithError(err).Warn("ip6tables: failed to remove a leftover device->device ACCEPT rule")
 				break
 			}
 		}
 		if err := ip6tablesInsertForward([]string{"-i", deviceName, "-o", deviceName, "-j", "DROP"}); err != nil {
 			return err
 		}
-		logrus.Info("ip6tables: 已添加客户端隔离 (device -> device DROP)")
+		logrus.Info("ip6tables: added client isolation (device -> device DROP)")
 	} else {
 		removeDropArgs := withMainComment([]string{"-i", deviceName, "-o", deviceName, "-j", "DROP"})
 		removed := false
 		for exec.Command("ip6tables", append([]string{"-C", "FORWARD"}, removeDropArgs...)...).Run() == nil {
 			if err := exec.Command("ip6tables", append([]string{"-D", "FORWARD"}, removeDropArgs...)...).Run(); err != nil {
-				logrus.WithError(err).Warn("ip6tables: 清理历史 device->device DROP 规则失败")
+				logrus.WithError(err).Warn("ip6tables: failed to remove a leftover device->device DROP rule")
 				break
 			}
 			removed = true
@@ -729,9 +729,9 @@ func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpCon
 			return err
 		}
 		if removed {
-			logrus.Info("ip6tables: 已切换到 mesh（清理历史隔离 DROP，并 ACCEPT device <-> device）")
+			logrus.Info("ip6tables: switched to mesh (removed the previous isolation DROP and ACCEPTed device <-> device)")
 		} else {
-			logrus.Info("ip6tables: 已启用 mesh（ACCEPT device <-> device，同 TUN 客户端互通）")
+			logrus.Info("ip6tables: mesh enabled (ACCEPT device <-> device; clients on the same TUN can reach each other)")
 		}
 	}
 
@@ -743,13 +743,13 @@ func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpCon
 		if err := ip6tablesInsertForward([]string{"-i", wanIface, "-o", deviceName, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"}); err != nil {
 			return err
 		}
-		logrus.Info("ip6tables: 已添加 FORWARD device <-> WAN")
+		logrus.Info("ip6tables: added FORWARD device <-> WAN")
 	} else {
 		dropToWAN := withMainComment([]string{"-i", deviceName, "-o", wanIface, "-j", "DROP"})
 		acceptToWAN := withMainComment([]string{"-i", deviceName, "-o", wanIface, "-j", "ACCEPT"})
 		for exec.Command("ip6tables", append([]string{"-C", "FORWARD"}, acceptToWAN...)...).Run() == nil {
 			if err := exec.Command("ip6tables", append([]string{"-D", "FORWARD"}, acceptToWAN...)...).Run(); err != nil {
-				logrus.WithError(err).Warn("ip6tables(off): 清理历史 device->wan ACCEPT 失败")
+				logrus.WithError(err).Warn("ip6tables(off): failed to remove a leftover device->wan ACCEPT")
 				break
 			}
 		}
@@ -760,7 +760,7 @@ func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpCon
 				return fmt.Errorf("ip6tables off FORWARD drop: %w", err)
 			}
 		}
-		logrus.Info("ip6tables: exit_mode=off,已 DROP FORWARD device->WAN(纯组网,无出口)")
+		logrus.Info("ip6tables: exit_mode=off, installed DROP FORWARD device->WAN (mesh only, no egress)")
 	}
 
 	// 3) connlimit（幂等），IPv6 用 128 位掩码。位置要求同 v4，见 installConnlimitRules。
@@ -789,9 +789,9 @@ func SetupIp6tables(deviceName, wanIface, wanIP string, subnets []string, tcpCon
 				return fmt.Errorf("ip6tables NAT -s %s: %w", subnet, err)
 			}
 		}
-		logrus.Infof("ip6tables: 已添加 NAT MASQUERADE 共 %d 个网段", len(subnets))
+		logrus.Infof("ip6tables: added NAT MASQUERADE for %d subnet(s)", len(subnets))
 	} else {
-		logrus.Info("ip6tables: exit_mode=off,跳过 NAT MASQUERADE(无出口流量)")
+		logrus.Info("ip6tables: exit_mode=off, skipping NAT MASQUERADE (no egress traffic)")
 	}
 
 	if allowExitWAN {
@@ -830,7 +830,7 @@ func insertTUNForwardPortDrops(bin, deviceName string, blockBT, blockTracker6969
 		}
 	}
 	if len(rules) > 0 {
-		logrus.Infof("%s: 已添加 TUN 出站目的端口 DROP（%d 条）", bin, len(rules))
+		logrus.Infof("%s: added TUN outbound destination-port DROP rules (%d)", bin, len(rules))
 	}
 	return nil
 }

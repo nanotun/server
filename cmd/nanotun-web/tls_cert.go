@@ -88,12 +88,12 @@ func ensureTLSCert(certDir string, extraSANs []string) (certPath, keyPath string
 		// 而写了一半的证书恰恰是断电 / 磁盘写满最常见的残留(0 字节反倒少见),
 		// 也就是说更可能出现的那种坏法,原先给的提示反而更差。
 		if _, err := tls.LoadX509KeyPair(certPath, keyPath); err != nil {
-			return "", "", fmt.Errorf("证书目录 %s 里的证书用不了(%s;%s):%w。多半是写到一半断电或磁盘写满留下的残件 —— 两个一起删掉再重启本服务,会自动重新签发自签证书(浏览器会因此提示一次新证书):rm -f %s %s",
+			return "", "", fmt.Errorf("the certificate in cert dir %s is unusable (%s; %s): %w. Most likely a leftover from losing power mid-write or a full disk — delete both and restart this service, a self-signed certificate will be reissued automatically (the browser will prompt once about the new certificate): rm -f %s %s",
 				certDir, describeCertFile(certPath), describeCertFile(keyPath), err, certPath, keyPath)
 		}
 		logrus.WithFields(logrus.Fields{
 			"cert": certPath, "key": keyPath,
-		}).Info("[tls] 复用已存在的证书")
+		}).Info("[tls] reusing the existing certificate")
 		_ = os.Chmod(certPath, certFileMode)
 		_ = os.Chmod(keyPath, keyFileMode)
 		return certPath, keyPath, nil
@@ -111,19 +111,19 @@ func ensureTLSCert(certDir string, extraSANs []string) (certPath, keyPath string
 	// 状态描述也是错的。自动重签只在两个都不在时才发生 —— 证书和私钥必须是配对生成的,
 	// 单独补一个必然对不上。
 	if cExists != kExists {
-		return "", "", fmt.Errorf("证书目录 %s 不完整:%s;%s。证书和私钥必须成对,单补一个对不上 —— 两个一起删掉再重启本服务,会自动重新签发自签证书(浏览器会因此提示一次新证书):rm -f %s %s",
+		return "", "", fmt.Errorf("cert dir %s is incomplete: %s; %s. Certificate and private key must be a matching pair, replacing just one will never line up — delete both and restart this service, a self-signed certificate will be reissued automatically (the browser will prompt once about the new certificate): rm -f %s %s",
 			certDir, describeCertFile(certPath), describeCertFile(keyPath), certPath, keyPath)
 	}
 
 	// 年数从常量取,别写死在文案里:上次把有效期从 10 年改成 100 年时,这句话是全仓
 	// 唯一漏掉的地方,而日志正是运维用来确认「到底签了多久」的东西。
-	logrus.WithField("cert_dir", certDir).Infof("[tls] 未发现证书,自动生成 self-signed(%d 年有效)", certValidYears)
+	logrus.WithField("cert_dir", certDir).Infof("[tls] no certificate found, generating a self-signed one (valid for %d years)", certValidYears)
 
 	sans := collectSANs(extraSANs)
 	if err := generateSelfSignedCert(certPath, keyPath, sans); err != nil {
 		return "", "", err
 	}
-	logrus.WithField("sans", sans).Warn("[tls] 已生成自签证书。生产环境请前置 nginx/caddy + 正式证书")
+	logrus.WithField("sans", sans).Warn("[tls] self-signed certificate generated. In production put nginx/caddy in front with a real certificate")
 	return certPath, keyPath, nil
 }
 
@@ -139,15 +139,15 @@ func describeCertFile(p string) string {
 	st, err := os.Stat(p)
 	switch {
 	case err != nil:
-		return name + " 不存在"
+		return name + " is missing"
 	case st.IsDir():
-		return name + " 是个目录"
+		return name + " is a directory"
 	case st.Size() == 0:
-		return name + " 在,但是 0 字节"
+		return name + " is present but 0 bytes"
 	default:
 		// 只报字节数,不下「正常」这种判断 —— 调用方之一恰恰是「读出来发现用不了」,
 		// 那句话里再说文件正常就是自相矛盾:同一行里既说证书用不了,又说它正常。
-		return fmt.Sprintf("%s %d 字节", name, st.Size())
+		return fmt.Sprintf("%s %d bytes", name, st.Size())
 	}
 }
 

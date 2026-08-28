@@ -122,7 +122,7 @@ func cmdUserSetBandwidth(ctx context.Context, st *store.Store, opts *globalOpts,
 // 全局缺省 0 = 不限制 —— 不设账号级也不设全局时完全放开。
 func cmdUserSetMaxSessions(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) != 2 {
-		return usageError(opts.usage("nanotun-admin user set-max-sessions <username> <n>   # n: >0 覆盖全局; 0 跟随全局; -1 该账号不限"))
+		return usageError(opts.usage("nanotun-admin user set-max-sessions <username> <n>   # n: >0 overrides the global limit; 0 follows it; -1 unlimited for this account"))
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {

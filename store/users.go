@@ -454,7 +454,7 @@ func (s *Store) RotateUserPSKCAS(ctx context.Context, id int64, pskHash, expecte
 		return false, errors.New("store: empty psk_hash")
 	}
 	if strings.TrimSpace(expectedOldHash) == "" {
-		return false, i18nErr("store.users.emptyExpectedHash", "store: empty expected_old_hash (CAS 必须有 base)")
+		return false, i18nErr("store.users.emptyExpectedHash", "store: empty expected_old_hash (CAS requires a base)")
 	}
 	if createdAt <= 0 {
 		return false, fmt.Errorf("store: invalid credential_created_at %d: %w", createdAt, ErrInvalid)

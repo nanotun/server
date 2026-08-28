@@ -91,7 +91,7 @@ var validatedSettingKeys = map[string]func(string) error{
 // 这两个都是**全局**开关(前者一刀切断所有客户端互访,后者把默认动作翻成拒绝),多半是在
 // 「出事了、先断网」的场合敲的 —— 敲完看到 written: 却什么都没发生,比没有这个开关更危险。
 // 故写完主动走 notifyACLChanged(server 的 /reload?what=acl 会同时刷新规则集、default_action
-// 与 mesh_enabled,见 reload 日志里那行 "[reload] acl 规则集已刷新")。
+// 与 mesh_enabled,见 reload 日志里那行 "[reload] acl_rules hot-reloaded")。
 var aclSnapshotSettingKeys = map[string]bool{
 	"mesh_enabled":       true,
 	"acl_default_action": true,

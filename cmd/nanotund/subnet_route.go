@@ -108,7 +108,7 @@ func rebuildSubnetRouteTable(ctx context.Context) {
 	defer cancel()
 	rows, err := gw.store.ListRoutesByStatus(dbCtx, util.RouteStatusApproved)
 	if err != nil {
-		logrus.WithError(err).Warn("[subnet-route] 重建路由表失败，保留旧表（不黑洞已生效路由）")
+		logrus.WithError(err).Warn("[subnet-route] failed to rebuild the route table, keeping the old table (do not blackhole routes already in effect)")
 		return
 	}
 	tbl := make([]subnetRouteEntry, 0, len(rows))
@@ -128,7 +128,7 @@ func rebuildSubnetRouteTable(ctx context.Context) {
 			logrus.WithFields(logrus.Fields{
 				"cidr":      r.CIDR,
 				"device_id": r.DeviceID,
-			}).Warn("[subnet-route] 跳过非私有/保留段的历史 approved 子网路由(绕过出口闸风险):请重新审批为出口节点或删除")
+			}).Warn("[subnet-route] skipping legacy approved subnet route outside private/reserved ranges (risk of bypassing the exit gate): re-approve it as an exit node or delete it")
 			continue
 		}
 		// 第十八轮深扫 MED:拦掉与 server 自身 mesh 网段(TUN v4/v6 CIDR)交叠的 approved 子网路由。批准了一条
@@ -140,7 +140,7 @@ func rebuildSubnetRouteTable(ctx context.Context) {
 			logrus.WithFields(logrus.Fields{
 				"cidr":      r.CIDR,
 				"device_id": r.DeviceID,
-			}).Warn("[subnet-route] 跳过与本 mesh 网段交叠的 approved 子网路由(跨信任域泄漏风险):请删除或改用不重叠网段")
+			}).Warn("[subnet-route] skipping approved subnet route overlapping this mesh subnet (risk of leaking across trust domains): delete it or use a non-overlapping subnet")
 			continue
 		}
 		tbl = append(tbl, subnetRouteEntry{prefix: masked, deviceID: r.DeviceID})
@@ -148,7 +148,7 @@ func rebuildSubnetRouteTable(ctx context.Context) {
 		// 集中在此分配：不论 approve 来自 admin CLI 还是 web，都经 /reload?what=routes 触发本 rebuild。0/0 出口已在
 		// 上面 continue 跳过，不占用 siteID（4via6 只对具体子网）。
 		if _, serr := gw.store.GetOrAssignSiteID(dbCtx, r.DeviceID); serr != nil {
-			logrus.WithError(serr).WithField("device_id", r.DeviceID).Warn("[subnet-route] 分配 4via6 siteID 失败")
+			logrus.WithError(serr).WithField("device_id", r.DeviceID).Warn("[subnet-route] failed to assign 4via6 siteID")
 		}
 	}
 	// SR-VIA6（深扫 #3）：先备好 siteID→deviceID 快照（含 ListVia6Sites DB 查询），再与 subnetRouteTable **相邻**
@@ -157,7 +157,7 @@ func rebuildSubnetRouteTable(ctx context.Context) {
 	// 保留旧 via6 表（仅 subnet 表更新，不黑洞已生效的 site 映射，与原降级语义一致）。
 	var newVia6 *map[uint16]int64
 	if sites, serr := gw.store.ListVia6Sites(dbCtx); serr != nil {
-		logrus.WithError(serr).Warn("[subnet-route] 重建 4via6 site 表失败，保留旧表")
+		logrus.WithError(serr).Warn("[subnet-route] failed to rebuild the 4via6 site table, keeping the old table")
 	} else {
 		inv := make(map[uint16]int64, len(sites))
 		for dev, sid := range sites {
@@ -170,7 +170,7 @@ func rebuildSubnetRouteTable(ctx context.Context) {
 		via6SiteTable.Store(newVia6)
 	}
 	logrus.WithFields(logrus.Fields{"routes": len(tbl), "sites_updated": newVia6 != nil}).
-		Info("[subnet-route] 已批准子网路由表 + 4via6 site 表已重建")
+		Info("[subnet-route] approved subnet route table + 4via6 site table rebuilt")
 }
 
 // deviceInSubnetRouteTable 报告该 deviceID 是否为**已批准子网路由**的宣告方（当前生效表里有其条目）。
