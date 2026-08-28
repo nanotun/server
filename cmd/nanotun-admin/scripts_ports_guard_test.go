@@ -107,3 +107,38 @@ func TestPortsHelper_IsPackagedAndInstalled(t *testing.T) {
 		}
 	}
 }
+
+// 测试台容器内的 Web 端口必须和它的 -p 映射对得上。
+//
+// lab.sh 的模型是「宿主某端口 → 容器某固定端口」,而那条 -p 在 docker run 那一刻就定死
+// 了 —— 那时候装机还没发生。装机默认会随机挑 Web 端口(见 install-self-hosted.sh),所以
+// lab.sh 必须显式钉住容器内的值,否则映射指向空处。
+//
+// 之所以值得一条守卫:它坏掉的样子会撒谎。lab.sh status 会打「宿主连不上 —— Docker
+// Desktop 端口转发的毛病,不是服务端」,于是人去查一个 Docker 的 bug,而真因是 Web 听在
+// 某个随机端口(2026-08-28 实测:容器内 10678、映射 7443,browse / browse-2fa / drill
+// 三条全断)。谁把那个钉子拔了,先在这儿红。
+func TestLabPinsContainerWebPortToItsPortMapping(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "testlab", "lab.sh"))
+	if err != nil {
+		t.Fatalf("读不到 lab.sh:%v", err)
+	}
+	src := string(b)
+
+	pin := regexp.MustCompile(`:\s*"\$\{NANOTUN_WEB_PORT:=(\d+)\}"`).FindStringSubmatch(src)
+	if pin == nil {
+		t.Fatal("lab.sh 没有钉住容器内的 Web 端口(找不到 : \"${NANOTUN_WEB_PORT:=<口>}\")。\n" +
+			"不钉住的话装机会随机挑一个,而 -p 映射打向一个固定端口 —— 宿主就连不上了,\n" +
+			"且报错会把人指向 Docker Desktop。")
+	}
+	mapping := regexp.MustCompile(`-p\s+"?127\.0\.0\.1:\$\{?WEB_PORT\}?:(\d+)`).FindStringSubmatch(src)
+	if mapping == nil {
+		t.Fatal("lab.sh 里找不到 -p 127.0.0.1:${WEB_PORT}:<容器端口> 这条映射;" +
+			"若映射写法改了,请同步更新本守卫。")
+	}
+	if pin[1] != mapping[1] {
+		t.Fatalf("lab.sh 自相矛盾:容器内 Web 端口钉在 %s,而 -p 映射打向容器 %s。\n"+
+			"两者必须一致,否则宿主上的 https://127.0.0.1:<宿主口>/ 连不上,"+
+			"而 browse / browse-2fa / drill 都走那个地址。", pin[1], mapping[1])
+	}
+}

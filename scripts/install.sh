@@ -50,6 +50,9 @@
 #
 # 选项:
 #   --lang en|zh   界面语言。默认英文;不给且有终端时会在最前面问一次(见下面 NANOTUN_LANG)
+#   --web-port <口> Web 后台端口。不给则随机挑一个(有终端时会拿它作默认值问你一次);
+#                  等价于环境变量 NANOTUN_WEB_PORT。数据面那两个端口刻意不随机 ——
+#                  REALITY 在 443/tcp、hy2 在 443/udp,理由见 config.toml 的 [reality]
 #   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
 #   --skip-check   跳过环境检查直接装(不建议;装到一半失败比现在就知道难收拾)
 #   --no-setup     装完不自动进开服向导
@@ -65,6 +68,9 @@
 #                       都认它,nanotun-admin 本来就认(它的默认也是英文),所以整条链的语言
 #                       是一致的。装完会落盘到 /etc/nanotun/lang,之后 nanotun-setup /
 #                       nanotun-uninstall / nanotun-set-suffix 默认沿用同一种语言。
+#   NANOTUN_WEB_PORT    Web 后台端口,同 --web-port(命令行参数优先)。不设就随机挑一个并
+#                       打出来;**重跑不会挪动已装机器的端口**(读 /etc/nanotun/web.env 的
+#                       现值沿用)。无人值守要确定值就设它。
 #   NANOTUN_MAGIC_SUFFIX        同 --magic-suffix(命令行参数优先);走 sudo 时记得写在
 #                       sudo 后面:sudo NANOTUN_MAGIC_SUFFIX=lab bash -c "$(curl ...)"
 #   NANOTUN_WEB_ADMIN_PASSWORD  Web 后台管理员密码,配合 --web-admin <名字> 使用。
@@ -394,6 +400,35 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       shift 2 ;;
+    # Web 后台端口。在这儿吃掉,别落进 SETUP_ARGS —— 向导不认它,会被当未知参数拒掉。
+    # 校验放在这里而不是等到后面:参数错误该立刻报,而不是等挑完端口、跑完自检才说。
+    --web-port)
+      case "${2:-}" in
+        ''|*[!0-9]*) NT_BAD_PORT=1 ;;
+        *) if [ "$2" -ge 1 ] && [ "$2" -le 65535 ]; then NANOTUN_WEB_PORT="$2"; NT_BAD_PORT=0
+           else NT_BAD_PORT=1; fi ;;
+      esac
+      if [ "${NT_BAD_PORT:-0}" = 1 ]; then
+        printf '%s\n' "$(tsel \
+          "install.sh: --web-port takes a number from 1 to 65535 (got '${2:-}')" \
+          "install.sh: --web-port 只认 1..65535 的整数(收到 '${2:-}')")" >&2
+        exit 2
+      fi
+      shift 2 ;;
+    --web-port=*)
+      _nt_p="${1#--web-port=}"
+      case "$_nt_p" in
+        ''|*[!0-9]*) NT_BAD_PORT=1 ;;
+        *) if [ "$_nt_p" -ge 1 ] && [ "$_nt_p" -le 65535 ]; then NANOTUN_WEB_PORT="$_nt_p"; NT_BAD_PORT=0
+           else NT_BAD_PORT=1; fi ;;
+      esac
+      if [ "${NT_BAD_PORT:-0}" = 1 ]; then
+        printf '%s\n' "$(tsel \
+          "install.sh: --web-port takes a number from 1 to 65535 (got '$_nt_p')" \
+          "install.sh: --web-port 只认 1..65535 的整数(收到 '$_nt_p')")" >&2
+        exit 2
+      fi
+      unset _nt_p; shift ;;
     --lang=*)
       if [ -z "$(nt_lang_normalize "${1#--lang=}")" ]; then
         printf '%s\n' "$(tsel \
@@ -442,6 +477,11 @@ Unattended (CI / cloud-init) — write it to disk first, and pass --web-admin:
 Options:
   --lang en|zh   interface language (default: en). Without it, and when a
                  terminal is attached, you are asked once up front.
+  --web-port <p> web console port. Without it a random one is picked (and offered
+                 as the default of a single question when a terminal is attached);
+                 same as NANOTUN_WEB_PORT. The two data-plane ports are
+                 deliberately not randomized — REALITY on 443/tcp and hy2 on
+                 443/udp; see the [reality] comments in config.toml.
   --check-only   only check the machine, list every problem, then exit (no root)
   --skip-check   install without checking first (not recommended)
   --no-setup     do not enter the setup wizard after installing
@@ -455,6 +495,11 @@ Environment:
                       passed on to preflight.sh / install-self-hosted.sh /
                       setup.sh and to nanotun-admin, and is remembered in
                       /etc/nanotun/lang for later nanotun-* commands
+  NANOTUN_WEB_PORT    web console port, same as --web-port (the flag wins). Unset
+                      means a random one is picked and printed. **Reruns never move
+                      an installed machine's port** (the current value in
+                      /etc/nanotun/web.env is kept). Set it when automation needs a
+                      known value.
   NANOTUN_MAGIC_SUFFIX same as --magic-suffix (the flag wins)
   NANOTUN_WEB_ADMIN_PASSWORD  web admin password, together with --web-admin
                       <name>. An environment variable rather than a flag: argv
@@ -511,6 +556,7 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
 
 选项:
   --lang en|zh   界面语言,默认英文;不给且有终端时会在最前面问一次
+  --web-port <口> Web 后台端口,不给则随机挑(等价 NANOTUN_WEB_PORT)
   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
   --skip-check   跳过环境检查直接装(不建议)
   --no-setup     装完不自动进开服向导
@@ -577,8 +623,8 @@ if [ ${#SETUP_ARGS[@]} -gt 0 ] && { [ "$CHECK_ONLY" = 1 ] || [ "$NO_SETUP" = 1 ]
     "install.sh: these arguments were meant for the setup wizard, but the wizard will not run this time ($why): ${SETUP_ARGS[*]}" \
     "install.sh: 这些参数本该转交开服向导,但这次向导不会跑($why):${SETUP_ARGS[*]}")" >&2
   printf '%s\n' "$(tsel \
-    "   install.sh itself only takes --lang / --check-only / --skip-check / --no-setup; everything else goes to the wizard (see --help)." \
-    "   install.sh 自己只认 --lang / --check-only / --skip-check / --no-setup,其余一律转交向导(--help 看用法)。")" >&2
+    "   install.sh itself only takes --lang / --web-port / --check-only / --skip-check / --no-setup; everything else goes to the wizard (see --help)." \
+    "   install.sh 自己只认 --lang / --web-port / --check-only / --skip-check / --no-setup,其余一律转交向导(--help 看用法)。")" >&2
   exit 2
 fi
 

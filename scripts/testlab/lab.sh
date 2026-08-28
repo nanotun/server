@@ -132,6 +132,28 @@ if [ -n "$DISTRO_VER" ]; then
   DEF_PORT=$(( 7500 + $(printf '%s' "$DISTRO" | cksum | cut -d' ' -f1) % 400 ))
 fi
 WEB_PORT="${LAB_WEB_PORT:-$DEF_PORT}"
+# 容器**内**的 Web 端口钉成 7443。
+#
+# 本测试台的模型是「宿主某端口 → 容器 7443」,而那条 -p 映射在 docker run 那一刻就定死了 ——
+# 那时候装机还没发生,随机端口也还不存在。所以让容器内随机等于让映射指向空处。
+#
+# 而失败的样子极具误导:lab.sh status 会打「宿主连不上 —— Docker Desktop 端口转发的毛病,
+# 不是服务端」,于是人去查一个 Docker 的 bug,真因是 Web 听在某个随机端口而映射打向 7443
+# (2026-08-28 实测:容器内 10678,映射 7443,browse / browse-2fa / drill 三条全断)。
+#
+# 随机那条路不在这儿验 —— 它由装机流程本身覆盖(不设 NANOTUN_WEB_PORT 时 install.sh /
+# install-self-hosted.sh 会挑一个并落进 web.env)。要在容器里验别的端口,显式设
+# NANOTUN_WEB_PORT,下面会提醒你映射对不上。
+: "${NANOTUN_WEB_PORT:=7443}"
+export NANOTUN_WEB_PORT
+if [ "$NANOTUN_WEB_PORT" != 7443 ]; then
+  printf '    %s!%s NANOTUN_WEB_PORT=%s:容器里的 Web 会听这个端口,但 -p 映射打向容器 7443 ——
+' \
+    "$C_WARN" "$C_OFF" "$NANOTUN_WEB_PORT" >&2
+  printf '      宿主上的 https://127.0.0.1:%s/ 连不上是预期的(browse / drill 同理)。
+' "$WEB_PORT" >&2
+fi
+
 # 缺 TUN 的那台是独立一台,不能跟正常那台共用容器名/端口 —— 否则 up 会直接复用
 # 已存在的那个(带着 /dev/net/tun),测出来的是假绿。
 if [ "$NO_TUN" = 1 ]; then
