@@ -495,3 +495,47 @@ func TestBareMetalAndDockerShareTheSameConfigCustomisations(t *testing.T) {
 		}
 	}
 }
+
+// 凡是自己做 SSH 预热的 e2e 入口,都必须把「取自服务端的那两个值」问出来。
+//
+// Web 后台端口和 MagicDNS 后缀都写在服务端的配置里,门禁这边只有兜底值(7443 / lan),而
+// 两者的默认都已经变了:端口现在是随机的,后缀从 lan 改成了 nanotun。猜错的样子毫无关联性
+// —— 阶段 60 整段报「Web 后台连不上」、阶段 1 整段报解析失败,看着都像被测系统坏了。
+//
+// 这条守卫的由来:第一次修的时候只改了 run.sh,而 provision.sh 是另一个独立入口,偏偏还是
+// 「刚重建完实验室」时先跑的那个 —— 正是默认值必错的时刻(2026-08-28)。所以判据不是列一张
+// 脚本清单,而是「谁做预热谁就得解析」:将来多一个入口,它自己就会被这条盯上。
+func TestEveryE2EEntryPointResolvesServerSideValues(t *testing.T) {
+	dir := filepath.Join("..", "..", "scripts", "e2e")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读不到 %s:%v", dir, err)
+	}
+	checked := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sh") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("读不到 %s:%v", e.Name(), err)
+		}
+		src := stripShellComments(string(b))
+		// 只看「真的去预热」的入口 —— 定义 warmup 的那个文件(lib/env.sh)不在本目录层。
+		if !strings.Contains(src, "e2e_ssh_warmup") {
+			continue
+		}
+		checked++
+		for _, fn := range []string{"e2e_resolve_web_base", "e2e_resolve_magic_suffix"} {
+			if !strings.Contains(src, fn) {
+				t.Errorf("%s 做了 SSH 预热却没调 %s():\n"+
+					"  这两个值取自服务端配置,门禁这边只有兜底值,而默认早就变了"+
+					"(端口现在随机、后缀从 lan 改成 nanotun)。\n"+
+					"  猜错的失败会指向被测系统,而不是指向门禁自己的配置漂移。", e.Name(), fn)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("一个做 SSH 预热的入口都没找到 —— 若 warmup 改名,请同步本守卫")
+	}
+}

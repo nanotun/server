@@ -40,10 +40,20 @@
 #      MagicDNS 后缀（客户端解析 *.<后缀> → mesh vIP）默认模板里的 "nanotun"，可用
 #      NANOTUN_MAGIC_SUFFIX=<后缀> 在首次装机时定制（只在真写模板时生效；保留既有
 #      config.toml 时不动，改现有后缀用 scripts/set-magic-suffix.sh）。
+#      REALITY 的 TCP 端口默认模板里的 443（伪装成普通 HTTPS 站点，理由见 config.toml
+#      的 [reality]），宿主上 443 已被占时可用 NANOTUN_REALITY_PORT=<口> 在首次装机时
+#      换一个 —— 同样只在真写模板时生效，保留既有 config.toml 时只告警不改：端口印在
+#      每一份已发出去的客户端配置里，挪走等于把现有客户端全部踢下线。
+#      Web 后台端口不给就**随机挑**一个（10000–31999，落进 /etc/nanotun/web.env），要
+#      确定值用 NANOTUN_WEB_PORT=<口>；已装机器重跑时沿用现值，不会被挪动。
+#      两者都是 TCP，设成同一个值是必坏的（后启动的拿 EADDRINUSE），环境自检会拦下。
 #   2. 开启 IP forwarding（v4 + v6）+ unprivileged ICMP ping（nanotun-web
 #      pro-bing 探测 server_dial_host 可达性必备），写 /etc/sysctl.d/99-nanotun.conf
-#   3. ufw active 时自动放行 8443/tcp（REALITY）+ 443/udp（hy2）（装了 web 再加 7443/tcp；
-#      INPUT 默认 DROP 时必须）。数据面 WS(:8080)默认绑回环、不放行,客户端经 hy2/REALITY 接入。
+#   3. ufw active 时自动放行**实际配置的**那几个端口：REALITY（默认 443/tcp）+ hy2
+#      （443/udp），装了 web 再加它那一个（默认随机）。端口一律从 nanotun-ports.sh 读，
+#      不写死 —— 写死过,而改过端口的机器上放行的是一个没人听的端口(见 scripts_ports_guard_test.go)。
+#      INPUT 默认 DROP 时这一步是必须的。数据面 WS(:8080)默认绑回环、不放行,客户端经
+#      hy2/REALITY 接入。
 #   4. K1 旧 DB 自检:若新 DB 空 + 旧 DB(/root/nanotun/data/nanotun.db)有终端用户 →
 #      默认拒绝继续(2026-05-21 事故场景);设置 NANOTUN_IMPORT_LEGACY_DB=1 显式导入。
 #   5. 跑 nanotun-admin --json --yes init 创建 admin（PSK 自动生成）
@@ -1045,8 +1055,9 @@ fi
 # ufw 放了不等于安全组放了,而 ufw 那条绿色的 ✓ 恰恰会让人以为防火墙这件事已经办完了。
 #
 # 443/**UDP** 单独点名:云厂商的默认安全组模板几乎都是 22 + 80/443 TCP,UDP 一条没有。
-# 也就是说照着模板走的人,REALITY(8443/tcp)自己加了,hy2 那条最容易漏 —— 而漏了它的
-# 表现不是连不上,是「能连但慢」(客户端悄悄退到别的传输),更难往防火墙上想。
+# REALITY 挪到 443/tcp 之后这一点更突出了:那条 TCP 规则模板里本来就有,于是 hy2 的 UDP
+# 成了唯一要自己加的一条,也就成了唯一会漏的那条 —— 而漏了它的表现不是连不上,是「能连
+# 但慢」(客户端悄悄退到别的传输),更难往防火墙上想。
 # 端口同样取实际值:安全组要放行的是这台机器真正在听的那个,照着默认值去填等于白填。
 if [ "$NT_LANG" = zh ]; then
   note_ports="${NT_PORT_REALITY}/tcp（REALITY）、$(printf '%s' "$NT_HY2_SPECS" | tr ' ' ',')/udp（hysteria2）"

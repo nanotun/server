@@ -69,6 +69,14 @@ step "0. 连通性与前置工具"
 e2e_ssh_warmup || die "三台机器没有全部就绪,先解决 SSH 再重建。"
 ok "SRV / A / C 均可达"
 
+# Web 后台端口和 MagicDNS 后缀都取自服务端配置,别猜 —— 连上了就直接问。
+#
+# 这两句 run.sh 里也有,但**本脚本必须自己调一遍**:它是独立入口,而且是「刚重建完实验室」
+# 时先跑的那个 —— 正是端口随机、后缀已从 lan 变成 nanotun、默认值必错的时刻。第 7 步用
+# E2E_WEB_BASE 去建 Web 管理员,猜错就直接失败,而失败长得像「Web 后台没起来」。
+e2e_resolve_web_base
+e2e_resolve_magic_suffix
+
 s "command -v nanotun-admin" >/dev/null 2>&1 || die "SRV 上没有 nanotun-admin,先装服务端。"
 for who in a c; do
   "$who" "test -x /usr/local/bin/nanotun" >/dev/null 2>&1 \

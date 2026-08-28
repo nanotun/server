@@ -517,7 +517,7 @@ type ServerConfig struct {
 	// JumpHostProtectedPorts(C6_full,2026-05-22):明确列出 jump_host_firewall 要保护的
 	// 端口/协议清单。每项格式 "proto/port" 或 "proto/start-end":
 	//   tcp/8080         单 TCP 端口(WSS gateway)
-	//   tcp/8443         REALITY
+	//   tcp/443          REALITY(默认端口;改过就填实际那个)
 	//   udp/443          hy2 主端口
 	//   udp/5000-5002    hy2 端口跳跃区间
 	//
