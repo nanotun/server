@@ -18,8 +18,11 @@
 #                                init 本身幂等,这个开关只为特殊排查场景保留)
 #   NANOTUN_FORCE_CONFIG=0       用镜像里的模板覆盖已有 config.toml(原文件会备份)
 #   NANOTUN_MAGIC_SUFFIX=        MagicDNS 局域网后缀(客户端解析 *.<后缀> → mesh 虚拟 IP),
-#                                默认模板里的 lan。只在**首次生成 config.toml**时生效(数据卷
-#                                已有配置时不动,改法见下面 apply_magic_suffix 注释)。
+#                                默认取模板里的值(现为 nanotun)。只在**首次生成 config.toml**
+#                                时生效(数据卷已有配置时不动,改法见下面 apply_magic_suffix 注释)。
+#   NANOTUN_REALITY_PORT=        REALITY 的 TCP 端口,默认取模板里的值(现为 443)。宿主上 443
+#                                已经被占时用它换一个。同样只在**首次生成 config.toml**时生效。
+#                                与裸机的 --reality-port 同名同义(scripts/install.sh)。
 #   NANOTUN_LANG=en              日志语言 en|zh,默认英文。也会传给 nanotun-admin /
 #                                nanotun-web / nanotun-ensure-assets.sh,并落盘到
 #                                $ETC_DIR/lang,所以 docker exec 进来敲 nanotun-admin
@@ -272,8 +275,78 @@ apply_magic_suffix() {
     }
   ' "$CFG" > "$CFG.new" && mv "$CFG.new" "$CFG" || { rm -f "$CFG.new"; die_t "Failed to write the MagicDNS suffix (config.toml was left untouched)" "写 MagicDNS 后缀失败(config.toml 未改动)"; }
   chmod 0600 "$CFG"
-  ok_t "MagicDNS suffix set to '$suf' (clients resolve *.$suf → mesh virtual IP; the default was 'lan')" \
-       "MagicDNS 后缀设为 '$suf'(客户端解析 *.$suf → mesh 虚拟 IP;默认原为 'lan')"
+  ok_t "MagicDNS suffix set to '$suf' (clients resolve *.$suf → mesh virtual IP; the template default is 'nanotun')" \
+       "MagicDNS 后缀设为 '$suf'(客户端解析 *.$suf → mesh 虚拟 IP;模板默认为 'nanotun')"
+}
+
+# apply_reality_port:按 NANOTUN_REALITY_PORT 定制 [reality].listen_addr。
+# 与 scripts/install-self-hosted.sh 的同名函数**同一套**语义(规则单一来源:那边改这边也要跟),
+# 也和 apply_magic_suffix 同一个口径 —— 只在这次真写了模板 config.toml 时改。
+#
+# 「已有配置就不动」这条在这里比后缀更硬:REALITY 的端口印在每一份已经发出去的客户端配置里,
+# 悄悄挪走等于把所有现有客户端一次性踢下线,而他们看到的只是「连不上」。
+#
+# 默认 443 是有理由的(见 config.toml 的 [reality]:伪装成普通 HTTPS 站点),这个变量是给
+# 「宿主上 443 已经被别的服务占着」的部署用的。
+apply_reality_port() {
+  local port="${NANOTUN_REALITY_PORT:-}"
+  [[ -n "$port" ]] || return 0   # 没给:用模板默认的 443,不动 config.toml
+
+  if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+    die_t "NANOTUN_REALITY_PORT must be a number from 1 to 65535: '$port'" \
+          "NANOTUN_REALITY_PORT 只认 1..65535 的整数:'$port'"
+  fi
+
+  # 和 Web 管理面撞在同一个 TCP 端口上,是一台必坏的容器,而所有信号都会说没事:
+  # 先起来的那个占住端口,后起来的拿 EADDRINUSE 反复重启,而健康检查走的是 control socket,
+  # 照样 healthy。裸机那边由环境自检拦下,容器里没有那一步,只能在这儿拦。
+  local web_port="${NANOTUN_WEB_LISTEN:-0.0.0.0:7443}"; web_port="${web_port##*:}"
+  if [[ "${NANOTUN_WEB_ENABLED:-1}" != 0 && "$port" == "$web_port" ]]; then
+    die_t "NANOTUN_REALITY_PORT=$port collides with the web console (NANOTUN_WEB_LISTEN=${NANOTUN_WEB_LISTEN:-0.0.0.0:7443}).
+   One TCP port cannot have two owners: whichever starts second gets EADDRINUSE and restarts forever,
+   while the health check keeps reporting healthy because it goes through the control socket.
+   Move the web console instead — it is the one that can go anywhere: NANOTUN_WEB_LISTEN=0.0.0.0:<other>" \
+          "NANOTUN_REALITY_PORT=$port 与 Web 管理面撞了(NANOTUN_WEB_LISTEN=${NANOTUN_WEB_LISTEN:-0.0.0.0:7443})。
+   一个 TCP 端口不能有两个主人:后起来的那个会拿 EADDRINUSE 反复重启,而健康检查走的是
+   control socket,会一直报 healthy。该挪的是 Web 管理面,它放哪儿都行:
+   NANOTUN_WEB_LISTEN=0.0.0.0:<别的端口>"
+  fi
+
+  if [[ "${CONFIG_FRESH:-0}" != 1 ]]; then
+    warn_t "Kept the config.toml already in the data volume, so NANOTUN_REALITY_PORT='$port' was not applied." \
+           "沿用了数据卷里已有的 config.toml,未套用 NANOTUN_REALITY_PORT='$port'。"
+    warn_t "  Moving REALITY on a deployment that is already serving cuts off every existing client — their" \
+           "  在一个已经在服务的部署上挪动 REALITY,会让所有现有客户端连不上 —— 他们手上的配置里"
+    warn_t "  profiles carry the old port. To do it deliberately: edit [reality].listen_addr in $CFG in the" \
+           "  写的是旧端口。要有意这么做:改卷里 $CFG 的 [reality].listen_addr,重启容器,"
+    warn_t "  volume, restart the container, then reissue every client profile." \
+           "  然后给每个客户端重发配置。"
+    return 0
+  fi
+
+  # 段感知改写:只动 [reality] 段内的 listen_addr。全局替换会把 [server] 和 [hysteria]
+  # 的同名字段一起改掉,那是三个不同的东西。
+  awk -v p="$port" '
+    /^[ \t]*\[/ { insec = ($0 ~ /^[ \t]*\[reality\][ \t]*$/); print; next }
+    {
+      if (insec && $0 ~ /^[ \t]*#?[ \t]*listen_addr[ \t]*=/) { print "listen_addr = \":" p "\""; next }
+      print
+    }
+  ' "$CFG" > "$CFG.tmp" && cat "$CFG.tmp" > "$CFG" && rm -f "$CFG.tmp"
+  chmod 0600 "$CFG"
+
+  local now
+  now="$(awk '/^[ \t]*\[reality\][ \t]*$/{insec=1; next} /^[ \t]*\[/{insec=0} insec && /^[ \t]*listen_addr[ \t]*=/{gsub(/.*:|"/, ""); print; exit}' "$CFG")"
+  [[ "$now" == "$port" ]] || die_t \
+    "failed to write REALITY's port into $CFG (wanted $port, found '${now:-none}')" \
+    "没能把 REALITY 端口写进 $CFG(想写 $port,读回 '${now:-空}')"
+
+  ok_t "REALITY port: $port (the template default is 443; changed because you asked)" \
+       "REALITY 端口:$port(模板默认 443,这次按你的要求改了)"
+  # EXPOSE 是构建期写死的(443/tcp),挪走之后 `docker run -P` 不会发布这个新端口。
+  # host 网络模式下无所谓;桥接模式下必须自己 -p。不说的话,现象是「容器好好的,外面连不上」。
+  warn_t "  Bridge networking: the image only EXPOSEs 443/tcp, so publish this one yourself: -p $port:$port" \
+         "  桥接模式:镜像 EXPOSE 的是 443/tcp,这个新端口要自己发布:-p $port:$port"
 }
 
 bootstrap() {
@@ -315,9 +388,11 @@ bootstrap() {
   chmod 0600 "$ETC_DIR"/config.toml.bak.* 2>/dev/null || true
 
   fill_config_secrets
-  # MagicDNS 后缀:首次生成 config.toml 时可经 NANOTUN_MAGIC_SUFFIX 定制(默认模板里的 lan)。
+  # MagicDNS 后缀:首次生成 config.toml 时可经 NANOTUN_MAGIC_SUFFIX 定制(默认取模板里的值)。
   # 同样须在 nanotund 启动前 —— 它启动时把后缀读进 magicDNSResolved 快照,起来后改要重启。
   apply_magic_suffix
+  # REALITY 端口:同样只在首次生成 config.toml 时生效,且同样必须在 nanotund 起来之前。
+  apply_reality_port
 
   # 按 config.toml 里配置的路径补齐缺失的 TLS 证书 / mTLS CA / masquerade 占位页。
   # 幂等:已存在的文件不动。

@@ -326,6 +326,7 @@ docker compose exec nanotun diff /etc/nanotun/config.toml /etc/nanotun/config.to
 | `NANOTUN_WEB_TRUSTED_PROXIES` | 空 | 可信反代 IP/CIDR。放在 nginx 后面时必须设，否则按 IP 的登录限流看到的全是反代地址 |
 | `NANOTUN_FORCE_CONFIG` | `0` | 用镜像模板覆盖已有配置（会备份原文件） |
 | `NANOTUN_MAGIC_SUFFIX` | 空（模板默认 `nanotun`） | MagicDNS 局域网后缀，客户端解析 `*.<后缀>` → mesh 虚拟 IP。**只在首次生成 `config.toml` 时生效**；卷里已有配置后再改这行不起作用（改法见下） |
+| `NANOTUN_REALITY_PORT` | 空（模板默认 `443`） | REALITY 的 TCP 端口。宿主上 443 已被别的服务占着时用它换一个。**只在首次生成 `config.toml` 时生效**；卷里已有配置后再改不起作用（挪动它会让所有现有客户端连不上，因为端口印在已经发出去的配置里）。与裸机的 `--reality-port` 同义 |
 | `NANOTUN_SKIP_INIT` | `0` | 跳过 `nanotun-admin init`。init 本身幂等，这个开关只为特殊排查保留 |
 | `NANOTUN_LANG` | `en` | 日志与 CLI 的语言，`en` 或 `zh`。容器里不问、不猜，默认英文 |
 
@@ -338,7 +339,9 @@ docker compose exec nanotun diff /etc/nanotun/config.toml /etc/nanotun/config.to
 > `environment:` 给主进程的变量 —— 不落盘的话，同一台机器上容器日志是中文、`docker exec`
 > 敲出来的却是英文。显式给了 `NANOTUN_LANG` 时仍以给的为准。
 
-> `NANOTUN_MAGIC_SUFFIX` 想换成别的（如 `nanotun`），要在**首次 `up -d` 前**设好（`docker-compose.yml` 的 `environment:` 里有注释好的样例）。数据卷里已经有 `config.toml` 之后，这个变量会被 `entrypoint.sh` 忽略并给出告警 —— 此时改后缀有两条路：直接改卷里 `config.toml` 的 `[server.magic_dns].domain_suffix` 再重启容器，或设 `NANOTUN_FORCE_CONFIG=1` 用模板重来（后者会重签密钥、踢掉所有客户端）。注意运行期后缀**只**从 `config.toml` 读，`nanotun-admin setting set magic_suffix` 不是入口（会被硬拒并指路）。
+> `NANOTUN_MAGIC_SUFFIX` 想换成别的（模板默认已是 `nanotun`），要在**首次 `up -d` 前**设好（`docker-compose.yml` 的 `environment:` 里有注释好的样例）。数据卷里已经有 `config.toml` 之后，这个变量会被 `entrypoint.sh` 忽略并给出告警 —— 此时改后缀有两条路：直接改卷里 `config.toml` 的 `[server.magic_dns].domain_suffix` 再重启容器，或设 `NANOTUN_FORCE_CONFIG=1` 用模板重来（后者会重签密钥、踢掉所有客户端）。注意运行期后缀**只**从 `config.toml` 读，`nanotun-admin setting set magic_suffix` 不是入口（会被硬拒并指路）。
+>
+> `NANOTUN_REALITY_PORT` 同理，而且后果更重：REALITY 的端口印在每一份已经发出去的客户端配置里，挪走等于把所有现有客户端一次性踢下线，而他们看到的只是「连不上」。另外镜像 `EXPOSE` 的是 `443/tcp`（构建期写死），桥接模式下换了端口要自己 `-p <口>:<口>`；`network_mode: host` 不受影响。
 
 ---
 

@@ -409,8 +409,8 @@ apply_magic_suffix() {
     || { rm -f "$cfg.new"; die_t "Could not write the MagicDNS suffix (config.toml was left untouched)" \
                                  "写 MagicDNS 后缀失败(config.toml 未改动)"; }
   chmod 0600 "$cfg"
-  ok_t "MagicDNS suffix set to '$suf' (clients resolve *.$suf → mesh virtual IP; the default was 'lan')" \
-       "MagicDNS 后缀设为 '$suf'(客户端解析 *.$suf → mesh 虚拟 IP;默认原为 'lan')"
+  ok_t "MagicDNS suffix set to '$suf' (clients resolve *.$suf → mesh virtual IP; the template default is 'nanotun')" \
+       "MagicDNS 后缀设为 '$suf'(客户端解析 *.$suf → mesh 虚拟 IP;模板默认为 'nanotun')"
 }
 
 # 环境自检:先验这台机器能不能跑,再验发布包对不对。

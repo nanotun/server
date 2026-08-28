@@ -454,3 +454,44 @@ func TestInstallerPortSelfCheckNamesTheProcess(t *testing.T) {
 		}
 	}
 }
+
+// 装机脚本和 Docker entrypoint 必须实现同一套「首次生成配置时才改」的定制点。
+//
+// 两边各有一份独立实现,注释里互相写着「规则单一来源:那边改这边也要跟」—— 但在这条守卫
+// 之前,没有任何东西在执行那句话。漏一边的样子是无声的:裸机上 --reality-port 好用,容器里
+// 设了同名变量却毫无反应,而日志里连一句「我忽略了它」都没有(2026-08-28 实测就是如此,
+// 那时 entrypoint 压根不认这个变量)。
+//
+// 只钉两件事:函数在,且被 CONFIG_FRESH 挡着。具体改写逻辑不比对 —— 那是实现细节,两边
+// 用词本来就不同(镜像里没有 set-magic-suffix.sh,指路也不一样)。
+func TestBareMetalAndDockerShareTheSameConfigCustomisations(t *testing.T) {
+	for _, f := range []string{
+		filepath.Join("..", "..", "scripts", "install-self-hosted.sh"),
+		filepath.Join("..", "..", "docker", "entrypoint.sh"),
+	} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("读不到 %s:%v", f, err)
+		}
+		src := stripShellComments(string(b))
+		for _, fn := range []string{"apply_magic_suffix", "apply_reality_port"} {
+			if !strings.Contains(src, fn+"() {") {
+				t.Errorf("%s 里没有 %s():两条部署路径的定制点必须对齐,"+
+					"否则同一个环境变量在一边生效、在另一边被静默忽略。",
+					filepath.Base(f), fn)
+				continue
+			}
+			// 函数体里必须有 CONFIG_FRESH 这道闸 —— 少了它就会去改别人已经在用的配置。
+			body := src[strings.Index(src, fn+"() {"):]
+			if end := strings.Index(body, "\n}\n"); end > 0 {
+				body = body[:end]
+			}
+			if !strings.Contains(body, "CONFIG_FRESH") {
+				t.Errorf("%s 的 %s() 没有 CONFIG_FRESH 这道闸:"+
+					"沿用既有配置时擅自改写,会动到一台正在服务的机器 —— "+
+					"REALITY 端口那条尤其重,挪走等于踢掉所有现有客户端。",
+					filepath.Base(f), fn)
+			}
+		}
+	}
+}

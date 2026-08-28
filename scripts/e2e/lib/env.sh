@@ -52,6 +52,12 @@ e2e_load_env() {
   : "${E2E_C_LAN6:=fd77:88::/64}"
   : "${E2E_C_LAN6_HOST:=fd77:88::1}"
   : "${E2E_TARGET_PORT:=8088}"        # 靶站端口,须在 C 的 ufw 放行名单里
+  # lan 只是**老默认**。模板 config.toml 的 domain_suffix 现在是 nanotun,所以新装的服务端
+  # 用的是 nanotun,而阶段 1 拿这个值拼 *.<后缀> 去做解析断言 —— 猜错的样子和 E2E_WEB_BASE
+  # 那次一模一样:一整段红,看着像 MagicDNS 坏了,真因是门禁自己的配置过时了。
+  # 真值由 e2e_resolve_magic_suffix() 在 SSH 预热之后去服务端问出来;显式设了就不问。
+  [[ -n "${E2E_MAGIC_SUFFIX:-}" ]] && E2E_MAGIC_SUFFIX_EXPLICIT=1
+  : "${E2E_MAGIC_SUFFIX_EXPLICIT:=0}"
   : "${E2E_MAGIC_SUFFIX:=lan}"
 
   # 服务端部署形态:systemd(裸机,默认)或 docker(镜像)。docker 模式下服务端的
@@ -153,6 +159,28 @@ _e2e_srv_shim_ensure() {
   # 这里不能用 s():它自己就在等这个文件,会绕回来。
   push_file s "$E2E_ROOT/remote/systemctl-docker-shim.sh" "$E2E_SRV_SHIM" || return 1
   _E2E_SHIM_READY=1
+}
+
+# e2e_resolve_magic_suffix —— 去 SRV 上把 MagicDNS 后缀问出来。
+#
+# 与 e2e_resolve_web_base 同一个理由和同一套做法:这个值取自服务端 config.toml,而门禁这边
+# 写死一份就等于要求人记住「重建实验室后同步改」。忘了的代价是阶段 1 整段红,且红得像被测
+# 系统坏了。2026-08-28 起模板默认从 lan 改成 nanotun,这条不改就是下次重建时必踩的坑。
+e2e_resolve_magic_suffix() {
+  (( E2E_MAGIC_SUFFIX_EXPLICIT )) && return 0
+  local suf
+  suf="$(srv_in_svc "cat /etc/nanotun/config.toml 2>/dev/null" 2>/dev/null \
+    | awk -F'"' '/^[ \t]*domain_suffix[ \t]*=/{print $2; exit}' || true)"
+  case "$suf" in
+    ''|*[!a-z0-9.-]*)
+      printf '%s! 没能从 SRV 的 config.toml 问出 MagicDNS 后缀,沿用 %s%s\n' \
+        "${_Y:-}" "$E2E_MAGIC_SUFFIX" "${_N:-}" >&2
+      printf '  若阶段 1 的 *.%s 解析断言全红,先核对:ssh %s@%s "grep domain_suffix /etc/nanotun/config.toml"\n' \
+        "$E2E_MAGIC_SUFFIX" "$E2E_SSH_USER" "$E2E_SRV_HOST" >&2
+      return 0 ;;
+  esac
+  E2E_MAGIC_SUFFIX="$suf"
+  printf 'MagicDNS   *.%s(从 SRV 的 config.toml 读到)\n' "$E2E_MAGIC_SUFFIX"
 }
 
 # e2e_resolve_web_base —— 去 SRV 上把 Web 后台真实端口问出来。
