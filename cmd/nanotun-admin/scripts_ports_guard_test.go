@@ -48,6 +48,17 @@ var literalPortSpec = regexp.MustCompile(`\b(8443|7443|443)/tcp|\b443/udp`)
 // 一声不吭 —— 恰恰是本次 bug 里「状态自检看错端口」那一半,最该被拦住的就是它。
 var literalPortArg = regexp.MustCompile(`\b(chk_port|check_port)\s+(tcp|udp)\s+\d+`)
 
+// URL 形态的字面量:`https://<server>:7443/`。
+//
+// 这是本守卫最初的盲区,2026-08-28 扫出来的:上面那条只认「端口/协议」(防火墙清单和
+// 自检标签的样子),而登录地址长的是 `:7443/` —— 于是 install-self-hosted.sh 在装机结尾
+// 打给用户的登录地址写死了 7443,一路通过了守卫、CI 和三机门禁。而那句话恰恰是用户装完
+// 看到的最后一行,Web 端口改成随机默认之后它给的是一个没人听的端口:照着点进去连不上,
+// 而现场看起来像「后台没装起来」。
+//
+// 一条漏掉真问题的守卫比没有守卫更糟 —— 它给的是虚假的安心,所以这里把形态补齐。
+var literalPortInURL = regexp.MustCompile(`:(8443|7443|443)(/|"|'|\s|$)`)
+
 // 带回落的引用:${NT_PORT_REALITY:-8443}/tcp。这种是合法的,不该算进去。
 var fallbackRef = regexp.MustCompile(`\$\{NT_PORT_[A-Z0-9_]+:-\d+\}`)
 
@@ -73,9 +84,18 @@ func TestScripts_PortsComeFromConfigNotLiterals(t *testing.T) {
 				if fallbackRef.MatchString(line) {
 					continue
 				}
+				// 出站目标不算。REALITY 的 dest(www.microsoft.com:443)是**要去连的别人家**
+				// 的端口,它就该是 443 —— 那是 HTTPS,换一个反而不像正常流量了。本守卫管的是
+				// 「这台机器听什么 / 放行什么 / 让用户连什么」,跟出站目标是两件事。
+				if strings.Contains(line, "dest_check") {
+					continue
+				}
 				m := literalPortSpec.FindString(line)
 				if m == "" {
 					m = literalPortArg.FindString(line)
+				}
+				if m == "" {
+					m = literalPortInURL.FindString(line)
 				}
 				if m != "" {
 					t.Errorf("%s:%d 把端口写死成 %s:\n    %s\n"+

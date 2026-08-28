@@ -1327,8 +1327,13 @@ if [ "$STATUS_BAD" = 1 ] || [ "$START_FAILED" = 1 ] || [ "${NANOTUN_VERBOSE:-0}"
     systemctl --no-pager status nanotun-web.service | head -18 || true
   fi
   echo "--- $(tsel 'listening ports' '监听端口') ---"
-  ss -lntup 2>&1 | grep -E ":(443|7443|8080|8443)" \
-    || echo "$(tsel '(nothing is listening on 443/7443/8080/8443)' '(443/7443/8080/8443 上没有任何监听)')"
+  # 端口清单从实际配置里拼。写死的话,改过端口(或 Web 随机)的机器上这条 grep 会什么都
+  # 不显示,而「一个端口都没听上」恰恰是最容易被当成结论的假象 —— 服务其实好好地跑在
+  # 别的端口上,而这段诊断正是给「装完像是坏了」的人看的。
+  NT_DIAG_PORTS="${NT_PORT_REALITY}|${NT_PORT_HY2}|8080"
+  [ "$WEB_AVAILABLE" -eq 1 ] && NT_DIAG_PORTS="${NT_DIAG_PORTS}|${NT_PORT_WEB}"
+  ss -lntup 2>&1 | grep -E ":(${NT_DIAG_PORTS})" \
+    || echo "$(tsel "(nothing is listening on ${NT_DIAG_PORTS//|/, })" "(${NT_DIAG_PORTS//|/、} 上没有任何监听)")"
   echo "--- journalctl -u nanotun -n 40 ---"
   journalctl -u nanotun.service --no-pager -n 40 || true
   # nanotun-web 的日志也要抓 —— 只抓 status 是不够的。
@@ -1353,6 +1358,9 @@ echo
 # nanotun-setup,而向导第一步就要连控制面,只会得到一个更晚、更难懂的错误。
 # 上面第 7 步已经把 status 和 journalctl 打出来了,这里只负责把结论说清楚。
 if [ "$START_FAILED" = 1 ]; then
+  # 同上:建议里的端口必须是这台机器实际要听的那几个。
+  NT_FAIL_PORTS="${NT_PORT_REALITY}|${NT_PORT_HY2}"
+  [ "$WEB_AVAILABLE" -eq 1 ] && NT_FAIL_PORTS="${NT_FAIL_PORTS}|${NT_PORT_WEB}"
   echo
   if [ "$NT_LANG" = zh ]; then
     printf '\033[1;31mFATAL: 文件已装好,但服务没能启动(诊断见上面第 7 步)。\033[0m\n' >&2
@@ -1361,14 +1369,14 @@ if [ "$START_FAILED" = 1 ]; then
     # 必须带 u:hysteria2 听的是 **UDP** 443,而端口冲突里它恰恰是最常撞的一个
     # (systemd-resolved、别的代理都爱占 UDP)。给一条 -lntp 的命令,人照着敲,
     # 屏幕上空空如也,于是把「端口被占」这条正确的线索排除掉了。
-    printf '  · 端口被占          ss -lntup | grep -E ":(443|7443|8443)"\n' >&2
+    printf '  · 端口被占          ss -lntup | grep -E ":(%s)"\n' "$NT_FAIL_PORTS" >&2
     printf '  · 环境不满足        nanotun-preflight\n' >&2
     printf '\n改完重跑本脚本即可(幂等,不会动已生效的配置和密钥)。\n' >&2
   else
     printf '\033[1;31mFATAL: the files are installed, but the service did not start (diagnostics in step 7 above).\033[0m\n' >&2
     printf '\nUsual causes:\n' >&2
     printf '  · a bad config       nanotun-admin config lint %s/config.toml\n' "$ETC_DIR" >&2
-    printf '  · a port is taken    ss -lntup | grep -E ":(443|7443|8443)"\n' >&2
+    printf '  · a port is taken    ss -lntup | grep -E ":(%s)"\n' "$NT_FAIL_PORTS" >&2
     printf '  · the machine falls short   nanotun-preflight\n' >&2
     printf '\nFix it and rerun this script (it is idempotent and does not touch config or keys already in effect).\n' >&2
   fi
@@ -1448,10 +1456,10 @@ if [ "${NANOTUN_WIZARD_FOLLOWS:-0}" != 1 ]; then
       webadmin list 2>/dev/null || true; } | awk 'NR>1 && NF {n++} END {print n+0}')"
     if [ "${WEB_ADMINS:-0}" -gt 0 ]; then
       if [ "$NT_LANG" = zh ]; then
-        echo "    已有 $WEB_ADMINS 个后台管理员,/setup 已关闭。登录: https://<server>:7443/"
+        echo "    已有 $WEB_ADMINS 个后台管理员,/setup 已关闭。登录: https://<server>:${NT_PORT_WEB}/"
         echo "    看都有谁: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin list"
       else
-        echo "    There are $WEB_ADMINS console administrators, so /setup is closed. Log in at: https://<server>:7443/"
+        echo "    There are $WEB_ADMINS console administrators, so /setup is closed. Log in at: https://<server>:${NT_PORT_WEB}/"
         echo "    To see who they are: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin list"
       fi
     elif grep -qE '^NANOTUN_WEB_ALLOW_SETUP=(0|false|no)[[:space:]]*$' "$ETC_DIR/web.env" 2>/dev/null; then
@@ -1466,12 +1474,12 @@ if [ "${NANOTUN_WIZARD_FOLLOWS:-0}" != 1 ]; then
     else
       if [ "$NT_LANG" = zh ]; then
         echo "    建后台账号: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <名字>"
-        echo "    (开服向导 nanotun-setup 会问这一步;在建好之前 https://<server>:7443/setup"
+        echo "    (开服向导 nanotun-setup 会问这一步;在建好之前 https://<server>:${NT_PORT_WEB}/setup"
         echo "     对全网公开 —— 谁先打开谁就是管理员)"
       else
         echo "    Create a console account: nanotun-admin --db-path $LIB_DIR/nanotun.db webadmin create <name>"
         echo "    (the setup wizard nanotun-setup asks for this; until one exists,"
-        echo "     https://<server>:7443/setup is open to the whole internet — whoever opens it"
+        echo "     https://<server>:${NT_PORT_WEB}/setup is open to the whole internet — whoever opens it"
         echo "     first becomes the administrator)"
       fi
     fi
