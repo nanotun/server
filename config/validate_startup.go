@@ -111,7 +111,7 @@ func (s ServerConfig) ValidateJumpHostFirewall() error {
 		return nil
 	}
 	if len(s.JumpHostAllowedIPs) == 0 {
-		return fmt.Errorf("[server] enabling jump_host_firewall requires a jump host IPv4 allowlist in [server].jump_host_allowed_ips (leaving it empty is the same as opening up to the whole internet, which is usually not what you want). Either fill in the allowlist, or set jump_host_firewall to false.")
+		return fmt.Errorf("[server] enabling jump_host_firewall requires a jump host IPv4 allowlist in [server].jump_host_allowed_ips (allowlist=empty; leaving it empty is the same as opening up to the whole internet, which is usually not what you want). Either fill in the allowlist, or set jump_host_firewall to false.")
 	}
 	// 第十二轮深扫 MED:逐条校验必须是可解析的 **IPv4 地址**(runtime sanitizeJumpHostIPv4s 只认 net.ParseIP
 	// 的 IPv4:CIDR / 主机名 / IPv6 一律静默丢弃)。此前只查 len==0 → 配 ["not-an-ip"] 能过 lint 与启动,运行期

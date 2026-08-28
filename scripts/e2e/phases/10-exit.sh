@@ -336,7 +336,7 @@ _check_exit_mode_off_shuts_the_door_to_wan_only() {
   # 「配置写了 off 但根本没按 off 装规则」会一路绿灯(同上,变异抓到的假绿)。
   log="$(s "journalctl -u nanotun --since @$since --no-pager")"
   check_contains "off · 启动日志点明已 DROP tun→WAN（运维据此确认档位真的生效）" \
-    "已 DROP FORWARD device->WAN" \
+    "DROP FORWARD device->WAN" \
     "$(printf '%s' "$log" | grep 'DROP FORWARD device->WAN' | head -1 || echo '(日志里没有这一句)')"
 
   # ⑥ 语义:off 只关「经本机 WAN 出网」,经 peer 中转仍然可用。

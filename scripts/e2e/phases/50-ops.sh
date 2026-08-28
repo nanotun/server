@@ -1020,7 +1020,7 @@ $log"
   fi
 
   # 反向断言:不能是被「名单留空」那道更早的闸拦下的 —— 那样测的是另一回事。
-  if echo "$log" | grep -q "jump_host_allowed_ips"; then
+  if echo "$log" | grep -q "allowlist=empty"; then
     _fail "跳板机防火墙 · 拦下它的是「名单留空」那道更早的闸，本条没测到运行期应用失败" "$log"
   else
     _pass "跳板机防火墙 · 拦下它的确实是运行期应用失败，不是名单校验"
@@ -1132,7 +1132,7 @@ phase_50_ops() {
   s "systemctl reload nanotun" >/dev/null
   sleep 3
   check "坏配置热加载后服务仍然存活" "active" "$(s 'systemctl is-active nanotun' | tr -d '[:space:]')"
-  check_contains "日志明确记录保留旧配置" "保留旧配置" \
+  check_contains "日志明确记录保留旧配置" "keeping the old" \
     "$(s "journalctl -u nanotun --since '-30s' --no-pager | grep -i reload")"
   check "坏配置期间数据面不中断" "0" "$(probe_egress_is "$E2E_C_HOST" && echo 0 || echo 1)"
   s "cp /tmp/nte2e-cfg.good /etc/nanotun/config.toml && systemctl reload nanotun" >/dev/null
@@ -1277,7 +1277,7 @@ _check_lease_gc_reclaims_only_what_it_should() {
   check "lease_gc · 手动租约仍在库里" "1" "$(_lease_count_of "$dev")"
   # 正面对照:上面那个 0 也可能是「GC 压根没跑」得来的(配置没写进去、循环没起来都会这样)。
   # 启动日志证明这一轮回收确实执行了,那个 0 才是「跑了但没动手动租约」的意思。
-  check_contains "lease_gc · 手动那一档里回收确实跑了（0 不是因为压根没跑）" "定时回收已启用" \
+  check_contains "lease_gc · 手动那一档里回收确实跑了（0 不是因为压根没跑）" "periodic reclamation enabled" \
     "$(s "journalctl -u nanotun --since @$since_manual --no-pager | grep lease-gc")"
 
   # ── 第四档:负值才是关闭 ──────────────────────────────────────────────────
@@ -1293,7 +1293,7 @@ _check_lease_gc_reclaims_only_what_it_should() {
   check "lease_gc · 负值关闭后一条都不回收（过期的非手动租约也留着）" "0" "$(srv_field lease_gc_total)"
   check "lease_gc · 负值关闭后靶子的租约仍在" "1" "$(_lease_count_of "$dev")"
   # 关闭这一档必须在日志里留痕,否则运维事后无从确认「到底是关了还是没跑」。
-  check_contains "lease_gc · 关闭时日志留痕（运维事后能确认是关了而非没跑）" "显式关闭定时回收" \
+  check_contains "lease_gc · 关闭时日志留痕（运维事后能确认是关了而非没跑）" "periodic reclamation is explicitly disabled" \
     "$(s "journalctl -u nanotun --since @$since --no-pager | grep lease-gc")"
 
   # ── 第五档:写 0 是「用默认的 30 天」,不是关闭 ───────────────────────────
@@ -1319,7 +1319,7 @@ _check_lease_gc_reclaims_only_what_it_should() {
     "$(srv_field lease_gc_total)"
   # 启用侧也必须留痕:在此之前只有「真删到东西」才打 INFO,于是「正按 30 天回收」这件事
   # 在日志里完全不可见 —— 照文档写 0 以为关掉了的人无从发现。
-  check_contains "lease_gc · 启用时日志点明生效阈值（否则「按默认在跑」不可见）" "定时回收已启用" \
+  check_contains "lease_gc · 启用时日志点明生效阈值（否则「按默认在跑」不可见）" "periodic reclamation enabled" \
     "$(s "journalctl -u nanotun --since @$since --no-pager | grep lease-gc")"
   check_contains "lease_gc · 启用日志里的阈值是默认的 720h（30 天）" "idle=720h" \
     "$(s "journalctl -u nanotun --since @$since --no-pager | grep lease-gc")"
@@ -1837,7 +1837,7 @@ _check_max_sessions_evicts_the_oldest() {
     _ms_cleanup 1 "" "" "$saved"
     return 0
   fi
-  check_contains "max_sessions · 热更日志讲明只对未来登录生效" "现役会话不会被回踢" \
+  check_contains "max_sessions · 热更日志讲明只对未来登录生效" "live sessions are not kicked" \
     "$(s "journalctl -u nanotun --since '-60s' --no-pager | grep max_sessions_per_user")"
   sleep 12
   check "max_sessions · 现役会话数超过新上限也不会被回踢" "2" "$(_ms_count "$u")"
