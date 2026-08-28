@@ -1117,6 +1117,19 @@ else
          "这台机器已有 $REAL_USERS 个 VPN 用户,跳过创建(升级 / 重跑向导时不该再来一遍)。"
     note_t "To add a user: nanotun-admin --db-path $DB user create <name>" \
            "要加用户:nanotun-admin --db-path $DB user create <名字>"
+    # 跳过创建,也就没有二维码 —— 而重跑向导的人想要的往往正是「给已有用户再出一张码」
+    # (换了设备、码丢了)。原先这里只说怎么**加**用户,那是另一件事:照着做会白建一个
+    # 多余账号,而他要的那张码还是没有。所以把取码的两条路一并说了。
+    note_t "  To reissue the QR codes for an existing user (a new device, or the codes were lost):" \
+           "  给已有用户重新出二维码(换设备、或码丢了):"
+    note_t "    nanotun-admin --db-path $DB profile show <name> --dial-host $current_dial --format qr-png --output <name>-profile.png --force" \
+           "    nanotun-admin --db-path $DB profile show <名字> --dial-host $current_dial --format qr-png --output <名字>-profile.png --force"
+    note_t "    nanotun-admin --db-path $DB --yes credentials show <name> --rotate-psk --format qr   (rotating kicks that user's live sessions)" \
+           "    nanotun-admin --db-path $DB --yes credentials show <名字> --rotate-psk --format qr   (轮换会把该用户在线的会话踢下去)"
+    if [ "$WEB_AVAILABLE" = 1 ]; then
+      note_t "  Or from the web console — it shows the server profile QR on a page (asks for your password again before revealing it)." \
+             "  或者从 Web 后台看 —— 那里有一页直接显示服务器 profile 二维码(显示前会再问一次你的密码)。"
+    fi
     USER_SKIPPED=1
   elif confirm "$(tsel 'Create a VPN user now?' '现在创建一个 VPN 用户?')" y; then
     username="$(ask "$(tsel 'Username' '用户名')" "alice")"
