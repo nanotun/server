@@ -15,12 +15,14 @@
 # 幂等:重复跑安全。已设过的值会显示出来让你选择保留,不会重置 PSK、不会重跑 init。
 # 默认也**不动 config.toml** —— 唯一例外是你在「MagicDNS 后缀」那步显式改了后缀(或带
 # --magic-suffix):那会备份→段感知改写→重启 nanotund(失败自动回滚)。回车保留则纹丝不动。
-# 想只加一个用户,重跑一遍在前几步回车跳过即可。
+# 想只加一个用户,重跑一遍在前几步回车沿用现值即可(已经有后台管理员的机器,第 2 步会
+# 直接跳过 —— 那一步不再问「要不要建」,建是默认;确实不想建就 --no-web-admin)。
 #
 # 可脚本化(自动化部署用):
 #   sudo ./scripts/setup.sh --dial-host vpn.example.com --user alice --yes
 #   sudo ./scripts/setup.sh --dial-host 203.0.113.10 --no-user --yes
 #   sudo ./scripts/setup.sh --magic-suffix lab --yes          # 只改 MagicDNS 后缀并重启
+#   sudo ./scripts/setup.sh --dial-host vpn.example.com --no-web-admin   # 我自己从 /setup 抢首位
 set -euo pipefail
 
 # 装成 /usr/local/bin/nanotun-setup 时,同目录就有 nanotun-set-suffix;从发布包/仓库直接
@@ -43,6 +45,7 @@ QR_DIR="$LIB_DIR/qr"
 OPT_DIAL_HOST=""
 OPT_USER=""
 OPT_NO_USER=0
+OPT_NO_WEB_ADMIN=0
 OPT_WEB_ADMIN=""
 OPT_MAGIC_SUFFIX=""
 ASSUME_YES=0
@@ -138,6 +141,7 @@ nanotun 开服向导:设置客户端拨号地址、创建 Web 后台管理员、
   --dial-host HOST   客户端拨号地址(域名或 IP,不带端口/协议),跳过交互询问
   --user NAME        创建这个 VPN 用户并出二维码
   --no-user          跳过创建用户那一步
+  --no-web-admin     跳过创建 Web 后台管理员(不给这个开关就一定会建 —— 见下)
   --web-admin NAME   Web 后台管理员用户名(密码见下面的环境变量)
   --magic-suffix SFX MagicDNS 局域网后缀(客户端解析 *.<后缀> → mesh 虚拟 IP),默认 nanotun。
                      只在与现值不同时才改:备份→段感知改写 config.toml→重启 nanotund
@@ -174,6 +178,8 @@ Options:
                      skips the interactive question
   --user NAME        create this VPN user and print its QR codes
   --no-user          skip the user-creation step
+  --no-web-admin     skip creating the web administrator (without this flag one is
+                     always created — see below)
   --web-admin NAME   username for the web admin (password: see the environment
                      variable below)
   --magic-suffix SFX MagicDNS LAN suffix (clients resolve *.<suffix> → mesh
@@ -227,6 +233,7 @@ while [ $# -gt 0 ]; do
     --dial-host) OPT_DIAL_HOST="$(need_val "$1" "${2:-}")"; shift 2 ;;
     --user)      OPT_USER="$(need_val "$1" "${2:-}")"; shift 2 ;;
     --no-user)   OPT_NO_USER=1; shift ;;
+    --no-web-admin) OPT_NO_WEB_ADMIN=1; shift ;;
     # 密码只从环境变量 NANOTUN_WEB_ADMIN_PASSWORD 读,故意**不做** --web-admin-password:
     # 命令行参数会进 argv,同机任何用户 ps 一眼就看见,还会落进 shell history 和 journal。
     --web-admin) OPT_WEB_ADMIN="$(need_val "$1" "${2:-}")"; shift 2 ;;
@@ -264,6 +271,16 @@ while [ $# -gt 0 ]; do
          "$(tsel 'unknown argument' '未知参数')" "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# --web-admin 与 --no-web-admin 同时给是矛盾的,而后果不对称:按哪一个走都可能让人以为
+# 自己拿到了另一个。点名了要建、又说别建 —— 只能让他自己说清楚。
+# (退出码 2 = 参数错误,与本文件其它参数错误同档。)
+if [ -n "$OPT_WEB_ADMIN" ] && [ "$OPT_NO_WEB_ADMIN" = 1 ]; then
+  printf 'FATAL: %s: %s\n' "$(basename -- "${0:-nanotun-setup}")" \
+    "$(tsel "--web-admin '$OPT_WEB_ADMIN' and --no-web-admin contradict each other: one names an administrator to create, the other says not to create one." \
+            "--web-admin '$OPT_WEB_ADMIN' 与 --no-web-admin 是矛盾的:一个点名要建,一个说别建。")" >&2
+  exit 2
+fi
 
 # ── 交互助手 ─────────────────────────────────────────────────────────────────
 # 提示写 stderr:调用方用 $(ask ...) 取值时,stdout 上只能有答案本身。
@@ -851,18 +868,34 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
     # 「现在不建的话…」是在提醒一件马上就不会发生的事。而一次全程成功的安装里冒出一句
     # 带感叹号的警告,只会让人回头翻日志找哪里错了。交互式那边要留着 —— 那里用户真能
     # 答 n,这句话正是拿来劝住他的。
-    if [ "${WEB_ADMIN_COUNT:-0}" = 0 ] && ! { [ "$ASSUME_YES" = 1 ] && [ -n "$OPT_WEB_ADMIN" ]; }; then
+    # 这一屏说的是「为什么现在就建」还是「不建的后果」,取决于接下来到底建不建 ——
+    # 交互式已经不问「要不要建」了(建是默认),所以再讲「不建的话…」是在描述一个不存在
+    # 的选择。会真的跳过的只剩两种:--no-web-admin,以及 --yes 却没点名。
+    if [ "$OPT_NO_WEB_ADMIN" != 1 ] && [ "$ASSUME_YES" != 1 ]; then
+      WA_WILL_CREATE=1
+    else
+      WA_WILL_CREATE=0
+    fi
+
+    if [ "${WEB_ADMIN_COUNT:-0}" = 0 ] && [ "$WA_WILL_CREATE" = 1 ]; then
+      # 建之前把理由说一句:这是整个向导里唯一「不做就有安全后果」的一步,而它现在是
+      # 无条件做的 —— 人有权知道向导为什么替他做了这个决定。
+      #
+      # 两种理由,取决于门开着没有。这个区分是原代码特意做过的,不能丢:库里没人时
+      # /setup 未必就是敞着的(close_setup_gate 写过 web.env 之后门是关的,库丢了也照样关),
+      # 那时候喊「敞着,谁先打开谁是管理员」是假警报,而真实处境恰好相反 —— 谁也进不去。
       if setup_gate_closed; then
-        # 零管理员 + 门已关:多半是库丢了(门就是为这一刻留的),或者这台机器之前 purge
-        # 过。网页那条路现在走不通,只能从这里或 CLI 建。
-        warn_t "/setup is closed on this machine and there is not a single administrator — nobody can log in to the web console." \
-               "这台机器的 /setup 已经关闭,现在一个管理员都没有 —— Web 后台登不进去。"
+        note_t "One is created now: /setup is closed on this machine and there is no administrator at all, so without this nobody could get into the web console." \
+               "现在就建:这台机器的 /setup 已关闭,而一个管理员都没有 —— 不建的话谁也进不去 Web 后台。"
       else
-        warn_t "Skip this and /setup stays open — whoever opens it first becomes the administrator." \
-               "现在不建的话,/setup 会一直敞着 —— 谁先打开谁就是管理员。"
+        note_t "One is created now on purpose: until an administrator exists, /setup is open to the whole internet — whoever opens it first becomes this machine's administrator." \
+               "现在就建,是有理由的:在第一个管理员出现之前,/setup 对全网敞着 —— 谁先打开谁就是这台机器的管理员。"
       fi
       printf '\n'
     fi
+    # 会跳过的两种情形(--no-web-admin / --yes 却没点名)不在这里说 —— 下面各自那一支
+    # 会点名是谁跳的、以及此刻的处境。原先在这里先笼统警告一句,于是屏幕上出现两句
+    # 几乎一样的话:一句像是在问你要不要,一句才是真的结论(2026-08-28 实测)。
 
     web_admin_user="$OPT_WEB_ADMIN"
     web_admin_pass="${NANOTUN_WEB_ADMIN_PASSWORD:-}"
@@ -871,15 +904,22 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
       # 无人值守。给了名字才建 —— 没给就当调用方另有安排(比如它自己会调
       # `webadmin create`),不替人凭空造账号。
       if [ -z "$web_admin_user" ]; then
-        if setup_gate_closed; then
+        # 无人值守下没点名:仍然跳过,不替调用方凭空造账号 —— cloud-init / CI 可能自己
+        # 会调 webadmin create,而一个它没预期的 admin 账号比没有更难查。
+        # 交互式那侧相反:那里建是默认(见下面 else 分支),因为人就在屏幕前。
+        if [ "$OPT_NO_WEB_ADMIN" = 1 ]; then
+          note_t "--no-web-admin: skipping (nothing was created, by request)." \
+                 "--no-web-admin:跳过(按要求不建)。"
+        elif setup_gate_closed; then
           warn_t "--yes without --web-admin: skipping. /setup is closed on this machine and it has no administrator, so the console cannot be entered:" \
                  "--yes 且没给 --web-admin:跳过。这台机器的 /setup 已关闭且没有管理员,后台进不去:"
         else
           warn_t "--yes without --web-admin: skipping. /setup on this machine is still open, so do this soon:" \
                  "--yes 且没给 --web-admin:跳过。这台机器的 /setup 仍然敞着,记得尽快:"
         fi
-        note_t "  nanotun-admin --db-path $DB webadmin create <name>" \
-               "  nanotun-admin --db-path $DB webadmin create <名字>"
+        [ "$OPT_NO_WEB_ADMIN" = 1 ] || \
+          note_t "  nanotun-admin --db-path $DB webadmin create <name>" \
+                 "  nanotun-admin --db-path $DB webadmin create <名字>"
       else
         if [ -z "$web_admin_pass" ]; then
           # 无人值守下没给密码,就地生成一个强的并打出来 —— 总好过留一个敞开的
@@ -948,11 +988,14 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
         fi
       fi
     else
-      # 名字是命令行点名给的,就别再问「要不要建」—— 那个问题已经被回答过了。
-      # (原来无条件问,于是 `--web-admin ops` 不带 --yes 时还会被问一遍,答 n 就把
-      #  明确的指令否掉了。)
-      if [ -n "$web_admin_user" ] || confirm "$(tsel \
-           'Settle the web console administrator now?' '现在就把 Web 后台管理员定下来?')" y; then
+      # **不问「要不要建」**。建是默认行为,而这一步是整个向导里唯一「不做就有安全后果」
+      # 的一步:一个管理员都没有时 /setup 对全网敞着,谁先打开谁就是这台机器的管理员。
+      # 那个问题的默认答案本来就是 y,而唯一会答 n 的情形(我就是想从浏览器抢首位)
+      # 现在由 --no-web-admin 明确表达 —— 与本脚本已有的 --no-user 同一套词汇。
+      #
+      # 历史:原先无条件问,`--web-admin ops` 不带 --yes 时还会被问一遍,答 n 就把一个
+      # 明确的指令否掉了;后来改成「点名了就不问」,现在进一步:一律不问。
+      if [ "$OPT_NO_WEB_ADMIN" != 1 ]; then
         # 提示里点明「新账号」:这一步开场白刚说完「VPN 账号和后台是两套东西」,而安装时
         # 建的那个 VPN 用户恰好也叫 admin —— 默认值一撞名,人很容易以为这是在给同一个
         # 账号补个密码,刚讲清楚的区分当场又糊掉了。默认值仍留 admin(后台就该叫这个,
@@ -1000,13 +1043,13 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
         note_t "Log in: https://$current_dial:$WEB_PORT/ (self-signed certificate, so the browser will warn; check the address, then continue)" \
                "登录: https://$current_dial:$WEB_PORT/(自签证书,浏览器会警告,确认地址无误后继续)"
       elif setup_gate_closed; then
-        warn_t "Skipped. /setup is closed on this machine and there is not a single administrator — the web console cannot be entered. Add one:" \
-               "跳过了。这台机器的 /setup 已关闭,而一个管理员都没有 —— Web 后台进不去。补一个:"
+        warn_t "--no-web-admin: skipped. /setup is closed on this machine and there is not a single administrator — the web console cannot be entered. Add one:" \
+               "--no-web-admin:跳过。这台机器的 /setup 已关闭,而一个管理员都没有 —— Web 后台进不去。补一个:"
         note_t "  nanotun-admin --db-path $DB webadmin create <name>" \
                "  nanotun-admin --db-path $DB webadmin create <名字>"
       else
-        warn_t "Skipped. /setup is still open — whoever opens it first becomes the administrator. To shut that door now:" \
-               "跳过了。/setup 仍然敞着 —— 谁先打开谁是管理员。想现在关掉这扇门:"
+        warn_t "--no-web-admin: skipped. /setup is still open — whoever opens it first becomes the administrator. To shut that door now:" \
+               "--no-web-admin:跳过。/setup 仍然敞着 —— 谁先打开谁是管理员。想现在关掉这扇门:"
         note_t "  ufw deny $WEB_PORT/tcp        # or" "  ufw deny $WEB_PORT/tcp        # 或者"
         note_t "  nanotun-admin --db-path $DB webadmin create <name>" \
                "  nanotun-admin --db-path $DB webadmin create <名字>"
