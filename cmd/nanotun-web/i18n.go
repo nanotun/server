@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -27,11 +28,35 @@ import (
 // 维护的、含少量 <code>/<a> 标记且不含用户可控数据」的静态片段。
 
 // Lang 语言代码。
+//
+// LangDefault 是**编译期兜底**,2026-08-28 从 zh 改成 en:整条安装链、守护进程日志、
+// nanotun-admin 都已经默认英文,唯独这里还是中文 —— 而它正是「浏览器既不要中文也不要
+// 英文」(法语/德语/日语,或干脆没有 Accept-Language)时落到的那一档。
+//
+// 它同时也是 translate() 找不到 key 时的回落目录,改成 en 顺带修正了方向:平价测试
+// (TestCatalogParity)保证的是 catEN ⊇ catZH,反向不保证,所以回落到 catZH 反而可能
+// 落空、把 key 本身打到页面上。
 const (
 	LangZH      = "zh"
 	LangEN      = "en"
-	LangDefault = LangZH
+	LangDefault = LangEN
 )
+
+// serverDefaultLang 这台服务器的默认语言:装机时选的那个(经 NANOTUN_LANG 传进来,裸机
+// 走 systemd 的 EnvironmentFile=/etc/nanotun/web.env,容器里由 entrypoint export)。
+//
+// 为什么不直接用 LangDefault:整条链的设计是「一处决定语言,下游都跟」(/etc/nanotun/lang),
+// 而 Web 后台此前是唯一没接上的一环。接上之后,选了中文装机的运维,其控制台对「既不要中文
+// 也不要英文」的浏览器也回落到中文,而不是一个跟他的选择无关的常量。
+//
+// 注意它**只影响挑语言**,不影响 translate() 的缺 key 回落 —— 后者固定走 LangDefault
+// (英文目录),否则英文界面会漏出中文。
+var serverDefaultLang = func() string {
+	if l, ok := normalizeLang(os.Getenv("NANOTUN_LANG")); ok {
+		return l
+	}
+	return LangDefault
+}()
 
 // langCookieName 持久化用户选择的语言。非 HttpOnly(纯 UI 偏好,前端无需读但也无妨),
 // SameSite=Lax + Secure(本服务仅 TLS)。
@@ -70,7 +95,7 @@ func langFromAcceptHeader(h string) string {
 			return l
 		}
 	}
-	return LangDefault
+	return serverDefaultLang
 }
 
 // ctxKeyLang 见 middleware.go 的 ctxKey 常量块(那里集中定义,避免 iota 冲突)。
@@ -80,7 +105,7 @@ func langFromCtx(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxKeyLang).(string); ok && v != "" {
 		return v
 	}
-	return LangDefault
+	return serverDefaultLang
 }
 
 // buildLangSwitchURLs 为每个受支持语言生成「切到该语言」的链接:保留当前 path +

@@ -938,6 +938,29 @@ if [ "$WEB_AVAILABLE" -eq 1 ]; then
     fi
     chmod 600 "$ETC_DIR/web.env" 2>/dev/null || true
   fi
+
+  # 语言也落进 web.env。
+  #
+  # nanotun-web 的环境只有 systemd 单元的 EnvironmentFile 这一条来路,而整条链的设计是
+  # 「一处决定语言,下游都跟」(/etc/nanotun/lang)—— Web 后台此前是唯一没接上的一环:
+  # 它的兜底语言是编译期常量,跟这台机器装机时选的那个毫无关系。
+  #
+  # 注意它**只**决定兜底那一档:浏览器的 Accept-Language、以及用户在页面上切过的语言
+  # (cookie)都优先。也就是说选中文装机不会把英文浏览器的界面变成中文,只是让「既不要
+  # 中文也不要英文」的浏览器落到中文而不是一个与本机无关的常量。
+  install -d -m 0755 "$ETC_DIR"
+  if grep -qE '^[ \t]*NANOTUN_LANG[ \t]*=' "$ETC_DIR/web.env" 2>/dev/null; then
+    # 同样原地替换,不追加第二行(EnvironmentFile 后者覆盖前者,两行并存最难查)。
+    tmp_env="$(mktemp)" || tmp_env=""
+    if [ -n "$tmp_env" ]; then
+      sed "s|^[ \t]*NANOTUN_LANG[ \t]*=.*|NANOTUN_LANG=${NT_LANG}|" \
+        "$ETC_DIR/web.env" > "$tmp_env" && cat "$tmp_env" > "$ETC_DIR/web.env"
+      rm -f "$tmp_env"
+    fi
+  else
+    printf 'NANOTUN_LANG=%s\n' "$NT_LANG" >> "$ETC_DIR/web.env"
+  fi
+  chmod 600 "$ETC_DIR/web.env" 2>/dev/null || true
 fi
 
 nanotun_load_ports "$ETC_DIR/config.toml" "$ETC_DIR/web.env"

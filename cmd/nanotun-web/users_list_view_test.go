@@ -34,9 +34,20 @@ func renderUsersList(t *testing.T, users []*store.User, showDisabled bool) strin
 	if err != nil {
 		t.Fatalf("clone: %v", err)
 	}
+	// 照 renderPage 的做法把 T / Th 绑到一个**明确的**语言上。
+	//
+	// 只设 data.Lang 是不够的:那一项只决定 <html lang> 属性,模板里的 {{T "..."}} 用的是
+	// 注入进 clone 的函数集。不注入就沿用解析期那份(绑在 LangDefault 上)—— 于是这个
+	// 测试的语言其实来自一个跟它无关的全局常量,2026-08-28 把默认从 zh 改成 en 时,
+	// 下面几条断言中文字面量的检查就一起红了,而页面本身没有任何问题。
+	clone = clone.Funcs(i18nFuncs(LangZH))
 	// 模板里 .Admin.Role / .Nav.Active 都有引用,layout 也读 .Admin.Username。
 	// 喂一个最小化 admin context — 角色 admin 才能看到「+ 新建用户」按钮。
 	data := PageData{
+		// 显式钉住语言。这两条断言查的是中文字面量,而语言以前是**靠全局默认**来的
+		// (LangDefault 曾是 zh)。2026-08-28 默认改成 en 之后它们就红了 —— 页面没坏,
+		// 是测试依赖了一个跟它无关的全局值。渲染哪种语言是这个测试自己的前提,写出来。
+		Lang:  LangZH,
 		Title: "用户管理",
 		Admin: &store.WebAdmin{ID: 1, Username: "tester", Role: "admin", Enabled: true},
 		Data: map[string]any{

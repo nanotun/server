@@ -87,6 +87,15 @@ func withAdminCtx(r *http.Request, a *store.WebAdmin) *http.Request {
 	return r.WithContext(ctx)
 }
 
+// withLangCtx 把语言注进 request context。
+//
+// 直接调 handler 的测试绕过了 withLang 中间件,于是 langFromCtx 会回落到服务器默认语言。
+// 断言中文(或英文)文案的测试必须自己把语言说清楚,而不是依赖那个默认 —— 它改一次,
+// 一批与语言无关的测试就会跟着红(2026-08-28 默认从 zh 改成 en 时就是如此)。
+func withLangCtx(r *http.Request, lang string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), ctxKeyLang, lang))
+}
+
 // countAudit 简单计数指定 action 的 audit 条目;用于断言 audit 实际写入。
 func countAudit(t *testing.T, s *Server, action string) int {
 	t.Helper()
@@ -753,6 +762,9 @@ func TestSettingsServerDialHostSet_FailureCTA(t *testing.T) {
 				strings.NewReader(form.Encode()))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			req = withAdminCtx(req, admin)
+			// 语言得自己钉住:下面断言的是中文 CTA 文案,而这里直接调 handler、绕过了
+			// withLang 中间件,langFromCtx 会回落到服务器默认语言(2026-08-28 起是英文)。
+			req = withLangCtx(req, LangZH)
 			w := httptest.NewRecorder()
 			s.handleSettingsServerDialHostSet(w, req)
 			if w.Code != c.wantStatus {

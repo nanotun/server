@@ -539,3 +539,28 @@ func TestEveryE2EEntryPointResolvesServerSideValues(t *testing.T) {
 		t.Fatal("一个做 SSH 预热的入口都没找到 —— 若 warmup 改名,请同步本守卫")
 	}
 }
+
+// Web 后台的语言必须接上「一处决定语言」那条链。
+//
+// nanotun-web 的环境只有 systemd 单元的 EnvironmentFile(/etc/nanotun/web.env)这一条
+// 来路。装机脚本不往里写 NANOTUN_LANG,它的兜底语言就退回编译期常量 —— 跟这台机器装机时
+// 选的那个毫无关系。2026-08-28 之前正是如此:整条安装链、守护进程日志、nanotun-admin
+// 都默认英文,唯独 Web 后台的兜底是中文,而那一档正是「浏览器既不要中文也不要英文」
+// (法语/德语/日语,或没有 Accept-Language)时落到的地方。
+func TestInstallerWritesWebConsoleLanguage(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install-self-hosted.sh"))
+	if err != nil {
+		t.Fatalf("读不到 install-self-hosted.sh:%v", err)
+	}
+	src := stripShellComments(string(b))
+	if !strings.Contains(src, "NANOTUN_LANG=%s") && !strings.Contains(src, "NANOTUN_LANG=${NT_LANG}") {
+		t.Error("装机脚本没把 NANOTUN_LANG 写进 web.env:\n" +
+			"  Web 后台就只能用编译期兜底语言,与装机时选的那个无关。")
+	}
+	// 追加而不是替换会留下两行,而 EnvironmentFile 是后者覆盖前者 —— 「改了却没生效」
+	// 和「改了生效了」长得一模一样,排查的人只会看到第一行。
+	if !strings.Contains(src, `sed "s|^[ \t]*NANOTUN_LANG[ \t]*=.*|NANOTUN_LANG=`) {
+		t.Error("web.env 里的 NANOTUN_LANG 不是原地替换:重跑会追加出第二行,\n" +
+			"  而 EnvironmentFile 后者覆盖前者,两行并存时最难查。")
+	}
+}
