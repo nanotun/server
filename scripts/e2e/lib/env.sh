@@ -30,6 +30,14 @@ e2e_load_env() {
 
   : "${E2E_SSH_USER:=root}"
   : "${E2E_DB_PATH:=/var/lib/nanotun/nanotun.db}"
+  # 7443 只是**老默认**。2026-08-28 起 Web 后台端口在新装机器上是随机的(装机时挑,落在
+  # /etc/nanotun/web.env 的 NANOTUN_WEB_LISTEN)。现役实验室是在那之前装的,所以还在 7443,
+  # 这个默认值对它仍然成立。
+  #
+  # 但重建实验室(或换一台 SRV)之后它就不成立了,而失败长得毫无关联:阶段 60 的每一条都
+  # 报「Web 后台连不上」,像是 nanotun-web 挂了,而真因是它听在一个随机端口上。重建之后
+  # 记得照着改 e2e.env 的 E2E_WEB_BASE:
+  #     ssh root@<SRV> 'grep NANOTUN_WEB_LISTEN /etc/nanotun/web.env'
   : "${E2E_WEB_BASE:=https://127.0.0.1:7443}"
 
   # 被测拓扑里的固定身份。这些值必须和 e2e.env 里描述的环境一致,
