@@ -37,7 +37,7 @@
 #      config.toml 已存在则**原样保留**（模板另存 config.toml.dist 供 diff）；模板里的
 #      REPLACE_WITH_* 占位与示例 short_ids 由 fill_config_secrets 就地换成本机随机值，
 #      否则 [reality].private_key 非法会让 nanotund 起不来（exit 31）。权限 0600。
-#      MagicDNS 后缀（客户端解析 *.<后缀> → mesh vIP）默认模板里的 "lan"，可用
+#      MagicDNS 后缀（客户端解析 *.<后缀> → mesh vIP）默认模板里的 "nanotun"，可用
 #      NANOTUN_MAGIC_SUFFIX=<后缀> 在首次装机时定制（只在真写模板时生效；保留既有
 #      config.toml 时不动，改现有后缀用 scripts/set-magic-suffix.sh）。
 #   2. 开启 IP forwarding（v4 + v6）+ unprivileged ICMP ping（nanotun-web
@@ -348,7 +348,7 @@ fill_config_secrets() {
 # 为什么在装机脚本里做:运行期后缀**只**取 config.toml 的 [server.magic_dns].domain_suffix
 # (magicDNSSuffixForClient / resolveMagicDNSConfig 都读它),且它不在 SIGHUP 热更新白名单里
 # (见 set-magic-suffix.sh 抬头),须在服务启动前定好 —— 而这里正是唯一会写 config.toml 的地方。
-# 模板默认写死 "lan";不给 NANOTUN_MAGIC_SUFFIX 就沿用模板,行为不变。
+# 模板默认写死 "nanotun";不给 NANOTUN_MAGIC_SUFFIX 就沿用模板,行为不变。
 #
 # 只在**这次真写了模板 config.toml**(CONFIG_FRESH=1:全新装 / NANOTUN_FORCE_CONFIG=1)时改。
 # 保留既有配置时绝不擅自改它(与「绝不覆盖已有配置」同一口径),只告警并指路 set-magic-suffix.sh。
@@ -722,7 +722,7 @@ chmod 0600 "$ETC_DIR"/config.toml.bak.* 2>/dev/null || true
 
 # 占位密钥填充。必须在 ensure-server-assets.sh / systemctl start 之前完成。
 fill_config_secrets
-# MagicDNS 后缀:装机时可经 NANOTUN_MAGIC_SUFFIX 定制(默认沿用模板里的 "lan")。同样须在
+# MagicDNS 后缀:装机时可经 NANOTUN_MAGIC_SUFFIX 定制(默认沿用模板里的 "nanotun")。同样须在
 # systemctl start 之前 —— 它在 nanotund 启动时被读进 magicDNSResolved 快照,起来后改要重启。
 apply_magic_suffix
 

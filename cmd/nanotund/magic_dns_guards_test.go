@@ -548,7 +548,9 @@ func TestResolveMagicDNSConfig_SuffixAndPortDefaults(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"", "lan"}, {"  ", "lan"}, {".", "lan"},
+		// 空 / 全空白 / 只有一个点 → 回落到默认后缀。默认值 2026-08-28 从 lan 改成 nanotun
+		// (lan 恰在装机脚本的保留域告警清单里,旧默认会触发自己的告警)。
+		{"", "nanotun"}, {"  ", "nanotun"}, {".", "nanotun"},
 		{"LAN", "lan"}, {" .Corp.Internal. ", "corp.internal"},
 	} {
 		if got := resolveMagicDNSConfig(config.MagicDNSConfig{DomainSuffix: tc.in}).suffix; got != tc.want {

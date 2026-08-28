@@ -387,8 +387,8 @@ Web 后台同款:`/users` 列表展示 `credential_id` 前 8 位;新建用户 / 
   gateway IP 的 :53 上跑内置 stub DNS,把 `<device>.<user>.<suffix>` 解析为 vIP。
   `listen_port` 必须 = 53,否则 server 会跳过给客户端 prepend gateway DNS
   (避免把客户端 DNS 指到查不到的端口)。配置范例见 `cmd/nanotund/config.toml` 注释。
-  后缀 `<suffix>` 默认 `lan`,**装机时**可定制:`--magic-suffix nanotun`
-  或环境变量 `NANOTUN_MAGIC_SUFFIX=nanotun`(一键装 `install.sh` / 离线
+  后缀 `<suffix>` 默认 `nanotun`,**装机时**可定制:`--magic-suffix lab`
+  或环境变量 `NANOTUN_MAGIC_SUFFIX=lab`(一键装 `install.sh` / 离线
   `install-self-hosted.sh` / Docker 同名变量,只在首次写 `config.toml` 时生效)。
   改**已装好**机器的后缀用 `sudo nanotun-set-suffix <后缀>`(装机时随包装成命令;发布包里
   对应 `scripts/set-magic-suffix.sh`)——备份→改→重启→失败自动回滚;`nanotun-setup` 向导里

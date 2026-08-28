@@ -220,7 +220,14 @@ type magicDNSResolved struct {
 func resolveMagicDNSConfig(c config.MagicDNSConfig) magicDNSResolved {
 	suf := strings.ToLower(strings.Trim(strings.TrimSpace(c.DomainSuffix), "."))
 	if suf == "" {
-		suf = "lan"
+		// 默认后缀。2026-08-28 从 "lan" 改成 "nanotun":lan 恰恰在装机脚本
+		// 「可能与家用路由器 / 保留域冲突」的告警清单里(与 home / internal / corp 并列),
+		// 也就是说旧的默认值会触发自己的告警。
+		//
+		// 只影响**省略了 domain_suffix 的配置**:模板一直显式写这一行,所以按模板装的机器
+		// (含 Docker)不受影响。真有省略的,启动日志那句 `[magic-dns] started suffix=…`
+		// 会如实报出实际生效的后缀。
+		suf = "nanotun"
 	}
 	port := c.ListenPort
 	if port == 0 {

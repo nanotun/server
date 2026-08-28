@@ -41,7 +41,12 @@ e2e_ssh_init
 GW4="${E2E_MAGIC_GW4:-10.201.0.1}"               # 服务端 TUN 网关,MagicDNS 监听 :53
 CFG="${E2E_SRV_CONFIG:-/etc/nanotun/config.toml}"
 NAME_HOST="${E2E_C_DEVNAME:-vultr}.$E2E_C_USER"   # 前半段,拼上后缀即完整 magic 名字
-TEST_PREF="${DRILL_SUFFIX:-nanotun}"             # 想验的非默认后缀(与原值撞车时下面会换)
+TEST_PREF="${DRILL_SUFFIX:-lab}"                 # 想验的非默认后缀(与原值撞车时下面会换)
+                                                 # 2026-08-28:默认后缀已从 lan 改成 nanotun,
+                                                 # 所以这里不能再用 nanotun —— 拿默认值当
+                                                 # 「非默认」等于什么都没验。也别用 corp/
+                                                 # internal 那几个:它们在保留域告警清单里,
+                                                 # 每跑一轮都会多刷一句无关的告警。
 SUFFIX_TOOL_LOCAL="$HERE/../set-magic-suffix.sh"   # 改后缀工具在 scripts/(本目录上一级)
 SUFFIX_TOOL_REMOTE=/tmp/nte2e-set-suffix.sh
 

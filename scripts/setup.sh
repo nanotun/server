@@ -20,7 +20,7 @@
 # 可脚本化(自动化部署用):
 #   sudo ./scripts/setup.sh --dial-host vpn.example.com --user alice --yes
 #   sudo ./scripts/setup.sh --dial-host 203.0.113.10 --no-user --yes
-#   sudo ./scripts/setup.sh --magic-suffix nanotun --yes      # 只改 MagicDNS 后缀并重启
+#   sudo ./scripts/setup.sh --magic-suffix lab --yes          # 只改 MagicDNS 后缀并重启
 set -euo pipefail
 
 # 装成 /usr/local/bin/nanotun-setup 时,同目录就有 nanotun-set-suffix;从发布包/仓库直接
@@ -139,7 +139,7 @@ nanotun 开服向导:设置客户端拨号地址、创建 Web 后台管理员、
   --user NAME        创建这个 VPN 用户并出二维码
   --no-user          跳过创建用户那一步
   --web-admin NAME   Web 后台管理员用户名(密码见下面的环境变量)
-  --magic-suffix SFX MagicDNS 局域网后缀(客户端解析 *.<后缀> → mesh 虚拟 IP),默认 lan。
+  --magic-suffix SFX MagicDNS 局域网后缀(客户端解析 *.<后缀> → mesh 虚拟 IP),默认 nanotun。
                      只在与现值不同时才改:备份→段感知改写 config.toml→重启 nanotund
                      (失败自动回滚)。不给这个参数时,交互模式会显示现值让你选择保留。
   --lang en|zh       界面语言,默认英文。不给时按 NANOTUN_LANG,再不给就读装机时落在
@@ -177,7 +177,7 @@ Options:
   --web-admin NAME   username for the web admin (password: see the environment
                      variable below)
   --magic-suffix SFX MagicDNS LAN suffix (clients resolve *.<suffix> → mesh
-                     virtual IP), default lan. Applied only when it differs from
+                     virtual IP), default nanotun. Applied only when it differs from
                      the current value: back up → section-aware rewrite of
                      config.toml → restart nanotund (rolled back automatically on
                      failure). Without this flag the interactive mode shows the
@@ -644,7 +644,7 @@ while :; do
 done
 
 # ── MagicDNS 局域网后缀(可选)────────────────────────────────────────────────
-# 进阶设置:绝大多数人用默认 lan 就好。放在这里(而非核心编号步骤)是因为它是唯一会**动
+# 进阶设置:绝大多数人用默认 nanotun 就好。放在这里(而非核心编号步骤)是因为它是唯一会**动
 # config.toml + 重启 nanotund** 的一步 —— 只有你显式改了后缀(或带 --magic-suffix)才发生,
 # 回车保留则纹丝不动。运行期后缀只从 config.toml 读,故必须改文件+重启,setting set 不是入口。
 step_t "MagicDNS LAN suffix (optional — changing it restarts the service)" \
@@ -660,8 +660,8 @@ else
     note_t "MagicDNS suffix = $cur_suffix (--yes leaves it alone; to change it: --magic-suffix <suffix> or sudo nanotun-set-suffix <suffix>)" \
            "MagicDNS 后缀 = $cur_suffix(--yes 不改;要改:--magic-suffix <后缀> 或 sudo nanotun-set-suffix <后缀>)"
   else
-    note_t "Clients resolve *.<suffix> → mesh virtual IP. Default lan; pick another one to stay clear of home routers and reserved domains." \
-           "客户端解析 *.<后缀> → mesh 虚拟 IP。默认 lan;想避开与家用路由器/保留域冲突可换一个。"
+    note_t "Clients resolve *.<suffix> → mesh virtual IP. Default nanotun; pick another one if it clashes with something on your network." \
+           "客户端解析 *.<后缀> → mesh 虚拟 IP。默认 nanotun;与你网内已有的名字撞车时可换一个。"
     ok_t "Current suffix: $cur_suffix" "当前后缀: $cur_suffix"
 
     # 目标后缀:命令行显式给了(--magic-suffix)就用它;否则交互询问,默认=现值(回车即保留)。

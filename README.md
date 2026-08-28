@@ -451,8 +451,8 @@ avoiding an accidental repeat rotate.
   DNS on the TUN gateway IP's :53, resolving `<device>.<user>.<suffix>` to a vIP. `listen_port`
   must = 53, otherwise the server skips prepending the gateway DNS to the client (to avoid
   pointing the client's DNS at an unreachable port). See the `cmd/nanotund/config.toml`
-  comments for a config example. The suffix `<suffix>` defaults to `lan` and can be customized
-  **at install time**: `--magic-suffix nanotun` or the env var `NANOTUN_MAGIC_SUFFIX=nanotun`
+  comments for a config example. The suffix `<suffix>` defaults to `nanotun` and can be customized
+  **at install time**: `--magic-suffix lab` or the env var `NANOTUN_MAGIC_SUFFIX=lab`
   (one-shot install `install.sh` / offline `install-self-hosted.sh` / same var for Docker;
   only takes effect when `config.toml` is first written). To change the suffix on an
   **already-installed** machine use `sudo nanotun-set-suffix <suffix>` (installed as a command

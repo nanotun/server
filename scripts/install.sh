@@ -54,7 +54,7 @@
 #   --skip-check   跳过环境检查直接装(不建议;装到一半失败比现在就知道难收拾)
 #   --no-setup     装完不自动进开服向导
 #   --magic-suffix <后缀>  MagicDNS 局域网后缀(客户端解析 *.<后缀> → mesh 虚拟 IP),
-#                  默认 lan;只在首次装机(真写模板 config.toml)时生效。等价于环境变量
+#                  默认 nanotun;只在首次装机(真写模板 config.toml)时生效。等价于环境变量
 #                  NANOTUN_MAGIC_SUFFIX。改现有机器的后缀用 sudo nanotun-set-suffix <后缀>
 #                  (装机时一并装成了命令;发布包里对应 scripts/set-magic-suffix.sh)。
 #   其余参数        原样转交开服向导,例如 --dial-host / --user / --web-admin / --yes
@@ -66,7 +66,7 @@
 #                       是一致的。装完会落盘到 /etc/nanotun/lang,之后 nanotun-setup /
 #                       nanotun-uninstall / nanotun-set-suffix 默认沿用同一种语言。
 #   NANOTUN_MAGIC_SUFFIX        同 --magic-suffix(命令行参数优先);走 sudo 时记得写在
-#                       sudo 后面:sudo NANOTUN_MAGIC_SUFFIX=nanotun bash -c "$(curl ...)"
+#                       sudo 后面:sudo NANOTUN_MAGIC_SUFFIX=lab bash -c "$(curl ...)"
 #   NANOTUN_WEB_ADMIN_PASSWORD  Web 后台管理员密码,配合 --web-admin <名字> 使用。
 #                       走环境变量而不是命令行参数:argv 对同机所有用户可见(ps),
 #                       还会落进 shell history。注意 sudo 默认不传环境变量,得写成
@@ -408,8 +408,8 @@ while [ $# -gt 0 ]; do
     --magic-suffix)
       case "${2:-}" in
         ''|-*) printf '%s\n' "$(tsel \
-                 "install.sh: --magic-suffix needs a suffix, e.g. --magic-suffix nanotun" \
-                 "install.sh: --magic-suffix 后面要跟一个后缀。例:--magic-suffix nanotun")" >&2
+                 "install.sh: --magic-suffix needs a suffix, e.g. --magic-suffix lab" \
+                 "install.sh: --magic-suffix 后面要跟一个后缀。例:--magic-suffix lab")" >&2
                exit 2 ;;
       esac
       MAGIC_SUFFIX="$2"; shift 2 ;;
@@ -446,7 +446,7 @@ Options:
   --skip-check   install without checking first (not recommended)
   --no-setup     do not enter the setup wizard after installing
   --magic-suffix <suffix>  MagicDNS LAN suffix (*.<suffix> → mesh virtual IP),
-                 default lan; only applied on a first install (same as
+                 default nanotun; only applied on a first install (same as
                  NANOTUN_MAGIC_SUFFIX). To change it later:
                  sudo nanotun-set-suffix <suffix>
 
@@ -514,7 +514,7 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
   --check-only   只做环境检查,一次列全问题后退出(不需要 root)
   --skip-check   跳过环境检查直接装(不建议)
   --no-setup     装完不自动进开服向导
-  --magic-suffix <后缀>  MagicDNS 局域网后缀(*.<后缀> → mesh 虚拟 IP),默认 lan;
+  --magic-suffix <后缀>  MagicDNS 局域网后缀(*.<后缀> → mesh 虚拟 IP),默认 nanotun;
                  只在首次装机生效(等价 NANOTUN_MAGIC_SUFFIX)。
                  改现有机器:sudo nanotun-set-suffix <后缀>
 

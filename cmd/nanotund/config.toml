@@ -113,9 +113,9 @@ login_rate_limit_per_min = 0
 # Magic hostname rules (after the trailing .<suffix> is stripped, told apart by label count /
 # first label; both matched strictly):
 #   A) device   <device>.<user>.<suffix>              → that device's mesh virtual IP (A/AAAA)
-#      e.g. vultr.smoker.lan                          → 10.201.0.36
+#      e.g. vultr.smoker.nanotun                      → 10.201.0.36
 #   B) 4via6    <v4-dashed>via<siteID>.<suffix>       → the 4via6 address of a LAN host at that site (AAAA)
-#      e.g. 192-168-199-1via3.lan                     → fdbc:4a60::3:c0a8:c701 (siteID=3)
+#      e.g. 192-168-199-1via3.nanotun                 → fdbc:4a60::3:c0a8:c701 (siteID=3)
 #      · <v4-dashed> = the target LAN IPv4 with the dots written as hyphens
 #        (192.168.199.1 → 192-168-199-1);
 #      · <siteID> = the advertiser's globally unique site number in the via6_sites table
@@ -135,12 +135,12 @@ login_rate_limit_per_min = 0
 #   so a device named "Alice Work MacBook" is written alice-work-macbook.<user>.<suffix>;
 #   characters outside ASCII are carried through as they are.
 #   A port in a URL is the target service's port and has nothing to do with DNS: e.g.
-#   http://192-168-199-1via3.lan:8899/ resolves to IPv6 and then really connects to
+#   http://192-168-199-1via3.nanotun:8899/ resolves to IPv6 and then really connects to
 #   [fdbc:4a60::3:c0a8:c701]:8899.
 #
 [server.magic_dns]
 enabled = true
-domain_suffix = "lan"
+domain_suffix = "nanotun"
 listen_port = 53
 # upstream_v4/v6: the upstream resolvers for non-magic domains — **do configure these**. Left
 # empty → non-magic queries return SERVFAIL ("magic-only"): the client takes the gateway as its
@@ -178,7 +178,7 @@ upstream_v6 = ["2001:4860:4860::8888"]
 ecs_forward = false
 # via4_pool: the **synthetic A-record pool** for 4via6 names (DNS46 + NAT46).
 #
-# Why it is needed: a 4via6 name (such as 192-168-1-10via7.lan) originally answered AAAA only,
+# Why it is needed: a 4via6 name (such as 192-168-1-10via7.nanotun) originally answered AAAA only,
 # and Apple platforms **do not send an AAAA query at all** when the system has no default v6
 # route (pinned down on real iOS hardware, 2026-08-17) — under iOS "mesh-only" a via name is
 # simply a dead name. With this pool enabled, an A query for a via name is answered with an

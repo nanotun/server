@@ -118,6 +118,19 @@ rsh 'set -e
   install -m 0755 "$D/scripts/setup.sh"                /usr/local/bin/nanotun-setup
   install -m 0755 "$D/scripts/preflight.sh"            /usr/local/bin/nanotun-preflight
   install -m 0755 "$D/scripts/ensure-server-assets.sh" /usr/local/bin/nanotun-ensure-assets.sh
+  # 下面三个是 2026-08-28 补的,正是本函数注释警告过的那种漏:
+  #
+  #   · nanotun-ports.sh —— preflight.sh 与 uninstall.sh 都 **source** 它来读实际端口。
+  #     缺了不会报错,两者会静默回落到写死的 8443/443/7443 —— 于是门禁验的是兜底路径,
+  #     而改过端口的机器上真正该走的那条从来没被跑过。
+  #   · nanotun-set-suffix / nanotun-uninstall —— 真实装机会把它们装成命令(见
+  #     install-self-hosted.sh),而 SRV 上没有,于是「按装好的名字敲」这条路在门禁里
+  #     压根不存在。magic-suffix-drill.sh 只好自己推一份上去。
+  #
+  # 清单该与 install-self-hosted.sh 一致,漂了由 cmd/nanotun-admin/deploy_srv_guard_test.go 报。
+  install -m 0755 "$D/scripts/nanotun-ports.sh"        /usr/local/bin/nanotun-ports.sh
+  install -m 0755 "$D/scripts/set-magic-suffix.sh"     /usr/local/bin/nanotun-set-suffix
+  install -m 0755 "$D/scripts/uninstall.sh"            /usr/local/bin/nanotun-uninstall
   # 开机前跑的那两个也要一起换,否则它们的改动永远不经门禁。
   #
   # 这份清单是手工维护的,漏一个不会有任何提示 —— 跑出来照样全绿,只是绿的是旧脚本。
