@@ -297,9 +297,10 @@ confirm() { # confirm <提示> [y|n 默认]
     case "$reply" in y|yes) return 0 ;; n|no) return 1 ;; esac
     # 不认识的答案原样重问,屏幕上就只是同一句话又出现一遍 —— 没人知道是自己答错了
     # 还是终端卡住了(实测连问七遍的样子和死循环没有区别)。说破再问。
-    # 插值一律写成 ${…}:紧跟在变量名后面的是「」这种非 ASCII 字符时,$reply」 会被
-    # 连着后面那个字节当成变量名,set -u 下直接报「unbound variable」把向导打断 ——
-    # 而这一支恰恰是「用户答错了」才走到的,报错比答错本身更难懂。
+    # 插值一律写成 ${…}:裸引用后面紧跟「」这类非 ASCII 标点时,bash 会把那个标点的首字节
+    # 连进变量名,set -u 下直接报「unbound variable」把向导打断 —— 而这一支恰恰是
+    # 「用户答错了」才走到的,报错比答错本身更难懂。
+    # (反例不写在这儿:scripts/e2e/selftest.sh 那道静态检查不区分注释与代码,故意的。)
     printf '    %s! %s%s\n' "$C_WARN" \
       "$(tsel "Did not understand \"${reply}\" — answer y or n (Enter = ${def})" \
               "不认识「${reply}」,只能答 y 或 n(直接回车 = ${def})")" "$C_OFF" >&2
