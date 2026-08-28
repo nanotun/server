@@ -909,6 +909,19 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: 
   if [ "$WEB_AVAILABLE" -eq 1 ] && [ "$NT_PORT_WEB" != "$NT_DEFAULT_WEB" ]; then
     ufw delete allow "${NT_DEFAULT_WEB}/tcp" >/dev/null 2>&1 || true
   fi
+  # Web 端口挪走之后,**旧那条**也得收 —— 而「旧」现在几乎总是个随机数。
+  #
+  # 上面那条只收 $NT_DEFAULT_WEB(7443)。在固定端口的年代它是够的:唯一可能的旧值就是
+  # 默认值。改成随机默认之后,每台机器的旧值都是随机数,于是那条清理覆盖的恰好是一个
+  # 不再发生的情况 —— 而 --web-port / NANOTUN_WEB_PORT 每换一次,就在机器上留下一个
+  # 对公网敞着、却没有任何东西在听的端口,且它跟一条正当放行规则长得毫无区别。
+  # 后果不是「有洞」(没人听就进不去),而是 ufw status 从此高估这台机器的暴露面 ——
+  # 对一个隐私工具来说,审计时看到的东西必须是真的。
+  # 旧值不用猜:写 web.env 之前就读到了(NT_WEB_PORT_PINNED)。
+  if [ "$WEB_AVAILABLE" -eq 1 ] && [ -n "$NT_WEB_PORT_PINNED" ] && \
+     [ "$NT_PORT_WEB" != "$NT_WEB_PORT_PINNED" ]; then
+    ufw delete allow "${NT_WEB_PORT_PINNED}/tcp" >/dev/null 2>&1 || true
+  fi
   if [ "$UFW_BAD" -eq 1 ]; then
     warn_t "ufw is running, but opening the ports automatically did not work. Run this by hand:" \
            "ufw 在跑,但自动放行没成功。请手动执行:"
@@ -937,6 +950,11 @@ elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev
   fi
   if [ "$WEB_AVAILABLE" -eq 1 ] && [ "$NT_PORT_WEB" != "$NT_DEFAULT_WEB" ]; then
     firewall-cmd --permanent --remove-port="${NT_DEFAULT_WEB}/tcp" >/dev/null 2>&1 || true
+  fi
+  # 与 ufw 分支同口径:旧的随机端口也要收(理由见那边的注释)。
+  if [ "$WEB_AVAILABLE" -eq 1 ] && [ -n "$NT_WEB_PORT_PINNED" ] && \
+     [ "$NT_PORT_WEB" != "$NT_WEB_PORT_PINNED" ]; then
+    firewall-cmd --permanent --remove-port="${NT_WEB_PORT_PINNED}/tcp" >/dev/null 2>&1 || true
   fi
   firewall-cmd --reload >/dev/null 2>&1 || FW_BAD=1
   if [ "$FW_BAD" -eq 0 ]; then

@@ -142,3 +142,40 @@ func TestLabPinsContainerWebPortToItsPortMapping(t *testing.T) {
 			"而 browse / browse-2fa / drill 都走那个地址。", pin[1], mapping[1])
 	}
 }
+
+// Web 端口挪走时,两个防火墙分支都必须收回**旧那个**端口的规则。
+//
+// 只收静态默认值(7443)是不够的:Web 端口改成随机默认之后,每台机器的旧值都是随机数,
+// 于是「等于默认值」这个条件覆盖的恰好是一个不再发生的情况。漏掉的后果是每换一次端口
+// 就在机器上留下一条对公网敞着、却没有任何东西在听的放行规则。
+//
+// 它不是「有洞」(没人听就进不去),而是让 ufw status / firewall-cmd --list-ports 高估
+// 这台机器的暴露面 —— 对一个隐私工具来说,审计时看到的必须是真的。而且它无声:陈旧规则
+// 不会让任何东西看起来坏掉,所以只能靠守卫盯着。
+//
+// 2026-08-28 实测过两边的差别:旧逻辑把 9000 挪到 8000 只发 `delete allow 7443/tcp`,
+// 9000 就永久留着了;修好后同一步会同时发 `delete allow 8000/tcp`。
+func TestInstallerReclaimsPreviousWebPortFirewallRule(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install-self-hosted.sh"))
+	if err != nil {
+		t.Fatalf("读不到 install-self-hosted.sh:%v", err)
+	}
+	src := string(b)
+
+	// 旧值只能从写 web.env 之前读到的那个来 —— 这个变量必须还在,否则无从知道要收哪条。
+	if !strings.Contains(src, "NT_WEB_PORT_PINNED=") {
+		t.Fatal("找不到 NT_WEB_PORT_PINNED(写 web.env 前读到的旧 Web 端口)。" +
+			"没有它就无法知道端口挪走后该收回哪条防火墙规则。")
+	}
+
+	for _, c := range []struct{ name, want string }{
+		{"ufw", `ufw delete allow "${NT_WEB_PORT_PINNED}/tcp"`},
+		{"firewalld", `firewall-cmd --permanent --remove-port="${NT_WEB_PORT_PINNED}/tcp"`},
+	} {
+		if !strings.Contains(src, c.want) {
+			t.Errorf("%s 分支没有收回旧的 Web 端口规则,缺:%s\n"+
+				"只收 $NT_DEFAULT_WEB 是不够的 —— 随机默认之后旧值几乎总是随机数,"+
+				"漏掉就会每改一次端口留下一条敞着却没人听的规则。", c.name, c.want)
+		}
+	}
+}
