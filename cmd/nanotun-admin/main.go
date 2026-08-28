@@ -671,17 +671,21 @@ SUBCOMMANDS
   user set-bandwidth <username> [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--no-refresh]
                                                 user-level 带宽 quota(0012);0 = 不限;改后自动 control sock /users/rate/refresh
   user set-max-sessions <username> <n>          按账号并发会话上限(0021);>0 覆盖全局 / 0 跟随全局 / -1 该账号不限;仅对未来登录生效
+  user set-platforms <username> ["macos,ios,android,windows,linux,router"]
+                                                限定该账号可登录的平台;留空 = 不限
   device create <username> --uuid <uuidv4> [--name N] [--platform P]
                                                 用指定 UUID 预创建设备(先配后连;配合 exit designate 预置出口)
   device list [--user <username>] [--effective]
                                                 列出设备(含 fixed_vip / 限速列);--effective 显示叠加 settings/toml/user 取 min 后的值
   device delete <device_id>                     删除一个设备及其 lease
   device set-fixed-vip <device_id> [--v4 IP] [--v6 IP] [--force]   按设备钉死 vIP(0008 起;空串清除)
+  device set-alias <device_id> <alias>          给设备起个人类可读的别名(留空清除)
   device set-rate <device_id> [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--no-refresh]
                                                 per-device 带宽限速(0011);0 = 清除回退全局默认;改后自动 control sock /rate/refresh
   lease list                                    列出全部 vIP 租约
   lease release <device_id>                     释放某设备的 lease
   lease set <device_id> [--v4 IP] [--v6 IP] [--manual]  手动指派 lease（管理员钉死）
+  lease gc                                      回收过期租约(平时由服务端自动做,这里用于手动催一次)
   audit list [--since DURATION] [--limit N] [--action ACTION]
                                                 列出最近的审计日志(--action 精确过滤,例:user_reset_psk / login.fail.bad_psk)
   webadmin create <username> [--role admin|viewer] [--password-stdin]
@@ -701,7 +705,7 @@ SUBCOMMANDS
   setting list                                  列出 app_settings 全表
   setting rate [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--burst-kib N] [--no-refresh]
                                                 全局默认带宽限速(0011)+ rate.Limiter burst(0012);不传任何值 = dry-run 仅展示
-  profile show [<username>] --host HOST [--node ...] [--format json|url|both|qr|qr-png]
+  profile show [<username>] --dial-host HOST [--advertised-host H] [--node ...] [--format json|url|both|qr|qr-png]
                                                 导出客户端可直接导入的 profile(仅服务器配置;PSK 已剥离到 credentials show)
                                                 省略 <username> = server-level 模式(Hy2 mTLS 客户端证书 CN 用合成占位符,不绑 user;
                                                 nanotun-web /server-qr 走这条路径)
@@ -721,7 +725,7 @@ SUBCOMMANDS
   kick session <conn_id> [--reason TEXT]        踢一条会话
   kick user <username|u<id>> [--reason TEXT]    踢某 user 所有会话
   kick device <devices.id|device_uuid> [--reason TEXT]    踢某 device 所有会话(0011)
-  connection list                               列出当前所有在线会话(从 server 实时拉)
+  connection list [--limit N] [--offset N]      列出当前所有在线会话(从 server 实时拉;会话多时用 --limit 分页)
   backup [PATH]                                 SQLite VACUUM INTO 强一致快照(不给路径则按时间戳命名)
   restore <src.db> [--force-while-running]      用快照覆盖现役 DB(server 应停)
   vacuum                                        VACUUM 重建,回收空闲页
@@ -754,17 +758,21 @@ SUBCOMMANDS
   user set-bandwidth <username> [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--no-refresh]
                                                 user-level bandwidth quota (0012); 0 = unlimited; auto control sock /users/rate/refresh after change
   user set-max-sessions <username> <n>          per-user concurrent session cap (0021); >0 overrides global / 0 follows global / -1 unlimited for this user; future logins only
+  user set-platforms <username> ["macos,ios,android,windows,linux,router"]
+                                                restrict which platforms may log in as this user; empty = no restriction
   device create <username> --uuid <uuidv4> [--name N] [--platform P]
                                                 pre-create a device with a given UUID (configure before connecting; pairs with exit designate)
   device list [--user <username>] [--effective]
                                                 list devices (incl. fixed_vip / rate columns); --effective shows the min across settings/toml/user
   device delete <device_id>                     delete a device and its lease
   device set-fixed-vip <device_id> [--v4 IP] [--v6 IP] [--force]   pin vIP per device (since 0008; empty string clears)
+  device set-alias <device_id> <alias>          give a device a human-readable alias (empty clears it)
   device set-rate <device_id> [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--no-refresh]
                                                 per-device bandwidth limit (0011); 0 = clear and fall back to global default; auto control sock /rate/refresh after change
   lease list                                    list all vIP leases
   lease release <device_id>                     release a device's lease
   lease set <device_id> [--v4 IP] [--v6 IP] [--manual]  manually assign a lease (admin-pinned)
+  lease gc                                      reclaim expired leases (the server does this on its own; this forces one pass)
   audit list [--since DURATION] [--limit N] [--action ACTION]
                                                 list recent audit logs (--action filters exactly, e.g. user_reset_psk / login.fail.bad_psk)
   webadmin create <username> [--role admin|viewer] [--password-stdin]
@@ -784,7 +792,7 @@ SUBCOMMANDS
   setting list                                  list the whole app_settings table
   setting rate [--up-mibs N|--up-bps N] [--down-mibs N|--down-bps N] [--burst-kib N] [--no-refresh]
                                                 global default bandwidth limit (0011) + rate.Limiter burst (0012); no values = dry-run (show only)
-  profile show [<username>] --host HOST [--node ...] [--format json|url|both|qr|qr-png]
+  profile show [<username>] --dial-host HOST [--advertised-host H] [--node ...] [--format json|url|both|qr|qr-png]
                                                 export a client-importable profile (server config only; PSK moved to credentials show)
                                                 omit <username> = server-level mode (Hy2 mTLS client cert CN uses a synthetic placeholder, not user-bound;
                                                 nanotun-web /server-qr uses this path)
@@ -804,7 +812,7 @@ SUBCOMMANDS
   kick session <conn_id> [--reason TEXT]        kick a single session
   kick user <username|u<id>> [--reason TEXT]    kick all sessions of a user
   kick device <devices.id|device_uuid> [--reason TEXT]    kick all sessions of a device (0011)
-  connection list                               list all currently online sessions (fetched live from the server)
+  connection list [--limit N] [--offset N]      list all currently online sessions (fetched live from the server; use --limit to page when there are many)
   backup [PATH]                                 strongly-consistent snapshot via SQLite VACUUM INTO (timestamped name if omitted)
   restore <src.db> [--force-while-running]      overwrite the live DB with a snapshot (server should be stopped)
   vacuum                                        VACUUM rebuild to reclaim free pages

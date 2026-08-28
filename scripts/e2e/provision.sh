@@ -506,12 +506,12 @@ $out"
   fi
 
   # MagicDNS 后缀:阶段 1(10-exit.sh)按 $E2E_MAGIC_SUFFIX 拼 *.<后缀> 域名做解析断言。
-  # 运行期后缀**只**取服务端 config.toml 的 [server.magic_dns].domain_suffix(缺省 lan)——
+  # 运行期后缀**只**取服务端 config.toml 的 [server.magic_dns].domain_suffix(模板缺省 nanotun)——
   # app_settings 里从来没有 magic_suffix 这一项,早先这里的 `setting set magic_suffix` 是空操作
   # (写进库无人读),现已在 CLI 侧硬拒(cmd_setting.go 的 systemManagedSettingKeys)。故不再徒劳写 DB:
-  # e2e 默认后缀就是 lan、与模板 config.toml 一致,阶段 1 开箱即绿。要验**非默认后缀**端到端,
+  # 后缀由 e2e_resolve_magic_suffix() 开跑时从服务端读,阶段 1 开箱即绿。要验**非默认后缀**端到端,
   # 用 scripts/e2e/magic-suffix-drill.sh(改 config.toml→重启→验证客户端解析→还原,不污染门禁基线)。
-  note "MagicDNS 后缀取 config.toml 的 domain_suffix(默认 lan);非默认后缀验证见 magic-suffix-drill.sh"
+  note "MagicDNS 后缀取 config.toml 的 domain_suffix(模板默认 nanotun);非默认后缀验证见 magic-suffix-drill.sh"
 fi
 
 # ── 7. web 管理员 ───────────────────────────────────────────────────────────

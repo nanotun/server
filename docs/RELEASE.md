@@ -136,9 +136,19 @@ public，否则用户 `docker pull` 会被要求登录。这一步 workflow 做�
 - `hysteria.tls_client_ca_file` / `hysteria.udp_relay_enabled`
 - `reality.listen_addr`
 - `tun.exit_mode` / `tun.exit_dns_redirect` / `tun.exit_deny_private`
+- `tun.forward_block_bt` / `tun.forward_block_tracker_6969` / `tun.forward_block_smtp_25`
+- `tun.tcp_connlimit_per_ip` / `tun.udp_connlimit_per_ip`
 - `store.db_path`
 
-权威来源：`cmd/nanotund/reload.go` 的 `classifyDeferredFields`。名单再漏，是安全事故，不是文档疏忽。
+最后那两行尤其容易漏，而漏掉的代价是**安全策略没生效却毫无提示**：把
+`tcp_connlimit_per_ip` 从 40 收到 5、SIGHUP、日志一切正常，于是以为收紧了，实际旧的
+iptables 规则还在（`reload.go:454` 那段注释记的就是这次）。封堵类的 `forward_block_*`
+同理：改了不重启，等于没封。
+
+权威来源：`cmd/nanotund/reload.go` —— `classifyDeferredFields` 只覆盖最常改的那几个，
+完整判据是该文件里所有登记为 deferred 的字段（`reload_deferred_guards_test.go` 盯着它们）。
+本表比单个函数宽，是因为它还收了「函数不报、但同样要重启」的那些。名单再漏，是安全事故，
+不是文档疏忽。
 
 ### 死配置（能过校验、没有读取点）
 

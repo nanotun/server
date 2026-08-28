@@ -564,3 +564,42 @@ func TestInstallerWritesWebConsoleLanguage(t *testing.T) {
 			"  而 EnvironmentFile 后者覆盖前者,两行并存时最难查。")
 	}
 }
+
+// reload.go 里登记为 deferred 的字段,RELEASE.md 的「必须 restart」表里必须都有。
+//
+// 这张表是发版时判断「改了这个要不要重启」的依据,而漏掉的代价是**安全策略没生效却毫无
+// 提示**:把 tun.tcp_connlimit_per_ip 从 40 收到 5、SIGHUP、日志一切正常,于是以为收紧了,
+// 实际旧的 iptables 规则还在(reload.go:454 记的就是这次)。forward_block_* 同理:改了不
+// 重启等于没封。
+//
+// 文档自己写着「名单再漏,是安全事故,不是文档疏忽」—— 那就不该靠人去对。
+// 2026-08-28 实测:五个 tun.* 字段全漏。
+func TestReleaseDocListsEveryDeferredField(t *testing.T) {
+	rl, err := os.ReadFile(filepath.Join("..", "..", "cmd", "nanotund", "reload.go"))
+	if err != nil {
+		t.Fatalf("读不到 reload.go:%v", err)
+	}
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "RELEASE.md"))
+	if err != nil {
+		t.Fatalf("读不到 RELEASE.md:%v", err)
+	}
+
+	// reload.go 里 deferred 项登记成 {"section.field", 旧值, 新值}
+	fields := regexp.MustCompile(`\{"([a-z_]+\.[a-z_0-9]+)"`).FindAllStringSubmatch(string(rl), -1)
+	if len(fields) == 0 {
+		t.Fatal("reload.go 里一个 deferred 字段都没解析出来 —— 若登记写法改了,请同步本守卫")
+	}
+	seen := map[string]bool{}
+	for _, m := range fields {
+		k := m[1]
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if !strings.Contains(string(doc), "`"+k+"`") {
+			t.Errorf("RELEASE.md 的「必须 restart」表里没有 %s:\n"+
+				"  改了它却只 reload,旧值仍然生效而日志之外没有任何提示 —— "+
+				"封堵/限流类字段漏掉就是安全策略静默失效。", k)
+		}
+	}
+}

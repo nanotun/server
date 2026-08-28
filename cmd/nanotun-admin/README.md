@@ -297,7 +297,7 @@ server 内置 stub DNS,把 peer 主机名 `<device>.<user>.<suffix>` 解析为 v
 ```toml
 [server.magic_dns]
 enabled = true
-domain_suffix = "lan"
+domain_suffix = "nanotun"
 listen_port = 53            # 必须 = 53,见下方关键约束
 upstream_v4 = ["223.5.5.5"]
 ecs_forward = false         # 跨国部署建议 true,见下方第 4 点

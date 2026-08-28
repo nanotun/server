@@ -324,7 +324,8 @@ const (
 type MagicDNSConfig struct {
 	Enabled bool `toml:"enabled"`
 
-	// DomainSuffix 是 Magic DNS 拦截的域名后缀,默认 "lan"。
+	// DomainSuffix 是 Magic DNS 拦截的域名后缀,默认 "nanotun"(2026-08-28 起;此前是 "lan",
+	// 与家用路由器和保留域撞车的概率太高)。
 	// 查询如 `alice-mac.alice.lan` → server 内查 leases 表 → 返回 vIP A/AAAA。
 	// 非该 suffix 域名走 Upstream 转发(若未配置 upstream → SERVFAIL)。
 	DomainSuffix string `toml:"domain_suffix,omitempty"`

@@ -12,12 +12,12 @@
 #
 # 用法：
 #   A) 远程（从本机 SSH 到服务器执行）：
-#        SSH_HOST=<nanotun服务器IP> SSH_PASS='密码' ./scripts/set-magic-suffix.sh nanotun
+#        SSH_HOST=<nanotun服务器IP> SSH_PASS='密码' ./scripts/set-magic-suffix.sh lab
 #      或用 SSH 密钥（不设 SSH_PASS）：
-#        SSH_HOST=<nanotun服务器IP> ./scripts/set-magic-suffix.sh nanotun
+#        SSH_HOST=<nanotun服务器IP> ./scripts/set-magic-suffix.sh lab
 #
 #   B) 本地（已 SSH 到服务器后，直接在服务器上以 root 跑）：
-#        sudo ./scripts/set-magic-suffix.sh nanotun
+#        sudo ./scripts/set-magic-suffix.sh lab
 #
 # 注意：这里的目标机是**运行 nanotun 的网关服务器**（客户端连接的后端），不是 mesh 里
 #   的某个客户端节点。多台网关都需各自执行一次。
@@ -131,12 +131,12 @@ What keeps this safe: back up config.toml → section-aware, surgical rewrite (o
 
 Usage:
   A) Remote (run on your own machine, over SSH to the server):
-       SSH_HOST=<nanotun server IP> SSH_PASS='<password>' ./scripts/set-magic-suffix.sh nanotun
+       SSH_HOST=<nanotun server IP> SSH_PASS='<password>' ./scripts/set-magic-suffix.sh lab
      or with an SSH key (leave SSH_PASS unset):
-       SSH_HOST=<nanotun server IP> ./scripts/set-magic-suffix.sh nanotun
+       SSH_HOST=<nanotun server IP> ./scripts/set-magic-suffix.sh lab
 
   B) Local (already SSHed in — run it on the server itself, as root):
-       sudo ./scripts/set-magic-suffix.sh nanotun
+       sudo ./scripts/set-magic-suffix.sh lab
 
 Note: the target is the **gateway server running nanotun** (the backend clients dial),
   not one of the client nodes in the mesh. Every gateway needs its own run.
@@ -149,7 +149,7 @@ EOF
       fi
     elif [ "$NT_LANG" = zh ]; then
       cat <<EOF
-用法: sudo $(basename "$0") <新后缀>        例如: sudo $(basename "$0") nanotun
+用法: sudo $(basename "$0") <新后缀>        例如: sudo $(basename "$0") lab
 
 修改 nanotun 的 MagicDNS 后缀(客户端解析 *.<后缀> → mesh 虚拟 IP)并重启服务。
 domain_suffix 不在 SIGHUP 热更白名单里,只有重启才生效;重启走 graceful drain,
@@ -166,7 +166,7 @@ domain_suffix 不在 SIGHUP 热更白名单里,只有重启才生效;重启走 g
 EOF
     else
       cat <<EOF
-Usage: sudo $(basename "$0") <new-suffix>        e.g.: sudo $(basename "$0") nanotun
+Usage: sudo $(basename "$0") <new-suffix>        e.g.: sudo $(basename "$0") lab
 
 Change nanotun's MagicDNS suffix (clients resolve *.<suffix> → mesh virtual IP) and
 restart the service. domain_suffix is not on the SIGHUP hot-reload list, so only a
@@ -206,12 +206,12 @@ if [ -z "$SUFFIX" ]; then
   me="$(basename "$0")"
   if [ "$me" = set-magic-suffix.sh ]; then
     echo "$(tsel \
-      "Usage: [SSH_HOST=.. SSH_PASS=..] ./scripts/${me} <new-suffix>    e.g.: ./scripts/${me} nanotun" \
-      "用法: [SSH_HOST=.. SSH_PASS=..] ./scripts/${me} <新后缀>    例如: ./scripts/${me} nanotun")" >&2
+      "Usage: [SSH_HOST=.. SSH_PASS=..] ./scripts/${me} <new-suffix>    e.g.: ./scripts/${me} lab" \
+      "用法: [SSH_HOST=.. SSH_PASS=..] ./scripts/${me} <新后缀>    例如: ./scripts/${me} lab")" >&2
   else
     echo "$(tsel \
-      "Usage: sudo ${me} <new-suffix>    e.g.: sudo ${me} nanotun    (--help for the details)" \
-      "用法: sudo ${me} <新后缀>    例如: sudo ${me} nanotun    (--help 看详细说明)")" >&2
+      "Usage: sudo ${me} <new-suffix>    e.g.: sudo ${me} lab    (--help for the details)" \
+      "用法: sudo ${me} <新后缀>    例如: sudo ${me} lab    (--help 看详细说明)")" >&2
   fi
   exit 2
 fi

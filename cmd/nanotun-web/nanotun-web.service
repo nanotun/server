@@ -1,6 +1,6 @@
 [Unit]
 Description=nanotun self-hosted mesh — admin web backend
-Documentation=https://github.com/your-org/nanotun/tree/main/nanotun-web
+Documentation=https://github.com/nanotun/server/tree/main/cmd/nanotun-web
 # 数据库与 nanotun 数据面共享;启动顺序上不强制依赖,nanotun-web 可以独立
 # 跑起来(只是 dashboard 的 "运行时数据" 会显示不可用)。
 Wants=nanotun.service

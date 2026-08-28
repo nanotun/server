@@ -169,7 +169,7 @@ func formatMaxSessions(opts *globalOpts, n int) string {
 // 新登录在 authenticatePSK 即时拦截。
 func cmdUserSetPlatforms(ctx context.Context, st *store.Store, opts *globalOpts, args []string) error {
 	if len(args) < 1 || len(args) > 2 {
-		return usageError(opts.usage(`nanotun-admin user set-platforms <username> ["macos,ios,android,windows,linux,router"]   # 留空=不限`))
+		return usageError(opts.usage(`nanotun-admin user set-platforms <username> ["macos,ios,android,windows,linux,router"]   # empty = no restriction`))
 	}
 	u, err := st.GetUserByUsername(ctx, args[0])
 	if err != nil {

@@ -243,12 +243,13 @@ C 虽然带 `--no-default-route`,但它是出口节点兼靶站,额外负载会�
   `scripts/e2e/frag-acl-drill.sh` —— 从 A 用原始套接字造 IP 分片穿隧道,靠服务端
   `acl_drops` 增量断言「无端口的非首片也被 fail-closed(增量 6 而非 3)」。它不进
   发版门禁:要 root 开 `SOCK_RAW`,且共用环境上临时动 ACL 有风险。
-- **MagicDNS 门禁只验默认后缀 nanotun;非默认后缀另有 drill。** 阶段 1(`10-exit.sh`)只在
-  `domain_suffix=lan` 下验解析。而「后缀可配」整条链(config.toml → nanotund 启动读进
+- **MagicDNS 门禁只验服务端当前后缀;非默认后缀另有 drill。** 阶段 1(`10-exit.sh`)用的
+  后缀由 `e2e_resolve_magic_suffix()` 开跑时从服务端 `config.toml` 读(模板默认 `nanotun`),
+  不再写死。而「后缀可配」整条链(config.toml → nanotund 启动读进
   快照 → 网关 :53 只答 `*.<该后缀>`)由一条按需 drill 走非默认后缀:
 
   ```bash
-  ./scripts/e2e/magic-suffix-drill.sh          # 默认改成 nanotun 再还原
+  ./scripts/e2e/magic-suffix-drill.sh          # 默认改成 lab 再还原
   DRILL_SUFFIX=mesh ./scripts/e2e/magic-suffix-drill.sh
   ```
 
@@ -258,14 +259,14 @@ C 虽然带 `--no-default-route`,但它是出口节点兼靶站,额外负载会�
   不进门禁:要重启服务端两次、其间 A/C 会 graceful 重连,且仅 systemd 形态(docker 形态
   配置在容器内、写文件要绕 `docker exec`,其后缀语义由单测 + 裸机装机测覆盖)。
 - **传输隐蔽性:REALITY 端口被主动探测时回落到真站,不可区分。** REALITY 的命脉是
-  探测者拿普通 TLS ClientHello 打接入端口(默认 8443)时,服务端把连接透明代理到
+  探测者拿普通 TLS ClientHello 打接入端口(默认 443/tcp)时,服务端把连接透明代理到
   `[reality].dest`(默认 `www.microsoft.com:443`),让探测者拿到一张**能过系统 CA 校验
   的真站证书**,认不出这是 VPN。本地假 VPS 上用同网段另一台带 `openssl` 的容器当探测者
   即可复现(需服务器容器能出网到 `dest`):
 
   ```bash
   # <SRV> = 服务器容器 IP。期望与直连真站逐字一致、Verify 0
-  echo | openssl s_client -connect <SRV>:8443 -servername www.microsoft.com 2>/dev/null \
+  echo | openssl s_client -connect <SRV>:443 -servername www.microsoft.com 2>/dev/null \
     | openssl x509 -noout -issuer -subject
   echo | openssl s_client -connect www.microsoft.com:443 -servername www.microsoft.com 2>/dev/null \
     | openssl x509 -noout -issuer -subject           # 对照:issuer/subject 应逐字相同

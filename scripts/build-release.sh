@@ -71,7 +71,10 @@ for GOARCH in $ARCHES; do
   echo "2. 复制 config 样例、systemd unit、TUN 脚本 ..."
   cp cmd/nanotund/config.toml "${STAGING}/extras/"
   cp cmd/nanotund/nanotun.service "${STAGING}/extras/"
-  cp cmd/nanotun-web/nanotun-web.service "${STAGING}/extras/" 2>/dev/null || true
+  # 这条不能 `|| true`:unit 丢了打包照样成功,而装机时 install-self-hosted.sh 只会把
+  # WEB_AVAILABLE 留在 0、静静跳过 Web 后台 —— 屏幕全绿,装完却没有管理界面,而「本来就
+  # 没装 web」和「包里漏了 unit」长得一模一样。缺件要在打包阶段就炸,别带进发布包。
+  cp cmd/nanotun-web/nanotun-web.service "${STAGING}/extras/"
   # 这些文件是 install-self-hosted.sh 的硬性依赖(缺了装不上),缺失时要在打包阶段就失败。
   cp cmd/nanotund/tun-setup.sh cmd/nanotund/tun-teardown.sh cmd/nanotund/tun-setup.service \
      "${STAGING}/scripts/"

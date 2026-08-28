@@ -98,8 +98,8 @@ can install without `--web-admin` too, it just leaves the admin account uncreate
 Any argument `install.sh` doesn't recognize is passed through verbatim to the wizard, so
 [`setup.sh`](scripts/setup.sh)'s options can all be given this way.
 
-**Ports.** Two of the three are deliberately *not* configurable-by-default, and one is
-deliberately random:
+**Ports.** Two of the three are deliberately *not* randomized, and one deliberately is
+(all three can still be set explicitly — see below):
 
 | | Port | Why |
 |---|---|---|
@@ -108,10 +108,10 @@ deliberately random:
 | Web console | **random** | An admin login page has no reason to blend in; it has every reason not to be found. Every deployment sitting on 7443 is a ready-made list for scanners. Picked from 10000–31999 (below Linux's ephemeral range, so it cannot collide with outgoing source ports). |
 
 With a terminal attached the installer shows the randomly picked console port and lets you type
-another one; without one it picks and prints it. `NANOTUN_WEB_PORT=23456` pins it explicitly —
-useful when automation needs a known value. **Reruns never move it**: upgrading is the main
+another one; without one it picks and prints it. `--web-port 23456` (or
+`NANOTUN_WEB_PORT=23456`) pins it explicitly — useful when automation needs a known value. **Reruns never move it**: upgrading is the main
 reason to rerun `install.sh`, and moving a live machine's admin entrance is not what you asked
-for. The port lives in `/etc/nanotun/web.env`, and everything downstream (the environment check,
+for. The port lives in `/etc/nanotun/web.env` as `NANOTUN_WEB_LISTEN`, and everything downstream (the environment check,
 the firewall rules, the "listening on" self-check, the wizard's login URL) reads it from there.
 
 > `443/tcp` collides with an existing web server far more often than the old `8443` did. The

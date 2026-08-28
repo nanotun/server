@@ -17,7 +17,7 @@ import (
 //   - 采用「翻译 key」模式,模板里写 {{T "some.key"}},文案集中在 catZH / catEN
 //     两张表(i18n_zh.go / i18n_en.go),而不是把 UI 文案硬编码在模板里 —— 这样
 //     单一结构源(模板)+ 集中翻译表,后续加语言只需再补一张表。
-//   - 默认语言 = 中文(zh),也是 fallback:某 key 在目标语言缺失时回落 zh,
+//   - 默认语言 = 英文(2026-08-28 起;此前是中文)(zh),也是 fallback:某 key 在目标语言缺失时回落 zh,
 //     再缺失回落 key 本身(便于开发期发现漏翻)。
 //   - 语言判定优先级:?lang= 显式覆盖(并写 cookie 持久化) > lang cookie >
 //     Accept-Language 头 > 默认 zh。判定结果挂在 request context 上,renderPage
@@ -34,7 +34,7 @@ import (
 // 英文」(法语/德语/日语,或干脆没有 Accept-Language)时落到的那一档。
 //
 // 它同时也是 translate() 找不到 key 时的回落目录,改成 en 顺带修正了方向:平价测试
-// (TestCatalogParity)保证的是 catEN ⊇ catZH,反向不保证,所以回落到 catZH 反而可能
+// (TestCatalogParity)保证的是 catEN ⊇ catZH,双向都查,所以回落到 catZH 反而可能
 // 落空、把 key 本身打到页面上。
 const (
 	LangZH      = "zh"

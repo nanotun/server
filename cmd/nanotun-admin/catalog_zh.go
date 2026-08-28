@@ -130,7 +130,7 @@ var catZH = map[string]string{
 	// ===== device =====
 	"device.flag.uuid":           "设备 UUID(RFC 4122 v4;须与出口机 /etc/nanotun/device_id 一致)",
 	"device.flag.name":           "设备显示名(可选)",
-	"device.flag.platform":       "平台 linux/darwin/windows(默认 linux)",
+	"device.flag.platform":       "平台 macos/ios/android/windows/linux/router(默认 linux)",
 	"device.flag.user":           "仅列出指定用户的设备（默认全部）",
 	"device.flag.effective":      "限速列展示「effective」(device∩settings∩toml∩user 取 min);默认只展示 device-level raw 值",
 	"device.flag.fixedV4":        "新的固定 IPv4 vIP;空串清除;不指定保持不变",

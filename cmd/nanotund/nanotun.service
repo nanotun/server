@@ -1,6 +1,6 @@
 [Unit]
 Description=nanotun self-hosted VPN gateway (M0 PSK mode)
-Documentation=file:///etc/nanotun/README.md
+Documentation=https://github.com/nanotun/server
 After=network-online.target nanotun-tun-setup.service
 Wants=network-online.target
 Requires=nanotun-tun-setup.service

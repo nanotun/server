@@ -440,6 +440,49 @@ apply_magic_suffix() {
 # 调用。同一套「这台机器行不行」的规则要是各写一份,迟早对不上,而对不上的那天
 # 表现是「引导脚本说能装,安装脚本说不能」。
 #
+# Web 后台端口必须在**环境自检之前**定下来。
+#
+# 自检要查「这台机器上这个端口空不空」,而它只能查它知道的那个。全新机器上
+# /usr/local/bin/nanotun-ports.sh 还不存在(装完才有),自检里 nanotun_load_ports 整块被
+# 跳过,NT_PORT_WEB 就停在兜底的 7443 —— 于是它查的是一个这次安装根本不会去听的端口。
+#
+# 2026-08-28 实测(离线解包直接跑本脚本、7443 被别的进程占着):自检 FATAL 挡下整场安装,
+# 而随后要挑的是 10000–31999 里的随机端口,跟 7443 毫无关系。反过来 7443 空闲时,自检会
+# 打「会放行 7443/tcp」,人照着去开安全组,后台却听在别处。
+#
+# install.sh 那条在线链不受影响 —— 它本来就在跑自检之前 export 了 NANOTUN_WEB_PORT。
+# 这里补的正是「离线直接跑本脚本」那条路。
+nt_ish_random_port() {
+  # 10000..31999:上界避开 Linux 默认临时端口段(32768–60999)——在那个区间 listen 会和
+  # 本机对外连接的源端口撞,症状是偶发绑定失败,极难复现。
+  # 用 /dev/urandom 而非 $RANDOM:同镜像同秒启动的批量云主机用 $RANDOM 有相当概率撞同一个。
+  local n
+  n="$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
+  case "$n" in ''|*[!0-9]*) n="$RANDOM" ;; esac
+  printf '%s' "$(( 10000 + n % 22000 ))"
+}
+
+NT_WEB_PORT_PINNED=""
+if [ -r "$ETC_DIR/web.env" ]; then
+  NT_WEB_PORT_PINNED="$(awk -F= '/^[ \t]*NANOTUN_WEB_LISTEN[ \t]*=/ {sub(/^[^=]*=/, ""); v=$0} END {print v}' \
+    "$ETC_DIR/web.env" 2>/dev/null | tr -d '[:space:]"'"'"'' | sed 's/.*://')"
+  case "$NT_WEB_PORT_PINNED" in ''|*[!0-9]*) NT_WEB_PORT_PINNED="" ;; esac
+fi
+
+# 不按 WEB_AVAILABLE 分岔:那一项要等解包检查完才知道(在下面),而端口现在就得定。
+# 发布包里没有 nanotun-web 时多定一个端口是无害的 —— 下面那段不会去写 web.env,
+# 而自检查一个空闲的随机端口也只是多打一行「空闲」。
+if [ -n "${NANOTUN_WEB_PORT:-}" ]; then
+  :                                        # ① 上游定了(install.sh 或调用方)
+elif [ -n "$NT_WEB_PORT_PINNED" ]; then
+  NANOTUN_WEB_PORT="$NT_WEB_PORT_PINNED"   # ② 沿用本机现值(升级不挪动管理入口)
+else
+  NANOTUN_WEB_PORT="$(nt_ish_random_port)" # ③ 自己挑
+  ok_t "Web console port: $NANOTUN_WEB_PORT (randomized; set NANOTUN_WEB_PORT to pin it)" \
+       "Web 后台端口:$NANOTUN_WEB_PORT(随机挑的;要固定就设 NANOTUN_WEB_PORT)"
+fi
+export NANOTUN_WEB_PORT
+
 # --offline:发布包已经在本地了,不需要 curl / tar。
 # NANOTUN_PREFLIGHT_DONE=1:install.sh 在下载之前已经验过一遍,不必重复。
 if [ "${NANOTUN_PREFLIGHT_DONE:-0}" = "1" ]; then
@@ -892,35 +935,7 @@ ok "ip_forward = $(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 'n/a'), v6.
 # 必须在放行防火墙**之前**定下来:下面 FW_TCP 用的就是它。也必须真的写进 web.env ——
 # nanotun-web 的监听地址只从那儿读(systemd 单元的 EnvironmentFile),不写就还是内置的 7443,
 # 于是会出现「防火墙放行了随机端口、服务却听在 7443」这种三方各自成功的局面。
-nt_ish_random_port() {
-  # 10000..31999:上界避开 Linux 默认临时端口段(32768–60999)——在那个区间 listen 会和
-  # 本机对外连接的源端口撞,症状是偶发绑定失败,极难复现。
-  # 用 /dev/urandom 而非 $RANDOM:同镜像同秒启动的批量云主机用 $RANDOM 有相当概率撞同一个。
-  local n
-  n="$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
-  case "$n" in ''|*[!0-9]*) n="$RANDOM" ;; esac
-  printf '%s' "$(( 10000 + n % 22000 ))"
-}
-
-NT_WEB_PORT_PINNED=""
-if [ -r "$ETC_DIR/web.env" ]; then
-  NT_WEB_PORT_PINNED="$(awk -F= '/^[ \t]*NANOTUN_WEB_LISTEN[ \t]*=/ {sub(/^[^=]*=/, ""); v=$0} END {print v}' \
-    "$ETC_DIR/web.env" 2>/dev/null | tr -d '[:space:]"'"'"'' | sed 's/.*://')"
-  case "$NT_WEB_PORT_PINNED" in ''|*[!0-9]*) NT_WEB_PORT_PINNED="" ;; esac
-fi
-
 if [ "$WEB_AVAILABLE" -eq 1 ]; then
-  if [ -n "${NANOTUN_WEB_PORT:-}" ]; then
-    :                                   # ① 上游定了
-  elif [ -n "$NT_WEB_PORT_PINNED" ]; then
-    NANOTUN_WEB_PORT="$NT_WEB_PORT_PINNED"   # ② 沿用本机现值
-  else
-    NANOTUN_WEB_PORT="$(nt_ish_random_port)" # ③ 自己挑
-    ok_t "Web console port: $NANOTUN_WEB_PORT (randomized; set NANOTUN_WEB_PORT to pin it)" \
-         "Web 后台端口:$NANOTUN_WEB_PORT(随机挑的;要固定就设 NANOTUN_WEB_PORT)"
-  fi
-  export NANOTUN_WEB_PORT
-
   # 落进 web.env。已经钉着同一个值就什么都不做(幂等,重跑不刷屏也不重启服务)。
   if [ "$NANOTUN_WEB_PORT" != "$NT_WEB_PORT_PINNED" ]; then
     install -d -m 0755 "$ETC_DIR"
@@ -947,7 +962,7 @@ if [ "$WEB_AVAILABLE" -eq 1 ]; then
   #
   # 注意它**只**决定兜底那一档:浏览器的 Accept-Language、以及用户在页面上切过的语言
   # (cookie)都优先。也就是说选中文装机不会把英文浏览器的界面变成中文,只是让「既不要
-  # 中文也不要英文」的浏览器落到中文而不是一个与本机无关的常量。
+  # 中文也不要英文」的浏览器落到这台机器装机时选的那个,而不是一个与本机无关的常量。
   install -d -m 0755 "$ETC_DIR"
   if grep -qE '^[ \t]*NANOTUN_LANG[ \t]*=' "$ETC_DIR/web.env" 2>/dev/null; then
     # 同样原地替换,不追加第二行(EnvironmentFile 后者覆盖前者,两行并存最难查)。

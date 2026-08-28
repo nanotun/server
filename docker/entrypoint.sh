@@ -11,6 +11,9 @@
 # 环境变量(都有合理默认,不设也能跑):
 #   NANOTUN_WEB_ENABLED=1        是否同时起 Web 管理面(0 = 只跑数据面)
 #   NANOTUN_WEB_LISTEN=0.0.0.0:7443
+#   NANOTUN_WEB_PORT=            NANOTUN_WEB_LISTEN 的简写,只给端口(裸机那边用的就是这个
+#                                名字)。两个都给时以 NANOTUN_WEB_LISTEN 为准 —— 它更具体
+#                                (能指定绑哪个地址)。
 #   NANOTUN_WEB_EXTRA_SANS=      Web 自签证书额外 SAN,逗号分隔,如 vpn.example.com
 #   NANOTUN_WEB_TRUSTED_PROXIES= 可信反代 IP/CIDR;放在 nginx 后面时必须设,否则按 IP
 #                                限流会因为看到的全是反代地址而失效
@@ -288,6 +291,32 @@ apply_magic_suffix() {
 #
 # 默认 443 是有理由的(见 config.toml 的 [reality]:伪装成普通 HTTPS 站点),这个变量是给
 # 「宿主上 443 已经被别的服务占着」的部署用的。
+# NANOTUN_WEB_PORT 是裸机那边的名字,容器里也认它 —— 作为 NANOTUN_WEB_LISTEN 的简写。
+#
+# 不认的后果是**静默**:照着裸机文档设了 NANOTUN_WEB_PORT=9000 的人,容器里的后台纹丝不动
+# 还在 7443,而屏幕上一句话都没有(2026-08-28 实测:entrypoint 里对这个名字 0 处引用)。
+# 同一个概念在两条部署路径上叫两个名字,本来就容易记错,记错还不吭声就更糟。
+#
+# 归一化放在这儿(所有用到 Web 端口的地方之前),这样撞端口检查、启动参数、日志都自动跟着,
+# 不必各处再判一次。两个都给时以 NANOTUN_WEB_LISTEN 为准:它更具体(能指定绑哪个地址),
+# 而且明确指出来,免得人以为自己设的那个生效了。
+normalize_web_listen() {
+  local p="${NANOTUN_WEB_PORT:-}"
+  [ -n "$p" ] || return 0
+  if [[ ! "$p" =~ ^[0-9]+$ ]] || (( p < 1 || p > 65535 )); then
+    die_t "NANOTUN_WEB_PORT must be a number from 1 to 65535: '$p'" \
+          "NANOTUN_WEB_PORT 只认 1..65535 的整数:'$p'"
+  fi
+  if [ -n "${NANOTUN_WEB_LISTEN:-}" ]; then
+    warn_t "Both NANOTUN_WEB_LISTEN and NANOTUN_WEB_PORT are set; going with NANOTUN_WEB_LISTEN=${NANOTUN_WEB_LISTEN} (it also says which address to bind)." \
+           "同时给了 NANOTUN_WEB_LISTEN 和 NANOTUN_WEB_PORT,以 NANOTUN_WEB_LISTEN=${NANOTUN_WEB_LISTEN} 为准(它还指定了绑哪个地址)。"
+    return 0
+  fi
+  export NANOTUN_WEB_LISTEN="0.0.0.0:${p}"
+  log_t "Web console port: ${p} (from NANOTUN_WEB_PORT)" \
+        "Web 后台端口:${p}(来自 NANOTUN_WEB_PORT)"
+}
+
 apply_reality_port() {
   local port="${NANOTUN_REALITY_PORT:-}"
   [[ -n "$port" ]] || return 0   # 没给:用模板默认的 443,不动 config.toml
@@ -391,6 +420,9 @@ bootstrap() {
   # MagicDNS 后缀:首次生成 config.toml 时可经 NANOTUN_MAGIC_SUFFIX 定制(默认取模板里的值)。
   # 同样须在 nanotund 启动前 —— 它启动时把后缀读进 magicDNSResolved 快照,起来后改要重启。
   apply_magic_suffix
+  # 先把 NANOTUN_WEB_PORT 归一成 NANOTUN_WEB_LISTEN,再做 REALITY 端口 —— 后者的撞端口
+  # 检查要读 Web 端口,顺序反了就会拿旧值去比。
+  normalize_web_listen
   # REALITY 端口:同样只在首次生成 config.toml 时生效,且同样必须在 nanotund 起来之前。
   apply_reality_port
 

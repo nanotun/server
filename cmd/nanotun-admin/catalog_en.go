@@ -133,7 +133,7 @@ var catEN = map[string]string{
 	// ===== device =====
 	"device.flag.uuid":           "device UUID (RFC 4122 v4; must match the exit host's /etc/nanotun/device_id)",
 	"device.flag.name":           "device display name (optional)",
-	"device.flag.platform":       "platform linux/darwin/windows (default linux)",
+	"device.flag.platform":       "platform macos/ios/android/windows/linux/router (default linux)",
 	"device.flag.user":           "list only the given user's devices (default all)",
 	"device.flag.effective":      "show 'effective' rate columns (min of device∩settings∩toml∩user); by default shows only device-level raw values",
 	"device.flag.fixedV4":        "new fixed IPv4 vIP; empty string clears; omit to keep unchanged",

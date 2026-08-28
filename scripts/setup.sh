@@ -385,11 +385,11 @@ resolve_suffix_tool() {
 
 # 读 config.toml 里现有的 MagicDNS 后缀。空白类用 [ \t] 而非 [[:space:]]:mawk 1.3.3
 # (老 Ubuntu/Debian 默认 awk)不认 POSIX 字符类,会永不匹配(与 set-magic-suffix.sh 同口径)。
-# 配置里没写该行 → 运行期兜底为 lan(resolveMagicDNSConfig 的默认),这里也回落 lan。
+# 配置里没写该行 → 运行期兜底为 nanotun(resolveMagicDNSConfig 的默认),这里也回落 nanotun。
 current_magic_suffix() {
   local v
   v="$(awk -F'"' '/^[ \t]*domain_suffix[ \t]*=/{print $2; exit}' "$ETC_DIR/config.toml" 2>/dev/null || true)"
-  printf '%s' "${v:-lan}"
+  printf '%s' "${v:-nanotun}"
 }
 
 # 放得下才打二维码。
