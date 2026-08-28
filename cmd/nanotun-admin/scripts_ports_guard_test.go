@@ -270,3 +270,47 @@ func TestDockerfileExposeMatchesDataPlanePorts(t *testing.T) {
 			realityPort, line)
 	}
 }
+
+// 端口冲突的「改端口」建议:硬失败和软提醒两条分支都必须看配置文件在不在。
+//
+// 全新机器上 /etc/nanotun/config.toml 要装完才有,所以「去改它的 listen_addr」在装机前
+// 是一条把人支到空地方的建议。preflight 里这句话写了两遍:FOR_INSTALL 那支(真装机,判死)
+// 和 soft 那支(只体检,不拦)。
+//
+// 2026-08-28 实测:硬失败那支做了判断,软提醒那支没有 —— 而 install.sh --check-only
+// (装机前最常走的那条路)恰恰走软提醒。同一个坑、同一个脚本、两条分支各写一遍,修了一条
+// 另一条留着。REALITY 从 8443 挪到 443 之后这条更常被踩:8443 几乎没人占,443 上到处是
+// nginx。这条守卫盯的就是它们别再分家。
+func TestPreflightPortAdviceChecksConfigExistsInBothBranches(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "preflight.sh"))
+	if err != nil {
+		t.Fatalf("读不到 preflight.sh:%v", err)
+	}
+	src := string(b)
+
+	// 只看 chk_port 这个函数体 —— 别的地方提到 config.toml 不算数。
+	start := strings.Index(src, "chk_port() {")
+	if start < 0 {
+		t.Fatal("preflight.sh 里找不到 chk_port(),若改名请同步本守卫")
+	}
+	body := src[start:]
+	if end := strings.Index(body, "\n  }\n"); end > 0 {
+		body = body[:end]
+	}
+
+	if !strings.Contains(body, `[ "$FOR_INSTALL" = 1 ]`) {
+		t.Fatal("chk_port() 里找不到 FOR_INSTALL 分支")
+	}
+	if !strings.Contains(body, "soft_t") {
+		t.Fatal("chk_port() 里找不到 soft_t(只体检、不拦人的那支)")
+	}
+
+	// 两条分支各要判一次。数个数而不是切片定位:切片端点全是魔数,改动措辞就会
+	// 悄悄失准 —— 一条盯着别人别写错的守卫,自己不能是这种写法。
+	const exists = `[ -f /etc/nanotun/config.toml ]`
+	if n := strings.Count(body, exists); n < 2 {
+		t.Errorf("chk_port() 里只有 %d 处判断配置文件在不在,应当是 2 处(硬失败一处、软提醒一处):\n"+
+			"  缺的那处会让人去改一个还不存在的文件 —— 全新机器上 config.toml 要装完才有,\n"+
+			"  而 install.sh --check-only(装机前最常走的那条路)走的正是软提醒那支。", n)
+	}
+}

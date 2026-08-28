@@ -565,14 +565,32 @@ if have ss || have netstat; then
             #
             # 服务名按端口取:7443 被占时起不来的是 nanotun-web,数据面照常跑 ——
             # 笼统说「nanotun 起不来」会让人以为整台机器废了。
+            # 「改端口」这条出路同样要看配置文件在不在 —— 理由和上面那支一字不差。
+            #
+            # 2026-08-28 实测:上面那支做了判断,这一支没有,于是全新机器上
+            # `install.sh --check-only`(装机前最常走的那条路)打出「改
+            # /etc/nanotun/config.toml 里的 listen_addr」,而那个文件要装完才有。
+            # 同一个坑,同一个脚本,两条分支各写一遍 —— 修了一条,另一条留着。
+            # REALITY 从 8443 挪到 443 之后这条更常被踩:8443 几乎没人占,443 上到处
+            # 都是 nginx。所以两边都得判,下面的守卫盯着它们别再分家。
+            local soft_fix soft_fix_zh
+            if [ -f /etc/nanotun/config.toml ]; then
+              soft_fix="To change the port: $(port_knob "$2")"
+              soft_fix_zh="改端口的话:$(port_knob "$2")"
+            else
+              soft_fix="To change the port: that file does not exist yet (it appears after the install),
+       so install with --skip-check first, then change $(port_knob "$2")"
+              soft_fix_zh="改端口的话:那个文件这会儿还不存在(装完才有),
+       先 --skip-check 装上,再改 $(port_knob "$2")"
+            fi
             soft_t "$2/$1 is in use ($lbl)" \
                    "$2/$1 已被占用($lbl)" \
                    "$2/$1 is held by another process, so $(port_svc "$2") will not start: $(printf '%s' "$hit" | tr -s ' ' | cut -c1-100)
        A real install rules this one \"must be fixed first\" (this run is only a check, so it does not stop you).
-       To change the port: $(port_knob "$2")" \
+       $soft_fix" \
                    "$2/$1 被别的进程占着,$(port_svc "$2") 起不来:$(printf '%s' "$hit" | tr -s ' ' | cut -c1-100)
        这条在真正安装时会被判为「必须先修复」(现在只是检查,所以不拦你)。
-       改端口的话:$(port_knob "$2")"
+       $soft_fix_zh"
           fi ;;
       esac
     fi
