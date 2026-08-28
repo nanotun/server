@@ -31,13 +31,13 @@ e2e_load_env() {
   : "${E2E_SSH_USER:=root}"
   : "${E2E_DB_PATH:=/var/lib/nanotun/nanotun.db}"
   # 7443 只是**老默认**。2026-08-28 起 Web 后台端口在新装机器上是随机的(装机时挑,落在
-  # /etc/nanotun/web.env 的 NANOTUN_WEB_LISTEN)。现役实验室是在那之前装的,所以还在 7443,
-  # 这个默认值对它仍然成立。
+  # /etc/nanotun/web.env 的 NANOTUN_WEB_LISTEN)。
   #
-  # 但重建实验室(或换一台 SRV)之后它就不成立了,而失败长得毫无关联:阶段 60 的每一条都
-  # 报「Web 后台连不上」,像是 nanotun-web 挂了,而真因是它听在一个随机端口上。重建之后
-  # 记得照着改 e2e.env 的 E2E_WEB_BASE:
-  #     ssh root@<SRV> 'grep NANOTUN_WEB_LISTEN /etc/nanotun/web.env'
+  # 这个值猜错的样子毫无关联性:阶段 60 每一条都报「Web 后台连不上」,像是 nanotun-web
+  # 挂了,而真因是它听在一个随机端口上。所以这里只留一个兜底值 —— 真正的端口由
+  # e2e_resolve_web_base() 在 SSH 预热之后去 SRV 上问出来(见下面)。显式设了就不问。
+  [[ -n "${E2E_WEB_BASE:-}" ]] && E2E_WEB_BASE_EXPLICIT=1
+  : "${E2E_WEB_BASE_EXPLICIT:=0}"
   : "${E2E_WEB_BASE:=https://127.0.0.1:7443}"
 
   # 被测拓扑里的固定身份。这些值必须和 e2e.env 里描述的环境一致,
@@ -153,6 +153,33 @@ _e2e_srv_shim_ensure() {
   # 这里不能用 s():它自己就在等这个文件,会绕回来。
   push_file s "$E2E_ROOT/remote/systemctl-docker-shim.sh" "$E2E_SRV_SHIM" || return 1
   _E2E_SHIM_READY=1
+}
+
+# e2e_resolve_web_base —— 去 SRV 上把 Web 后台真实端口问出来。
+#
+# 为什么不靠 e2e.env 里写死:Web 端口在新装机器上是随机的,于是「重建实验室之后记得改
+# E2E_WEB_BASE」变成了一条必须有人记住的规矩,而忘了的代价是整个阶段 60 变红、且红得
+# 像是被测系统坏了。门禁的失败必须指向被测系统,不能指向门禁自己的配置漂移。
+#
+# 显式给了 E2E_WEB_BASE 就不问 —— 有人要指到别的地址(跳板、端口转发)时不该被覆盖。
+# 问不到也不 die:保留兜底值继续跑,但把话说清楚,否则阶段 60 的红又会指向错误的方向。
+e2e_resolve_web_base() {
+  (( E2E_WEB_BASE_EXPLICIT )) && return 0
+  local raw port
+  raw="$(srv_in_svc "cat /etc/nanotun/web.env 2>/dev/null" 2>/dev/null || true)"
+  port="$(printf '%s\n' "$raw" \
+    | awk -F= '/^[ \t]*NANOTUN_WEB_LISTEN[ \t]*=/ {sub(/^[^=]*=/, ""); v=$0} END {print v}' \
+    | tr -d '[:space:]"'"'"'' | sed 's/.*://')"
+  case "$port" in
+    ''|*[!0-9]*)
+      printf '%s! 没能从 SRV 的 /etc/nanotun/web.env 问出 Web 后台端口,沿用 %s%s\n' \
+        "${_Y:-}" "$E2E_WEB_BASE" "${_N:-}" >&2
+      printf '  若阶段 60 全线报「连不上」,先核对:ssh %s@%s "grep NANOTUN_WEB_LISTEN /etc/nanotun/web.env"\n' \
+        "$E2E_SSH_USER" "$E2E_SRV_HOST" >&2
+      return 0 ;;
+  esac
+  E2E_WEB_BASE="https://127.0.0.1:${port}"
+  printf 'Web 后台   %s(从 SRV 的 web.env 读到)\n' "$E2E_WEB_BASE"
 }
 
 # 三台机器的执行入口。s=服务端,a=普通客户端,c=出口/宣告方客户端。

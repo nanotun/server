@@ -411,7 +411,7 @@ cmd_status() {
     printf '  Web      https://127.0.0.1:%s/  (HTTP %s)\n' "$WEB_PORT" "$code"
   else
     printf '  Web      https://127.0.0.1:%s/  宿主连不上 —— Docker Desktop 端口转发的毛病,不是服务端\n' "$WEB_PORT"
-    printf '           容器里验:docker exec %s curl -sk -o /dev/null -w "%%{http_code}\\n" https://127.0.0.1:7443/\n' "$NAME"
+    printf '           容器里验:docker exec %s curl -sk -o /dev/null -w "%%{http_code}\\n" https://127.0.0.1:%s/\n' "$NAME" "$NANOTUN_WEB_PORT"
   fi
 }
 
@@ -434,7 +434,7 @@ browse_precheck() {
   # 已经有管理员的话「抢首位」那条断言必挂,而挂出来的样子是「找不到 password_confirm
   # 输入框」,跟真实原因隔着好几层 —— 在这里先说清楚。
   code="$(docker exec "$NAME" curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
-            https://127.0.0.1:7443/setup 2>/dev/null || true)"
+            https://127.0.0.1:${NANOTUN_WEB_PORT}/setup 2>/dev/null || true)"
   [ "$code" = 200 ] \
     || die "这台已经有 Web 管理员了(/setup 回 ${code},已自动关闭)。这个测试要自己抢首位管理员:
        $0 reset && $0 install --local        # 装的时候别带 --web-admin"

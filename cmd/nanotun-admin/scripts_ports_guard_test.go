@@ -199,3 +199,74 @@ func TestInstallerReclaimsPreviousWebPortFirewallRule(t *testing.T) {
 		}
 	}
 }
+
+// tomlSectionPort 从 config.toml 的某个 section 里取 listen_addr 的端口。
+// 端口并集(":443,5000-5100")取第一个 —— 那是实际绑定的主端口。
+func tomlSectionPort(t *testing.T, src, section string) string {
+	t.Helper()
+	i := strings.Index(src, "\n["+section+"]")
+	if i < 0 {
+		t.Fatalf("config.toml 里找不到 [%s]", section)
+	}
+	rest := src[i+1:]
+	// 到下一个 section 为止,别把别人的 listen_addr 读进来
+	if j := regexp.MustCompile(`\n\[[a-z0-9_.]+\]`).FindStringIndex(rest); j != nil {
+		rest = rest[:j[0]]
+	}
+	m := regexp.MustCompile(`(?m)^\s*listen_addr\s*=\s*"([^"]*)"`).FindStringSubmatch(rest)
+	if m == nil {
+		t.Fatalf("[%s] 里找不到 listen_addr", section)
+	}
+	p := m[1][strings.LastIndex(m[1], ":")+1:]
+	if k := strings.IndexAny(p, ",-"); k >= 0 {
+		p = p[:k]
+	}
+	return p
+}
+
+// 镜像的 EXPOSE 必须和 config.toml 模板里数据面实际听的端口一致。
+//
+// EXPOSE 不影响 network_mode: host(官方 compose 走的就是它),所以它漂了完全无声 ——
+// 没有任何测试、日志或健康检查会提一句。但它是镜像元数据:docker inspect、registry 页面、
+// 以及 docker run -P 都读它。漂了的后果是 -P 把一个没人听的端口发布出去,而客户端真正要
+// 连的那个反倒没发布,偏偏 docker port 的输出看上去一切正常。
+//
+// 2026-08-28 实测到的就是这个:REALITY 从 8443 挪到 443,模板改了、entrypoint 改了、
+// 文档改了,唯独 Dockerfile 的 EXPOSE 还写着 8443/tcp,而且它上面的注释还在说
+// 「8443/tcp REALITY」—— 一条会被人当依据去开防火墙的错误说明。
+func TestDockerfileExposeMatchesDataPlanePorts(t *testing.T) {
+	cfgRaw, err := os.ReadFile(filepath.Join("..", "..", "cmd", "nanotund", "config.toml"))
+	if err != nil {
+		t.Fatalf("读 config.toml:%v", err)
+	}
+	dfRaw, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("读 Dockerfile:%v", err)
+	}
+	cfg, df := string(cfgRaw), string(dfRaw)
+
+	expose := regexp.MustCompile(`(?m)^EXPOSE\s+(.*)$`).FindStringSubmatch(df)
+	if expose == nil {
+		t.Fatal("Dockerfile 里找不到 EXPOSE 行")
+	}
+	line := expose[1]
+
+	for _, c := range []struct{ section, proto string }{
+		{"reality", "tcp"},
+		{"hysteria", "udp"},
+	} {
+		want := tomlSectionPort(t, cfg, c.section) + "/" + c.proto
+		if !strings.Contains(line, want) {
+			t.Errorf("EXPOSE 少了 %s([%s] 在 config.toml 模板里听的就是它):\n  EXPOSE %s\n"+
+				"  桥接模式下 docker run -P 会漏发布这个端口,而客户端要连的正是它。",
+				want, c.section, line)
+		}
+	}
+	// 挪走之后旧端口不能还留在 EXPOSE 里:-P 会把它发布出去,而那儿没有任何东西在听。
+	if realityPort := tomlSectionPort(t, cfg, "reality"); realityPort != "8443" &&
+		strings.Contains(line, "8443/tcp") {
+		t.Errorf("EXPOSE 里还留着 8443/tcp,但 [reality] 现在听的是 %s:\n  EXPOSE %s\n"+
+			"  -P 会发布一个没人听的端口,而 docker port 的输出看上去毫无异常。",
+			realityPort, line)
+	}
+}

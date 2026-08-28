@@ -174,10 +174,17 @@ WORKDIR /etc/nanotun
 VOLUME ["/etc/nanotun", "/var/lib/nanotun"]
 
 # 443/udp   hysteria2 QUIC
-# 8443/tcp  REALITY
-# 7443/tcp  nanotun-web 管理面 HTTPS
+# 443/tcp   REALITY(2026-08-28 从 8443 挪过来;镜像里的 config.toml 模板写的就是 :443)
+# 7443/tcp  nanotun-web 管理面 HTTPS(容器里不随机 —— 裸机那边随机是为了别都长在同一个
+#           众所周知的端口上,而容器的端口本来就由 -p / compose 决定,再随机一层只会让
+#           映射写不出来)
 # 8080/tcp 数据面 WS 与 8081/tcp /health 默认只绑回环,不 EXPOSE。
-EXPOSE 443/udp 8443/tcp 7443/tcp
+#
+# 官方 compose 走的是 network_mode: host,那种模式下 EXPOSE 不参与任何映射。但它仍然是
+# 镜像元数据(docker inspect / registry 页面 / docker run -P 都读它),写错了就会:-P 把
+# 一个没人听的端口发布出去,而客户端真正要连的那个反倒没发布 —— 而 docker port 的输出
+# 看上去一切正常。桥接模式不是纸上谈兵,docs/DOCKER.md 里就记着有人这么跑。
+EXPOSE 443/udp 443/tcp 7443/tcp
 
 # 探活走控制面 unix socket,而不是 /health 的 127.0.0.1:8081 —— 后者在 host 网络模式下
 # 与宿主回环共用,容易和宿主上别的服务撞端口;socket 是文件,不存在这个问题。
