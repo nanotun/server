@@ -830,6 +830,10 @@ func TestHy2DialAddress_PrefersPortUnion(t *testing.T) {
 	}
 
 	// 入口 host 为空时不该把 address 写成一个只有端口的残缺串。
+	// 这里的 8443 是**输入**,不是默认值:断言的是「入口 host 为空时这一段一个字都别动」,
+	// 所以期望值必须等于上面设进去的那个数,与 defaultRealityTCPPort 无关。
+	// (2026-08-28 把默认端口改成 443 时,这一行一度被误当成回落断言改掉,于是它开始
+	//  验证一件相反的事 —— 「空 host 时把端口改成默认值」。)
 	r := &profileSchemaReality{Port: 8443}
 	attachEntryAddresses("  ", r, nil)
 	if r.Address != "" || r.Port != 8443 {
@@ -838,7 +842,7 @@ func TestHy2DialAddress_PrefersPortUnion(t *testing.T) {
 	// reality 端口为 0 时也要落默认,别拼出 "1.2.3.4:0"。
 	r2 := &profileSchemaReality{}
 	attachEntryAddresses("1.2.3.4", r2, nil)
-	if r2.Address != "1.2.3.4:8443" {
+	if r2.Address != "1.2.3.4:443" {
 		t.Errorf("reality 入口地址 = %q", r2.Address)
 	}
 }

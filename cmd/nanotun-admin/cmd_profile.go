@@ -32,10 +32,17 @@ import (
 // 与 rust_vpn_client_lib_common::server_profile 对齐的 schema 与默认端口；
 // 改这里时务必同步 Rust 一侧（两边都有自家单测保护，不会被无声破坏）。
 const (
-	profileSchemaVersion    = 1
-	profileURLPrefix        = "nanotun://v1?d="
-	defaultGatewayTCPPort   = 8080
-	defaultRealityTCPPort   = 8443
+	profileSchemaVersion  = 1
+	profileURLPrefix      = "nanotun://v1?d="
+	defaultGatewayTCPPort = 8080
+	// REALITY 的回落端口。2026-08-28 从 8443 改成 443,与 config.toml 模板和
+	// scripts/nanotun-ports.sh 的默认值对齐(理由见模板里 [reality] 那段:伪装成普通
+	// HTTPS 站只有在 443 上才成立)。
+	//
+	// 只在 config 里 [reality].listen_addr 为空、且没给 --reality-port 时才用得到 ——
+	// 模板一直显式写那一行,所以正常装出来的机器走不到这里。但三处默认值不该分头演化:
+	// 对不上的那天,客户端 profile 里的端口会和服务端实际监听的差一个,而症状只是「连不上」。
+	defaultRealityTCPPort   = 443
 	defaultHy2UDPPort       = 443
 	defaultServerConfigPath = "/etc/nanotun/config.toml"
 )

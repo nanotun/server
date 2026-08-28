@@ -591,6 +591,24 @@ if have ss || have netstat; then
     . /usr/local/bin/nanotun-ports.sh
     nanotun_load_ports
   fi
+  # 装机进行中的 Web 端口覆盖。必须在这儿再认一遍,不能只靠 nanotun_load_ports ——
+  # 全新机器上 /usr/local/bin/nanotun-ports.sh 还不存在(装完才有),上面那个 if 整块跳过,
+  # 于是它里面对 NANOTUN_WEB_PORT 的处理压根不会跑。
+  #
+  # 后果是双向的,而且两边都严重:
+  #   · 7443 被别的服务占着的全新机器上,--for-install 会**硬失败挡下安装** —— 而这次
+  #     装机用的是随机端口,压根不碰 7443;
+  #   · 反过来,显式 NANOTUN_WEB_PORT=X 且 X 被占时,这里查的是 7443、一路放行,装完
+  #     nanotun-web 拿 EADDRINUSE crash-loop —— 正是本检查存在的理由(见下面 chk_port
+  #     里那段「装了一半的系统」)。
+  if [ -n "${NANOTUN_WEB_PORT:-}" ]; then
+    case "$NANOTUN_WEB_PORT" in
+      ''|*[!0-9]*) ;;
+      *) if [ "$NANOTUN_WEB_PORT" -ge 1 ] && [ "$NANOTUN_WEB_PORT" -le 65535 ]; then
+           NT_PORT_WEB="$NANOTUN_WEB_PORT"
+         fi ;;
+    esac
+  fi
   chk_port tcp "$NT_PORT_REALITY" "REALITY" "REALITY"
   chk_port udp "$NT_PORT_HY2"  "hysteria2" "hysteria2"
   chk_port tcp "$NT_PORT_WEB" "web admin" "Web 后台"
