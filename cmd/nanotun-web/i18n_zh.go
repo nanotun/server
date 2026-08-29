@@ -327,14 +327,20 @@ var catZH = map[string]string{
 	"acl.deleteConfirm": "删除该 ACL?",
 	"acl.none":          "尚无 ACL 规则;系统当前对所有源 → 所有目的放行。",
 	"acl.noneDeny":      "尚无 ACL 规则,而兜底动作是 deny —— 跨用户流量与出口流量当前全部被拒。白名单模型下需要逐条加 allow 才会有流量通过。",
+	"acl.noneUnknown":   "尚无 ACL 规则。兜底动作读不到,所以这些流量到底通不通没法从这里判断,用 nanotun-admin setting get acl_default_action 确认。",
 	// 兜底动作(acl_default_action)只读展示。控制台不给编辑入口:改它是瞬间全网通断。
+	//
+	// 文案必须把「出口是独立一类」讲明:exit 与 user 是两套规则集,只加 user→user 的
+	// allow 解不开出公网(见 nanotund 的 TestACLDropPacketDirected_UserRulesDoNotUnlockExit)。
+	// 只说「显式 allow 的才通」的话,管理员会配满互访规则然后发现谁都上不了网,
+	// 而列表上没有一行跟出口有关。
 	"acl.defaultActionLabel":       "没命中任何规则时:",
-	"acl.defaultActionAllowNote":   "—— 跨用户默认互通,下面的规则只是例外。",
-	"acl.defaultActionDenyNote":    "—— 白名单模型:只有下面显式 allow 的才通。",
+	"acl.defaultActionAllowNote":   "—— 跨用户互访和出公网默认都通,下面的规则只是例外。",
+	"acl.defaultActionDenyNote":    "—— 白名单:只有下面显式 allow 的才通。出公网是独立的一类,没有「目标类型 = 出口」的放行规则时,连用户自己上网也会被拒。",
 	"acl.defaultActionUnknown":     "读取失败",
 	"acl.defaultActionUnknownNote": "—— 暂时读不到这个设置,下面的规则列表仍然是准的。",
 	"acl.defaultActionCliHint":     "这一项控制台只读,改动请用命令行(改完立即生效,无需重启):",
-	"acl.defaultActionRawWarn":     "这个值既不是 allow 也不是 deny(多半是拼错了)。数据面读不出合法值时按 deny 处理,也就是说现在跨用户流量是被拒的。用命令行重新设成 allow 或 deny 即可恢复。",
+	"acl.defaultActionRawWarn":     "这个值既不是 allow 也不是 deny(多半是拼错了)。数据面读不出合法值时按 deny 处理,也就是说跨用户流量和出公网现在都是被拒的。用命令行重新设成 allow 或 deny 即可恢复。",
 	"aclNew.title":      "新建 ACL 规则",
 	"aclNew.srcUser":    "src 用户(0 = 任意)",
 	"aclNew.dstUser":    "dst 用户(0 = 任意)",

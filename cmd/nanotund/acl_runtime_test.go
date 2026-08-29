@@ -808,6 +808,52 @@ func TestACLDropPacketDirected_ExitDefaultDeny(t *testing.T) {
 	}
 }
 
+// user 类规则**解不开出口**:白名单模式下加满了 user→user 的 allow,出公网照旧全拒。
+//
+// 这是 default=deny 最反直觉的一处。exit 与 user 是两套独立规则集(buildACLSnapshot 只在
+// dst_kind='exit' 时置 hasExitRules),所以管理员按「加 allow 放行」的直觉把互访规则配全之后,
+// 会看到一个满屏 allow 的 ACL 列表 + 谁都上不了网,而列表上没有任何一行与出口有关。
+//
+// 界面上「只有显式 allow 的才通」这句话必须把这一点讲明(见 nanotun-web 的
+// acl.defaultActionDenyNote),否则就是在教人踩这个坑;而这条用例是那句话的依据 ——
+// 哪天有人让 user 规则也顺带放开出口,这里会红,提醒同步改文案。
+func TestACLDropPacketDirected_UserRulesDoNotUnlockExit(t *testing.T) {
+	const uid, peer = int64(41), int64(42)
+	mine := netip.MustParseAddr("10.0.0.41")
+	theirs := netip.MustParseAddr("10.0.0.42")
+	registerVIPOwners([]netip.Addr{mine}, uid, 1)
+	registerVIPOwners([]netip.Addr{theirs}, peer, 1)
+	defer unregisterVIPOwners([]netip.Addr{mine}, 1)
+	defer unregisterVIPOwners([]netip.Addr{theirs}, 1)
+
+	// 白名单模式 + 一条「什么都放行」的 user 规则(src=*、dst=*),但一条 exit 规则都没有。
+	loadACLForTest([]*store.ACLPair{
+		{SrcUserID: 0, DstUserID: 0, Action: store.ACLAllow, DstKind: store.ACLDstKindUser},
+	}, store.ACLDeny)
+
+	udp := func(dstIP [4]byte) []byte {
+		return []byte{
+			0x45, 0x00, 0x00, 0x1c,
+			0x00, 0x00, 0x00, 0x00,
+			0x40, 0x11, 0x00, 0x00,
+			10, 0, 0, 41,
+			dstIP[0], dstIP[1], dstIP[2], dstIP[3],
+			0x12, 0x34, 0x00, 0x35,
+			0x00, 0x08, 0x00, 0x00,
+		}
+	}
+
+	// 前提确认:这条 user 规则确实生效了,跨用户互访是通的。
+	if aclDropPacketDirected(uid, udp([4]byte{10, 0, 0, 42})) {
+		t.Fatal("src=*/dst=* 的 user allow 规则没放行跨用户流量 —— 用例前提就不成立")
+	}
+	// 正题:出公网仍然被拒,因为没有任何 dst_kind='exit' 的放行规则。
+	if !aclDropPacketDirected(uid, udp([4]byte{8, 8, 8, 8})) {
+		t.Error("user 类 allow 规则把出口也放开了 —— " +
+			"界面上「出口是独立一类、要单独放行」那句话就成了错的,得同步改文案")
+	}
+}
+
 // TestACLDropPacketDirected_GatewayExempt 覆盖第四轮深扫 HIGH:default=deny 下,发往 **server 自身网关地址**
 // (如 MagicDNS gateway:53)不应被 exit ACL 丢弃 —— 与 exitDeniedForPacket / egress / subnet_route 的
 // isLocalMeshDst 豁免对齐。同一 default=deny 下发往公网 IP 仍应被丢,以证明豁免只针对网关。

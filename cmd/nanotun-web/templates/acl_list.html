@@ -66,8 +66,14 @@
     {{else}}
         {{/* 空规则集的含义完全由兜底动作决定,不能写死成「全放行」:
              default=deny + 零规则 = 跨用户流量和出口流量全丢(白名单还没放行任何人),
-             这恰恰是最容易让人困惑的状态(「我一条规则都没加,怎么全断了」)。 */}}
-        <tr><td colspan="9" class="muted">{{if eq .Data.DefaultAction "deny"}}{{T "acl.noneDeny"}}{{else}}{{T "acl.none"}}{{end}}</td></tr>
+             这恰恰是最容易让人困惑的状态(「我一条规则都没加,怎么全断了」)。
+             读失败时必须走第三条分支:此前它落到 else 分支,于是顶上显示「读取失败」、
+             表格里却照旧宣称「全放行」—— 同一屏自相矛盾,正是本页要消灭的那种误导。 */}}
+        <tr><td colspan="9" class="muted">
+            {{- if .Data.DefaultActionFail}}{{T "acl.noneUnknown"}}
+            {{- else if eq .Data.DefaultAction "deny"}}{{T "acl.noneDeny"}}
+            {{- else}}{{T "acl.none"}}{{end}}
+        </td></tr>
     {{end}}
     </tbody>
 </table>

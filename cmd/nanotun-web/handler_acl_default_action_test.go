@@ -27,30 +27,36 @@ type aclPhrases struct {
 	unknown   string // 读取失败
 	noneAllow string // 空规则集 + allow
 	noneDeny  string // 空规则集 + deny
+	noneUnfk  string // 空规则集 + 读不到兜底动作
 	rawWarn   string // 值拼错时的解释
 	readOnly  string // 「控制台只读」
+	exitNote  string // deny 语义里「出口是独立一类」那半句
 }
 
 var aclPhrasesByLang = map[string]aclPhrases{
 	LangZH: {
 		label:     "没命中任何规则时",
-		allowNote: "默认互通",
-		denyNote:  "白名单模型",
+		allowNote: "跨用户互访和出公网默认都通",
+		denyNote:  "白名单",
 		unknown:   "读取失败",
 		noneAllow: "所有源 → 所有目的放行",
 		noneDeny:  "全部被拒",
+		noneUnfk:  "没法从这里判断",
 		rawWarn:   "既不是 allow 也不是 deny",
 		readOnly:  "控制台只读",
+		exitNote:  "出公网是独立的一类",
 	},
 	LangEN: {
 		label:     "When no rule matches",
-		allowNote: "cross-user traffic is allowed by default",
-		denyNote:  "whitelist model",
+		allowNote: "cross-user traffic and internet egress are both allowed by default",
+		denyNote:  "whitelist",
 		unknown:   "read failed",
 		noneAllow: "allows all sources",
 		noneDeny:  "all cross-user traffic and all exit traffic is currently refused",
+		noneUnfk:  "cannot tell you whether that traffic flows",
 		rawWarn:   "neither allow nor deny",
 		readOnly:  "read-only",
+		exitNote:  "Internet egress is a separate class",
 	},
 }
 
@@ -203,6 +209,49 @@ func TestACLList_UnreadableDefaultActionDoesNotGuessAndKeepsListingRules(t *test
 		}
 		if !strings.Contains(body, "keep-src") {
 			t.Errorf("规则列表应当照常渲染, body=%q", trimForLog(body))
+		}
+	})
+}
+
+// 读失败 + 一条规则都没有:这一屏不能自相矛盾。
+//
+// 曾经就是:顶上 badge 显示「读取失败」,而表格里的空行照旧写着「所有源 → 所有目的放行」——
+// 空行分支只判了 deny,读失败时 Action 是空串,于是落进 else 走了 allow 那句文案。
+// 页面同时说着「我不知道」和「全放行」,后半句还正好是最危险的那个方向。
+func TestACLList_UnreadableDefaultActionDoesNotClaimAllOpenOnTheEmptyTable(t *testing.T) {
+	forEachLang(t, func(t *testing.T, lang string, p aclPhrases) {
+		s := aclGuardServer(t)
+		breakAppSettingsTable(t, s) // 一条规则都不建,走空表分支
+		body := aclListBody(t, s, lang)
+
+		if !strings.Contains(body, p.unknown) {
+			t.Errorf("顶上应显示读取失败, body=%q", trimForLog(body))
+		}
+		if strings.Contains(body, p.noneAllow) {
+			t.Fatalf("读不到兜底动作,空表却宣称全放行 —— 同一屏自相矛盾, body=%q", trimForLog(body))
+		}
+		if strings.Contains(body, p.noneDeny) {
+			t.Errorf("读不到却断言全拒,方向同样是猜的, body=%q", trimForLog(body))
+		}
+		if !strings.Contains(body, p.noneUnfk) {
+			t.Errorf("空表应说明「判断不了」并给出查证办法, body=%q", trimForLog(body))
+		}
+	})
+}
+
+// deny 文案必须讲明「出口是独立一类」。
+//
+// exit 与 user 是两套规则集:只加 user→user 的 allow 解不开出公网(nanotund 侧由
+// TestACLDropPacketDirected_UserRulesDoNotUnlockExit 钉住)。只说「显式 allow 的才通」
+// 会让人把互访规则配满,然后发现谁都上不了网,而列表上没有一行跟出口有关。
+func TestACLList_DenyNoteSaysExitIsASeparateClass(t *testing.T) {
+	forEachLang(t, func(t *testing.T, lang string, p aclPhrases) {
+		s := aclGuardServer(t)
+		if err := s.store.SettingsSet(t.Context(), "acl_default_action", "deny"); err != nil {
+			t.Fatalf("SettingsSet deny: %v", err)
+		}
+		if body := aclListBody(t, s, lang); !strings.Contains(body, p.exitNote) {
+			t.Errorf("deny 文案没讲出口是独立一类,等于在教人踩坑, body=%q", trimForLog(body))
 		}
 	})
 }
