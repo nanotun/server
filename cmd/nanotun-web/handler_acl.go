@@ -23,6 +23,53 @@ import (
 //
 // 改动后,若 cfg.AutoReloadOnACLChange = true,异步通知 nanotund reload。
 
+// aclDefaultActionView 是 ACL 列表页顶部「兜底动作」的只读展示。
+//
+// 为什么要有:一屏 allow 规则在 default=allow 和 default=deny 两种部署下长得
+// 一模一样,但语义相反(前者规则只是例外,后者规则才是全部放行来源)。列表页此前
+// 不显示这个值,只有 /acl/new 的说明文字提过一句「出厂是 allow」——看列表的人
+// 得不到任何提示。
+//
+// 只读:改这个值是瞬间全网通断,控制台故意不给表单(仅 CLI
+// `nanotun-admin setting set acl_default_action`),避免下拉框手滑。
+type aclDefaultActionView struct {
+	// Action 是数据面实际会用的动作:"allow" / "deny"。Failed 时为空。
+	Action string
+	// Raw 仅在库里存了个既不是 allow 也不是 deny 的值时非空(如拼成 "deni"),
+	// 用于把原始字符串回显给运维——否则他看到 badge 是 deny 却以为自己设的是 allow。
+	Raw string
+	// Failed 表示读设置本身出错。此时不猜值:allow 和 deny 猜错任何一个方向都是
+	// 误导(说 allow 会让人以为网是通的,说 deny 会引发一次无谓的排查)。
+	Failed bool
+}
+
+// readACLDefaultAction 读取兜底动作,归一化逻辑与数据面
+// (cmd/nanotund/acl_runtime.go 的 readSettings)保持一致:
+//   - key 不存在      → allow(migration 0003 的 seed 值,也是内置默认)
+//   - allow / deny    → 原值(大小写与空白不敏感)
+//   - 其它非空值      → deny(fail-closed),并把原值回显
+//
+// 这里刻意不复用 store.IsAllowed:那个函数有意不读 acl_default_action
+// (见其注释),拿它渲染会显示出与数据面相反的结论。
+func (s *Server) readACLDefaultAction(ctx context.Context) aclDefaultActionView {
+	v, ok, err := s.store.SettingsGet(ctx, "acl_default_action")
+	if err != nil {
+		logrus.WithError(err).Warn("[acl] failed to read acl_default_action; the list page shows it as unknown")
+		return aclDefaultActionView{Failed: true}
+	}
+	if !ok {
+		return aclDefaultActionView{Action: store.ACLAllow}
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case store.ACLAllow:
+		return aclDefaultActionView{Action: store.ACLAllow}
+	case store.ACLDeny:
+		return aclDefaultActionView{Action: store.ACLDeny}
+	default:
+		return aclDefaultActionView{Action: store.ACLDeny, Raw: v}
+	}
+}
+
 func (s *Server) handleACLList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -59,11 +106,17 @@ func (s *Server) handleACLList(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: p.CreatedAt,
 		})
 	}
+	def := s.readACLDefaultAction(r.Context())
 	s.renderPage(w, r, "acl_list.html", PageData{
 		Title: tr(r, "page.acl.title"),
 		Flash: flashFromQuery(r), // 第七轮 P2:add/delete redirect 都写 flash
-		Data:  map[string]any{"Rows": rs},
-		Nav:   NavContext{Active: "acl"},
+		Data: map[string]any{
+			"Rows":              rs,
+			"DefaultAction":     def.Action,
+			"DefaultActionRaw":  def.Raw,
+			"DefaultActionFail": def.Failed,
+		},
+		Nav: NavContext{Active: "acl"},
 	})
 }
 

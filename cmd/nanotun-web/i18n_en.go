@@ -324,6 +324,16 @@ var catEN = map[string]string{
 	"acl.newRule":       "+ New rule",
 	"acl.deleteConfirm": "Delete this ACL?",
 	"acl.none":          "No ACL rules yet; the system currently allows all sources → all destinations.",
+	"acl.noneDeny":      "No ACL rules yet, and the default action is deny — all cross-user traffic and all exit traffic is currently refused. Under a whitelist model you have to add allow rules before anything gets through.",
+	// Read-only display of acl_default_action. No edit form on purpose: flipping it
+	// takes the whole mesh up or down instantly.
+	"acl.defaultActionLabel":       "When no rule matches:",
+	"acl.defaultActionAllowNote":   "— cross-user traffic is allowed by default, and the rules below are exceptions.",
+	"acl.defaultActionDenyNote":    "— whitelist model: only what is explicitly allowed below gets through.",
+	"acl.defaultActionUnknown":     "read failed",
+	"acl.defaultActionUnknownNote": "— this setting could not be read right now; the rule list below is still accurate.",
+	"acl.defaultActionCliHint":     "The console shows this read-only. Change it from the command line (applies at once, no restart):",
+	"acl.defaultActionRawWarn":     "This value is neither allow nor deny — most likely a typo. When the data plane cannot read a valid value it falls back to deny, so cross-user traffic is being refused right now. Set it back to allow or deny from the command line to recover.",
 	"aclNew.title":      "New ACL rule",
 	"aclNew.srcUser":    "src user (0 = any)",
 	"aclNew.dstUser":    "dst user (0 = any)",

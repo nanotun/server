@@ -15,6 +15,31 @@
     {{end}}
 </div>
 
+{{/* 兜底动作(acl_default_action)只读展示。
+     一屏 allow 规则在 default=allow / default=deny 下长得一样但语义相反,不显示
+     这一行的话,看列表的人无从判断「没命中规则的流量」到底通不通。
+     故意不给编辑入口:改它是瞬间全网通断,只走 CLI(见 handler_acl.go 注释)。 */}}
+<p class="muted" style="margin:-6px 0 14px">
+    {{T "acl.defaultActionLabel"}}
+    {{- if .Data.DefaultActionFail}}
+    <span class="badge warn">{{T "acl.defaultActionUnknown"}}</span> {{T "acl.defaultActionUnknownNote"}}
+    {{- else if eq .Data.DefaultAction "allow"}}
+    <span class="badge ok">{{T "common.allow"}}</span> {{T "acl.defaultActionAllowNote"}}
+    {{- else}}
+    <span class="badge err">{{T "common.deny"}}</span> {{T "acl.defaultActionDenyNote"}}
+    {{- end}}
+    <br><small>{{T "acl.defaultActionCliHint"}} <code>nanotun-admin setting set acl_default_action deny</code></small>
+</p>
+
+{{/* 库里存了个既不是 allow 也不是 deny 的值(典型是拼错):数据面 fail-closed 当 deny,
+     但运维以为自己设的是别的。badge 只显示裁决结果不够,必须把原始值回显出来。 */}}
+{{if .Data.DefaultActionRaw}}
+<div class="flash err">
+    <strong>⚠️ <code>acl_default_action</code> = <code>{{.Data.DefaultActionRaw}}</code></strong> —
+    {{T "acl.defaultActionRawWarn"}}
+</div>
+{{end}}
+
 <div class="card">
 <table class="tbl">
     <thead><tr><th>ID</th><th>{{T "acl.thAction"}}</th><th>{{T "acl.thSrc"}}</th><th>{{T "acl.thDst"}}</th><th>{{T "acl.thProto"}}</th><th>{{T "acl.thPort"}}</th><th>{{T "acl.thKind"}}</th><th>{{T "common.created"}}</th><th></th></tr></thead>
@@ -39,7 +64,10 @@
             </td>
         </tr>
     {{else}}
-        <tr><td colspan="9" class="muted">{{T "acl.none"}}</td></tr>
+        {{/* 空规则集的含义完全由兜底动作决定,不能写死成「全放行」:
+             default=deny + 零规则 = 跨用户流量和出口流量全丢(白名单还没放行任何人),
+             这恰恰是最容易让人困惑的状态(「我一条规则都没加,怎么全断了」)。 */}}
+        <tr><td colspan="9" class="muted">{{if eq .Data.DefaultAction "deny"}}{{T "acl.noneDeny"}}{{else}}{{T "acl.none"}}{{end}}</td></tr>
     {{end}}
     </tbody>
 </table>
