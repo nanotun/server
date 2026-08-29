@@ -152,6 +152,40 @@ func warnIfUnknownSettingKey(opts *globalOpts, key string) {
 	}
 }
 
+// warnACLDefaultActionDeny:把 acl_default_action 翻到 deny 之后,说清影响面。
+//
+// 这是这套设置里影响面最大的一次写入 —— 跨用户流量与**所有出公网**立刻改按白名单
+// 裁决,而白名单此刻可能一条都没有。原本只回一句「已写入」,断了谁的网看不出来。
+// 尤其反直觉的是出口:exit 与 user 是两套独立规则集,配满 user→user 的 allow 也
+// 解不开上网(nanotund 侧 TestACLDropPacketDirected_UserRulesDoNotUnlockExit)。
+//
+// 规则集为空时再补一句:此刻是「谁都不通」,而不是「还没开始限制」。
+// 只吼 deny 方向:翻回 allow 是放开,不会让人措手不及。
+func warnACLDefaultActionDeny(ctx context.Context, st *store.Store, opts *globalOpts, key, value string) {
+	if key != "acl_default_action" {
+		return
+	}
+	if strings.ToLower(strings.TrimSpace(value)) != store.ACLDeny {
+		return
+	}
+	fmt.Fprintln(opts.stderr, opts.T("acl.defaultActionDenyWarn"))
+	rules, err := st.ListACLPairs(ctx)
+	if err != nil {
+		return
+	}
+	if len(rules) == 0 {
+		fmt.Fprintln(opts.stderr, opts.T("acl.defaultActionEmptyDeny"))
+		return
+	}
+	// 有规则但没有一条 exit 放行 → 上网仍然全断,而列表上没有一行跟出口有关。
+	for _, r := range rules {
+		if r != nil && r.DstKind == store.ACLDstKindExit && r.Action == store.ACLAllow {
+			return
+		}
+	}
+	fmt.Fprintln(opts.stderr, opts.T("acl.defaultActionNoExitAllow"))
+}
+
 // hintUnknownSettingKey:`setting get` 查不到时,只在 key 本身也不认识的情况下补一句相近拼写。
 // 已知 key 查不到就是「还没设」,那是正常状态,不该借机敲打人。
 func hintUnknownSettingKey(opts *globalOpts, key string) {
@@ -313,6 +347,10 @@ func cmdSetting(ctx context.Context, st *store.Store, opts *globalOpts, args []s
 		} else {
 			fmt.Fprintln(opts.stdout, opts.T("setting.written", key, value))
 		}
+		// 翻到 deny 是这套设置里影响面最大的一次写入:跨用户流量与**所有出公网**
+		// 立刻按白名单裁决,而白名单此刻可能是空的。原本只回一句 "已写入",看不出
+		// 刚刚把谁的网断了 —— 与 acl.allowNeedsReverse 同一类提醒。
+		warnACLDefaultActionDeny(ctx, st, opts, key, value)
 		// 落库 ≠ 生效:有些 key 被 server 缓存在内存快照里,不通知就只是改了行 DB。见 aclSnapshotSettingKeys。
 		if aclSnapshotSettingKeys[key] {
 			if notifyACLChanged(opts) {

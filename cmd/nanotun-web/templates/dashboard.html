@@ -170,7 +170,14 @@
         <div class="stat"><div class="label">{{T "nav.users"}}</div><div class="value">{{.Data.DB.Users}}</div></div>
         <div class="stat"><div class="label">{{T "nav.devices"}}</div><div class="value">{{.Data.DB.Devices}}</div></div>
         <div class="stat"><div class="label">{{T "nav.leases"}}</div><div class="value">{{.Data.DB.Leases}}</div></div>
-        <div class="stat"><div class="label">{{T "dashboard.dbAcls"}}</div><div class="value">{{.Data.DB.ACLs}}</div></div>
+        {{/* 规则条数旁边贴上兜底动作:0 条在 default=deny 下不是「没有策略」而是
+             「谁都不通」,只给条数会把最危险的状态显示成最无害的样子。
+             读失败时不显示 badge,不猜方向。 */}}
+        <div class="stat"><div class="label">{{T "dashboard.dbAcls"}}</div><div class="value">{{.Data.DB.ACLs}}
+            {{- if .Data.ACLDefaultAction}}
+            {{if .Data.ACLDefaultDeny}}<span class="badge err">{{.Data.ACLDefaultAction}}</span>{{else}}<span class="badge ok">{{.Data.ACLDefaultAction}}</span>{{end}}
+            {{- end}}
+        </div></div>
         <div class="stat"><div class="label">{{T "nav.routes"}}</div><div class="value">{{.Data.DB.Routes}}</div></div>
         <div class="stat"><div class="label">{{T "nav.audit"}}</div><div class="value">{{.Data.DB.Audits}}</div></div>
         <div class="stat"><div class="label">{{T "dashboard.dbAdmins"}}</div><div class="value">{{.Data.DB.Admins}}</div></div>

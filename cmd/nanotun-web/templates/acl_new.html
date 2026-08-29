@@ -6,6 +6,18 @@
 <div class="card">
 {{/* 2026-07-19 易用性:开头交代规则语义 + 生效方式,原表单只有裸字段。 */}}
 <p class="hint">{{T "aclNew.intro"}}</p>
+{{/* 兜底动作按**实时值**渲染。此前这里写死「出厂值是 allow」,已经翻成 deny 的
+     部署打开这一页会读到与现场相反的结论。key 与 /acl 列表页共用,一处真相。 */}}
+<p class="hint">
+    {{T "acl.defaultActionLabel"}}
+    {{- if .Data.DefaultActionFail}}
+    <b>{{T "acl.defaultActionUnknown"}}</b> {{T "acl.defaultActionUnknownNote"}}
+    {{- else if eq .Data.DefaultAction "allow"}}
+    <b>allow</b> {{T "acl.defaultActionAllowNote"}}
+    {{- else}}
+    <b>deny</b> {{T "acl.defaultActionDenyNote"}}
+    {{- end}}
+</p>
 <form method="post" action="/acl/new">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <div class="row">
@@ -60,6 +72,10 @@
             <input id="port_hi" name="port_hi" type="number" min="0" max="65535" value="0">
         </div>
     </div>
+    {{/* 「目标类型」是 default=deny 下最容易配错的一格:exit 与 user 是两套独立
+         规则集,配满 user 也解不开出公网(nanotund 侧
+         TestACLDropPacketDirected_UserRulesDoNotUnlockExit 钉住了这个行为)。 */}}
+    <p class="hint">{{T "aclNew.dstKindHint"}}</p>
     <p class="hint">{{T "aclNew.portHint"}}</p>
     <button type="submit" class="btn">{{T "common.create"}}</button>
     <a href="/acl" class="btn secondary">{{T "common.cancel"}}</a>

@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/nanotun/server/store"
 )
 
 // ACL 列表页顶部的「没命中任何规则时」一行。
@@ -21,42 +23,48 @@ import (
 
 // aclPhrases 是判定「页面表达了哪种语义」的关键短语。
 type aclPhrases struct {
-	label     string // 兜底动作那一行的引导语
-	allowNote string // allow 语义
-	denyNote  string // deny(白名单)语义
-	unknown   string // 读取失败
-	noneAllow string // 空规则集 + allow
-	noneDeny  string // 空规则集 + deny
-	noneUnfk  string // 空规则集 + 读不到兜底动作
-	rawWarn   string // 值拼错时的解释
-	readOnly  string // 「控制台只读」
-	exitNote  string // deny 语义里「出口是独立一类」那半句
+	label       string // 兜底动作那一行的引导语
+	allowNote   string // allow 语义
+	denyNote    string // deny(白名单)语义
+	unknown     string // 读取失败
+	noneAllow   string // 空规则集 + allow
+	noneDeny    string // 空规则集 + deny
+	noneUnfk    string // 空规则集 + 读不到兜底动作
+	rawWarn     string // 值拼错时的解释
+	readOnly    string // 「控制台只读」
+	exitNote    string // deny 语义里「出口是独立一类」那半句
+	kindHint    string // /acl/new「目标类型」旁边的两套规则集提示
+	exitBlocked string // 路由页「ACL 把出口全拦了」横幅
 }
 
 var aclPhrasesByLang = map[string]aclPhrases{
 	LangZH: {
-		label:     "没命中任何规则时",
-		allowNote: "跨用户互访和出公网默认都通",
-		denyNote:  "白名单",
-		unknown:   "读取失败",
-		noneAllow: "所有源 → 所有目的放行",
-		noneDeny:  "全部被拒",
-		noneUnfk:  "没法从这里判断",
-		rawWarn:   "既不是 allow 也不是 deny",
-		readOnly:  "控制台只读",
-		exitNote:  "出公网是独立的一类",
+		label:       "没命中任何规则时",
+		allowNote:   "跨用户互访和出公网默认都通",
+		denyNote:    "白名单",
+		unknown:     "读取失败",
+		noneAllow:   "所有源 → 所有目的放行",
+		noneDeny:    "全部被拒",
+		noneUnfk:    "没法从这里判断",
+		rawWarn:     "既不是 allow 也不是 deny",
+		readOnly:    "控制台只读",
+		exitNote:    "出公网是独立的一类",
+		kindHint:    "这是两套互不相干的规则集",
+		exitBlocked: "ACL 正在拦掉所有出公网流量",
 	},
 	LangEN: {
-		label:     "When no rule matches",
-		allowNote: "cross-user traffic and internet egress are both allowed by default",
-		denyNote:  "whitelist",
-		unknown:   "read failed",
-		noneAllow: "allows all sources",
-		noneDeny:  "all cross-user traffic and all exit traffic is currently refused",
-		noneUnfk:  "cannot tell you whether that traffic flows",
-		rawWarn:   "neither allow nor deny",
-		readOnly:  "read-only",
-		exitNote:  "Internet egress is a separate class",
+		label:       "When no rule matches",
+		allowNote:   "cross-user traffic and internet egress are both allowed by default",
+		denyNote:    "whitelist",
+		unknown:     "read failed",
+		noneAllow:   "allows all sources",
+		noneDeny:    "all cross-user traffic and all exit traffic is currently refused",
+		noneUnfk:    "cannot tell you whether that traffic flows",
+		rawWarn:     "neither allow nor deny",
+		readOnly:    "read-only",
+		exitNote:    "Internet egress is a separate class",
+		kindHint:    "two unrelated rule sets",
+		exitBlocked: "ACL is dropping all internet egress",
 	},
 }
 
@@ -253,6 +261,125 @@ func TestACLList_DenyNoteSaysExitIsASeparateClass(t *testing.T) {
 		if body := aclListBody(t, s, lang); !strings.Contains(body, p.exitNote) {
 			t.Errorf("deny 文案没讲出口是独立一类,等于在教人踩坑, body=%q", trimForLog(body))
 		}
+	})
+}
+
+// /acl/new 的说明必须用**实时值**,不能写死出厂默认。
+//
+// 此前那句写着「出厂值是 allow,也就是默认互通」。已经翻成 deny 的部署打开这一页,
+// 读到的是与现场相反的结论 —— 而这一页恰恰是人要来加规则的地方,判断反了就会
+// 按错误前提配策略。
+func TestACLNew_IntroFollowsTheLiveDefaultAction(t *testing.T) {
+	forEachLang(t, func(t *testing.T, lang string, p aclPhrases) {
+		newBody := func(s *Server) string {
+			t.Helper()
+			w := httptest.NewRecorder()
+			s.handleACLNew(w, withLangCtx(adminGetReq("/acl/new"), lang))
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET /acl/new code=%d body=%q", w.Code, trimForLog(w.Body.String()))
+			}
+			return w.Body.String()
+		}
+
+		t.Run("未设置时说 allow", func(t *testing.T) {
+			body := newBody(aclGuardServer(t))
+			if !strings.Contains(body, p.allowNote) {
+				t.Errorf("没按实时值渲染 allow 语义, body=%q", trimForLog(body))
+			}
+			if strings.Contains(body, p.denyNote) {
+				t.Errorf("allow 状态却显示 deny 语义, body=%q", trimForLog(body))
+			}
+		})
+
+		t.Run("翻成 deny 后跟着变", func(t *testing.T) {
+			s := aclGuardServer(t)
+			if err := s.store.SettingsSet(t.Context(), "acl_default_action", "deny"); err != nil {
+				t.Fatalf("SettingsSet deny: %v", err)
+			}
+			body := newBody(s)
+			if !strings.Contains(body, p.denyNote) {
+				t.Errorf("已是 deny,页面还没跟上, body=%q", trimForLog(body))
+			}
+			if strings.Contains(body, p.allowNote) {
+				t.Fatalf("deny 部署上仍在说默认互通 —— 正是要修掉的那句, body=%q", trimForLog(body))
+			}
+		})
+
+		// 「目标类型」是这一页最容易配错的一格:选 user 配不出上网权限。
+		t.Run("提示出口与 user 是两套规则集", func(t *testing.T) {
+			if body := newBody(aclGuardServer(t)); !strings.Contains(body, p.kindHint) {
+				t.Errorf("目标类型旁边没提示两套规则集互不相干, body=%q", trimForLog(body))
+			}
+		})
+	})
+}
+
+// 路由页:ACL 把出口整体拦住时要说一声。
+//
+// default=deny 且没有 kind=exit 的放行规则时,批准哪台设备做出口都不通 —— 而路由页
+// 本身会显示得像已经生效。缺这条提示时,现象是「批了出口还是上不了网」,人会去查
+// 设备、平台、固定 IP,查不到 ACL 上。
+func TestRouteList_WarnsWhenACLBlocksAllExitTraffic(t *testing.T) {
+	forEachLang(t, func(t *testing.T, lang string, p aclPhrases) {
+		routesBody := func(s *Server) string {
+			t.Helper()
+			w := httptest.NewRecorder()
+			s.handleRouteList(w, withLangCtx(adminGetReq("/routes"), lang))
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET /routes code=%d body=%q", w.Code, trimForLog(w.Body.String()))
+			}
+			return w.Body.String()
+		}
+
+		t.Run("default=allow 不该吓人", func(t *testing.T) {
+			if body := routesBody(aclGuardServer(t)); strings.Contains(body, p.exitBlocked) {
+				t.Errorf("ACL 其实是通的,却挂了「出口全断」横幅, body=%q", trimForLog(body))
+			}
+		})
+
+		t.Run("deny 且无出口放行 → 警告", func(t *testing.T) {
+			s := aclGuardServer(t)
+			if err := s.store.SettingsSet(t.Context(), "acl_default_action", "deny"); err != nil {
+				t.Fatalf("SettingsSet deny: %v", err)
+			}
+			if body := routesBody(s); !strings.Contains(body, p.exitBlocked) {
+				t.Errorf("出口被 ACL 全拦却没提示, body=%q", trimForLog(body))
+			}
+		})
+
+		t.Run("user 类放行不算解开出口", func(t *testing.T) {
+			s := aclGuardServer(t)
+			if err := s.store.SettingsSet(t.Context(), "acl_default_action", "deny"); err != nil {
+				t.Fatalf("SettingsSet deny: %v", err)
+			}
+			// 配一条 user→user 的 allow:数据面上这解不开出公网,警告必须还在。
+			form := aclForm(t, s, "ex-src", "ex-dst")
+			form.Set("action", "allow")
+			w := httptest.NewRecorder()
+			s.handleACLNew(w, newAdminPostRequest(t, "/acl/new", form))
+			if w.Code != http.StatusSeeOther {
+				t.Fatalf("建 user allow 规则失败: code=%d", w.Code)
+			}
+			if body := routesBody(s); !strings.Contains(body, p.exitBlocked) {
+				t.Errorf("只加了 user 类放行,出口仍是断的,警告不该消失, body=%q", trimForLog(body))
+			}
+		})
+
+		t.Run("补上出口放行后撤掉警告", func(t *testing.T) {
+			s := aclGuardServer(t)
+			if err := s.store.SettingsSet(t.Context(), "acl_default_action", "deny"); err != nil {
+				t.Fatalf("SettingsSet deny: %v", err)
+			}
+			u := newPRGTestUser(t, s, "exit-ok")
+			if _, err := s.store.AddACLPair(t.Context(), store.NewACLPair{
+				SrcUserID: u.ID, Action: store.ACLAllow, DstKind: store.ACLDstKindExit,
+			}); err != nil {
+				t.Fatalf("建 exit allow 规则: %v", err)
+			}
+			if body := routesBody(s); strings.Contains(body, p.exitBlocked) {
+				t.Errorf("已有 kind=exit 的放行规则,警告应当撤掉, body=%q", trimForLog(body))
+			}
+		})
 	})
 }
 

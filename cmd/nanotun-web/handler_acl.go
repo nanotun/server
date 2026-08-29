@@ -70,6 +70,31 @@ func (s *Server) readACLDefaultAction(ctx context.Context) aclDefaultActionView 
 	}
 }
 
+// aclBlocksAllExitTraffic 判断「此刻 ACL 是否把所有出公网流量都拦掉了」。
+//
+// 条件是 acl_default_action=deny 且没有任何 kind=exit 的 allow 规则 —— 这时数据面
+// 走 hasExitRules fast-path 整体丢弃出口方向(见 cmd/nanotund/acl_runtime.go),
+// 连用户自己上网都不通。user 类规则配多少条都不解开这一层。
+//
+// 读失败或读不到规则时返回 false:宁可少提示一次,也不要在 ACL 其实是通的页面上
+// 挂一条「你的出口全断了」把人引去查错方向。
+func (s *Server) aclBlocksAllExitTraffic(ctx context.Context) bool {
+	def := s.readACLDefaultAction(ctx)
+	if def.Failed || def.Action != store.ACLDeny {
+		return false
+	}
+	rules, err := s.store.ListACLPairs(ctx)
+	if err != nil {
+		return false
+	}
+	for _, r := range rules {
+		if r != nil && r.DstKind == store.ACLDstKindExit && r.Action == store.ACLAllow {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) handleACLList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -125,18 +150,30 @@ func (s *Server) handleACLNew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	users, _ := s.store.ListUsers(r.Context())
+	// 兜底动作用**实时值**渲染,不写死出厂默认:已经翻成 deny 的部署打开这一页,
+	// 「出厂是 allow」会把人引到与现场相反的结论。文案与 /acl 列表页共用同一批
+	// i18n key,保持一处真相。
+	def := s.readACLDefaultAction(r.Context())
+	data := func() map[string]any {
+		return map[string]any{
+			"Users":             users,
+			"DefaultAction":     def.Action,
+			"DefaultActionRaw":  def.Raw,
+			"DefaultActionFail": def.Failed,
+		}
+	}
 	switch r.Method {
 	case http.MethodGet:
 		s.renderPage(w, r, "acl_new.html", PageData{
 			Title: tr(r, "page.aclNew.title"),
-			Data:  map[string]any{"Users": users},
+			Data:  data(),
 			Nav:   NavContext{Active: "acl"},
 		})
 	case http.MethodPost:
 		retry := func(msg string) {
 			s.renderPage(w, r, "acl_new.html", PageData{
 				Title: tr(r, "page.aclNew.title"),
-				Data:  map[string]any{"Users": users},
+				Data:  data(),
 				Flash: &Flash{Kind: "err", Text: msg},
 				Nav:   NavContext{Active: "acl"},
 			})

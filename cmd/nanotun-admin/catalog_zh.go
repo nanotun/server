@@ -380,19 +380,33 @@ var catZH = map[string]string{
 	"acl.allowNeedsReverse": "注意:默认动作是 deny,而 ACL 是**逐包、按方向**判定的(无连接状态)—— " +
 		"只有这一条规则时,请求能过去、回程包会被丢,表现为完全不通。双向互通还需要:" +
 		"`nanotun-admin acl allow %s %s`",
-	"acl.reloadHint":         "提示: 规则已落库,执行 `nanotun-admin reload` 或 `systemctl reload nanotun` 让运行中进程刷新 ACL snapshot 后即时生效。",
-	"acl.protoNeedsArg":      "--proto 需要参数",
-	"acl.portNeedsArg":       "--port 需要参数",
-	"acl.portInvalid":        "--port 参数 %q 非法: %s",
-	"acl.portRangeNeedsArg":  "--port-range 需要 LO-HI 形式参数",
-	"acl.portRangeForm":      "--port-range %q 应当形如 1024-2048",
-	"acl.portRangeLoInvalid": "--port-range lo %q 非法: %s",
-	"acl.portRangeHiInvalid": "--port-range hi %q 非法: %s",
-	"acl.portRangeLoGtHi":    "--port-range %q lo>hi",
-	"acl.deleted":            "已删除 ACL 规则 #%d",
-	"acl.notFound":           "ACL 规则不存在:#%d",
-	"user.notFound":          "用户不存在:%s",
-	"device.notFound":        "设备不存在:#%d",
+	// 兜底动作:同一张规则表在 allow / deny 两种兜底下语义相反,零行更像「没配策略」。
+	// 表后补一句,让人不必再去 `setting get` 一趟。
+	"acl.defaultActionAllow": "没命中任何规则时:allow —— 跨用户互访和出公网默认都通,上面的规则只是例外。",
+	"acl.defaultActionDeny": "没命中任何规则时:deny —— 白名单:只有上面显式 allow 的才通。" +
+		"出公网是独立的一类,没有 kind=exit 的放行规则时,连用户自己上网也会被拒。",
+	"acl.defaultActionEmptyDeny": "当前一条规则都没有,兜底又是 deny —— 也就是说跨用户流量与出公网现在全部被拒。",
+	"acl.defaultActionUnreadable": "警告:读不到 acl_default_action(%s)—— 没命中规则的流量到底通不通,这次判断不了。" +
+		"上面的规则表本身是准的。",
+	"acl.defaultActionTypo": "警告:acl_default_action=%q 既不是 allow 也不是 deny(多半是拼错了)。" +
+		"数据面读不出合法值时按 deny 处理,也就是说跨用户流量和出公网现在都是被拒的。" +
+		"用 `nanotun-admin setting set acl_default_action allow|deny` 改回来。",
+	"acl.defaultActionDenyWarn": "注意:已切到白名单模型 —— 跨用户流量与**所有出公网**现在都只按显式 allow 规则放行。" +
+		"出口是独立的一类:配满 user→user 的 allow 也不会让人能上网,那需要 `acl allow <user> '*' --exit`。",
+	"acl.defaultActionNoExitAllow": "      当前没有任何 kind=exit 的放行规则 —— 所有用户的上网现在都是断的(包括他们自己出公网)。",
+	"acl.reloadHint":               "提示: 规则已落库,执行 `nanotun-admin reload` 或 `systemctl reload nanotun` 让运行中进程刷新 ACL snapshot 后即时生效。",
+	"acl.protoNeedsArg":            "--proto 需要参数",
+	"acl.portNeedsArg":             "--port 需要参数",
+	"acl.portInvalid":              "--port 参数 %q 非法: %s",
+	"acl.portRangeNeedsArg":        "--port-range 需要 LO-HI 形式参数",
+	"acl.portRangeForm":            "--port-range %q 应当形如 1024-2048",
+	"acl.portRangeLoInvalid":       "--port-range lo %q 非法: %s",
+	"acl.portRangeHiInvalid":       "--port-range hi %q 非法: %s",
+	"acl.portRangeLoGtHi":          "--port-range %q lo>hi",
+	"acl.deleted":                  "已删除 ACL 规则 #%d",
+	"acl.notFound":                 "ACL 规则不存在:#%d",
+	"user.notFound":                "用户不存在:%s",
+	"device.notFound":              "设备不存在:#%d",
 
 	// ===== route =====
 	"route.flag.user":                    "仅列出指定用户下设备声明的路由",

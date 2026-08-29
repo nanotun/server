@@ -384,19 +384,34 @@ var catEN = map[string]string{
 		"(no connection state) — with only this rule the request gets through but the reply is dropped, " +
 		"which looks like nothing works at all. For two-way traffic you also need: " +
 		"`nanotun-admin acl allow %s %s`",
-	"acl.reloadHint":         "hint: the rule is persisted; run `nanotun-admin reload` or `systemctl reload nanotun` to have running processes refresh the ACL snapshot and take effect immediately.",
-	"acl.protoNeedsArg":      "--proto needs an argument",
-	"acl.portNeedsArg":       "--port needs an argument",
-	"acl.portInvalid":        "--port argument %q is invalid: %s",
-	"acl.portRangeNeedsArg":  "--port-range needs a LO-HI argument",
-	"acl.portRangeForm":      "--port-range %q should look like 1024-2048",
-	"acl.portRangeLoInvalid": "--port-range lo %q is invalid: %s",
-	"acl.portRangeHiInvalid": "--port-range hi %q is invalid: %s",
-	"acl.portRangeLoGtHi":    "--port-range %q lo>hi",
-	"acl.deleted":            "deleted ACL rule #%d",
-	"acl.notFound":           "ACL rule not found: #%d",
-	"user.notFound":          "user not found: %s",
-	"device.notFound":        "device not found: #%d",
+	// Default action: the same rule table means opposite things under allow vs deny,
+	// and zero rows looks like "no policy at all". Print it after the table so nobody
+	// has to make a separate `setting get` trip.
+	"acl.defaultActionAllow": "When no rule matches: allow — cross-user traffic and internet egress are both permitted by default, and the rules above are exceptions.",
+	"acl.defaultActionDeny": "When no rule matches: deny — whitelist: only what is explicitly allowed above gets through. " +
+		"Internet egress is a separate class; without an allow rule of kind=exit, even a user's own internet access is refused.",
+	"acl.defaultActionEmptyDeny": "There are no rules at all and the default is deny — so all cross-user traffic and all internet egress is refused right now.",
+	"acl.defaultActionUnreadable": "WARN: could not read acl_default_action (%s) — this run cannot tell you whether unmatched traffic flows. " +
+		"The rule table above is still accurate.",
+	"acl.defaultActionTypo": "WARN: acl_default_action=%q is neither allow nor deny (most likely a typo). " +
+		"When the data plane cannot read a valid value it falls back to deny, so cross-user traffic and internet egress are both refused right now. " +
+		"Set it back with `nanotun-admin setting set acl_default_action allow|deny`.",
+	"acl.defaultActionDenyWarn": "NOTE: switched to the whitelist model — cross-user traffic and **all internet egress** now pass only via explicit allow rules. " +
+		"Exit is a separate class: filling in user→user allows will not restore internet access; that needs `acl allow <user> '*' --exit`.",
+	"acl.defaultActionNoExitAllow": "      There is currently no allow rule of kind=exit — internet access is down for every user (including their own egress).",
+	"acl.reloadHint":               "hint: the rule is persisted; run `nanotun-admin reload` or `systemctl reload nanotun` to have running processes refresh the ACL snapshot and take effect immediately.",
+	"acl.protoNeedsArg":            "--proto needs an argument",
+	"acl.portNeedsArg":             "--port needs an argument",
+	"acl.portInvalid":              "--port argument %q is invalid: %s",
+	"acl.portRangeNeedsArg":        "--port-range needs a LO-HI argument",
+	"acl.portRangeForm":            "--port-range %q should look like 1024-2048",
+	"acl.portRangeLoInvalid":       "--port-range lo %q is invalid: %s",
+	"acl.portRangeHiInvalid":       "--port-range hi %q is invalid: %s",
+	"acl.portRangeLoGtHi":          "--port-range %q lo>hi",
+	"acl.deleted":                  "deleted ACL rule #%d",
+	"acl.notFound":                 "ACL rule not found: #%d",
+	"user.notFound":                "user not found: %s",
+	"device.notFound":              "device not found: #%d",
 
 	// ===== route =====
 	"route.flag.user":                    "list only routes advertised by devices under the given user",

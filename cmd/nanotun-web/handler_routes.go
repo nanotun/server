@@ -217,6 +217,11 @@ func (s *Server) handleRouteList(w http.ResponseWriter, r *http.Request) {
 	for id, d := range devByID {
 		devNames[id] = d.DisplayName()
 	}
+	// 批准一个出口 ≠ 流量真能出去:acl_default_action=deny 且没有任何 kind=exit 的
+	// 放行规则时,出口方向在数据面被整体丢弃(acl_runtime.go 的 hasExitRules fast-path),
+	// 这一页却会显示得像已经生效。缺这一条提示的话,现象是「批了出口还是上不了网」,
+	// 而人会去查出口设备、平台、固定 IP,查不到 ACL 上。
+	exitBlocked := s.aclBlocksAllExitTraffic(r.Context())
 	s.renderPage(w, r, "routes_list.html", PageData{
 		Title: tr(r, "page.routes.title"),
 		Flash: flashFromQuery(r), // 第七轮 P2:approve/reject/delete redirect 都写 flash
@@ -229,6 +234,7 @@ func (s *Server) handleRouteList(w http.ResponseWriter, r *http.Request) {
 			"Exits":          exits,
 			"ExitCandidates": candidates,
 			"DevNames":       devNames,
+			"ACLExitBlocked": exitBlocked,
 		},
 		Nav: NavContext{Active: "routes"},
 	})

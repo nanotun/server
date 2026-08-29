@@ -89,11 +89,18 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	//     init 路径只在 migration 阶段跑一次,handler 应当看到"已 init 完"的状态。
 	serverID, _ := s.store.GetServerID(ctx)
 
+	// 「ACL 规则 = 0」在 default=deny 下看着像「没有策略」,实际是「谁都不通」。
+	// 光给个条数会把最危险的那种状态显示成最无害的样子,所以把兜底动作贴在旁边。
+	// 读失败时留空,不猜方向(说 allow 会让人以为网是通的)。
+	aclDef := s.readACLDefaultAction(ctx)
+
 	s.renderPage(w, r, "dashboard.html", PageData{
 		Title: tr(r, "page.dashboard.title"),
 		Flash: flashFromQuery(r), // 第七轮 P2:统一到 helper
 		Data: map[string]any{
 			"DB":                       dbStats,
+			"ACLDefaultAction":         aclDef.Action,
+			"ACLDefaultDeny":           aclDef.Action == store.ACLDeny,
 			"Runtime":                  runtime,
 			"RuntimeErr":               runtimeErr != nil,
 			"RuntimeErrDetail":         runtimeErrDetail(runtimeErr, isAdminRole),

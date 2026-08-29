@@ -4,6 +4,17 @@
 <h1>{{T "routes.h1"}}</h1>
 <p class="sub">{{T "routes.descPre"}}<b>{{T "routes.descStrong"}}</b>{{T "routes.descPost"}}</p>
 
+{{/* 批准出口 ≠ 流量真能出去。acl_default_action=deny 且没有 kind=exit 的放行规则时,
+     出口方向在数据面被整体丢弃,这一页却显示得像已经生效 —— 现象是「批了出口还是
+     上不了网」,而人会去查设备、平台、固定 IP,查不到 ACL 上。 */}}
+{{if .Data.ACLExitBlocked}}
+<div class="flash err">
+    <strong>⚠️ {{T "routes.aclExitBlockedStrong"}}</strong> —
+    {{T "routes.aclExitBlockedBody"}}
+    <a href="/acl">{{T "routes.aclExitBlockedLink"}}</a>
+</div>
+{{end}}
+
 <div class="card">
 <div class="card-title"><span class="hl">EXIT.NODES</span> {{T "routes.exits"}} <span class="line"></span> <span class="count">{{len .Data.Exits}}</span></div>
 {{range .Data.Exits}}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/nanotun/server/store"
 )
@@ -75,7 +76,60 @@ func cmdACLList(ctx context.Context, st *store.Store, opts *globalOpts, _ []stri
 		}
 		t.row(r.ID, r.Action, formatACLEnd(r.SrcUserID, r.SrcUsername), dstCell, r.DstKind, formatACLProto(r.Proto), formatACLPort(r.DstPortLo, r.DstPortHi), fmtTimeUnix(r.CreatedAt))
 	}
-	return t.flush()
+	if err := t.flush(); err != nil {
+		return err
+	}
+	// 光看规则表判断不出「没命中规则的流量」通不通,而零行更像「没配策略」。
+	// 跟 web 列表页同一个理由:同一张表在 allow / deny 两种兜底下语义相反。
+	printACLDefaultActionNote(ctx, st, opts, len(out) == 0)
+	return nil
+}
+
+// aclDefaultActionEffective 读出数据面**实际会用**的兜底动作。
+//
+// 归一化与 cmd/nanotund/acl_runtime.go 的 readSettings 对齐:key 缺失 → allow;
+// allow / deny 大小写与空白不敏感;其它非空值 → deny(fail-closed)。
+// raw 只在「存了个既不是 allow 也不是 deny 的值」时非空,供调用方回显 —— 不然
+// 运维看到结论是 deny,却记得自己设的是别的,从输出里看不出库里躺着个拼错值。
+func aclDefaultActionEffective(ctx context.Context, st *store.Store) (action, raw string, err error) {
+	v, ok, err := st.SettingsGet(ctx, "acl_default_action")
+	if err != nil {
+		return "", "", err
+	}
+	if !ok {
+		return store.ACLAllow, "", nil
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case store.ACLAllow:
+		return store.ACLAllow, "", nil
+	case store.ACLDeny:
+		return store.ACLDeny, "", nil
+	default:
+		return store.ACLDeny, v, nil
+	}
+}
+
+// printACLDefaultActionNote 在规则表后补一句「没命中规则时怎么办」。
+//
+// 读失败不猜方向:说 allow 会让人以为网是通的,说 deny 会引发一次无谓的排查。
+// 这里只警告,不让 acl list 失败 —— 规则表本身是准的,不该因为一句补充信息看不到。
+func printACLDefaultActionNote(ctx context.Context, st *store.Store, opts *globalOpts, emptyRuleset bool) {
+	action, raw, err := aclDefaultActionEffective(ctx, st)
+	if err != nil {
+		fmt.Fprintln(opts.stderr, opts.T("acl.defaultActionUnreadable", opts.errText(err)))
+		return
+	}
+	if raw != "" {
+		fmt.Fprintln(opts.stderr, opts.T("acl.defaultActionTypo", raw))
+	}
+	if action == store.ACLDeny {
+		fmt.Fprintln(opts.stdout, opts.T("acl.defaultActionDeny"))
+		if emptyRuleset {
+			fmt.Fprintln(opts.stdout, opts.T("acl.defaultActionEmptyDeny"))
+		}
+		return
+	}
+	fmt.Fprintln(opts.stdout, opts.T("acl.defaultActionAllow"))
 }
 
 // aclPairView 是 acl 一族 --json 的统一形状。
@@ -245,7 +299,9 @@ func warnAllowNeedsReverse(ctx context.Context, st *store.Store, opts *globalOpt
 	if srcRaw == "*" || dstRaw == "*" {
 		return
 	}
-	if v, ok, err := st.SettingsGet(ctx, "acl_default_action"); err != nil || !ok || v != "deny" {
+	// 走归一化读取:此前是 `v != "deny"` 的裸比较,库里手工写进 "DENY" / " deny "
+	// 时数据面按 deny 裁决,而这条提醒不吼 —— 恰好在最需要它的场合缺席。
+	if action, _, err := aclDefaultActionEffective(ctx, st); err != nil || action != store.ACLDeny {
 		return
 	}
 	rules, err := st.ListACLPairs(ctx)
