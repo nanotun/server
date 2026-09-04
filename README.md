@@ -51,7 +51,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
 4. **Setup wizard** ([`setup.sh`](scripts/setup.sh)) — see below
 
 When it finishes you can use it: the wizard asks for the client dial address, sets the Web
-admin username and password, creates the first VPN user, and prints two QR codes.
+admin username and password, creates the first tunnel user, and prints two QR codes.
 
 > **About the client, up front.** What this repository ships is the **server**. Those two QR
 > codes are meant to be scanned by a nanotun client, and the clients (macOS / Windows /
@@ -271,7 +271,7 @@ sudo nanotun-setup
 
 It probes and writes the dial address (`server_dial_host`), **creates the Web admin on the
 spot** (username and password you set now, password entered twice, hidden), creates the first
-VPN user, and prints two QR codes directly in the terminal:
+tunnel user, and prints two QR codes directly in the terminal:
 
 - **profile QR** — the server address and transport config, no PSK. But with hy2 mTLS on (the
   install default) it embeds a client certificate — that's not a login credential, yet it is

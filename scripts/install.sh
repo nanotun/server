@@ -3,7 +3,7 @@
 #
 #   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh)"
 #
-# 跑完就能用:向导会问拨号地址、建第一个 VPN 用户、出两个二维码。
+# 跑完就能用:向导会问拨号地址、建第一个隧道用户、出两个二维码。
 #
 # 为什么不是更眼熟的 `curl … | sudo bash`:Ubuntu / Debian 的 sudo 默认 use_pty,会
 # 另开一个 pty 跑命令,叠加管道占着 sudo 的 stdin,向导一问话就被挂起(全新 Ubuntu

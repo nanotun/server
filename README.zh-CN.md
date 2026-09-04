@@ -44,7 +44,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
    IP 转发、REALITY / hy2 密钥与自签证书、放行 ufw、第一个 VPN 管理员
 4. **开服向导**([`setup.sh`](scripts/setup.sh))—— 见下
 
-跑完就能用:向导会问客户端拨号地址、定下 Web 后台的用户名和密码、建第一个 VPN 用户、出两个二维码。
+跑完就能用:向导会问客户端拨号地址、定下 Web 后台的用户名和密码、建第一个隧道用户、出两个二维码。
 
 > **先说清楚客户端。** 这个仓库发布的是**服务端**;那两个二维码要用 nanotun 客户端扫,
 > 而客户端(macOS / Windows / Android / OpenWrt)目前**不公开分发**,代码也不在这里。
@@ -227,7 +227,7 @@ sudo nanotun-setup
 ```
 
 它会探测并写入拨号地址(`server_dial_host`)、**当场创建 Web 后台管理员**(用户名和密码
-你现在定,密码两遍隐藏输入)、创建第一个 VPN 用户,并直接在终端打出两个二维码:
+你现在定,密码两遍隐藏输入)、创建第一个隧道用户,并直接在终端打出两个二维码:
 
 - **profile QR** —— 服务器地址与传输配置,不含 PSK。但开着 hy2 mTLS(装机默认)时它内嵌一张客户端证书 —— 那不是登录凭证,却是进 QUIC 那道门的钥匙,所以发给本人、别公开贴
 - **credentials QR** —— 用户名 + PSK,机密,只能一对一给本人
@@ -506,7 +506,7 @@ sudo NANOTUN_VERSION=v1.0.0 bash -c "$(curl -fsSL \
 详见脚本头部注释与 [`docs/UPGRADE_M0.md`](docs/UPGRADE_M0.md)。
 
 不加 `--no-setup` 也不会弄坏什么:向导认得已经配好的机器,拨号地址拿现值作默认,
-Web 管理员和 VPN 用户都已存在就跳过。只是白走一遍问答。
+Web 管理员和隧道用户都已存在就跳过。只是白走一遍问答。
 
 跨多个版本一次升上来也是这个办法,不用逐版本爬。实测从 v0.1.0 直接升到 v0.1.16:
 `server_id`、REALITY 私钥、两张证书、用户与 ACL 全部原样保留,已经发出去的 profile
