@@ -1962,7 +1962,7 @@ func tunWriteLoop(dev tun.Device) {
 //
 // C3(2026-05-22):没有这个 deadline,客户端 TCP 接收窗口被填满 / NIC dropped /
 // QUIC path stalled 时,内核 write 会无限阻塞,goroutine 持有 linkWrMu 一直不释放,
-// 任何 kick / broadcast Close / takeover 路径都会跟着卡。5s 是「正常 GFW 抖动也能
+// 任何 kick / broadcast Close / takeover 路径都会跟着卡。5s 是「正常网络抖动也能
 // 写完一帧」与「不让单个慢客户端阻塞 kick 5s+」的折中。慢于此值的客户端我们直接断,
 // 上层 cleanupConnection 会释放 vIP / TunChan,后续重连用新 link 重新协商。
 const tunDemuxWriteDeadline = 5 * time.Second

@@ -94,7 +94,7 @@ func decodeMldsa65SeedBase64(s string) (*[32]byte, error) {
 // bridgeRealityToPlainVPN REALITY 握手完成后的明文连接环回本机 [server].listen_addr（WebSocket 数据面）。
 // smuxPool 非空时经环回 smux 单会话 OpenStream（与 hy2 共用 pool）；否则每 REALITY 客户端一次 Dial VPN WebSocket。
 // 任一侧 io.Copy 结束（对端 EOF 等）时必须同时 Close 两侧，否则另一侧 Copy 会永久阻塞在 Read，
-// 导致 localhost:8080 与环回对端长期 ESTABLISHED（斗篷/REALITY 常见泄漏）。
+// 导致 localhost:8080 与环回对端长期 ESTABLISHED（TLS/REALITY 常见泄漏）。
 func bridgeRealityToPlainVPN(realityConn net.Conn, vpnListenAddr, vpnWsPath string, smuxPool *loopbackSmuxPool, loopbackWSTLS *tls.Config) {
 	// 进入 bridge 时 reality 握手已完成 —— 立即清掉 realityAcceptDeadlineListener 设的
 	// 握手 deadline,否则后续业务读写(可能长时间无流量)会因 deadline 到期 EOF。

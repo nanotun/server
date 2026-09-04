@@ -253,7 +253,7 @@ func TestDecodeMldsa65SeedBase64_Needs32BytesAndSaysSoWhenItIsNot(t *testing.T) 
 }
 
 // bridge 的核心不变量:任一侧断了必须把另一侧也关掉。漏关的话 localhost 上会攒下
-// 一堆 ESTABLISHED,是这类斗篷实现最常见的泄漏。
+// 一堆 ESTABLISHED,是这类 TLS 实现最常见的泄漏。
 func TestBridgeRealityToPlainVPN_ClosingOneSideTearsDownTheOther(t *testing.T) {
 	t.Run("环回拨不通时立刻关掉客户端连接", func(t *testing.T) {
 		client, server := net.Pipe()

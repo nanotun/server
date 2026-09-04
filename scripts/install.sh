@@ -623,7 +623,7 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
                       否则 main
   NANOTUN_VERBOSE     =1 时连 systemd 状态和日志一起打出来(默认只给结论)
 
-github.com 连不上(被墙 / 出站受限)时,把两个下载前缀指到镜像,一键仍然可用。
+github.com 连不上(网络受限 / 出站受限)时,把两个下载前缀指到镜像,一键仍然可用。
 给的是**完整前缀**,路径型和 ghproxy 那种前缀型镜像都装得下:
   NANOTUN_GH_BASE     发布包的下载前缀,默认 https://github.com/${REPO}
   NANOTUN_RAW_BASE    preflight.sh 的下载前缀,默认
@@ -1201,9 +1201,9 @@ if [ "$CURL_RC" != 0 ]; then
 $OFFLINE_HINT" \
                   "下载失败:连上了但数据不来($DL $CURL_RC:30 秒内速度不到 1KB/s,已重试 3 次)。
    不是「你的网慢」—— 慢但在动的下载不会走到这里,这是彻底停住了。多半是到
-   ${GH_BASE} 的链路被中断或被墙,换个时间 / 换条线路重试${NANOTUN_GH_BASE:+
+   ${GH_BASE} 的链路被中断或被阻断,换个时间 / 换条线路重试${NANOTUN_GH_BASE:+
    (这是你用 NANOTUN_GH_BASE 指定的镜像)}${NANOTUN_GH_BASE:-
-   (被墙的话可以用 NANOTUN_GH_BASE 指到镜像,见 --help)}。
+   (链路不通时可以用 NANOTUN_GH_BASE 指到镜像,见 --help)}。
 $OFFLINE_HINT" ;;
     # wget 分不出「压根没通」和「连上了不给数据」,所以这条把两种都覆盖掉,而不去断言
     # 具体是哪一种 —— 断错了会把人往错的方向支。
@@ -1215,10 +1215,10 @@ $OFFLINE_HINT" ;;
    (if it is blocked, point NANOTUN_GH_BASE at a mirror, see --help)}.
 $OFFLINE_HINT" \
                     "下载失败:网络这一层没成($DL $CURL_RC:DNS / 连接 / TLS / 读超时,wget 把这几种并成一个码)。
-   先检查网络、DNS、出站防火墙或代理;都正常的话多半是到 ${GH_BASE} 的链路被中断或被墙,
+   先检查网络、DNS、出站防火墙或代理;都正常的话多半是到 ${GH_BASE} 的链路被中断或被阻断,
    换个时间 / 换条线路重试${NANOTUN_GH_BASE:+
    (这是你用 NANOTUN_GH_BASE 指定的镜像 —— 先确认它本身是通的)}${NANOTUN_GH_BASE:-
-   (被墙的话可以用 NANOTUN_GH_BASE 指到镜像,见 --help)}。
+   (链路不通时可以用 NANOTUN_GH_BASE 指到镜像,见 --help)}。
 $OFFLINE_HINT" ;;
     http) die_t "Download failed: the server returned an error such as 404 ($DL $CURL_RC): $BASE/$TARBALL
    Confirm that this version exists and has a linux-$ARCH artifact: https://github.com/${REPO}/releases" \

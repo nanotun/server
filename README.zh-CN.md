@@ -136,7 +136,7 @@ sudo NANOTUN_VERSION=v1.0.0 bash -c "$(curl -fsSL \
 > 联动是 v0.1.25 加的。更早的 tag 上那份 `install.sh` 还没有它,环境检查仍从 `main` 取 ——
 > 脚本和发布包钉住了,环境检查没有。要单独指定用 `NANOTUN_BRANCH`。
 
-**github.com 连不上**(被墙 / 出站受限)时不必放弃一键,把两个下载前缀指到镜像即可。给的是
+**github.com 连不上**(网络受限 / 出站受限)时不必放弃一键,把两个下载前缀指到镜像即可。给的是
 完整前缀,所以路径型和 ghproxy 那种前缀型镜像都装得下:
 
 ```bash

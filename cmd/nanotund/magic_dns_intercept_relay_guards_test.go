@@ -139,7 +139,7 @@ func TestInterceptExitBoundDNS_SilentExitBecomesSERVFAILNotLocalGeo(t *testing.T
 	if !forwardPacketToExitNode(client, mkClientDNSPacket(t, clientVIP, 44002, resolver, query)) {
 		t.Fatal("查询应被接管")
 	}
-	// 查询确实发出去了,只是出口那边永远不回话(链路黑洞 / 上游被墙)。
+	// 查询确实发出去了,只是出口那边永远不回话(链路黑洞 / 上游不可达)。
 	recvTunPacket(t, exitTun, "注入出口的查询包")
 
 	// 等出口往返超时(exitDNSWaitTimeout)后应答才会出现。

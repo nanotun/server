@@ -182,7 +182,7 @@ func TestStartEmbeddedHysteria_ObfsInitFailureUnwindsThePortAndTheRules(t *testi
 // listen_addr 的端口位允许写并集("443"、"8443,443"、"5000-5100,443"),所以它不是简单的整数解析 ——
 // 拆 host:port 那一步对 "443x" 之类是**放过**的,只有并集解析才认得出来。这道闸没拦住的话主端口会落成 0,
 // 而 0 交给内核就是「随便给个临时端口」:hy2 于是在一个谁都不知道的高位端口上监听,node_login 上报的
-// 也是那个号,而客户端配的是 443 —— 服务端日志一片正常,所有 hy2 客户端连不上,现场看起来像被墙。
+// 也是那个号,而客户端配的是 443 —— 服务端日志一片正常,所有 hy2 客户端连不上,现场看起来像链路被阻断。
 func TestStartEmbeddedHysteria_RefusesAListenAddrWhosePortsCannotBeParsed(t *testing.T) {
 	dir := t.TempDir()
 	certFile, keyFile := writeTestHy2ServerTLS(t, dir)

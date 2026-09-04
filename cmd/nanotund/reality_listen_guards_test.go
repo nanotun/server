@@ -738,7 +738,7 @@ func TestBridgeRealityToPlainVPN_SmuxPathCarriesRealClientAddrAndBridgesBothWays
 	}
 
 	// 客户端断开 → bridge 两侧都要关,否则另一侧的 io.Copy 永远挂在 Read 上
-	// (环回连接长期 ESTABLISHED,是斗篷/REALITY 的经典泄漏)。
+	// (环回连接长期 ESTABLISHED,是 TLS/REALITY 的经典泄漏)。
 	_ = client.Close()
 	select {
 	case <-done:
