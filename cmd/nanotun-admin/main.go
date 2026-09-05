@@ -689,7 +689,7 @@ SUBCOMMANDS
   audit list [--since DURATION] [--limit N] [--action ACTION]
                                                 列出最近的审计日志(--action 精确过滤,例:user_reset_psk / login.fail.bad_psk)
   webadmin create <username> [--role admin|viewer] [--password-stdin]
-                                                建 Web 后台管理员(浏览器登录用,与 VPN 账号是两套)。
+                                                建 Web 后台管理员(浏览器登录用,与客户端账号是两套)。
                                                 密码走终端提问 / 管道 / env NANOTUN_WEB_ADMIN_PASSWORD,不收命令行参数
   webadmin list                                 列出 Web 后台管理员
   webadmin reset-password <username> [--password-stdin]
@@ -776,7 +776,7 @@ SUBCOMMANDS
   audit list [--since DURATION] [--limit N] [--action ACTION]
                                                 list recent audit logs (--action filters exactly, e.g. user_reset_psk / login.fail.bad_psk)
   webadmin create <username> [--role admin|viewer] [--password-stdin]
-                                                create a web console admin (browser login; separate from VPN accounts).
+                                                create a web console admin (browser login; separate from client accounts).
                                                 Password comes from the terminal, a pipe, or env NANOTUN_WEB_ADMIN_PASSWORD — never from argv
   webadmin list                                 list web console admins
   webadmin reset-password <username> [--password-stdin]

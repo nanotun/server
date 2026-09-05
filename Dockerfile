@@ -102,10 +102,10 @@ ARG NANOTUN_VERSION=""
 ARG NANOTUN_GIT_SHA=""
 
 # OCI 标准标签。source 那条不是装饰:GHCR 靠它把镜像包关联到仓库,没有的话
-# 包页面既不显示 README 也没有指回源码的链接,对一个要人信任的 VPN 网关镜像来说
+# 包页面既不显示 README 也没有指回源码的链接,对一个要人信任的组网网关镜像来说
 # 是硬伤。其余几条让 `docker inspect` 能答出「这是什么、什么许可、哪个版本」。
 LABEL org.opencontainers.image.title="nanotun" \
-      org.opencontainers.image.description="Self-hosted mesh VPN gateway (nanotund + nanotun-web + nanotun-admin)" \
+      org.opencontainers.image.description="Self-hosted mesh networking gateway (nanotund + nanotun-web + nanotun-admin)" \
       org.opencontainers.image.source="https://github.com/nanotun/server" \
       org.opencontainers.image.documentation="https://github.com/nanotun/server/blob/main/docs/DOCKER.md" \
       org.opencontainers.image.licenses="Apache-2.0" \
