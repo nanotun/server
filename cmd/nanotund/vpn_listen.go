@@ -84,7 +84,7 @@ func buildVPNHTTPServeMux(wsPath string, gw *gatewayState, muxEnabled bool, muxO
 		}
 		ws, err := up.Upgrade(w, r, nil)
 		if err != nil {
-			logrus.WithField("remote", r.RemoteAddr).WithError(err).Debug("VPN WebSocket Upgrade failed")
+			logrus.WithField("remote", r.RemoteAddr).WithError(err).Debug("[dataplane] WebSocket Upgrade failed")
 			return
 		}
 		nc := util.NewWSStreamConn(ws)
@@ -131,7 +131,7 @@ func startVPNHTTPServer(ln net.Listener, wsPath string, gw *gatewayState, muxEna
 		// 探测完 / 后没读完就走的连接 60s 就清掉,不让它常驻 accept queue。
 		IdleTimeout: 60 * time.Second,
 	}
-	logrus.Infof("VPN: WebSocket listening on %s, path %s (link frames carried in Binary messages)", ln.Addr().String(), normalizeVPNWebSocketPath(wsPath))
+	logrus.Infof("[dataplane] WebSocket listening on %s, path %s (link frames carried in Binary messages)", ln.Addr().String(), normalizeVPNWebSocketPath(wsPath))
 	// P1-7: VPN HTTP Serve 用 safeGlobalGoroutine 包,与 hysteria / keepalive 三路统一。
 	// 这里 panic 极少(net/http 健壮),但万一 handler 内部 panic 漏过 recover middleware
 	// 又往上抛,至少能走 graceful shutdown(撤 iptables / 关 TUN)。

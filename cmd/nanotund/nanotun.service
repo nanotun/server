@@ -1,5 +1,5 @@
 [Unit]
-Description=nanotun self-hosted VPN gateway (M0 PSK mode)
+Description=nanotun self-hosted mesh gateway (M0 PSK mode)
 Documentation=https://github.com/nanotun/server
 After=network-online.target nanotun-tun-setup.service
 Wants=network-online.target

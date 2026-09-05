@@ -48,7 +48,7 @@ var systemManagedSettingKeys = map[string]string{
 // 与 systemManagedSettingKeys 不同的地方:这里**允许写入**,只是绕开了 raw
 // SettingsSet,改走 key-specific 的 validator 兜底。设计动机:
 //
-//   - ops 用 `setting set advertised_host vpn.example.com` 做脚本化部署是合理需求,
+//   - ops 用 `setting set advertised_host nanotun.example.com` 做脚本化部署是合理需求,
 //     单纯 block(像 server_id 那样)会让 web UI 成为唯一入口,损失自动化能力;
 //   - 但 web 端 POST /settings/advertised-host 在调 store.SetAdvertisedHost 前会先跑
 //     store.ValidateAdvertisedHost,过滤 scheme / 端口 / 换行注入 / 长度上限等;
@@ -588,8 +588,8 @@ func cmdSettingRate(ctx context.Context, st *store.Store, opts *globalOpts, args
 //
 // 用法:
 //
-//	nanotun-admin setting probe-dial-host vpn.example.com
-//	nanotun-admin setting probe-dial-host vpn.example.com --skip-icmp
+//	nanotun-admin setting probe-dial-host nanotun.example.com
+//	nanotun-admin setting probe-dial-host nanotun.example.com --skip-icmp
 //	nanotun-admin setting probe-dial-host 203.0.113.10
 //
 // `--skip-icmp` 与 web 表单 `skip_probe` 同款语义:**仍做 DNS 解析**,只跳过 ICMP ping

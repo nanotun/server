@@ -33,7 +33,7 @@ var loginCodeExpectations = []struct {
 	{util.CodeTokenExpired, "登录凭据已过期,请重新登录", "login.fail.token_expired"},
 	{util.CodeUserNotFound, "用户不存在", "login.fail.user_not_found"},
 	{util.CodeUserBlacklisted, "用户已被禁用", "login.fail.user_disabled"},
-	{util.CodeVPNExpired, "VPN 服务已到期", "login.fail.vpn_expired"},
+	{util.CodeVPNExpired, "服务已到期", "login.fail.vpn_expired"},
 	{util.CodeSessionLimit, "已达最大会话数,请先在其它设备断开", "login.fail.session_limit"},
 	{util.CodeKickByAdmin, "已被管理员踢下线", "login.fail.kick_by_admin"},
 	{util.CodeNodeLoginInvalid, "节点信息无效", "login.fail.node_invalid"},

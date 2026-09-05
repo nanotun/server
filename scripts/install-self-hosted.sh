@@ -148,7 +148,7 @@ die_t()  { die  "$(tsel "$1" "$2")"; }
 # 照装不误,装完退 0。
 #
 # 踩点很集中。README 的无人值守示例是给 install.sh 的:
-#   sudo bash nanotun-install.sh --dial-host vpn.example.com --user alice --yes
+#   sudo bash nanotun-install.sh --dial-host nanotun.example.com --user alice --yes
 # 而离线安装那段(下 tar 自己装)给的是 `sudo ./scripts/install-self-hosted.sh`。
 # 两段隔了几十行,把上面那串参数接到下面这条命令上是很自然的动作 —— 结果是安装成功、
 # 退出码 0、屏幕全绿,而 --dial-host 一个字都没生效,客户端仍然连不上。人会去查网络、
@@ -202,7 +202,7 @@ if [ "$#" -gt 0 ]; then
 用法: sudo ./scripts/install-self-hosted.sh [--lang en|zh]      (不接受开服向导的参数)
 
 把发布包装成一台在跑的服务:二进制、systemd 单元、IP 转发、REALITY/hy2 密钥与自签证书、
-防火墙放行、第一个 VPN 管理员。**装完还不等于客户端能连** —— 拨号地址、Web 后台管理员、
+防火墙放行、第一个客户端管理员。**装完还不等于客户端能连** —— 拨号地址、Web 后台管理员、
 第一个用户和二维码在开服向导里,装完跑:
 
     sudo nanotun-setup
@@ -224,7 +224,7 @@ Usage: sudo ./scripts/install-self-hosted.sh [--lang en|zh]   (takes no wizard a
 
 Turns the release tarball into a running service: binaries, systemd units, IP
 forwarding, REALITY/hy2 keys and self-signed certificates, firewall openings, the
-first VPN administrator. **Installed is not yet reachable** — the dial host, the
+first client administrator. **Installed is not yet reachable** — the dial host, the
 web administrator, the first user and its QR codes belong to the setup wizard.
 When this finishes, run:
 
@@ -879,7 +879,7 @@ step_t "2. Enable IP forwarding + unprivileged ICMP ping" \
 # 两边 sysctl --system 都读,建出来就行。
 mkdir -p /etc/sysctl.d
 cat > /etc/sysctl.d/99-nanotun.conf <<'SYSCTL'
-# nanotun self-hosted VPN gateway: forward packets so clients can reach the internet
+# nanotun self-hosted mesh gateway: forward packets so clients can reach the internet
 # and each other
 net.ipv4.ip_forward = 1
 net.ipv4.conf.all.forwarding = 1
@@ -1088,7 +1088,7 @@ fi
 # (无人值守、或者装完就去干别的),和 ufw 装了但没启用因而落进 else 分支的 —— 后者是
 # 全新 Ubuntu 的常态,那句 warn 里也没有「安全组」三个字。
 #
-# 这是自托管 VPN 最贵的一个坑:主机防火墙放行成功、服务全绿、端口在听,客户端就是连不上,
+# 这是自托管组网最贵的一个坑:主机防火墙放行成功、服务全绿、端口在听,客户端就是连不上,
 # 而症状(握手超时 / QUIC 无响应)和「你还没在网页控制台上点放行」之间隔着整个心智模型。
 # ufw 放了不等于安全组放了,而 ufw 那条绿色的 ✓ 恰恰会让人以为防火墙这件事已经办完了。
 #
@@ -1291,8 +1291,8 @@ else
     printf '        PSK       %s\n' "$INIT_PSK"
   fi
   echo
-  warn_t "These are the credentials of the VPN account called admin (a different thing from the web console administrator) — copy them now." \
-         "这是 admin 这个 VPN 账号的凭据(跟 Web 后台管理员是两回事),现在就抄走。"
+  warn_t "These are the credentials of the client account called admin (a different thing from the web console administrator) — copy them now." \
+         "这是 admin 这个客户端账号的凭据(跟 Web 后台管理员是两回事),现在就抄走。"
   warn_t "A second copy is kept in ${INIT_FILE} (0600) — that is the release tarball's extraction directory, so do not delete it by reflex." \
          "另存了一份在 ${INIT_FILE}(0600)—— 那是发布包解压目录,别顺手删了。"
 fi
@@ -1437,7 +1437,7 @@ check_port udp "$NT_PORT_HY2"     "${NT_PORT_HY2}/udp(hy2)" nanotund
 #
 # [tun].subnets 里的候选如果**全部**与本机网段冲突,nanotund 会跳过 IPv4 继续跑:
 # 服务 active、端口都听上了、这个脚本一路打勾,而客户端从此拿不到 IPv4 虚拟 IP,
-# 等于一台只剩 IPv6 的 VPN。原因只在 journal 里留一句 warning,而装完一切正常的人
+# 等于一台只剩 IPv6 的网关。原因只在 journal 里留一句 warning,而装完一切正常的人
 # 是不会去翻 journal 的。
 #
 # 触发它不需要多奇怪的配置:本机地址是 10.x/**8**(企业内网、部分云内网的常规分法)
@@ -1449,8 +1449,8 @@ if [ "$START_FAILED" != 1 ] && ip link show "$TUN_DEV" >/dev/null 2>&1 \
    && ! ip -4 addr show dev "$TUN_DEV" 2>/dev/null | grep -q 'inet '; then
   warn_t "$TUN_DEV has no IPv4 address — every candidate in [tun].subnets collides with a subnet this machine already uses, so IPv4 was skipped." \
          "$TUN_DEV 没有 IPv4 地址 —— [tun].subnets 里的候选网段与本机网段全部冲突,已跳过 IPv4。"
-  warn_t "  The service did come up, but clients get no IPv4 virtual IP, so this VPN is IPv6-only for now." \
-         "  服务是起来了,但客户端拿不到 IPv4 虚拟 IP,这台 VPN 眼下只有 IPv6 能用。"
+  warn_t "  The service did come up, but clients get no IPv4 virtual IP, so this server is IPv6-only for now." \
+         "  服务是起来了,但客户端拿不到 IPv4 虚拟 IP,这台服务器眼下只有 IPv6 能用。"
   warn_t "  This machine holds: $(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | tr '\n' ' ')" \
          "  本机占着:$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | tr '\n' ' ')"
   warn_t "  Pick a range that does not collide in [tun].subnets of $ETC_DIR/config.toml, then systemctl restart nanotun" \

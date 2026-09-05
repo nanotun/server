@@ -413,8 +413,8 @@ if [ -c /dev/net/tun ]; then
 elif [ "$OS" = "Linux" ]; then
   fail_t "/dev/net/tun does not exist" \
          "/dev/net/tun 不存在" \
-         "Try modprobe tun first. If the host simply does not provide it (OpenVZ and some LXC VPS do not), this machine cannot run a VPN gateway — you need a KVM-virtualised one" \
-         "先试 modprobe tun。要是宿主根本不提供(OpenVZ 和部分 LXC VPS 就没有),这台机器跑不了 VPN 网关,得换 KVM 虚拟化的"
+         "Try modprobe tun first. If the host simply does not provide it (OpenVZ and some LXC VPS do not), this machine cannot run a mesh gateway — you need a KVM-virtualised one" \
+         "先试 modprobe tun。要是宿主根本不提供(OpenVZ 和部分 LXC VPS 就没有),这台机器跑不了组网网关,得换 KVM 虚拟化的"
 fi
 
 # ip_forward 必须能置 1:nanotund 装 iptables 规则前会自己 sysctl -w,

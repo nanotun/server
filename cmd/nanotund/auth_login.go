@@ -245,7 +245,7 @@ func clientLoginMessageForCode(code int) string {
 	case util.CodeUserBlacklisted:
 		return "用户已被禁用"
 	case util.CodeVPNExpired:
-		return "VPN 服务已到期"
+		return "服务已到期"
 	case util.CodeSessionLimit:
 		return "已达最大会话数,请先在其它设备断开"
 	case util.CodeKickByAdmin:

@@ -190,7 +190,7 @@ func buildHysteriaServerConfig(hc *config.HysteriaConfig, cert tls.Certificate, 
 		// 应当只承担 hy2-tunnel 流量。开启 UDPRelayEnabled 会把 hy2 作为通用
 		// SOCKS5 UDP 代理使用,任何 hy2 客户端都能借此从本机发出任意 UDP 流量
 		// (DNS amplification / 内网横移 / 等)。仅在确认需要纯代理用途时才开启。
-		logrus.Warn("[hy2] config.udp_relay_enabled=true, so nanotun is currently acting as a general-purpose UDP proxy; if it is only meant to be a VPN entry point, turn this off to shrink the attack surface")
+		logrus.Warn("[hy2] config.udp_relay_enabled=true, so nanotun is currently acting as a general-purpose UDP proxy; if it is only meant to be a tunnel entry point, turn this off to shrink the attack surface")
 	}
 
 	out := &hyserver.Config{

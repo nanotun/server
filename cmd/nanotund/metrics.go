@@ -48,7 +48,7 @@ func writePrometheusMetrics(w io.Writer, gw *gatewayState) {
 	connIDMapMu.RLock()
 	connCount := len(connIDMap)
 	connIDMapMu.RUnlock()
-	fmt.Fprintln(w, "# HELP nanotun_active_sessions Current count of active VPN sessions")
+	fmt.Fprintln(w, "# HELP nanotun_active_sessions Current count of active tunnel sessions")
 	fmt.Fprintln(w, "# TYPE nanotun_active_sessions gauge")
 	fmt.Fprintf(w, "nanotun_active_sessions %d\n", connCount)
 
@@ -156,7 +156,7 @@ func writePrometheusMetrics(w io.Writer, gw *gatewayState) {
 	// 加密/复用 overhead。方向语义与 settings.rate_up_* / rate_down_* 对齐:
 	//   up   = 客户端上传 = server 从 link 读出
 	//   down = 客户端下载 = server 向 link 写入
-	fmt.Fprintln(w, "# HELP nanotun_bytes_total Total VPN data-plane bytes since process start, by direction")
+	fmt.Fprintln(w, "# HELP nanotun_bytes_total Total data-plane bytes since process start, by direction")
 	fmt.Fprintln(w, "# TYPE nanotun_bytes_total counter")
 	fmt.Fprintf(w, "nanotun_bytes_total{direction=\"up\"} %d\n", vpnBytesUp.Load())
 	fmt.Fprintf(w, "nanotun_bytes_total{direction=\"down\"} %d\n", vpnBytesDown.Load())

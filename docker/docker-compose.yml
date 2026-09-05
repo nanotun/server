@@ -103,7 +103,7 @@ services:
       # 或 NANOTUN_FORCE_CONFIG=1 用模板重来,后者会重签密钥、踢掉所有客户端)。
       # NANOTUN_MAGIC_SUFFIX: "lab"
       # 用域名访问管理面时填上,自签证书会带这个 SAN,浏览器少一层告警。
-      # NANOTUN_WEB_EXTRA_SANS: "vpn.example.com"
+      # NANOTUN_WEB_EXTRA_SANS: "nanotun.example.com"
       # 管理面放在 nginx 后面时必须填,否则按 IP 的登录限流看到的全是反代地址。
       # NANOTUN_WEB_TRUSTED_PROXIES: "127.0.0.1,10.0.0.0/8"
       #

@@ -187,10 +187,10 @@ ping ≠ server 能 ping)。如果你在 **server 机器上**直接跑 CLI(SSH �
 
 ```bash
 # 与 web 表单 POST /settings/server-dial-host 完全等价的 DNS+ICMP probe
-./nanotun-admin setting probe-dial-host vpn.example.com
+./nanotun-admin setting probe-dial-host nanotun.example.com
 
 # 服务器 ban ICMP(Vultr / AWS / Linode 安全组默认)时,跳过 ICMP 但仍做 DNS:
-./nanotun-admin setting probe-dial-host vpn.example.com --skip-icmp
+./nanotun-admin setting probe-dial-host nanotun.example.com --skip-icmp
 
 # 字面 IP 跳过 DNS+ICMP,纯语法校验(包含 rejectedSpecialIP 黑名单)
 ./nanotun-admin setting probe-dial-host 203.0.113.10 --skip-icmp

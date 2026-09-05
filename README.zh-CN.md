@@ -41,7 +41,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
 1. **检查环境** —— 这台机器能不能跑(见下);不过就不下载、不安装,不留半个装了一半的系统
 2. **下载** —— 自动挑架构,校验 SHA256,解压到 `/opt/nanotun/`
 3. **安装**([`install-self-hosted.sh`](scripts/install-self-hosted.sh))—— systemd 单元、
-   IP 转发、REALITY / hy2 密钥与自签证书、放行 ufw、第一个 VPN 管理员
+   IP 转发、REALITY / hy2 密钥与自签证书、放行 ufw、第一个客户端管理员
 4. **开服向导**([`setup.sh`](scripts/setup.sh))—— 见下
 
 跑完就能用:向导会问客户端拨号地址、定下 Web 后台的用户名和密码、建第一个隧道用户、出两个二维码。
@@ -65,7 +65,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install.sh -o nanotun-install.sh \
   && sudo NANOTUN_WEB_ADMIN_PASSWORD='换成你的密码' bash nanotun-install.sh \
-      --dial-host vpn.example.com --user alice --web-admin ops --yes
+      --dial-host nanotun.example.com --user alice --web-admin ops --yes
 ```
 
 > **这里要先落盘,不能写成 `curl … | bash`。** 管道形态下,curl 失败时 bash 拿到的是一个
@@ -240,13 +240,13 @@ sudo nanotun-setup
 
 ```bash
 sudo NANOTUN_WEB_ADMIN_PASSWORD='...' nanotun-setup \
-     --dial-host vpn.example.com --user alice --web-admin ops --yes
+     --dial-host nanotun.example.com --user alice --web-admin ops --yes
 ```
 
 密码只走环境变量,不做成命令行参数 —— argv 对同机所有用户可见(`ps`),还会落进 shell
 history。`--yes` 下给了 `--web-admin` 却没给密码时,向导会随机生成一个并打在屏幕上(只此一次)。
 
-VPN 账号和 Web 后台是**两套东西**,最容易混:前者是客户端登录用的用户名 + PSK(PSK 由服务器
+客户端账号和 Web 后台是**两套东西**,最容易混:前者是客户端登录用的用户名 + PSK(PSK 由服务器
 生成,不能自选);后者是浏览器登录后台用的,密码你自己设。后台账号也可以随时用命令行加:
 
 ```bash
@@ -272,7 +272,7 @@ curl -fsSLO https://raw.githubusercontent.com/nanotun/server/main/docker/docker-
   && docker compose up -d && docker compose logs -f     # 首次启动的 PSK 会打在日志里
 ```
 
-镜像是 `ghcr.io/nanotun/server`(amd64 + arm64 多架构)。它是个 VPN 网关,对
+镜像是 `ghcr.io/nanotun/server`(amd64 + arm64 多架构)。它是个组网网关,对
 `/dev/net/tun`、`CAP_NET_ADMIN`、宿主 `sysctl` 和防火墙有硬性要求,宿主那几个内核参数
 容器改不了得你自己设 —— **上面两行跑完不等于客户端就能连上**,逐条踩坑说明见
 [`docs/DOCKER.md`](docs/DOCKER.md)。容器里没有 `nanotun-setup`,拨号地址和用户在
@@ -310,7 +310,7 @@ nanotun-admin user create alice --admin --exit-allowed=true
 
 # 2) 客户端 profile QR(服务器节点 / 路由,不含 PSK;开着 hy2 mTLS 时内嵌一张客户端证书,
 #    所以是「发给本人」而不是「随便贴」)。--dial-host 不给就用库里存的 server_dial_host。
-nanotun-admin profile show alice --dial-host vpn.example.com --format qr
+nanotun-admin profile show alice --dial-host nanotun.example.com --format qr
 
 # 3) 客户端 credentials QR(用 PSK 明文 + UUID 生成,**仅这一次能拿到明文**)。
 #    用户用 nanotun-cred://v1?d=... 二维码扫入 Apple 客户端 Keychain,Profile 列表
@@ -329,7 +329,7 @@ Docker 部署统一加前缀 `docker compose exec nanotun`(镜像里 `NANOTUN_DB
 装完后服务由 systemd 管(`systemctl status nanotun` / `nanotun-web`);Docker 部署则
 是容器自身。想手工前台跑(排障):`sudo nanotund -config /etc/nanotun/config.toml`。
 
-VPN 数据面监听 `[server].listen_addr`(默认 `127.0.0.1:8080`,仅回环),走 WebSocket
+数据面监听 `[server].listen_addr`(默认 `127.0.0.1:8080`,仅回环),走 WebSocket
 Binary + 自定义链路帧(见 `util/link_frame.go`)。生产客户端(iOS/Android)经 Hysteria 2
 (`[hysteria]`,:443/udp)或 Xray REALITY(`[reality]`,:443/tcp)入站,服务端在握手后
 把它们环回桥接到数据面端口,客户端不直连 8080。仅当你要让客户端直接 wss:// 拨数据面时,

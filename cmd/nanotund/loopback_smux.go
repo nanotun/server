@@ -287,14 +287,14 @@ func dispatchVPNIncoming(c net.Conn, gw *gatewayState, muxEnabled bool, smuxCfg 
 		// ≥0x5600 时才可能撞上 'V',而那时后续字节早已到齐,Peek(4) 不会等。所以「首字节匹配才要求
 		// 看满 4 字节」既不会误判,也不会在直连路径上多等一个字节。
 		if err := setPeekDeadline(c); err != nil {
-			logrus.WithError(err).Debug("failed to set the read deadline for the VPN connection detection phase")
+			logrus.WithError(err).Debug("failed to set the read deadline for the data-plane connection detection phase")
 		}
 		head, err := br.Peek(1)
 		if err == nil && head[0] == loopbackSmuxMagic[0] {
 			head, err = br.Peek(4)
 		}
 		if err != nil {
-			logrus.WithError(err).Debug("VPN connection Peek failed")
+			logrus.WithError(err).Debug("[dataplane] connection Peek failed")
 			_ = c.Close()
 			return
 		}
@@ -338,7 +338,7 @@ func runLoopbackSmuxServerSide(rw io.ReadWriteCloser, gw *gatewayState, smuxCfg 
 		return
 	}
 	defer func() { _ = sess.Close() }()
-	logrus.Info("loopback VPN: smux carrier established, hy2/REALITY will multiplex onto this session")
+	logrus.Info("[dataplane] loopback smux carrier established, hy2/REALITY will multiplex onto this session")
 	for {
 		st, err := sess.AcceptStream()
 		if err != nil {

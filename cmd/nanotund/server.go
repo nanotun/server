@@ -1459,7 +1459,7 @@ func main() {
 
 	vpnLn, errLn := net.Listen("tcp", cfg.Server.ListenAddr)
 	if errLn != nil {
-		util.FatalExit(util.ClassifyListenError(errLn), logrus.Fields{"listen_addr": cfg.Server.ListenAddr}, "VPN Listen %s: %v", cfg.Server.ListenAddr, errLn)
+		util.FatalExit(util.ClassifyListenError(errLn), logrus.Fields{"listen_addr": cfg.Server.ListenAddr}, "data plane Listen %s: %v", cfg.Server.ListenAddr, errLn)
 	}
 	defer vpnLn.Close()
 
@@ -1482,7 +1482,7 @@ func main() {
 	if tlsOn {
 		cert, errTLS := util.LoadAndCheckTLSKeyPair(certPath, keyPath, "vpn-wss")
 		if errTLS != nil {
-			util.FatalExit(util.ExitTLSCert, logrus.Fields{"cert": certPath, "key": keyPath}, "VPN TLS loading certificate %s / %s: %v", certPath, keyPath, errTLS)
+			util.FatalExit(util.ExitTLSCert, logrus.Fields{"cert": certPath, "key": keyPath}, "data plane TLS loading certificate %s / %s: %v", certPath, keyPath, errTLS)
 		}
 		tlsSrv := util.NewServerTLSConfig(util.ServerTLSOptions{
 			Certificates: []tls.Certificate{cert},
@@ -1490,7 +1490,7 @@ func main() {
 			// SessionTicketsEnabled 留零值 = 禁用 ticket(工厂安全默认);VPN 长连接无 resumption 需求。
 		})
 		vpnLn = tls.NewListener(vpnLn, tlsSrv)
-		logrus.Infof("VPN: TLS (WSS) enabled on %s, certificate %s, handshake timeout %s", cfg.Server.ListenAddr, certPath, wssHandshakeTimeout)
+		logrus.Infof("[dataplane] TLS (WSS) enabled on %s, certificate %s, handshake timeout %s", cfg.Server.ListenAddr, certPath, wssHandshakeTimeout)
 	}
 
 	var loopbackWSTLS *tls.Config
@@ -1507,9 +1507,9 @@ func main() {
 	if muxEnabled {
 		muxOptsForAccept = buildSmuxConfigFrom(cfg.Smux)
 		loopbackSmuxPoolRef = newLoopbackSmuxPool(loopbackWSURL, muxOptsForAccept, loopbackWSTLS)
-		logrus.Infof("VPN: %s; loopback smux enabled (hy2/REALITY reaches multiplexed streams over WebSocket)", cfg.Server.ListenAddr)
+		logrus.Infof("[dataplane] %s; loopback smux enabled (hy2/REALITY reaches multiplexed streams over WebSocket)", cfg.Server.ListenAddr)
 	} else {
-		logrus.Infof("VPN: %s, WebSocket binary link frames", cfg.Server.ListenAddr)
+		logrus.Infof("[dataplane] %s, WebSocket binary link frames", cfg.Server.ListenAddr)
 	}
 
 	hySrv, hyUDPPort, hyPortHopCleanup, errHy := startEmbeddedHysteria(&cfg, cfg.Server.ListenAddr, loopbackWSURL, loopbackSmuxPoolRef, loopbackWSTLS)
@@ -1819,9 +1819,9 @@ func main() {
 	// 返回,那是 systemctl restart / stop 的正常尾声。判据用 globalContext 而不是错误
 	// 文案 —— 关停一定先 cancel 它,而 net 包那句措辞不属于任何导出的 sentinel。
 	if globalContext != nil && globalContext.Err() != nil {
-		logrus.WithError(errAcc).Info("VPN HTTP server exited as part of the process shutdown")
+		logrus.WithError(errAcc).Info("[dataplane] HTTP server exited as part of the process shutdown")
 	} else {
-		logrus.WithError(errAcc).Warn("VPN HTTP server exited")
+		logrus.WithError(errAcc).Warn("[dataplane] HTTP server exited")
 	}
 }
 

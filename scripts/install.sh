@@ -13,7 +13,7 @@
 # 无人值守(CI / cloud-init)不需要问话,不认得的参数一律转交向导。先落盘再执行 ——
 #   curl -fsSL .../install.sh -o nanotun-install.sh \
 #     && sudo NANOTUN_WEB_ADMIN_PASSWORD='<密码>' bash nanotun-install.sh \
-#          --dial-host vpn.example.com --user alice --web-admin ops --yes
+#          --dial-host nanotun.example.com --user alice --web-admin ops --yes
 #
 # 两处都不是可有可无的:
 #  ① **不能**写成 `curl … | sudo bash`。curl 失败时 bash 拿到的是个空脚本,老老实实跑完
@@ -643,7 +643,7 @@ EOF
     # 自己不认得的一律转交开服向导。这条是「一条命令装完就能用」的关键:
     #
     #   curl -fsSL .../install.sh -o nanotun-install.sh \
-    #     && sudo bash nanotun-install.sh --dial-host vpn.example.com --user alice --yes
+    #     && sudo bash nanotun-install.sh --dial-host nanotun.example.com --user alice --yes
     #
     # 没有它,无人值守就只能拆成两条命令(装完再 sudo nanotun-setup ...),而中间那步
     # 恰恰是最容易被忘掉的 —— 忘了它,服务是起着的,客户端却因为没有 server_dial_host

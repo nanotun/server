@@ -139,7 +139,7 @@ ufw allow 7443/tcp   # Web 管理面（只想内网访问就别开，改用 SSH 
 
 ## 为什么只有 host 模式
 
-这里只提供 host 网络模式（`docker-compose.yml`）。不是省事，是这个 VPN 网关有两件事要在宿主的
+这里只提供 host 网络模式（`docker-compose.yml`）。不是省事，是这个组网网关有两件事要在宿主的
 网络栈里做，bridge 下做不成，而且**两件都不报错**：
 
 **端口跳跃。** hy2 的端口跳跃靠 `nanotund` 启动时自己往 `nat PREROUTING` 写 REDIRECT，
@@ -322,7 +322,7 @@ docker compose exec nanotun diff /etc/nanotun/config.toml /etc/nanotun/config.to
 |---|---|---|
 | `NANOTUN_WEB_ENABLED` | `1` | 设 `0` 只跑数据面，不起 Web 管理面 |
 | `NANOTUN_WEB_LISTEN` | `0.0.0.0:7443` | 管理面监听地址 |
-| `NANOTUN_WEB_EXTRA_SANS` | 空 | 自签证书额外 SAN，如 `vpn.example.com` |
+| `NANOTUN_WEB_EXTRA_SANS` | 空 | 自签证书额外 SAN，如 `nanotun.example.com` |
 | `NANOTUN_WEB_TRUSTED_PROXIES` | 空 | 可信反代 IP/CIDR。放在 nginx 后面时必须设，否则按 IP 的登录限流看到的全是反代地址 |
 | `NANOTUN_FORCE_CONFIG` | `0` | 用镜像模板覆盖已有配置（会备份原文件） |
 | `NANOTUN_MAGIC_SUFFIX` | 空（模板默认 `nanotun`） | MagicDNS 局域网后缀，客户端解析 `*.<后缀>` → mesh 虚拟 IP。**只在首次生成 `config.toml` 时生效**；卷里已有配置后再改这行不起作用（改法见下） |
@@ -351,13 +351,13 @@ docker compose exec nanotun diff /etc/nanotun/config.toml /etc/nanotun/config.to
 
 `nanotund` 挂了 → 整个容器退出，交给 Docker 的 restart 策略拉起。没有它什么都干不了。
 
-`nanotun-web` 挂了 → 就地重启，不动数据面。为了一个管理界面把所有 VPN 客户端踢下线，
+`nanotun-web` 挂了 → 就地重启，不动数据面。为了一个管理界面把所有客户端踢下线，
 代价和收益完全不成比例。60 秒内连挂 5 次就不再拉起，只留日志 —— 配置写错时无限重启
 只会把日志刷爆，反而盖住真正的错误行。
 
 放弃拉起后容器会转成 **unhealthy**，尽管数据面还在正常转发。systemd 那边这种情况
 `systemctl is-active nanotun-web` 会显示 failed，容器里没有第二个 unit 可看，只能靠健康
-状态把「后台已经进不去了」这件事说出来。看见 unhealthy 又能连上 VPN，先查日志里
+状态把「后台已经进不去了」这件事说出来。看见 unhealthy 又能连上隧道，先查日志里
 `nanotun-web` 的退出原因（host 模式下最常见的是 7443 被宿主上别的服务占了），修好后
 `docker compose restart` 即可 —— 管理面不会自己回来。
 

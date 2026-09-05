@@ -3,11 +3,11 @@
 #
 #   sudo ./scripts/setup.sh
 #
-# 安装脚本负责的是机器这一侧:二进制、systemd、密钥、防火墙、第一个 VPN 管理员。
+# 安装脚本负责的是机器这一侧:二进制、systemd、密钥、防火墙、第一个客户端管理员。
 # 它跑完之后服务确实在跑,但客户端还连不上,因为还差三件只有你知道答案的事:
 #
 #   1. 客户端该往哪个地址拨(server_dial_host)—— 安装脚本猜不到你的域名;
-#   2. Web 后台的第一个管理员 —— 只能在浏览器上创建,而且跟 VPN 的 PSK 是两套账号;
+#   2. Web 后台的第一个管理员 —— 只能在浏览器上创建,而且跟客户端的 PSK 是两套账号;
 #   3. 给用户的两个二维码 —— profile(服务器配置 + 客户端证书)+ credentials(凭证,机密)。
 #
 # 这三件事以前全靠读文档,这个脚本把它们串起来。
@@ -19,10 +19,10 @@
 # 直接跳过 —— 那一步不再问「要不要建」,建是默认;确实不想建就 --no-web-admin)。
 #
 # 可脚本化(自动化部署用):
-#   sudo ./scripts/setup.sh --dial-host vpn.example.com --user alice --yes
+#   sudo ./scripts/setup.sh --dial-host nanotun.example.com --user alice --yes
 #   sudo ./scripts/setup.sh --dial-host 203.0.113.10 --no-user --yes
 #   sudo ./scripts/setup.sh --magic-suffix lab --yes          # 只改 MagicDNS 后缀并重启
-#   sudo ./scripts/setup.sh --dial-host vpn.example.com --no-web-admin   # 我自己从 /setup 抢首位
+#   sudo ./scripts/setup.sh --dial-host nanotun.example.com --no-web-admin   # 我自己从 /setup 抢首位
 set -euo pipefail
 
 # 装成 /usr/local/bin/nanotun-setup 时,同目录就有 nanotun-set-suffix;从发布包/仓库直接
@@ -135,7 +135,7 @@ note_t() { note "$(tsel "$1" "$2")"; }
 die_t()  { die  "$(tsel "$1" "$2")"; }
 
 # nt_plural <个数> <单数> <复数> —— 只有两处计数提示用得上,而它们真的会打出 1。
-# 中文没这个问题(「1 个用户」就是对的),英文那份写死复数就会冒出「1 VPN users」——
+# 中文没这个问题(「1 个用户」就是对的),英文那份写死复数就会冒出「1 users」——
 # 一句本来在说「这台机器已经配过了」的话,读起来像是脚本自己数错了。
 nt_plural() { if [ "${1:-0}" = 1 ]; then printf '%s' "$2"; else printf '%s' "$3"; fi; }
 
@@ -156,7 +156,7 @@ nanotun 开服向导:设置客户端拨号地址、创建 Web 后台管理员、
 
 选项:
   --dial-host HOST   客户端拨号地址(域名或 IP,不带端口/协议),跳过交互询问
-  --user NAME        创建这个 VPN 用户并出二维码
+  --user NAME        创建这个用户并出二维码
   --no-user          跳过创建用户那一步
   --no-web-admin     跳过创建 Web 后台管理员(不给这个开关就一定会建 —— 见下)
   --web-admin NAME   Web 后台管理员用户名(密码见下面的环境变量)
@@ -178,8 +178,8 @@ nanotun 开服向导:设置客户端拨号地址、创建 Web 后台管理员、
 
 例:
   sudo ${me}
-  sudo ${me} --dial-host vpn.example.com --user alice --yes
-  sudo NANOTUN_WEB_ADMIN_PASSWORD='...' ${me} --dial-host vpn.example.com \\
+  sudo ${me} --dial-host nanotun.example.com --user alice --yes
+  sudo NANOTUN_WEB_ADMIN_PASSWORD='...' ${me} --dial-host nanotun.example.com \\
        --user alice --web-admin ops --yes
 EOF
   else
@@ -193,7 +193,7 @@ it is safe.
 Options:
   --dial-host HOST   address clients dial (domain or IP, no port, no scheme);
                      skips the interactive question
-  --user NAME        create this VPN user and print its QR codes
+  --user NAME        create this user and print its QR codes
   --no-user          skip the user-creation step
   --no-web-admin     skip creating the web administrator (without this flag one is
                      always created — see below)
@@ -224,8 +224,8 @@ Environment:
 
 Examples:
   sudo ${me}
-  sudo ${me} --dial-host vpn.example.com --user alice --yes
-  sudo NANOTUN_WEB_ADMIN_PASSWORD='...' ${me} --dial-host vpn.example.com \\
+  sudo ${me} --dial-host nanotun.example.com --user alice --yes
+  sudo NANOTUN_WEB_ADMIN_PASSWORD='...' ${me} --dial-host nanotun.example.com \\
        --user alice --web-admin ops --yes
 EOF
   fi
@@ -590,7 +590,7 @@ while :; do
   printf '\n'
   # 语法就没过的值,不该再问「仍然使用?」—— 那是个死胡同问题:探测前脚刚说「语法错
   # 必须改」,后脚却提议照用,而答了 y 之后 setting set 必然拒绝,原来还会当场 die,
-  # 整个向导退出、得重跑一遍。实测填 https://vpn.example.com 就是这个下场。
+  # 整个向导退出、得重跑一遍。实测填 https://nanotun.example.com 就是这个下场。
   #
   # 判据取探测输出的**第一行**:语法这一关的结论固定打在那里,过了是「✓ 语法校验通过」,
   # 没过是「✗ 语法校验失败」,后面的 DNS / ICMP 结论都在下面几行。认符号不认中文 ——
@@ -621,8 +621,8 @@ while :; do
     use_default=y
     warn_t "Only ICMP failed — cloud providers block ping by default (Vultr / AWS / Aliyun security groups all do)," \
            "只有 ICMP 没通 —— 云厂商默认封 ping(Vultr / AWS / 阿里云安全组都这样),"
-    warn_t "which says nothing about the VPN ports. If the address is right, just carry on." \
-           "这不代表 VPN 端口不通。地址没填错的话直接继续即可。"
+    warn_t "which says nothing about the tunnel ports. If the address is right, just carry on." \
+           "这不代表隧道端口不通。地址没填错的话直接继续即可。"
   else
     use_default=n
     warn_t "The probe did not pass, and not in the soft ICMP way: a syntax error has to be fixed;" \
@@ -839,10 +839,10 @@ close_setup_gate() {
 }
 
 if [ "$WEB_AVAILABLE" = 1 ]; then
-  note_t "Note that this is a **separate thing** from the VPN accounts — the single easiest step to confuse:" \
-         "注意这跟 VPN 账号是**两套东西**,最容易搞混的一步:"
-  note_t "  · VPN user + PSK     — used by clients to log in; the install already created one called admin" \
-         "  · VPN 用户 + PSK  —— 客户端登录用,安装时已建了一个 admin"
+  note_t "Note that this is a **separate thing** from the client accounts — the single easiest step to confuse:" \
+         "注意这跟客户端账号是**两套东西**,最容易搞混的一步:"
+  note_t "  · User + PSK         — used by clients to log in; the install already created one called admin" \
+         "  · 用户 + PSK  —— 客户端登录用,安装时已建了一个 admin"
   note_t "  · Web administrator  — used to log in from a browser; its username and password are decided right now" \
          "  · Web 后台管理员  —— 浏览器登录用,用户名和密码现在就定下来"
   printf '\n'
@@ -1013,13 +1013,13 @@ if [ "$WEB_AVAILABLE" = 1 ]; then
       # 历史:原先无条件问,`--web-admin ops` 不带 --yes 时还会被问一遍,答 n 就把一个
       # 明确的指令否掉了;后来改成「点名了就不问」,现在进一步:一律不问。
       if [ "$OPT_NO_WEB_ADMIN" != 1 ]; then
-        # 提示里点明「新账号」:这一步开场白刚说完「VPN 账号和后台是两套东西」,而安装时
-        # 建的那个 VPN 用户恰好也叫 admin —— 默认值一撞名,人很容易以为这是在给同一个
+        # 提示里点明「新账号」:这一步开场白刚说完「客户端账号和后台是两套东西」,而安装时
+        # 建的那个客户端用户恰好也叫 admin —— 默认值一撞名,人很容易以为这是在给同一个
         # 账号补个密码,刚讲清楚的区分当场又糊掉了。默认值仍留 admin(后台就该叫这个,
         # 换成 webadmin 之类只是把别扭挪个地方),用一句话把它钉住。
         [ -n "$web_admin_user" ] || web_admin_user="$(ask "$(tsel \
-          'Console username (a new account, unrelated to the VPN admin)' \
-          '后台用户名(新账号,跟 VPN 那个 admin 无关)')" "admin")"
+          'Console username (a new account, unrelated to the client admin)' \
+          '后台用户名(新账号,跟客户端那个 admin 无关)')" "admin")"
 
         if [ -n "$web_admin_pass" ] && wa_create "$web_admin_user" "$web_admin_pass"; then
           # 名字和密码都已经给全了(环境变量),即便没带 --yes 也不必再问一遍 ——
@@ -1089,8 +1089,8 @@ else
                                     "--web-admin $OPT_WEB_ADMIN 这次没生效:这台机器上没有 Web 后台,建了也没处登。"
 fi
 
-# ── 3. 首个 VPN 用户 + 二维码 ────────────────────────────────────────────────
-step_t "3. Create a VPN user and print its QR codes" "3. 创建 VPN 用户并生成二维码"
+# ── 3. 首个客户端用户 + 二维码 ────────────────────────────────────────────────
+step_t "3. Create a user and print its QR codes" "3. 创建用户并生成二维码"
 
 if [ "$OPT_NO_USER" = 1 ]; then
   note_t "--no-user, skipping." "--no-user,跳过。"
@@ -1109,7 +1109,7 @@ else
   #
   # 计数只数**非管理员**($3=="no"),与 install-self-hosted.sh 的 count_real_users 同一个口径。
   # 装机脚本自己会建一个管理员账号,把它一起算进来的话,全新机器上这里会直接跳过 —— 首装就
-  # 拿不到任何 VPN 用户和二维码,那比重复建一个严重得多。
+  # 拿不到任何用户和二维码,那比重复建一个严重得多。
   USER_LIST="$(admin user list 2>/dev/null || true)"
   REAL_USERS="$(printf '%s\n' "$USER_LIST" | awk 'NR>1 && $3=="no" {n++} END {print n+0}')"
   USER_NAMED_EXISTS=0
@@ -1121,8 +1121,8 @@ else
   username=""
   USER_SKIPPED=0
   if [ "$USER_NAMED_EXISTS" = 1 ]; then
-    ok_t "VPN user $OPT_USER already exists, skipping creation." \
-         "VPN 用户 $OPT_USER 已存在,跳过创建。"
+    ok_t "User $OPT_USER already exists, skipping creation." \
+         "用户 $OPT_USER 已存在,跳过创建。"
     note_t "To reissue its credentials QR code (this rotates the PSK and drops that user's live sessions):" \
            "要给它重出凭证二维码(会轮换 PSK 并踢掉其在线会话):"
     note "  nanotun-admin --db-path $DB --yes credentials show $OPT_USER --rotate-psk --format qr"
@@ -1130,8 +1130,8 @@ else
   elif [ -n "$OPT_USER" ]; then
     username="$OPT_USER"
   elif [ "$REAL_USERS" -gt 0 ]; then
-    ok_t "This machine already has $REAL_USERS VPN $(nt_plural "$REAL_USERS" user users), skipping creation (an upgrade or a rerun of the wizard should not add another)." \
-         "这台机器已有 $REAL_USERS 个 VPN 用户,跳过创建(升级 / 重跑向导时不该再来一遍)。"
+    ok_t "This machine already has $REAL_USERS $(nt_plural "$REAL_USERS" user users), skipping creation (an upgrade or a rerun of the wizard should not add another)." \
+         "这台机器已有 $REAL_USERS 个用户,跳过创建(升级 / 重跑向导时不该再来一遍)。"
     note_t "To add a user: nanotun-admin --db-path $DB user create <name>" \
            "要加用户:nanotun-admin --db-path $DB user create <名字>"
     # 跳过创建,也就没有二维码 —— 而重跑向导的人想要的往往正是「给已有用户再出一张码」
@@ -1148,7 +1148,7 @@ else
              "  或者从 Web 后台看 —— 那里有一页直接显示服务器 profile 二维码(显示前会再问一次你的密码)。"
     fi
     USER_SKIPPED=1
-  elif confirm "$(tsel 'Create a VPN user now?' '现在创建一个 VPN 用户?')" y; then
+  elif confirm "$(tsel 'Create a user now?' '现在创建一个用户?')" y; then
     username="$(ask "$(tsel 'Username' '用户名')" "alice")"
   fi
 

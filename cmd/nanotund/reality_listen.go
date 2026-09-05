@@ -127,7 +127,7 @@ func bridgeRealityToPlainVPN(realityConn net.Conn, vpnListenAddr, vpnWsPath stri
 		var ws net.Conn
 		ws, err = util.DialVPNWebSocket(wsURL, 15*time.Second, loopbackWSTLS)
 		if err != nil {
-			logrus.WithError(err).WithField("dial", wsURL).Warn("REALITY handshake succeeded but the loopback to the VPN WebSocket failed")
+			logrus.WithError(err).WithField("dial", wsURL).Warn("REALITY handshake succeeded but the loopback to the data-plane WebSocket failed")
 			_ = realityConn.Close()
 			return
 		}
@@ -211,7 +211,7 @@ func startRealityVPNListener(cfg *config.Config, smuxPool *loopbackSmuxPool, loo
 	vpnLoop := cfg.Server.ListenAddr
 	wsPath := cfg.Server.VPNWebSocketPath
 	tlsOn := serverVPNDataPlaneTLSActive(&cfg.Server)
-	logrus.Infof("VPN: REALITY listening on %s (aligned with Xray-core v26.3.27), dest=%s; after a successful handshake it loops back to %s; node_login reports tcp_port=%d, handshake timeout %s, concurrency limit %d", r.ListenAddr, r.Dest, loopbackVPNWebSocketURL(vpnLoop, wsPath, tlsOn), tcpPort, realityHandshakeTimeout, realityMaxConcurrent)
+	logrus.Infof("[dataplane] REALITY listening on %s (aligned with Xray-core v26.3.27), dest=%s; after a successful handshake it loops back to %s; node_login reports tcp_port=%d, handshake timeout %s, concurrency limit %d", r.ListenAddr, r.Dest, loopbackVPNWebSocketURL(vpnLoop, wsPath, tlsOn), tcpPort, realityHandshakeTimeout, realityMaxConcurrent)
 	if ca := strings.TrimSpace(r.ClientAddr); ca != "" {
 		logrus.Infof("REALITY client_addr (documentation / operations only): %s", ca)
 	}

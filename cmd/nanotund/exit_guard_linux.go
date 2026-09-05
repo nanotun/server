@@ -126,7 +126,7 @@ func iptablesLikeInsertChain(bin, chain string, ruleArgs []string) error {
 func logExitDenyPrivate(bin, mode string, prefixes []string) {
 	if mode == config.TUNExitDenyPrivateOff {
 		logrus.WithField("bin", bin).Warn("[exit-guard] exit_deny_private=off: egress does not block private / link-local destinations — " +
-			"VPN users can reach cloud metadata (169.254.169.254) and whatever internal network this server sits in through this host; make sure that is what this deployment wants")
+			"clients can reach cloud metadata (169.254.169.254) and whatever internal network this server sits in through this host; make sure that is what this deployment wants")
 		return
 	}
 	if len(prefixes) == 0 {

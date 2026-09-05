@@ -10,8 +10,8 @@
 - **进程隔离**:与 `nanotun.service` 完全独立,各自的 systemd unit、各自的退出策略。
 - **共享 SQLite**:与 nanotun 用同一文件(`/var/lib/nanotun/nanotun.db`);通过
   `migrate` 跨进程 flock 保证迁移安全。
-- **独立账号体系**:`web_admins` 新表(argon2id 同款),与 VPN 数据面 `users.psk_hash`
-  解耦。Web 账号泄露不会让攻击者获得 VPN 接入权。
+- **独立账号体系**:`web_admins` 新表(argon2id 同款),与数据面 `users.psk_hash`
+  解耦。Web 账号泄露不会让攻击者获得数据面接入权。
 - **角色**:`admin`(全功能) / `viewer`(只读)。
 - **session**:持久化在 `web_sessions` 表,server 重启不掉登录;改密 / 禁用 admin 自动
   撤销其所有 session。

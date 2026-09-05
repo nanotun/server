@@ -188,7 +188,7 @@ func handleRouteAdvertiseFrame(ctx context.Context, c *Connection, payload []byt
 					logrus.WithFields(logrus.Fields{
 						"device_id": c.deviceID,
 						"cidr":      norm,
-					}).Warn("[route_adv] the advertised prefix overlaps the server's own mesh prefix, rejecting it (that prefix is used by the VPN itself, so approving it would never take effect)")
+					}).Warn("[route_adv] the advertised prefix overlaps the server's own mesh prefix, rejecting it (that prefix is used by the mesh itself, so approving it would never take effect)")
 					continue
 				}
 				advPfx = append(advPfx, p)

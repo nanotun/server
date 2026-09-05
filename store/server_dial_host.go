@@ -90,7 +90,7 @@ func (s *Store) SetServerDialHost(ctx context.Context, host string) error {
 // 三选一接受:
 //   - IPv4 字面量(如 "203.0.113.10");
 //   - IPv6 字面量,带方括号(如 "[2001:db8::1]")或不带方括号纯文本(`2001:db8::1`);
-//   - 合法 RFC 1035 hostname(如 "vpn.example.com"),且**末段必须含至少一个字母字符**。
+//   - 合法 RFC 1035 hostname(如 "nanotun.example.com"),且**末段必须含至少一个字母字符**。
 //
 // 末段含字母约束的理由(本轮加的):
 //   - RFC 952/3696 明确 TLD label 不能纯数字 —— `test-203.0.113.10` / `1.2.3.4` 这类

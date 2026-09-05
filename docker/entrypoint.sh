@@ -15,7 +15,7 @@
 #   NANOTUN_WEB_PORT=            NANOTUN_WEB_LISTEN 的简写,只给端口(裸机那边用的就是这个
 #                                名字)。两个都给时以 NANOTUN_WEB_LISTEN 为准 —— 它更具体
 #                                (能指定绑哪个地址)。
-#   NANOTUN_WEB_EXTRA_SANS=      Web 自签证书额外 SAN,逗号分隔,如 vpn.example.com
+#   NANOTUN_WEB_EXTRA_SANS=      Web 自签证书额外 SAN,逗号分隔,如 nanotun.example.com
 #   NANOTUN_WEB_TRUSTED_PROXIES= 可信反代 IP/CIDR;放在 nginx 后面时必须设,否则按 IP
 #                                限流会因为看到的全是反代地址而失效
 #   NANOTUN_SKIP_INIT=0          跳过 nanotun-admin init(数据卷已有库时无副作用,

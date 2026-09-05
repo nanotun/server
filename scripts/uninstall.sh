@@ -177,7 +177,7 @@ RUN_DIR=/run/nanotun
 UNITS=(nanotun.service nanotun-web.service nanotun-tun-setup.service nanotun-tun-isolate.service)
 
 # 服务端装进 /usr/local/bin 的东西。
-# **不含 `nanotun`** —— 那是客户端二进制,跟服务端毫无关系,删了等于顺手把人家的 VPN 也卸了。
+# **不含 `nanotun`** —— 那是客户端二进制,跟服务端毫无关系,删了等于顺手把人家的客户端也卸了。
 #
 # nanotun-uninstall 是本脚本自己(install-self-hosted.sh 把它装成了命令)。删掉正在跑的
 # 脚本文件是安全的:bash 一直握着那个 fd,unlink 只摘掉目录项,inode 要等 fd 关闭才回收,
@@ -266,11 +266,11 @@ if [ "$PURGE" = 1 ]; then
   # 不靠一句话套两种语序。
   if [ "$NT_LANG" = zh ]; then
     printf '\n\033[1;31m--purge:配置、证书、数据库都会被删掉。\033[0m\n'
-    printf '  数据库 %s(约 %s 个 VPN 用户)—— 用户、设备、PSK、审批过的子网路由全部一起没,\n' "$LIB_DIR/nanotun.db" "$users"
+    printf '  数据库 %s(约 %s 个用户)—— 用户、设备、PSK、审批过的子网路由全部一起没,\n' "$LIB_DIR/nanotun.db" "$users"
     printf '  已经发出去的客户端配置也就此作废。这一步没有撤销。\n'
   else
     printf '\n\033[1;31m--purge: config, certificates and the database will all be deleted.\033[0m\n'
-    printf '  The database %s (about %s VPN users) — users, devices, PSKs and approved\n' "$LIB_DIR/nanotun.db" "$users"
+    printf '  The database %s (about %s users) — users, devices, PSKs and approved\n' "$LIB_DIR/nanotun.db" "$users"
     printf '  subnet routes all go with it, and client configs already handed out stop working.\n'
     printf '  There is no undo for this step.\n'
   fi
