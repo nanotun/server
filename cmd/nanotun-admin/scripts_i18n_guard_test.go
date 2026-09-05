@@ -110,6 +110,34 @@ func TestScripts_HaveLanguageMechanism(t *testing.T) {
 	}
 }
 
+// helpCmd 跑「不带 --lang 的 --help」,也就是英文那一屏。
+//
+// 语言优先级是 --lang > NANOTUN_LANG > /etc/nanotun/lang > en(见各脚本开头),
+// 所以「默认就是英文」这个前提只在前两级都不存在时成立。而 exec.Command 默认继承
+// 父进程环境:开发机上只要 NANOTUN_LANG=zh(装机向导本来就会把它写进
+// /etc/nanotun/web.env,维护者的 shell 里也常有),脚本会**正确地**打出中文,
+// 这条断言随之报「有文案漏译了」—— 一个假警报,而且它指向的方向完全是错的。
+// 所以这里把那个变量摘掉,让子进程真的走到缺省分支。
+//
+// 落盘的 /etc/nanotun/lang 是绝对路径,测试没法隔离;它存在且写着中文时直接跳过并
+// 说明原因,不装作通过。
+func helpCmd(t *testing.T, bin string) *exec.Cmd {
+	t.Helper()
+	if b, err := os.ReadFile("/etc/nanotun/lang"); err == nil &&
+		strings.HasPrefix(strings.TrimSpace(string(b)), "zh") {
+		t.Skip("本机 /etc/nanotun/lang 写着 zh,脚本的缺省语言就是中文,这条断言在此机器上无从判断")
+	}
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "NANOTUN_LANG=") {
+			env = append(env, kv)
+		}
+	}
+	cmd := exec.Command("bash", bin, "--help")
+	cmd.Env = env
+	return cmd
+}
+
 // --help 得真的分语言。这条是「漏译」唯一一条不需要人去核对清单的判据。
 func TestScripts_HelpIsBilingual(t *testing.T) {
 	for _, script := range bilingualScripts {
@@ -130,7 +158,7 @@ func TestScripts_HelpIsBilingual(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			en, err := exec.Command("bash", bin, "--help").CombinedOutput()
+			en, err := helpCmd(t, bin).CombinedOutput()
 			if err != nil {
 				t.Fatalf("`%s --help` 退出码非 0(%v):\n%s", name, err, en)
 			}

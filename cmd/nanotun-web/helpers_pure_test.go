@@ -184,19 +184,36 @@ func TestPortRangeText(t *testing.T) {
 // 语言协商
 // -------------------------------------------------------------------------
 
+// 认得的语言按 header 走,认不得的回落到**这台服务器的**默认语言 —— 不是常量
+// LangDefault。两者只在 NANOTUN_LANG 没设时相等,所以原来那份用 LangDefault 当期望值
+// 的写法在装机时选了中文的机器上会假报失败(serverDefaultLang 是包级 var,进程启动就
+// 从环境读定了,t.Setenv 拦不住)。这里改成存档-替换-还原,顺带把「选中文装机 → 控制台
+// 对既不要中文也不要英文的浏览器也回落中文」这条本来无人覆盖的行为一起测掉。
 func TestLangFromAcceptHeader(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"", LangDefault},
+	// 与 serverDefaultLang 无关的用例:header 里有认得的语言,一律照 header 走。
+	fixed := []struct{ in, want string }{
 		{"zh-CN,zh;q=0.9,en;q=0.8", "zh"},
 		{"en-US,en;q=0.9", "en"},
-		{"fr-FR,de;q=0.9", LangDefault},
 		{"xx,en", "en"},             // 第一个不认识就看下一个
 		{"  en-GB  ", "en"},         // 前后空白
 		{"en;q=0.1,zh;q=0.9", "en"}, // 不做 q 值排序:按出现顺序取第一个认识的
 	}
-	for _, tc := range cases {
+	for _, tc := range fixed {
 		if got := langFromAcceptHeader(tc.in); got != tc.want {
 			t.Errorf("langFromAcceptHeader(%q)=%q, 期望 %q", tc.in, got, tc.want)
+		}
+	}
+
+	// 回落用例:header 空或全不认得时,跟这台服务器的默认语言一致。
+	orig := serverDefaultLang
+	t.Cleanup(func() { serverDefaultLang = orig })
+	for _, def := range supportedLangs {
+		serverDefaultLang = def
+		for _, in := range []string{"", "fr-FR,de;q=0.9"} {
+			if got := langFromAcceptHeader(in); got != def {
+				t.Errorf("serverDefaultLang=%q 时 langFromAcceptHeader(%q)=%q, 期望回落到 %q",
+					def, in, got, def)
+			}
 		}
 	}
 }
