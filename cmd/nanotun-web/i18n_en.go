@@ -1092,7 +1092,7 @@ var catEN = map[string]string{
 	"audit.nextPage":   "Next",
 	"audit.shownRange": "Entries %d – %d",
 	// Admin password reset page:
-	"page.adminPwd.title":  "Change password - %s",
+	"page.adminPwd.title":  "Change Password - %s",
 	"adminPwd.backToList":  "Back to admins",
 	"adminPwd.title":       "Change password: %s",
 	"adminPwd.newPwd":      "New password",
