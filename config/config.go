@@ -266,7 +266,7 @@ type TUNConfig struct {
 	//   ""(默认) / "auto"  → 自动探测服务器系统 DNS(/etc/resolv.conf 及 systemd-resolved 上游,
 	//                        跳过环回/stub);探到则接管,探不到则跳过(退化为原样透传,无回归)。
 	//   "off"              → 关闭接管,客户端 :53 原样转发到它自己选的上游(老行为)。
-	//   "<IPv4>"           → 强制 DNAT 到该解析器(如 "223.5.5.5" / "1.1.1.1")。
+	//   "<IPv4>"           → 强制 DNAT 到该解析器(如 "8.8.8.8" / "1.1.1.1")。
 	//
 	// SIGHUP 不可热更(同 ExitMode,涉及 nat 表重建)。
 	ExitDNSRedirect string `toml:"exit_dns_redirect,omitempty"`
@@ -351,7 +351,7 @@ type MagicDNSConfig struct {
 	// ECSForward=true 时,非 magic 域名转发上游前附带 EDNS Client Subnet(RFC 7871,
 	// 客户端会话对端 IP 的 /24(v4)// /56(v6)),让上游按**客户端所在地**做 CDN 地理调度,
 	// 而不是按 server 所在地(真机 e2e:新加坡 server 不带 ECS 时把一个 CDN 域名调度到香港
-	// 节点,离 server 远的客户端访问绕远)。要求上游支持 ECS(如 8.8.8.8 / 223.5.5.5;运营商内网 DNS 多半
+	// 节点,离 server 远的客户端访问绕远)。要求上游支持 ECS(如 8.8.8.8;1.1.1.1 / 9.9.9.9 出于隐私不支持;运营商内网 DNS 多半
 	// 忽略之,无害)。默认 false:向上游暴露客户端 /24 属隐私让渡,由运维显式选择。
 	// 客户端对端 IP 是私网/回环/链路本地/CGNAT(非全球单播)时自动跳过。
 	ECSForward bool `toml:"ecs_forward,omitempty"`

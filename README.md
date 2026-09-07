@@ -164,7 +164,7 @@ matters to you.
 
 **If github.com is unreachable** (blocked, restricted egress), you don't have to give up the
 one-liner — point the two download prefixes at a mirror. They're full prefixes, so both
-path-style and ghproxy-style (URL-appending) mirrors fit:
+path-style and URL-prefix-style (URL-appending) mirrors fit:
 
 ```bash
 sudo NANOTUN_GH_BASE=https://<your-mirror>/https://github.com/nanotun/server \

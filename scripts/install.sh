@@ -87,8 +87,8 @@
 #   NANOTUN_BRANCH      从哪个 ref 取 preflight.sh。默认:NANOTUN_VERSION 是 tag 时跟着它,
 #                       否则 main。显式设了就以它为准
 #   NANOTUN_GH_BASE     发布包的下载前缀,默认 https://github.com/<repo>。给的是**完整前缀**,
-#                       所以路径型和 ghproxy 那种前缀型镜像都装得下:
-#                         NANOTUN_GH_BASE=https://ghproxy.net/https://github.com/nanotun/server
+#                       所以路径型和前缀型(把整条 URL 挂在后面)镜像都装得下:
+#                         NANOTUN_GH_BASE=https://mirror.example.com/https://github.com/nanotun/server
 #   NANOTUN_RAW_BASE    preflight.sh 的下载前缀,默认
 #                       https://raw.githubusercontent.com/<repo>/<ref>/scripts
 #                       (设了它就绕过 NANOTUN_REPO / NANOTUN_BRANCH 的拼装)
@@ -144,10 +144,10 @@ fi
 # install-self-hosted.sh)写得很好,但那等于放弃一键;能指到镜像的话这台机器本来是装得上的。
 #
 # 之所以是完整前缀:两类常见镜像的形状不一样,主机名换不出来。
-#   · 路径型:NANOTUN_RAW_BASE=https://raw.gitmirror.com/nanotun/server/main/scripts
-#   · 前缀型(ghproxy 那类,把整条 URL 挂在后面):
-#       NANOTUN_GH_BASE=https://ghproxy.net/https://github.com/nanotun/server
-#     拼出来正好是它要的 https://ghproxy.net/https://github.com/.../releases/download/...
+#   · 路径型:NANOTUN_RAW_BASE=https://raw.mirror.example.com/nanotun/server/main/scripts
+#   · 前缀型(把整条 URL 挂在后面):
+#       NANOTUN_GH_BASE=https://mirror.example.com/https://github.com/nanotun/server
+#     拼出来正好是它要的 https://mirror.example.com/https://github.com/.../releases/download/...
 # 一个变量两种都装得下,不必为每种镜像各加一个开关。
 RAW_BASE="${NANOTUN_RAW_BASE:-https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts}"
 GH_BASE="${NANOTUN_GH_BASE:-https://github.com/${REPO}}"
@@ -558,7 +558,7 @@ Environment:
 
 When github.com is unreachable (blocked / restricted egress), point both
 download prefixes at a mirror and the one-liner still works. These are **full
-prefixes**, so both path-style and ghproxy-style mirrors fit:
+prefixes**, so both path-style and URL-prefix-style mirrors fit:
   NANOTUN_GH_BASE     prefix for the release tarball, default https://github.com/${REPO}
   NANOTUN_RAW_BASE    prefix for preflight.sh, default
                       https://raw.githubusercontent.com/${REPO}/<ref>/scripts
@@ -624,7 +624,7 @@ nanotun 一条命令开服 —— 检查环境 → 下载发布包 → 安装 �
   NANOTUN_VERBOSE     =1 时连 systemd 状态和日志一起打出来(默认只给结论)
 
 github.com 连不上(网络受限 / 出站受限)时,把两个下载前缀指到镜像,一键仍然可用。
-给的是**完整前缀**,路径型和 ghproxy 那种前缀型镜像都装得下:
+给的是**完整前缀**,路径型和前缀型(把整条 URL 挂在后面)镜像都装得下:
   NANOTUN_GH_BASE     发布包的下载前缀,默认 https://github.com/${REPO}
   NANOTUN_RAW_BASE    preflight.sh 的下载前缀,默认
                       https://raw.githubusercontent.com/${REPO}/<ref>/scripts

@@ -138,7 +138,7 @@ sudo NANOTUN_VERSION=v1.0.0 bash -c "$(curl -fsSL \
 > 脚本和发布包钉住了,环境检查没有。要单独指定用 `NANOTUN_BRANCH`。
 
 **github.com 连不上**(网络受限 / 出站受限)时不必放弃一键,把两个下载前缀指到镜像即可。给的是
-完整前缀,所以路径型和 ghproxy 那种前缀型镜像都装得下:
+完整前缀,所以路径型和前缀型(把整条 URL 挂在后面)镜像都装得下:
 
 ```bash
 sudo NANOTUN_GH_BASE=https://<你的镜像>/https://github.com/nanotun/server \
