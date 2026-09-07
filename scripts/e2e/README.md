@@ -258,10 +258,10 @@ C 虽然带 `--no-default-route`,但它是出口节点兼靶站,额外负载会�
   转 NXDOMAIN**(证明切换排他),再还原并验还原也真生效。收尾必定还原原后缀(trap 幂等)。
   不进门禁:要重启服务端两次、其间 A/C 会 graceful 重连,且仅 systemd 形态(docker 形态
   配置在容器内、写文件要绕 `docker exec`,其后缀语义由单测 + 裸机装机测覆盖)。
-- **传输隐蔽性:REALITY 端口被主动探测时回落到真站,不可区分。** REALITY 的命脉是
-  探测者拿普通 TLS ClientHello 打接入端口(默认 443/tcp)时,服务端把连接透明代理到
-  `[reality].dest`(默认 `www.microsoft.com:443`),让探测者拿到一张**能过系统 CA 校验
-  的真站证书**,认不出这是 VPN。本地假 VPS 上用同网段另一台带 `openssl` 的容器当探测者
+- **REALITY 端口对普通 TLS 客户端表现为真站。** REALITY 的要点是
+  普通 TLS ClientHello 打接入端口(默认 443/tcp)时,服务端把连接透明代理到
+  `[reality].dest`(默认 `www.microsoft.com:443`),对方拿到一张**能过系统 CA 校验
+  的真站证书**。本地假 VPS 上用同网段另一台带 `openssl` 的容器当客户端
   即可复现(需服务器容器能出网到 `dest`):
 
   ```bash

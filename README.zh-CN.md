@@ -88,7 +88,7 @@ curl -fsSL https://raw.githubusercontent.com/nanotun/server/main/scripts/install
 
 | | 端口 | 为什么 |
 |---|---|---|
-| REALITY | `443/tcp` | REALITY 的伪装是「这就是个普通 HTTPS 站」—— 探测者会拿到一张 `[reality].dest` 的、能过系统 CA 校验的真证书。这套说法只有在「本来就该是 HTTPS」的端口上才成立。 |
+| REALITY | `443/tcp` | REALITY 用 `[reality].dest` 那张能过系统 CA 校验的真证书完成 TLS 握手:普通 TLS 客户端打这个端口,拿到的就是那个站。这只有在「本来就该是 HTTPS」的端口上才成立。 |
 | hysteria2 | `443/udp` | 443 是能穿过酒店 / 企业 / 运营商网络的那个端口,而 443 上的 QUIC 与普通 HTTP/3 无从区分。TCP 与 UDP 的 443 互不冲突,两者合起来恰恰是任何支持 HTTP/3 的网站的指纹。 |
 | Web 后台 | **随机** | 管理登录页没有「要像正常流量」的需求,却有充分的理由别被找到。所有部署都长在 7443 上,等于给扫描器一份现成的名单。取值 10000–31999(在 Linux 临时端口段以下,不会和对外连接的源端口撞)。 |
 

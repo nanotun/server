@@ -401,12 +401,12 @@ report_tls_insecure_hint = true
 # frame + TUN. dest must be reachable; at startup a probe dial to dest records the handshake
 # record length.
 [reality]
-# 443/tcp on purpose. REALITY's whole disguise is "this is an ordinary HTTPS site": a prober
-# sending a plain TLS ClientHello gets transparently proxied to dest below and receives a real,
-# CA-valid certificate for it. That story only holds on the port where HTTPS is expected —
-# on 8443 (the old default) the pair 8443/tcp + 443/udp already said "something custom lives
-# here". With hy2 on 443/udp, this machine now presents exactly the fingerprint of any modern
-# website that serves HTTP/3: 443 on both protocols. TCP and UDP do not collide.
+# 443/tcp on purpose. REALITY terminates TLS with the real certificate of dest below: a plain
+# TLS ClientHello on this port is transparently proxied to dest and receives its real, CA-valid
+# certificate. That only works on the port where HTTPS is expected — on 8443 (the old default)
+# the pair 8443/tcp + 443/udp already said "something custom lives here". With hy2 on 443/udp,
+# this machine now looks like any modern website that serves HTTP/3: 443 on both protocols.
+# TCP and UDP do not collide.
 #
 # The cost: 443/tcp collides with an existing web server (nginx / caddy / certbot) far more
 # often than 8443 did. The installer checks whether the port is free before touching anything

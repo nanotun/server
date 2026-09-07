@@ -103,7 +103,7 @@ Any argument `install.sh` doesn't recognize is passed through verbatim to the wi
 
 | | Port | Why |
 |---|---|---|
-| REALITY | `443/tcp` | REALITY's disguise is "this is an ordinary HTTPS site" — a prober gets a real, CA-valid certificate for `[reality].dest`. That only holds on the port where HTTPS is expected. |
+| REALITY | `443/tcp` | REALITY terminates TLS with the real, CA-valid certificate of `[reality].dest`: a plain TLS client on this port simply reaches that site. That only works on the port where HTTPS is expected. |
 | hysteria2 | `443/udp` | 443 is the port that gets through hotel / corporate / carrier networks, and QUIC on 443 is indistinguishable from ordinary HTTP/3. TCP and UDP 443 do not collide, so together they are exactly the fingerprint of any modern website serving HTTP/3. |
 | Web console | **random** | An admin login page has no reason to blend in; it has every reason not to be found. Every deployment sitting on 7443 is a ready-made list for scanners. Picked from 10000–31999 (below Linux's ephemeral range, so it cannot collide with outgoing source ports). |
 
