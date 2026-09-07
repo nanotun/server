@@ -15,7 +15,7 @@ func mkECSTestQuery(t *testing.T, withOpt, withECS bool) []byte {
 	m := dnsmessage.Message{
 		Header: dnsmessage.Header{ID: 0x1234, RecursionDesired: true},
 		Questions: []dnsmessage.Question{{
-			Name:  dnsmessage.MustNewName("www.baidu.com."),
+			Name:  dnsmessage.MustNewName("www.example-cdn.com."),
 			Type:  dnsmessage.TypeA,
 			Class: dnsmessage.ClassINET,
 		}},
@@ -86,7 +86,7 @@ func TestInjectECS_AddsOptWhenAbsent(t *testing.T) {
 	if err := m.Unpack(out); err != nil {
 		t.Fatalf("unpack out: %v", err)
 	}
-	if m.Header.ID != 0x1234 || len(m.Questions) != 1 || m.Questions[0].Name.String() != "www.baidu.com." {
+	if m.Header.ID != 0x1234 || len(m.Questions) != 1 || m.Questions[0].Name.String() != "www.example-cdn.com." {
 		t.Fatalf("ID/question 被改动: %+v", m.Header)
 	}
 }

@@ -370,8 +370,8 @@ type Connection struct {
 
 	// remoteIPHost:本会话底层链路的对端 IP(host 部分,不含 port)。magic DNS 上游转发的 ECS
 	//(EDNS Client Subnet,RFC 7871)用它给公网查询附带客户端真实位置,纠正「解析视角 = server
-	// 所在地」的 CDN 调度偏差(真机 e2e:新加坡 server 把 baidu 解析到香港 45.113.192.x,带 ECS
-	// 后恢复国内 180.101.x)。struct literal 一次性写入,进 map 后只读(见上方 U2 invariant)。
+	// 所在地」的 CDN 调度偏差(真机 e2e:新加坡 server 把一个 CDN 域名解析到香港 45.113.192.x,
+	// 带 ECS 后改为客户端所在地的 180.101.x)。struct literal 一次性写入,进 map 后只读(见上方 U2 invariant)。
 	remoteIPHost string
 
 	// G_wss_ping:服务端主动 Ping 后,客户端最近一次回 Pong 的时刻(UnixNano)。

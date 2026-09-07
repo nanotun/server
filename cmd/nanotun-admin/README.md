@@ -311,7 +311,7 @@ ecs_forward = false         # 跨国部署建议 true,见下方第 4 点
    - `dnsmasq` / Pi-hole listen `0.0.0.0:53`(全 IP)会和 server 冲突 → bind 失败 → magic_dns 模块不起(主进程继续跑)。修法:dnsmasq 改 `bind-interfaces` + `listen-address=127.0.0.1`,或换非标端口 + 自做 53→5353 转发。
    - **udp/53 与 tcp/53 都要通**(RFC 7766 要求成对;大应答置 TC=1 后使用方只能改走 TCP)。server 自装的 iptables 例外两者都放行,自带防火墙的部署需自行放行网关 IP 的两个协议。
 3. **权限**:server 已 root 启动(TUN 需要),:53 没成本;rootless 容器需 `cap_net_bind_service`。
-4. **`ecs_forward`:跨国部署几乎必开**。转发上游时附带客户端 /24(EDNS Client Subnet),让 CDN 按**客户端所在地**调度。不开时上游只看到 server 的位置——实测新加坡 server 会把 `www.baidu.com` 给成港/海外节点,国内客户端每个请求绕远,而且解析本身是成功的,极易被误判成「隧道慢」。默认 `false` 是因为它向上游暴露客户端 /24(隐私让渡),须运维显式选择;私网/CGNAT 客户端自动跳过。
+4. **`ecs_forward`:跨国部署几乎必开**。转发上游时附带客户端 /24(EDNS Client Subnet),让 CDN 按**客户端所在地**调度。不开时上游只看到 server 的位置——实测新加坡 server 会把一个 CDN 域名解析到香港节点,离 server 远的客户端每个请求都绕远,而且解析本身是成功的,极易被误判成「隧道慢」。默认 `false` 是因为它向上游暴露客户端 /24(隐私让渡),须运维显式选择;私网/CGNAT 客户端自动跳过。
 
 ### 备份 / 恢复 / 压缩(P1#10)
 

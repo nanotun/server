@@ -23,7 +23,7 @@ func resetUpstreamDNSCacheForTest(t *testing.T) {
 // 上游答案发给 B 地区的使用方，正是 ECS 要修的那个病被缓存重新引入。
 func TestUpstreamDNSCacheKey_SeparatesByECSScope(t *testing.T) {
 	q := dnsmessage.Question{
-		Name:  dnsmessage.MustNewName("www.baidu.com."),
+		Name:  dnsmessage.MustNewName("www.example-cdn.com."),
 		Type:  dnsmessage.TypeA,
 		Class: dnsmessage.ClassINET,
 	}

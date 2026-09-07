@@ -4,12 +4,12 @@ package main
 //
 // 背景(真机 e2e,2026-08-16):iOS meshOnly 要解除 AAAA 抑制必须给隧道装 v6 默认路由,而 v6
 // 默认路由会让 iOS 把隧道 DNS 提升为系统默认解析器 —— 公网域名也经隧道到 magic DNS 转发上游。
-// 上游看到的查询源是 server(如新加坡),CDN 域名被调度到 server 附近节点(baidu → 45.113.192.x
-// 香港),国内客户端访问绕远。fullTunnel 各平台(macOS 已实测)同病。
+// 上游看到的查询源是 server(如新加坡),CDN 域名被调度到 server 附近节点(实测一个 CDN 域名
+// → 45.113.192.x 香港),离 server 远的客户端访问绕远。fullTunnel 各平台(macOS 已实测)同病。
 //
 // 修法:转发前把客户端会话对端 IP 的 /24(v4)// /56(v6)作为 ECS 附进查询,支持 ECS 的上游
-//(223.5.5.5 / 8.8.8.8 等)即按客户端所在地调度(e2e 验证:新加坡带 ECS 问 223.5.5.5,baidu
-// 恢复 180.101.x 国内节点)。不支持 ECS 的上游忽略该选项,无害。config `ecs_forward` 显式开启。
+//(8.8.8.8 / 223.5.5.5 等)即按客户端所在地调度(e2e 验证:新加坡 server 带 ECS 转发后,同一
+// 域名改为解析到客户端所在地的 180.101.x)。不支持 ECS 的上游忽略该选项,无害。config `ecs_forward` 显式开启。
 import (
 	"encoding/binary"
 	"net"

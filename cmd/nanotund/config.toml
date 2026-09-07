@@ -147,20 +147,21 @@ listen_port = 53
 # first / only DNS, so under a full tunnel all public DNS breaks (the mac client goes further and
 # collapses the tunnel's DNS down to the gateway alone). Once configured, the gateway forwards
 # upstream: magic names resolve locally, public names work as usual (replies carry A/AAAA). Pick
-# upstreams that are nearby and reachable (on a node outside China, put the neutral ones first).
+# upstreams that are nearby and reachable from wherever the server runs, most-preferred first.
 upstream_v4 = ["223.5.5.5", "8.8.8.8"]
 upstream_v6 = ["2001:4860:4860::8888"]
 # ecs_forward: when forwarding a non-magic domain upstream, attach EDNS Client Subnet (RFC 7871,
 # the /24 (v4) / /56 (v6) of the client session's peer IP), so the upstream does its CDN steering
 # by **where the client is** rather than **where this machine is**.
 #
-# What it looks like without it (measured on real hardware: a client in Chongqing → a server in
-# Singapore, full tunnel): the upstream only ever sees the server's address, so www.baidu.com
-# gets steered to 45.113.192.x / 103.235.46.x (Hong Kong / overseas nodes) where the client's own
-# vantage point should have given 153.3.238.x. The name resolves, the site loads, but every CDN
-# request takes the long way round — a quiet symptom, easily mistaken for "the tunnel is slow".
-# With it on, the same query comes back with a node inside China. Cross-border deployments
-# (server and users in different regions) almost always want this on.
+# What it looks like without it (measured on real hardware: client and server on different
+# continents, server in Singapore, full tunnel): the upstream only ever sees the server's
+# address, so a CDN-hosted name gets steered to 45.113.192.x / 103.235.46.x (nodes near the
+# server) where the client's own vantage point should have given 153.3.238.x. The name resolves,
+# the site loads, but every CDN request takes the long way round — a quiet symptom, easily
+# mistaken for "the tunnel is slow". With it on, the same query comes back with a node near the
+# client. Cross-border deployments (server and users in different regions) almost always want
+# this on.
 #
 # Cost and prerequisites:
 #   · A privacy trade-off — the client's /24 is disclosed to the upstream. Hence false by

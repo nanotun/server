@@ -86,16 +86,16 @@ func TestBuildIPv4UDPRoundTrip(t *testing.T) {
 func TestBuildIPv4UDPChecksumReferenceVector(t *testing.T) {
 	src := netip.AddrFrom4([4]byte{10, 201, 0, 1})
 	dst := netip.AddrFrom4([4]byte{8, 8, 8, 8})
-	payload := []byte("\xab\xcd\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03www\x05baidu\x03com\x00\x00\x01\x00\x01")
+	payload := []byte("\xab\xcd\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03www\x0bexample-cdn\x03com\x00\x00\x01\x00\x01")
 	pkt, ok := buildIPv4UDP(src, 40414, dst, 53, payload)
 	if !ok {
 		t.Fatal("buildIPv4UDP 失败")
 	}
-	if got := binary.BigEndian.Uint16(pkt[26:28]); got != 0xdee4 {
-		t.Fatalf("UDP 校验和 = %#04x, 参考值 0xdee4", got)
+	if got := binary.BigEndian.Uint16(pkt[26:28]); got != 0xbaab {
+		t.Fatalf("UDP 校验和 = %#04x, 参考值 0xbaab", got)
 	}
-	if got := binary.BigEndian.Uint16(pkt[10:12]); got != 0x1fd9 {
-		t.Fatalf("IPv4 头校验和 = %#04x, 参考值 0x1fd9", got)
+	if got := binary.BigEndian.Uint16(pkt[10:12]); got != 0x1fd3 {
+		t.Fatalf("IPv4 头校验和 = %#04x, 参考值 0x1fd3", got)
 	}
 }
 

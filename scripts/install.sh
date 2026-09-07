@@ -143,7 +143,7 @@ fi
 # github.com 在不少地区是常年不稳的那种。现有的离线指引(去能上网的机器下 tar,再跑
 # install-self-hosted.sh)写得很好,但那等于放弃一键;能指到镜像的话这台机器本来是装得上的。
 #
-# 之所以是完整前缀:国内两类常见镜像的形状不一样,主机名换不出来。
+# 之所以是完整前缀:两类常见镜像的形状不一样,主机名换不出来。
 #   · 路径型:NANOTUN_RAW_BASE=https://raw.gitmirror.com/nanotun/server/main/scripts
 #   · 前缀型(ghproxy 那类,把整条 URL 挂在后面):
 #       NANOTUN_GH_BASE=https://ghproxy.net/https://github.com/nanotun/server
