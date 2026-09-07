@@ -47,9 +47,10 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nanotun/server/main
 跑完就能用:向导会问客户端拨号地址、定下 Web 后台的用户名和密码、建第一个隧道用户、出两个二维码。
 
 > **先说清楚客户端。** 这个仓库发布的是**服务端**;那两个二维码要用 nanotun 客户端扫,
-> 而客户端(macOS / Windows / Android / OpenWrt)目前**不公开分发**,代码也不在这里。
+> 而客户端(macOS / Windows / Android / OpenWrt)**不开源**,代码也不在这里。
 > 也就是说:服务端你现在就能装起来、能从 Web 后台和 CLI 管起来,但手上没有客户端的话,
-> 二维码暂时没有东西可扫。要客户端请联系维护者。
+> 二维码暂时没有东西可扫。各平台客户端正在陆续打包,进度与下载见
+> <https://www.nanotun.com/download.html>。
 >
 > 把这句写在最前面,是因为它值得你在花时间装之前就知道 —— 而不是装完、拿到二维码那一刻
 > 才发现。

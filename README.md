@@ -55,10 +55,10 @@ admin username and password, creates the first tunnel user, and prints two QR co
 
 > **About the client, up front.** What this repository ships is the **server**. Those two QR
 > codes are meant to be scanned by a nanotun client, and the clients (macOS / Windows /
-> Android / OpenWrt) are **not publicly distributed** — their code isn't here either. So: you
+> Android / OpenWrt) are **closed-source** — their code isn't here either. So: you
 > can stand the server up right now and administer it from the Web console and the CLI, but
-> without a client in hand there's nothing to scan those QR codes with. Contact the maintainer
-> if you need one.
+> without a client in hand there's nothing to scan those QR codes with. Per-platform builds
+> are being packaged; see <https://www.nanotun.com/download.html> for status and downloads.
 >
 > This is stated up front because it's worth knowing *before* you spend time installing —
 > rather than at the moment the wizard hands you a QR code.
