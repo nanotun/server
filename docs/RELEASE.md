@@ -106,6 +106,17 @@ git push origin v0.1.0
 - [ ] Actions 里 `Release` workflow 三个 job 全绿
 - [ ] Release 页面上 amd64 / arm64 两个 tar 和 `SHA256SUMS` 都在
 - [ ] `docker pull ghcr.io/nanotun/server:X.Y.Z` 在一台干净机上能拉能起
+- [ ] 补发版说明(英文)。CI 只生成一行 Full Changelog 链接,人读不出改了什么。
+      改 Release 走 GitHub API,`gh` 默认登录的账号对本仓库没有写权限,git push 能成是
+      因为走的 deploy key(仅限 git 操作)。所以用只对本仓库有 Contents 写权限的
+      fine-grained token 临时注入,不动 `gh` 的登录、不影响别的仓库:
+
+      ```bash
+      GH_TOKEN=$(cat ~/.config/nanotun/gh-release-token) \
+        gh release edit vX.Y.Z --repo nanotun/server --notes-file notes.md
+      ```
+
+      token 文件权限 0600;到期或泄露就在 GitHub 上 regenerate 后覆盖文件内容。
 
 **首次发版专有**：GHCR 上新建的包默认是 private，要去仓库 Packages 页手动改成
 public，否则用户 `docker pull` 会被要求登录。这一步 workflow 做不到。
