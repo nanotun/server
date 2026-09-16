@@ -35,6 +35,8 @@ var catEN = map[string]string{
 	"sysmon.swap":           "Swap",
 	"form.required":         "Please fill in this field.",
 	"form.pattern":          "The format of this field is not accepted.",
+	"form.showPassword":     "Show password",
+	"form.hidePassword":     "Hide password",
 	"common.actions":        "Actions",
 	"common.totalPre":       "Total: ",
 	"common.totalPost":      "",

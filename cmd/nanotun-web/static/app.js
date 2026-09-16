@@ -21,6 +21,9 @@
  *  - form[data-progress-form]     提交时禁用按钮 + 改文案 + 可选进度/超时兜底(拨号 host 探测)。
  *  - body[data-msg-required]      原生表单校验气泡的文案(见下面「校验气泡」一节)。
  *    body[data-msg-pattern]
+ *  - input[type=password]         自动补一个「眼睛」按钮切换明文/密文(见「密码可见性」一节)。
+ *    body[data-msg-show-pw]       按钮的无障碍文案(aria-label / title),两种状态各一句。
+ *    body[data-msg-hide-pw]
  *
  * 页面各自的复制到剪贴板逻辑仍留在**带 nonce 的内联 <script>** 里(涉及 i18n 文案 +
  * 元素特定取值 + alert/prompt 降级),不在此文件。
@@ -93,6 +96,101 @@
             window.print();
         }
     });
+
+    // ---- 密码可见性:给每个密码框补一个「眼睛」 ---------------------------------
+    //
+    // 登录页 / 首次安装 / 改密 / 新建管理员 / QR 口令页的密码框都是 type=password,
+    // 输错一个字符只能整段删掉重打。这里在脚本层统一给它们补一个切换按钮,模板不用
+    // 逐个改;无 JS 时就是普通密码框(渐进增强)。
+    //
+    // 两个取舍:
+    //   · 按钮是 type=button,不会被当成表单提交键;放在 <form> 里按回车仍提交表单。
+    //   · SVG 是写死的常量,不拼任何页面数据;文案从 body 的 data-* 读(html/template
+    //     已按属性上下文转义),与本文件其余约定一致 —— 不引入注入面。
+    var msgShowPw = document.body && document.body.getAttribute("data-msg-show-pw");
+    var msgHidePw = document.body && document.body.getAttribute("data-msg-hide-pw");
+    var SVG_NS = "http://www.w3.org/2000/svg";
+
+    function eyeIcon(open) {
+        var svg = document.createElementNS(SVG_NS, "svg");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("width", "18");
+        svg.setAttribute("height", "18");
+        svg.setAttribute("fill", "none");
+        svg.setAttribute("stroke", "currentColor");
+        svg.setAttribute("stroke-width", "1.8");
+        svg.setAttribute("stroke-linecap", "round");
+        svg.setAttribute("stroke-linejoin", "round");
+        svg.setAttribute("aria-hidden", "true");
+        var eye = document.createElementNS(SVG_NS, "path");
+        eye.setAttribute("d", "M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z");
+        svg.appendChild(eye);
+        var pupil = document.createElementNS(SVG_NS, "circle");
+        pupil.setAttribute("cx", "12");
+        pupil.setAttribute("cy", "12");
+        pupil.setAttribute("r", "3");
+        svg.appendChild(pupil);
+        if (!open) {
+            // 斜杠 = 「当前是明文,点一下藏起来」。
+            var slash = document.createElementNS(SVG_NS, "path");
+            slash.setAttribute("d", "M4 4l16 16");
+            svg.appendChild(slash);
+        }
+        return svg;
+    }
+
+    function setToggleState(btn, visible) {
+        var label = visible ? (msgHidePw || "Hide password") : (msgShowPw || "Show password");
+        btn.setAttribute("aria-label", label);
+        btn.setAttribute("title", label);
+        btn.setAttribute("aria-pressed", visible ? "true" : "false");
+        while (btn.firstChild) btn.removeChild(btn.firstChild);
+        btn.appendChild(eyeIcon(!visible));
+    }
+
+    function enhancePasswordInputs() {
+        var inputs = document.querySelectorAll('input[type="password"]');
+        for (var i = 0; i < inputs.length; i++) {
+            var input = inputs[i];
+            if (!input.parentNode || input.parentNode.classList.contains("pw-wrap")) continue;
+            var wrap = document.createElement("span");
+            wrap.className = "pw-wrap";
+            input.parentNode.insertBefore(wrap, input);
+            wrap.appendChild(input);
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "pw-toggle";
+            btn.tabIndex = -1; // 不抢 Tab 顺序:密码框 → 下一个字段;鼠标/触屏点它即可。
+            setToggleState(btn, false);
+            wrap.appendChild(btn);
+        }
+    }
+
+    document.addEventListener("click", function (e) {
+        var t = e.target;
+        if (!t || !t.closest) return;
+        var btn = t.closest(".pw-toggle");
+        if (!btn) return;
+        e.preventDefault();
+        var input = btn.parentNode && btn.parentNode.querySelector("input");
+        if (!input) return;
+        var show = input.type === "password";
+        input.type = show ? "text" : "password";
+        setToggleState(btn, show);
+        // 切换后把焦点还给输入框,光标留在末尾,继续打字不打断。
+        try {
+            input.focus({ preventScroll: true });
+            var n = input.value.length;
+            input.setSelectionRange(n, n);
+        } catch (_) { /* 某些浏览器对 type=password 不支持 setSelectionRange,忽略 */ }
+    });
+
+    // footer 里以 defer 引入,执行时 DOM 已就绪;保险起见两种情形都接住。
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", enhancePasswordInputs);
+    } else {
+        enhancePasswordInputs();
+    }
 
     // ---- 提交委托:拨号 host 探测的进度提示 / 超时兜底 ------------------------
     // 复刻 dashboard 横幅 + settings 页原 onsubmit 行为:提交后禁用按钮防重复提交、

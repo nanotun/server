@@ -457,6 +457,33 @@ input:focus, select:focus, textarea:focus {
 }
 textarea { font-family: var(--mono); }
 
+/* 密码框的「眼睛」(由 app.js 在运行时包一层 .pw-wrap 并追加 .pw-toggle):
+ * 按钮绝对定位在输入框右侧内部,输入框留出右内边距免得文字压到图标下面。 */
+.pw-wrap { position: relative; display: block; width: 100%; }
+.pw-wrap input { padding-right: 38px; }
+.pw-toggle {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 5px;
+    color: var(--muted);
+    cursor: pointer;
+    line-height: 0;
+}
+.pw-toggle:hover { color: var(--accent); background: var(--accent-dim); }
+.pw-toggle:focus-visible { outline: 1px solid var(--accent); }
+.pw-toggle[aria-pressed="true"] { color: var(--accent); }
+
 .field { margin-bottom: 14px; }
 .field label {
     display: block;

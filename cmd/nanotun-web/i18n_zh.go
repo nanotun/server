@@ -36,6 +36,8 @@ var catZH = map[string]string{
 	"sysmon.swap":           "交换分区",
 	"form.required":         "请填写此字段。",
 	"form.pattern":          "这个字段的格式不对。",
+	"form.showPassword":     "显示密码",
+	"form.hidePassword":     "隐藏密码",
 	"common.actions":        "操作",
 	"common.totalPre":       "共 ",
 	"common.totalPost":      " 条",
