@@ -1336,6 +1336,29 @@ else
   [ -f "$ETC_DIR/config.toml" ] && printf '    MagicDNS    *.%s → mesh virtual IP\n' "$(current_magic_suffix)"
 fi
 printf '\n'
+
+# 后台管理员还没绑二步验证(TOTP)的,红字点名。
+#
+# 这一屏是人真正照着做的最后一屏,而 Web 后台是这台机器上**唯一**只靠一个口令就能拿到
+# 全部控制权的入口(客户端走 PSK + REALITY,CLI 要 root)。管理员刚在上面建好、口令刚抄走,
+# 此刻去后台点一下「二步验证」是最便宜的时候;过了这一屏没人会再回来。
+# 判的是**现状**而不是「这次建了没」:重跑向导、或从 /setup 抢首位建的管理员,同样该被提醒。
+# 从 `webadmin list` 的表格取(ENABLED=yes 且 TOTP=no 的用户名),不引 python/jq 之类的依赖。
+if [ "$WEB_AVAILABLE" = 1 ]; then
+  no_totp="$(admin webadmin list 2>/dev/null | awk 'NR>1 && $4=="yes" && $5=="no" {print $2}' | tr '\n' ' ' | sed 's/ *$//')"
+  if [ -n "$no_totp" ]; then
+    printf '    %s%s%s\n' "$C_ERR" "$(tsel \
+      "Two-factor authentication (TOTP) is NOT enabled for web console admin(s): $no_totp" \
+      "Web 后台管理员还没绑定二步验证(TOTP):$no_totp")" "$C_OFF"
+    printf '    %s%s%s\n' "$C_ERR" "$(tsel \
+      "A password alone is all it takes to control this server from the console. Do it now:" \
+      "现在只凭一个口令就能从后台完全控制这台服务器。请立刻去绑定:")" "$C_OFF"
+    printf '    %s%s%s\n' "$C_ERR" "$(tsel \
+      "  log in at https://$current_dial:$WEB_PORT/ → \"My account\" (/me) → enable TOTP → save the recovery codes." \
+      "  登录 https://$current_dial:$WEB_PORT/ → 「我的账号」(/me) → 启用二步验证 → 把恢复码抄下来保存。")" "$C_OFF"
+    printf '\n'
+  fi
+fi
 # --db-path 已经不是必须的了:不带它时 nanotun-admin 会自己找到这台机器装好的库
 # (只有当前目录下正好有 data/nanotun.db 时才用那个)。但这里照旧写全 —— 贴进
 # 文档、脚本、工单里的命令,不该依赖「在哪个目录跑」。
