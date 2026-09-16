@@ -78,21 +78,33 @@ cp e2e.env.example e2e.env   # 填写机器地址、凭据、身份
 它只覆盖 `/usr/local/bin` 下的二进制与脚本,**不碰** `config.toml`、`certs/`、数据库 ——
 那三样一动,机器的身份(REALITY 私钥、PSK、已发出去的 profile)就变了,实验室得重建。
 
-### A/C 上的客户端二进制没有同款钉子(会拿旧 CLI 刷绿)
+### A/C 上的客户端:装对外发布的版本,并钉住
 
-上面那套只保证**服务端**是 HEAD。A/C 上的 `/usr/local/bin/nanotun` 是手工装上去的,
-既没有 `deploy-srv.sh` 那样的一键更新,也没有任何断言钉住它的版本 —— 而 `nanotun --version`
-恒为 Cargo 包版本 `0.1.0`,跨提交不变,**光看版本号根本分不出是哪个构建**(服务端至少有
-`dev-<sha>`)。于是整套 e2e 可以在一个几周前的客户端上安静跑绿。
+```bash
+./deploy-cli.sh              # 装 dl.nanotun.com 上当前发布的 Linux CLI 到 A/C → 回读 → 改 E2E_EXPECT_CLIENT_VERSION
+./deploy-cli.sh 1.0.5        # 钉指定版本
+./deploy-cli.sh --check      # 只看:线上哪版、A/C 现在哪版、钉子多少
+```
 
-2026-08-10 实测就撞上了:A/C 的二进制是 08-02 构建的,而客户端侧的组网 MagicDNS 兜底修复
-(`blackhorse-windows` 的 `11425ea`)是 08-09 才提交的。也就是说 v0.1.20 那次 341/341 全绿,
-跑的是一个**不含该修复**的 CLI;而 C 上「组网下 `.lan` 应用层解析不到」当时就实实在在存在着
-(`getent` 空、`dig @10.201.0.1` 同名字正常),只是没有任何断言去看它。
+A/C 上的 `/usr/local/bin/nanotun` 装的是**下载页上用户拿到的同一个文件**
+(`dl.nanotun.com/linux-cli/nanotun-<版本>-<arch>-musl-static`,按 `/api/v1/client/latest`
+里的 sha256 核对),不是从客户端工程现编的中间构建。阶段 0 会断言两台的 `nanotun --version`
+等于 `E2E_EXPECT_CLIENT_VERSION`,与服务端那条钉子同一口径。
 
-所以改动客户端后要自己确认 A/C 的二进制是新的(比对 mtime,或直接重装),别指望门禁提醒你。
-现在阶段 1 至少会在 C 上验组网系统解析,这类「客户端旧了」的问题**有机会**在那条断言上暴露,
-但它只覆盖 DNS 这一条链,不是版本钉子。
+这条是 2026-09-16 补的。此前 A/C 的二进制是手工从 `blackhorse-windows` 某个 commit 现编的,
+既没有一键更新也没有断言钉着 —— 而那时 `nanotun --version` 恒为 Cargo 包版本 `0.1.0`,
+**光看版本号分不出是哪个构建**。2026-08-10 实测就撞上了:A/C 的二进制是 08-02 构建的,而
+客户端侧的组网 MagicDNS 兜底修复(`11425ea`)是 08-09 才提交的,v0.1.20 那次 341/341 全绿
+跑的是一个**不含该修复**的 CLI。换成发布版之后版本号是真的,这个洞才补得上。
+
+两点要知道的:
+
+- **发布版带连接门禁(1.0.4 起)**:未登录账号时,本地个人具名连接的上限是 1。A 上只存
+  `test` 这一条(provision 先 remove 再 add),C 全走即席 `connect <profile>`,所以不触发;
+  但哪个阶段若多做一次 `nanotun add`,第二条就会被拒,报的是「个人节点已达上限」——
+  读起来像套餐问题,其实是门禁在起作用。
+- **发布版未设 locale 时默认英文(1.0.5 起)**。e2e 没有任何断言 grep 客户端的中文输出,
+  不受影响;以后加断言别依赖它的界面文案。
 
 ### 别在自己机器上跑:`run-remote.sh`
 

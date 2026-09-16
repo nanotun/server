@@ -124,6 +124,22 @@ phase_00_baseline() {
     note "未设置 E2E_EXPECT_VERSION,跳过版本比对"
   fi
 
+  # 客户端也要钉。服务端那条钉子存在的理由(在旧二进制上安静刷绿)对客户端同样成立,
+  # 而且客户端这边更隐蔽:2026-08-10 那次 v0.1.20 全绿,A/C 跑的是不含 MagicDNS 修复的旧 CLI,
+  # 因为 `nanotun --version` 那时恒为 0.1.0,看不出构建。现在 A/C 装的是对外发布的版本
+  # (deploy-cli.sh 从 dl.nanotun.com 装,并把 E2E_EXPECT_CLIENT_VERSION 改成同一个值),
+  # `--version` 是真实版本号,所以这里能像服务端一样比对。
+  local want_cli="${E2E_EXPECT_CLIENT_VERSION:-}"
+  if [[ -n "$want_cli" ]]; then
+    local who got
+    for who in a c; do
+      got="$("$who" '/usr/local/bin/nanotun --version 2>/dev/null' | awk 'NR==1{print $NF}' | tr -d '[:space:]\r')"
+      check "客户端 ${who^^} 的 nanotun 版本符合预期" "$want_cli" "${got:-?}"
+    done
+  else
+    note "未设置 E2E_EXPECT_CLIENT_VERSION,跳过客户端版本比对(见 README「A/C 上的客户端」)"
+  fi
+
   check "nanotund 运行中"    "active" "$(s 'systemctl is-active nanotun'     | tr -d '[:space:]')"
   check "nanotun-web 运行中" "active" "$(s 'systemctl is-active nanotun-web' | tr -d '[:space:]')"
 
