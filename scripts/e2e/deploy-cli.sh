@@ -60,18 +60,18 @@ ENVF="${E2E_ENV:-$HERE/e2e.env}"
 step "1. 发布记录 ($API_LATEST)"
 command -v python3 >/dev/null || die "本机没有 python3(解析发布记录要用)"
 RAW="$(curl -fsSL --max-time 30 "$API_LATEST" 2>/dev/null)" || die "取不到发布记录:$API_LATEST"
-# 接口把全部平台一起返回,自己按 platform 挑;资产名 → sha256 逐条列出来给下面核对用。
+# 带 ?platform= 时 data 就是那一条发布记录(version / assets[] / platform)。首行版本号,
+# 其后每行「资产名 sha256」给下面核对用。platform 字段回读一遍,防接口忽略了参数给回别的平台。
 REL="$(printf '%s' "$RAW" | python3 -c '
 import json, sys
-d = json.load(sys.stdin)
-rel = [r for r in d.get("data", {}).get("releases", []) if r.get("platform") == "linux-cli"]
-if not rel:
+d = json.load(sys.stdin).get("data") or {}
+if d.get("platform") != "linux-cli" or not d.get("version"):
     sys.exit(1)
-r = rel[0]
-print(r["version"])
-for a in r.get("assets", []):
+print(d["version"])
+for a in d.get("assets", []):
     print(a["name"], a["sha256"])
-')" || die "发布记录里没有 linux-cli 这个平台"
+')" || die "发布记录不是 linux-cli 平台的,或没有 version 字段:
+$(printf '%s' "$RAW" | head -c 400)"
 LATEST="$(printf '%s\n' "$REL" | head -1)"
 VER="${WANT:-$LATEST}"
 if [[ "$VER" != "$LATEST" ]]; then
